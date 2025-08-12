@@ -1,4 +1,4 @@
-# LlamaCPP Platform
+# Llama Nexus
 
 > A comprehensive model management platform with web UI control over LlamaCPP deployments
 
@@ -6,7 +6,7 @@
 [![CUDA](https://img.shields.io/badge/CUDA-Accelerated-green.svg)](https://developer.nvidia.com/cuda-zone)
 [![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-orange.svg)](https://openai.com/blog/openai-api)
 
-**LlamaCPP Platform** is a complete model management system featuring real-time monitoring, configuration management, and full lifecycle control for LlamaCPP deployments. Built with modern web technologies and optimized for high-performance GPU inference.
+**Llama Nexus** is a complete model management system featuring real-time monitoring, configuration management, and full lifecycle control for LlamaCPP deployments. Built with modern web technologies and optimized for high-performance GPU inference.
 
 ## 📋 Table of Contents
 
