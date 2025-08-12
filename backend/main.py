@@ -102,9 +102,9 @@ class LlamaCPPManager:
                 logger.warning(f"Docker CLI check failed with error='{e}'")
         
         self.use_docker = (DOCKER_AVAILABLE or docker_cli_available) and os.getenv("USE_DOCKER", "false").lower() == "true"
-        self.container_name = os.getenv("LLAMACPP_CONTAINER_NAME", "llamacpp-gpt-oss-managed")
+        self.container_name = os.getenv("LLAMACPP_CONTAINER_NAME", "llamacpp-api")
         # Docker network to attach launched containers to (defaults to compose default)
-        self.docker_network = os.getenv("DOCKER_NETWORK", "llamacpp-gpt-oss-api_default")
+        self.docker_network = os.getenv("DOCKER_NETWORK", "llama-nexus_default")
         
         # Defer container log reading to runtime callers to avoid loop issues during import
         
@@ -256,7 +256,7 @@ class LlamaCPPManager:
         logger.info(f"Built llamacpp command with {len(cmd)} arguments: '{cmd_str[:100]}...'" if len(cmd_str) > 100 else f"Built llamacpp command: '{cmd_str}'")
         
         # Validate Docker image exists
-        image_name = "llamacpp-gpt-oss-api-llamacpp-api"
+        image_name = "llama-nexus-llamacpp-api"
         try:
             docker_client.images.get(image_name)
             logger.info(f"Docker image validation successful for image_name='{image_name}'")
@@ -276,8 +276,8 @@ class LlamaCPPManager:
             auto_remove=False,
             network=self.docker_network,
             volumes={
-                "llamacpp-gpt-oss-api_gpt_oss_models": {"bind": "/home/llamacpp/models", "mode": "rw"},
-                "/home/alec/git/llamacpp-gpt-oss-api/chat-template.jinja": {"bind": "/home/llamacpp/chat-template.jinja", "mode": "ro"}
+                "llamacpp-api_gpt_oss_models": {"bind": "/home/llamacpp/models", "mode": "rw"},
+                "/home/alec/git/llama-nexus/chat-template.jinja": {"bind": "/home/llamacpp/chat-template.jinja", "mode": "ro"}
             },
             environment={
                 "CUDA_VISIBLE_DEVICES": "0",
@@ -329,7 +329,7 @@ class LlamaCPPManager:
         logger.info(f"Built command: {' '.join(cmd)}")
         
         # Check if image exists
-        image_name = "llamacpp-gpt-oss-api-llamacpp-api"
+        image_name = "llama-nexus-llamacpp-api"
         image_check = await asyncio.create_subprocess_exec(
             'docker', 'images', '--format', '{{.Repository}}:{{.Tag}}', image_name,
             stdout=asyncio.subprocess.PIPE,
@@ -352,8 +352,8 @@ class LlamaCPPManager:
             '--shm-size', '16g',
             '-p', '8600:8080',
             '--network', self.docker_network,
-            '-v', 'llamacpp-gpt-oss-api_gpt_oss_models:/home/llamacpp/models',
-            '-v', '/home/alec/git/llamacpp-gpt-oss-api/chat-template.jinja:/home/llamacpp/chat-template.jinja:ro',
+            '-v', 'llama-nexus_gpt_oss_models:/home/llamacpp/models',
+            '-v', '/home/alec/git/llama-nexus/chat-template.jinja:/home/llamacpp/chat-template.jinja:ro',
             '-e', 'CUDA_VISIBLE_DEVICES=0',
             '-e', 'NVIDIA_VISIBLE_DEVICES=0',
             '-e', f'MODEL_NAME={self.config["model"]["name"]}',
@@ -442,7 +442,7 @@ class LlamaCPPManager:
                 raise HTTPException(status_code=400, detail=error_msg)
             
             # Validate chat template file exists
-            template_path = "/home/alec/git/llamacpp-gpt-oss-api/chat-template.jinja"
+            template_path = "/home/alec/git/llama-nexus/chat-template.jinja"
             logger.info(f"Validating chat template file at path='{template_path}'")
             if not os.path.exists(template_path):
                 error_msg = f"Chat template file not found: {template_path}"
@@ -1075,7 +1075,7 @@ class ModelDownloadManager:
 
     async def _run_download(self, model_id: str, repo_id: str, filename: str, dest_path: Path, cancel_event: asyncio.Event):
         url = hf_hub_url(repo_id=repo_id, filename=filename)
-        headers = {"User-Agent": "llamacpp-gpt-oss-api/1.0"}
+        headers = {"User-Agent": "llama-nexus1.0"}
         hf_token = os.getenv("HUGGINGFACE_TOKEN")
         if hf_token:
             headers["Authorization"] = f"Bearer {hf_token}"
@@ -1182,7 +1182,7 @@ class ModelDownloadManager:
         try:
             # Get total size of all parts
             total_size = 0
-            headers = {"User-Agent": "llamacpp-gpt-oss-api/1.0"}
+            headers = {"User-Agent": "llama-nexus1.0"}
             hf_token = os.getenv("HUGGINGFACE_TOKEN")
             if hf_token:
                 headers["Authorization"] = f"Bearer {hf_token}"

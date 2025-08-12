@@ -22,7 +22,7 @@ services:
       - API_KEY=placeholder-api-key
       # Enable Docker mode and set container name
       - USE_DOCKER=true
-      - LLAMACPP_CONTAINER_NAME=llamacpp-gpt-oss-api
+      - LLAMACPP_CONTAINER_NAME=llamacpp-api
       # Pass through HuggingFace token from host environment
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
       # Enable colored logging
@@ -64,7 +64,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: llamacpp-gpt-oss-api
+    container_name: llamacpp-api
     hostname: llamacpp
     ports:
       - "8600:8080"    # API server port

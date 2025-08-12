@@ -177,11 +177,11 @@ docker compose exec llamacpp-api ls -la /home/llamacpp/models/
 docker system df -v
 
 # Check specific volume usage
-docker volume inspect llamacpp-gpt-oss-api_gpt_oss_models
+docker volume inspect llamacpp-api_gpt_oss_models
 
 # Clear model cache (if needed)
 docker compose down
-docker volume rm llamacpp-gpt-oss-api_gpt_oss_models
+docker volume rm llamacpp-api_gpt_oss_models
 docker compose up -d
 ```
 
