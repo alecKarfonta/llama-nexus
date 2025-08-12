@@ -1,0 +1,128 @@
+services:
+  # Backend Management API - Controls LlamaCPP
+  backend-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: llamacpp-backend
+    ports:
+      - "8700:8700"    # Management API port
+    environment:
+      # Default LlamaCPP configuration
+      - MODEL_NAME=gpt-oss-120b
+      - MODEL_VARIANT=Q4_K_M
+      - CONTEXT_SIZE=128000
+      - GPU_LAYERS=999
+      - TEMPERATURE=0.7
+      - TOP_P=0.8
+      - TOP_K=20
+      - REPEAT_PENALTY=1.05
+      - BATCH_SIZE=2048
+      - N_CPU_MOE=0
+      - API_KEY=placeholder-api-key
+      # Enable Docker mode and set container name
+      - USE_DOCKER=true
+      - LLAMACPP_CONTAINER_NAME=llamacpp-gpt-oss-api
+      # Pass through HuggingFace token from host environment
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+      # Enable colored logging
+      - FORCE_COLOR=1
+      - TERM=xterm-256color
+    volumes:
+      - gpt_oss_models:/home/llamacpp/models
+      - ./chat-template.jinja:/home/llamacpp/chat-template.jinja:ro
+      # Mount llamacpp binaries
+      - llamacpp_bin:/usr/local/bin:ro
+      # Mount Docker socket to enable Docker operations
+      - /var/run/docker.sock:/var/run/docker.sock
+    runtime: nvidia
+    shm_size: '16gb'
+    depends_on:
+      llamacpp-builder:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Build container for LlamaCPP binaries
+  llamacpp-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: llamacpp-builder
+    volumes:
+      - llamacpp_bin:/output
+    command: |
+      bash -c "
+        cp /build/llama.cpp/build/bin/llama-server /output/
+        cp /build/llama.cpp/build/bin/llama-cli /output/
+        chmod +x /output/*
+        echo 'LlamaCPP binaries copied'
+      "
+
+  # Llama.cpp API Server - Direct access
+  llamacpp-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llamacpp-gpt-oss-api
+    hostname: llamacpp
+    ports:
+      - "8600:8080"    # API server port
+    runtime: nvidia
+    shm_size: '16gb'
+    volumes:
+      - gpt_oss_models:/home/llamacpp/models
+      - ./chat-template.jinja:/home/llamacpp/chat-template.jinja:ro
+    environment:
+      # CUDA optimizations
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=0
+      # Model configuration
+      - MODEL_NAME=gpt-oss-120b
+      - MODEL_VARIANT=Q4_K_M
+      - CONTEXT_SIZE=128000
+      - GPU_LAYERS=999
+      - TEMPERATURE=0.7
+      - TOP_P=0.8
+      - TOP_K=20
+      - API_KEY=placeholder-api-key
+      - BATCH_SIZE=2048
+      - N_CPU_MOE=0
+      # HuggingFace token for downloads
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+
+  # Management Frontend - React Web Interface
+  llamacpp-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: llamacpp-frontend
+    hostname: frontend
+    ports:
+      - "3000:80"    # Frontend web interface
+    depends_on:
+      - backend-api
+      - llamacpp-api
+    environment:
+      - VITE_API_BASE_URL=http://192.168.1.77:8600
+      - VITE_BACKEND_URL=http://192.168.1.77:8700
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  gpt_oss_models:
+    driver: local
+  llamacpp_bin:
+    driver: local

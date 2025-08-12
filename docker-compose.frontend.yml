@@ -1,0 +1,13 @@
+version: '3'
+
+services:
+  frontend:
+    build: 
+      context: ./frontend
+    ports:
+      - "3001:80"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
