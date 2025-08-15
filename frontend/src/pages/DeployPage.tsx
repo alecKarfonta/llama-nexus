@@ -147,8 +147,8 @@ const DEFAULT_VALUES = {
     main_gpu: 0,
     continuous_batching: false,
     parallel_slots: 1,
-    cache_type_k: 'f16',
-    cache_type_v: 'f16',
+    cache_type_k: 'q4_0',
+    cache_type_v: 'q4_0',
   },
   context_extension: {
     yarn_ext_factor: 1.0,
@@ -307,6 +307,10 @@ export const DeployPage: React.FC = () => {
   const [validateErrors, setValidateErrors] = useState<string[] | null>(null)
   const [validateWarnings, setValidateWarnings] = useState<string[] | null>(null)
   const [currentModel, setCurrentModel] = useState<any | null>(null)
+  const [templates, setTemplates] = useState<string[]>([])
+  const [selectedTemplate, setSelectedTemplate] = useState<string>('')
+  const [templatesDir, setTemplatesDir] = useState<string>('')
+  const [templatesLoading, setTemplatesLoading] = useState<boolean>(false)
 
   useEffect(() => {
     const init = async () => {
@@ -328,6 +332,17 @@ export const DeployPage: React.FC = () => {
           const cm = await apiService.getCurrentModel()
           setCurrentModel(cm)
         } catch {}
+
+        // Load templates
+        try {
+          setTemplatesLoading(true)
+          const data = await apiService.listTemplates()
+          setTemplates(data.files)
+          setSelectedTemplate(data.selected)
+          setTemplatesDir(data.directory)
+        } finally {
+          setTemplatesLoading(false)
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to initialize deploy page')
       } finally {
@@ -742,6 +757,61 @@ export const DeployPage: React.FC = () => {
                 ))}
               </Select>
             </Grid>
+            <Grid item xs={12} md={6}>
+              <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Chat Template</Typography>
+              <Select
+                fullWidth
+                value={selectedTemplate}
+                disabled={templatesLoading}
+                onChange={async (e) => {
+                  const filename = e.target.value as string
+                  setSelectedTemplate(filename)
+                  try {
+                    await apiService.selectTemplate(filename)
+                    // Refresh config and command preview to reflect new template selection
+                    const cfgRes = await fetch(`/api/v1/service/config`)
+                    if (cfgRes.ok) {
+                      const cfgJson = await cfgRes.json()
+                      setConfig(cfgJson.config)
+                      setCommandLine(cfgJson.command || '')
+                    }
+                  } catch (err) {
+                    // revert on error
+                    setSelectedTemplate((prev) => prev)
+                    setError(err instanceof Error ? err.message : 'Failed to select template')
+                  }
+                }}
+                sx={{ 
+                  fontSize: '0.875rem',
+                  '& .MuiOutlinedInput-root': {
+                    borderRadius: 1
+                  }
+                }}
+              >
+                {templates.length === 0 && (
+                  <MenuItem value="" disabled>
+                    No templates found in {templatesDir || '/home/llamacpp/templates'}
+                  </MenuItem>
+                )}
+                {templates.map((f) => (
+                  <MenuItem key={f} value={f}>{f}</MenuItem>
+                ))}
+              </Select>
+              <Box mt={1}>
+                <Chip 
+                  label="Manage templates"
+                  variant="outlined"
+                  onClick={() => window.location.assign('/templates')}
+                  sx={{ 
+                    borderRadius: '4px',
+                    fontWeight: 500,
+                    fontSize: '0.6875rem',
+                    height: '24px',
+                    borderColor: 'rgba(255, 255, 255, 0.2)'
+                  }}
+                />
+              </Box>
+            </Grid>
             <Grid item xs={12}>
               <Button
                 variant="contained"
@@ -933,7 +1003,7 @@ export const DeployPage: React.FC = () => {
                   label="CPU MoE Layers"
                   description="Keep the Mixture of Experts (MoE) weights of the first N layers in the CPU. Set to 0 to disable."
                   path="model.n_cpu_moe"
-                  value={config.model.n_cpu_moe || 0}
+                  value={config.model.n_cpu_moe || 21}
                   defaultValue={getDefaultValue('model.n_cpu_moe')}
                   type="number"
                   min={0}
@@ -1472,7 +1542,7 @@ export const DeployPage: React.FC = () => {
                   label="Cache Type K" 
                   type="text" 
                   fullWidth 
-                  value={config.performance.cache_type_k || 'f16'} 
+                  value={config.performance.cache_type_k || 'q4_0'} 
                   onChange={(e) => updateConfig('performance.cache_type_k', e.target.value)} 
                   helperText="KV cache data type for K (--cache-type-k)"
                   sx={{ 
@@ -1495,7 +1565,7 @@ export const DeployPage: React.FC = () => {
                   label="Cache Type V" 
                   type="text" 
                   fullWidth 
-                  value={config.performance.cache_type_v || 'f16'} 
+                  value={config.performance.cache_type_v || 'q4_0'} 
                   onChange={(e) => updateConfig('performance.cache_type_v', e.target.value)} 
                   helperText="KV cache data type for V (--cache-type-v)"
                   sx={{ 

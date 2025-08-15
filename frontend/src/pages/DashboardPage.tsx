@@ -17,6 +17,7 @@ import {
 import { RealTimeMetricsDisplay } from '@/components/monitoring'
 import { ServiceStatusDisplay } from '@/components/monitoring/ServiceStatusDisplay'
 import { LogViewer } from '@/components/monitoring/LogViewer'
+import { TokenUsageTracker } from '@/components/monitoring/TokenUsageTracker'
 import { StatCard } from '@/components/dashboard/StatCard'
 
 export const DashboardPage: React.FC = () => {
@@ -187,6 +188,21 @@ export const DashboardPage: React.FC = () => {
             </Paper>
           </Grid>
           
+          <Grid item xs={12}>
+            <Paper sx={{ 
+              p: 2, 
+              borderRadius: 0.5,
+              bgcolor: 'background.paper',
+              border: '1px solid',
+              borderColor: 'grey.200'
+            }}>
+              <Typography variant="h6" gutterBottom>Token Usage Tracking</Typography>
+              <Box sx={{ maxWidth: '100%', overflow: 'auto' }}>
+                <TokenUsageTracker />
+              </Box>
+            </Paper>
+          </Grid>
+
           <Grid item xs={12}>
             <Paper sx={{ 
               p: 2, 

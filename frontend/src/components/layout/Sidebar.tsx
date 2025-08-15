@@ -21,6 +21,7 @@ import {
   Storage as DeployIcon,
   Speed as TestingIcon,
   Insights as MonitoringIcon,
+  Description as TemplatesIcon,
 } from '@mui/icons-material'
 import type { NavigationItem, NavigationSection } from '@/types'
 
@@ -85,6 +86,12 @@ const navigationSections: NavigationSection[] = [
         icon: 'chat',
       },
       {
+        id: 'templates',
+        label: 'Templates',
+        path: '/templates',
+        icon: 'templates',
+      },
+      {
         id: 'deploy',
         label: 'Deploy',
         path: '/deploy',
@@ -134,6 +141,8 @@ const getIcon = (iconName: string) => {
       return <TestingIcon />
     case 'monitoring':
       return <MonitoringIcon />
+    case 'templates':
+      return <TemplatesIcon />
     default:
       return <DashboardIcon />
   }

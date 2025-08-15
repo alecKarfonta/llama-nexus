@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Back
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from enum import Enum
 import asyncio
 import subprocess
 import json
@@ -29,6 +30,15 @@ from huggingface_hub import HfApi
 
 # Import enhanced logger
 from enhanced_logger import enhanced_logger as logger
+# Token tracking imports (Docker image copies module files to /app)
+try:
+    from token_tracker import token_tracker  # type: ignore
+    from token_middleware import TokenUsageMiddleware  # type: ignore
+except Exception:
+    token_tracker = None  # type: ignore
+    class TokenUsageMiddleware(BaseHTTPMiddleware):  # type: ignore
+        async def dispatch(self, request, call_next):
+            return await call_next(request)
 
 # Try to import docker, fallback to subprocess if not available
 try:
@@ -118,6 +128,10 @@ class LlamaCPPManager:
                 "gpu_layers": int(os.getenv("GPU_LAYERS", "999")),
                 "n_cpu_moe": int(os.getenv("N_CPU_MOE", "0")),
             },
+            "template": {
+                "directory": os.getenv("TEMPLATE_DIR", "/home/llamacpp/templates"),
+                "selected": os.getenv("CHAT_TEMPLATE", "chat-template-oss.jinja"),
+            },
             "sampling": {
                 "temperature": float(os.getenv("TEMPERATURE", "0.7")),
                 "top_p": float(os.getenv("TOP_P", "0.8")),
@@ -205,8 +219,8 @@ class LlamaCPPManager:
             "--dry-base", str(self.config["sampling"]["dry_base"]),
             "--dry-allowed-length", str(self.config["sampling"]["dry_allowed_length"]),
             "--dry-penalty-last-n", str(self.config["sampling"]["dry_penalty_last_n"]),
-            "--chat-template-file", "/home/llamacpp/chat-template.jinja",
             "--jinja",
+            "--chat-template-file", str(Path(self.config["template"]["directory"]) / self.config["template"]["selected"]),
             "--verbose",
             "--metrics",
             "--embeddings",
@@ -267,6 +281,12 @@ class LlamaCPPManager:
         
         logger.info("Initiating Docker container creation and startup...")
         
+        # Resolve host templates dir (can be overridden via env)
+        host_templates_dir = os.getenv(
+            "TEMPLATES_HOST_DIR",
+            str(Path(__file__).resolve().parents[1] / "chat-templates")
+        )
+
         # Run container with the command
         self.docker_container = docker_client.containers.run(
             image=image_name,
@@ -277,7 +297,7 @@ class LlamaCPPManager:
             network=self.docker_network,
             volumes={
                 "llamacpp-api_gpt_oss_models": {"bind": "/home/llamacpp/models", "mode": "rw"},
-                "/home/alec/git/llama-nexus/chat-template.jinja": {"bind": "/home/llamacpp/chat-template.jinja", "mode": "ro"}
+                host_templates_dir: {"bind": "/home/llamacpp/templates", "mode": "ro"}
             },
             environment={
                 "CUDA_VISIBLE_DEVICES": "0",
@@ -345,6 +365,10 @@ class LlamaCPPManager:
         logger.info(f"Docker image found: {image_name}")
         
         # Build docker run command
+        host_templates_dir = os.getenv(
+            "TEMPLATES_HOST_DIR",
+            str(Path(__file__).resolve().parents[1] / "chat-templates")
+        )
         docker_cmd = [
             'docker', 'run', '-d',
             '--name', self.container_name,
@@ -353,7 +377,7 @@ class LlamaCPPManager:
             '-p', '8600:8080',
             '--network', self.docker_network,
             '-v', 'llama-nexus_gpt_oss_models:/home/llamacpp/models',
-            '-v', '/home/alec/git/llama-nexus/chat-template.jinja:/home/llamacpp/chat-template.jinja:ro',
+            '-v', f'{host_templates_dir}:/home/llamacpp/templates:ro',
             '-e', 'CUDA_VISIBLE_DEVICES=0',
             '-e', 'NVIDIA_VISIBLE_DEVICES=0',
             '-e', f'MODEL_NAME={self.config["model"]["name"]}',
@@ -442,7 +466,7 @@ class LlamaCPPManager:
                 raise HTTPException(status_code=400, detail=error_msg)
             
             # Validate chat template file exists
-            template_path = "/home/alec/git/llama-nexus/chat-template.jinja"
+            template_path = str(Path(self.config["template"]["directory"]) / self.config["template"]["selected"]) 
             logger.info(f"Validating chat template file at path='{template_path}'")
             if not os.path.exists(template_path):
                 error_msg = f"Chat template file not found: {template_path}"
@@ -1655,6 +1679,12 @@ app.add_middleware(
 # Add logging middleware
 app.add_middleware(LoggingMiddleware)
 
+# Add token usage tracking middleware if available
+try:
+    app.add_middleware(TokenUsageMiddleware)
+except Exception:
+    logger.warning("TokenUsageMiddleware not available; token tracking middleware not enabled")
+
 # Health check endpoint
 @app.get("/health")
 async def health_check():
@@ -1722,7 +1752,8 @@ async def get_config():
             "sampling": ["temperature", "top_p", "top_k", "min_p", "repeat_penalty", 
                         "frequency_penalty", "presence_penalty", "dry_multiplier"],
             "performance": ["threads", "batch_size", "ubatch_size", "num_predict"],
-            "server": ["api_key"]
+            "server": ["api_key"],
+            "template": ["directory", "selected"]
         }
     }
 
@@ -2148,6 +2179,100 @@ async def list_downloads():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- Chat template management endpoints ---
+@app.get("/v1/templates")
+async def list_templates():
+    try:
+        templates_dir = Path(manager.config["template"]["directory"])
+        if not templates_dir.exists():
+            return {"success": True, "data": {"directory": str(templates_dir), "files": [], "selected": manager.config["template"]["selected"]}}
+        files = [p.name for p in templates_dir.glob("*.jinja") if p.is_file()]
+        return {"success": True, "data": {"directory": str(templates_dir), "files": files, "selected": manager.config["template"]["selected"]}}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/templates/{filename}")
+async def get_template(filename: str):
+    try:
+        templates_dir = Path(manager.config["template"]["directory"])
+        path = templates_dir / filename
+        if not path.exists() or not path.is_file():
+            raise HTTPException(status_code=404, detail="Template not found")
+        return {"success": True, "data": {"filename": filename, "content": path.read_text()}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/v1/templates/{filename}")
+async def update_template(filename: str, payload: Dict[str, Any]):
+    try:
+        content = payload.get("content")
+        if not isinstance(content, str):
+            raise HTTPException(status_code=400, detail="'content' must be a string")
+        templates_dir = Path(manager.config["template"]["directory"]) 
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        path = templates_dir / filename
+        # Overwrite file atomically
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(content)
+        tmp_path.replace(path)
+        return {"success": True, "data": {"filename": filename}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/templates/select")
+async def select_template(payload: Dict[str, Any]):
+    try:
+        filename = payload.get("filename")
+        if not filename or not isinstance(filename, str):
+            raise HTTPException(status_code=400, detail="'filename' is required")
+        templates_dir = Path(manager.config["template"]["directory"]) 
+        path = templates_dir / filename
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Template not found")
+        # Update config and persist
+        updated = _merge_and_persist_config({"template": {"directory": str(templates_dir), "selected": filename}})
+        return {"success": True, "data": {"selected": updated["template"]["selected"]}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/templates")
+async def create_template(payload: Dict[str, Any]):
+    try:
+        filename = payload.get("filename")
+        content = payload.get("content", "")
+        
+        if not filename or not isinstance(filename, str):
+            raise HTTPException(status_code=400, detail="'filename' is required")
+        
+        if not isinstance(content, str):
+            raise HTTPException(status_code=400, detail="'content' must be a string")
+        
+        # Ensure filename has .jinja extension
+        if not filename.endswith('.jinja'):
+            filename += '.jinja'
+        
+        templates_dir = Path(manager.config["template"]["directory"])
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        path = templates_dir / filename
+        
+        # Check if file already exists
+        if path.exists():
+            raise HTTPException(status_code=409, detail="Template already exists")
+        
+        # Create the new template file
+        path.write_text(content)
+        return {"success": True, "data": {"filename": filename}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/v1/models/downloads/{model_id}")
 async def cancel_download(model_id: str):
@@ -2157,6 +2282,91 @@ async def cancel_download(model_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Token Usage Tracking Endpoints ---
+
+class TimeRange(str, Enum):
+    ONE_HOUR = "1h"
+    ONE_DAY = "24h"
+    ONE_WEEK = "7d"
+    ONE_MONTH = "30d"
+    ALL_TIME = "all"
+
+@app.get("/v1/usage/tokens")
+async def get_token_usage(timeRange: TimeRange = TimeRange.ONE_DAY):
+    try:
+        if not token_tracker:
+            raise HTTPException(status_code=503, detail="Token tracker not available")
+        usage_data = token_tracker.get_token_usage(timeRange)  # type: ignore
+        return {"success": True, "data": usage_data, "timestamp": datetime.now().isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting token usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/usage/tokens/timeline")
+async def get_token_usage_timeline(timeRange: TimeRange = TimeRange.ONE_DAY):
+    try:
+        if not token_tracker:
+            raise HTTPException(status_code=503, detail="Token tracker not available")
+        interval = "hour"
+        if timeRange == TimeRange.ONE_HOUR:
+            interval = "minute"
+        elif timeRange in [TimeRange.ONE_WEEK, TimeRange.ONE_MONTH]:
+            interval = "day"
+        usage_data = token_tracker.get_token_usage_over_time(timeRange, interval)  # type: ignore
+        return {"success": True, "data": usage_data, "interval": interval, "timestamp": datetime.now().isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting token usage timeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/usage/tokens/summary")
+async def get_token_usage_summary(timeRange: TimeRange = TimeRange.ALL_TIME):
+    try:
+        if not token_tracker:
+            raise HTTPException(status_code=503, detail="Token tracker not available")
+        summary = token_tracker.get_total_token_usage(timeRange)  # type: ignore
+        return {"success": True, "data": summary, "timestamp": datetime.now().isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting token usage summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/usage/tokens/record")
+async def record_token_usage(request: Request):
+    try:
+        if not token_tracker:
+            raise HTTPException(status_code=503, detail="Token tracker not available")
+        body = await request.json()
+        if not body.get("model_id"):
+            raise HTTPException(status_code=400, detail="model_id is required")
+        if "prompt_tokens" not in body:
+            raise HTTPException(status_code=400, detail="prompt_tokens is required")
+        if "completion_tokens" not in body:
+            raise HTTPException(status_code=400, detail="completion_tokens is required")
+        success = token_tracker.record_token_usage(  # type: ignore
+            model_id=body.get("model_id"),
+            prompt_tokens=body.get("prompt_tokens"),
+            completion_tokens=body.get("completion_tokens"),
+            model_name=body.get("model_name"),
+            request_id=body.get("request_id"),
+            user_id=body.get("user_id"),
+            endpoint=body.get("endpoint"),
+            metadata=body.get("metadata"),
+        )
+        if success:
+            return {"success": True, "message": "Token usage recorded successfully", "timestamp": datetime.now().isoformat()}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to record token usage")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error recording token usage: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

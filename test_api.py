@@ -168,6 +168,99 @@ def main():
     ):
         tests_passed += 1
     
+    # Test 7: Tool calling via chat template (non-streaming)
+    total_tests += 1
+    def test_tool_calling() -> bool:
+        try:
+            payload = {
+                "model": "gpt-oss-20b",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a helpful assistant. If a function is provided that can satisfy the user's request, "
+                            "you MUST call the function instead of answering directly."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Please generate a UUID version 4. Do not answer directly; instead call the tool named 'generate_uuid' "
+                            "with the appropriate arguments."
+                        )
+                    }
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "generate_uuid",
+                            "description": "Generate a universally unique identifier (UUID)",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "version": {
+                                        "type": "string",
+                                        "enum": ["v4", "v1"],
+                                        "description": "UUID version to generate"
+                                    }
+                                },
+                                "required": []
+                            }
+                        }
+                    }
+                ],
+                # Force the function call if the server honors OpenAI tool_choice
+                "tool_choice": {"type": "function", "function": {"name": "generate_uuid"}},
+                "temperature": 0,
+                "stream": False,
+                "max_tokens": 64
+            }
+
+            print("\n🧪 Testing: Tool Calling (generate_uuid)")
+            start_time = time.time()
+
+            response = requests.post(
+                f"{BASE_URL}/v1/chat/completions",
+                headers=HEADERS,
+                json=payload,
+                timeout=60
+            )
+
+            duration = time.time() - start_time
+
+            if response.status_code != 200:
+                print(f"❌ Tool calling failed: {response.status_code}")
+                print(f"   Response: {response.text}")
+                return False
+
+            result = response.json()
+            choice = result["choices"][0]
+            message = choice["message"]
+
+            tool_calls = message.get("tool_calls") or []
+            finish_reason = choice.get("finish_reason")
+
+            # Strict assertions so failures are visible for debugging
+            assert isinstance(tool_calls, list) and len(tool_calls) > 0, "Expected tool_calls in response"
+            assert finish_reason == "tool_calls", f"Expected finish_reason 'tool_calls', got '{finish_reason}'"
+            assert tool_calls[0]["type"] == "function", "First tool_call should be of type 'function'"
+            assert tool_calls[0]["function"]["name"] == "generate_uuid", "Expected tool name 'generate_uuid'"
+
+            print(f"✅ Tool calling successful ({duration:.1f}s)")
+            print(f"   finish_reason: {finish_reason}")
+            print(f"   tool_calls: {tool_calls}")
+            return True
+        except AssertionError as ae:
+            print(f"❌ Tool calling assertion failed: {ae}")
+            return False
+        except Exception as e:
+            print(f"❌ Tool calling error: {e}")
+            return False
+
+    if test_tool_calling():
+        tests_passed += 1
+    
     # Summary
     print("\n" + "=" * 50)
     print(f"📊 Test Results: {tests_passed}/{total_tests} tests passed")

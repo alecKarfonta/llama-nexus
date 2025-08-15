@@ -17,12 +17,15 @@ import type {
   ConfigurationPreset,
   ChatCompletionRequest,
   ChatCompletionResponse,
-  ChatCompletionChunk
+  ChatCompletionChunk,
+  TokenUsageData
 } from '@/types/api';
 
 class ApiService {
   private client: AxiosInstance;
+  private backendClient: AxiosInstance;
   private baseURL: string;
+  private backendBaseURL: string;
 
   constructor() {
     // Use env or relative base so dev proxy can avoid CORS; production can set env
@@ -47,10 +50,29 @@ class ApiService {
     }
     
     this.baseURL = isDevelopment ? '' : apiBaseUrl;
+    // Backend base URL (management API)
+    let backendBaseUrl = '';
+    if (import.meta.env?.VITE_BACKEND_URL) {
+      backendBaseUrl = import.meta.env.VITE_BACKEND_URL;
+    } else if ((window as any).__ENV__?.VITE_BACKEND_URL) {
+      backendBaseUrl = (window as any).__ENV__.VITE_BACKEND_URL;
+    } else if (!isDevelopment) {
+      backendBaseUrl = apiBaseUrl; // fallback
+    }
+    this.backendBaseURL = backendBaseUrl;
     console.log('API Base URL:', this.baseURL || 'using relative URLs (proxy mode)');
 
     this.client = axios.create({
       baseURL: this.baseURL,
+      timeout: 30000,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer placeholder-api-key'
+      }
+    });
+
+    this.backendClient = axios.create({
+      baseURL: this.backendBaseURL || this.baseURL,
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json',
@@ -75,25 +97,17 @@ class ApiService {
     );
 
     // Response interceptor
+    const onResponse = (response: any) => response;
+    const onError = (error: AxiosError) => {
+      console.error('API Response Error:', error);
+      return Promise.reject(this.transformError(error));
+    };
     this.client.interceptors.response.use(
-      (response: any) => {
-        return response;
-      },
-      (error: AxiosError) => {
-        console.error('API Response Error:', error);
-        
-        // Handle specific error cases
-        if (error.response?.status === 401) {
-          // Handle unauthorized access
-          console.error('Unauthorized access to API');
-        } else if (error.response?.status === 503) {
-          // Service unavailable
-          console.error('LlamaCPP service unavailable');
-        }
-        
-        return Promise.reject(this.transformError(error));
-      }
+      onResponse,
+      onError
     );
+
+    this.backendClient.interceptors.response.use(onResponse, onError);
   }
 
   private transformError(error: AxiosError): Error {
@@ -199,6 +213,30 @@ class ApiService {
     
     // Fallback to empty array if data format is unexpected
     return [];
+  }
+
+  // Template management APIs
+  async listTemplates(): Promise<{ directory: string; files: string[]; selected: string }> {
+    const response = await this.backendClient.get('/v1/templates');
+    return (response.data as any).data;
+  }
+
+  async getTemplate(filename: string): Promise<{ filename: string; content: string }> {
+    const response = await this.backendClient.get(`/v1/templates/${encodeURIComponent(filename)}`);
+    return (response.data as any).data;
+  }
+
+  async updateTemplate(filename: string, content: string): Promise<void> {
+    await this.backendClient.put(`/v1/templates/${encodeURIComponent(filename)}`, { content });
+  }
+
+  async selectTemplate(filename: string): Promise<void> {
+    await this.backendClient.post('/v1/templates/select', { filename });
+  }
+
+  async createTemplate(filename: string, content: string = ''): Promise<{ filename: string }> {
+    const response = await this.backendClient.post('/v1/templates', { filename, content });
+    return (response.data as any).data;
   }
   
   // Helper to extract parameter count from model name
@@ -525,6 +563,32 @@ class ApiService {
         return pump();
       }
     });
+  }
+
+  // Token usage tracking
+  async getTokenUsage(timeRange: string = '24h'): Promise<TokenUsageData[]> {
+    try {
+      const response = await this.client.get('/v1/usage/tokens', {
+        params: { timeRange }
+      });
+      return response.data.data || [];
+    } catch (error) {
+      // Do not fallback to mock data; surface the error so it can be fixed
+      throw error;
+    }
+  }
+
+  async recordTokenUsage(params: {
+    model_id: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    model_name?: string;
+    request_id?: string;
+    user_id?: string;
+    endpoint?: string;
+    metadata?: Record<string, any>;
+  }): Promise<void> {
+    await this.backendClient.post('/v1/usage/tokens/record', params);
   }
 
   // Utility method to test API connectivity

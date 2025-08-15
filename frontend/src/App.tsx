@@ -9,6 +9,7 @@ import { ConfigurationPage } from '@/pages/ConfigurationPage'
 import { DeployPage } from '@/pages/DeployPage'
 import { ChatPage } from '@/pages/ChatPage'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
+import { TemplatesPage } from '@/pages/TemplatesPage'
 
 // Placeholder pages for new routes until we implement them
 const TestingPage = () => <Box><h1>Testing Page</h1><p>Coming soon...</p></Box>
@@ -47,6 +48,7 @@ function App() {
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/deploy" element={<DeployPage />} />
+            <Route path="/templates" element={<TemplatesPage />} />
             <Route path="/testing" element={<TestingPage />} />
             <Route path="/monitoring" element={<MonitoringPage />} />
             <Route path="/configuration" element={<ConfigurationPage />} />

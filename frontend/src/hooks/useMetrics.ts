@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiService } from '@/services/api';
 import { websocketService } from '@/services/websocket';
-import type { ResourceMetrics } from '@/types/api';
+import type { ResourceMetrics, TokenUsageData } from '@/types/api';
 
 // Hook for fetching current metrics
 export const useMetrics = (enabled: boolean = true) => {
@@ -164,6 +164,16 @@ export const usePrometheusMetrics = () => {
     parseMetrics,
     fetchMetrics,
   };
+};
+
+// Hook for token usage data
+export const useTokenUsage = (timeRange: '1h' | '24h' | '7d' | '30d' = '24h') => {
+  return useQuery({
+    queryKey: ['token-usage', timeRange],
+    queryFn: () => apiService.getTokenUsage(timeRange),
+    refetchInterval: 60000, // Refresh every minute
+    staleTime: 55000,
+  });
 };
 
 // Hook for health check with automatic retry

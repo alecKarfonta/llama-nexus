@@ -81,7 +81,11 @@ if [ -z "$MODEL_PATH" ]; then
     echo "Model file not found, will use: $MODEL_PATH"
 fi
 
-TEMPLATE_PATH="/home/llamacpp/chat-template.jinja"
+# Template selection now supports a directory of templates mounted at /home/llamacpp/templates
+# Use CHAT_TEMPLATE env var to pick a file inside that directory
+TEMPLATE_DIR="${TEMPLATE_DIR:-/home/llamacpp/templates}"
+CHAT_TEMPLATE="${CHAT_TEMPLATE:-chat-template-oss.jinja}"
+TEMPLATE_PATH="${TEMPLATE_DIR}/${CHAT_TEMPLATE}"
 
 # Download model if not exists
 if [ ! -f "$MODEL_PATH" ]; then
@@ -166,8 +170,8 @@ exec llama-server \
     --dry-base "$DRY_BASE" \
     --dry-allowed-length "$DRY_ALLOWED_LENGTH" \
     --dry-penalty-last-n "$DRY_PENALTY_LAST_N" \
-    --chat-template-file "$TEMPLATE_PATH" \
     --jinja \
+    --chat-template-file "$TEMPLATE_PATH" \
     --verbose \
     --metrics \
     --embeddings \

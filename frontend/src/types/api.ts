@@ -276,6 +276,16 @@ export interface ToolMessage extends ChatMessage {
   content: string;
 }
 
+// Token Usage Tracking Types
+export interface TokenUsageData {
+  modelId: string;
+  modelName?: string;
+  promptTokens: number;
+  completionTokens: number;
+  lastUsed: string;
+  requests: number;
+}
+
 // Built-in example tools for testing
 export interface WeatherQuery {
   location: string;

@@ -59,7 +59,7 @@ COPY --from=builder /build/llama.cpp/build/bin/llama-gguf-split /usr/local/bin/
 
 # Copy configuration files
 COPY start.sh /start.sh
-COPY chat-template.jinja /home/llamacpp/chat-template.jinja
+COPY chat-template-oss.jinja /home/llamacpp/chat-template.jinja
 RUN chmod +x /start.sh
 
 # Set up environment for GPU
