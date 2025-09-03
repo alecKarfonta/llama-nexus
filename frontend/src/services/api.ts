@@ -18,7 +18,9 @@ import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
   ChatCompletionChunk,
-  TokenUsageData
+  TokenUsageData,
+  LlamaCppCommit,
+  LlamaCppCommitsResponse
 } from '@/types/api';
 
 class ApiService {
@@ -599,6 +601,38 @@ class ApiService {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Get available llama.cpp commits and releases
+   */
+  async getLlamaCppCommits(): Promise<LlamaCppCommitsResponse> {
+    const response = await this.backendClient.get<LlamaCppCommitsResponse>('/api/v1/llamacpp/commits');
+    return response.data;
+  }
+
+  /**
+   * Validate a llama.cpp commit exists
+   */
+  async validateLlamaCppCommit(commitId: string): Promise<{ valid: boolean; error?: string; commit?: any }> {
+    const response = await this.backendClient.get(`/api/v1/llamacpp/commits/${commitId}/validate`);
+    return response.data;
+  }
+
+  /**
+   * Apply a specific llama.cpp commit
+   */
+  async applyLlamaCppCommit(commitId: string): Promise<{ message: string; commit: string; commit_info?: any; requires_rebuild: boolean }> {
+    const response = await this.backendClient.post(`/api/v1/llamacpp/commits/${commitId}/apply`);
+    return response.data;
+  }
+
+  /**
+   * Rebuild llama.cpp containers
+   */
+  async rebuildLlamaCpp(): Promise<{ message: string; stdout: string; stderr: string }> {
+    const response = await this.backendClient.post('/api/v1/llamacpp/rebuild');
+    return response.data;
   }
 }
 

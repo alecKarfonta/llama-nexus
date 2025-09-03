@@ -37,6 +37,10 @@ services:
       - llamacpp_bin:/usr/local/bin:ro
       # Mount Docker socket to enable Docker operations
       - /var/run/docker.sock:/var/run/docker.sock
+      # Mount entire project directory for rebuild operations (read-only except Dockerfile)
+      - .:/home/alec/git/llama-nexus:ro
+      # Mount Dockerfile separately as read-write for version management
+      - ./Dockerfile:/home/alec/git/llama-nexus/Dockerfile
     runtime: nvidia
     shm_size: '16gb'
     depends_on:

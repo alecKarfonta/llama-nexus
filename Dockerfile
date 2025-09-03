@@ -23,13 +23,16 @@ RUN pip3 install huggingface_hub hf_transfer
 WORKDIR /build
 RUN git clone https://github.com/ggml-org/llama.cpp.git && \
     cd llama.cpp && \
+    git checkout b6181 && \
+    echo "Building llama.cpp version: $(git describe --tags --always)" && \
     cmake . -B build \
         -DBUILD_SHARED_LIBS=OFF \
         -DGGML_CUDA=ON \
         -DLLAMA_CURL=ON \
         -DLLAMA_SERVER_VERBOSE=ON && \
     cmake --build build --config Release -j$(nproc) --clean-first \
-        --target llama-server llama-cli llama-gguf-split
+        --target llama-server llama-cli llama-gguf-split && \
+    echo "Built llama.cpp version: $(./build/bin/llama-cli --version | head -1)"
 
 # Runtime stage
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04

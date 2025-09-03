@@ -300,3 +300,18 @@ export interface CodeExecutionQuery {
   language: 'python' | 'javascript' | 'bash';
   code: string;
 }
+
+// LlamaCPP Commit Management Types
+export interface LlamaCppCommit {
+  tag: string;
+  name: string;
+  published_at: string;
+  body: string;
+  is_current: boolean;
+}
+
+export interface LlamaCppCommitsResponse {
+  current_commit: string;
+  releases: LlamaCppCommit[];
+  recent_commits: LlamaCppCommit[];
+}

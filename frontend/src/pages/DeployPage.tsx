@@ -33,6 +33,7 @@ import {
 } from '@mui/icons-material'
 import { apiService } from '@/services/api'
 import type { ModelInfo } from '@/types/api'
+import LlamaCppCommitSelector from '@/components/LlamaCppCommitSelector'
 
 // Local Config type mirrors backend snake_case fields to avoid camelCase/casing drift
 interface Config {
@@ -875,6 +876,7 @@ export const DeployPage: React.FC = () => {
         <Tab label="Performance" />
         <Tab label="Context Extension" />
         <Tab label="Server" />
+        <Tab label="LlamaCPP Version" />
         <Tab label="Command Line" />
       </Tabs>
 
@@ -1993,6 +1995,17 @@ export const DeployPage: React.FC = () => {
       )}
 
       {tab === 5 && (
+        <Box sx={{ mb: 3 }}>
+          <LlamaCppCommitSelector 
+            onCommitChanged={(commit) => {
+              console.log('LlamaCPP commit changed to:', commit);
+              // Optionally refresh configuration or show notification
+            }}
+          />
+        </Box>
+      )}
+
+      {tab === 6 && (
         <Card sx={{ 
           borderRadius: 1, 
           boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
