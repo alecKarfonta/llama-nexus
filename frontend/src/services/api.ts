@@ -4,6 +4,7 @@
  */
 
 import axios, { AxiosInstance, AxiosError } from 'axios';
+import { settingsManager } from '@/utils/settings';
 import type {
   ModelInfo,
   ModelDownloadRequest,
@@ -28,6 +29,11 @@ class ApiService {
   private backendClient: AxiosInstance;
   private baseURL: string;
   private backendBaseURL: string;
+
+  private getAuthHeaders() {
+    const apiKey = settingsManager.getApiKey();
+    return apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {};
+  }
 
   constructor() {
     // Use env or relative base so dev proxy can avoid CORS; production can set env
@@ -69,7 +75,6 @@ class ApiService {
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer placeholder-api-key'
       }
     });
 
@@ -78,7 +83,6 @@ class ApiService {
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer placeholder-api-key'
       }
     });
 
@@ -86,14 +90,32 @@ class ApiService {
   }
 
   private setupInterceptors() {
-    // Request interceptor
+    // Request interceptor for main client
     this.client.interceptors.request.use(
       (config: any) => {
         console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
+        // Inject API key dynamically
+        const authHeaders = this.getAuthHeaders();
+        config.headers = { ...config.headers, ...authHeaders };
         return config;
       },
       (error: any) => {
         console.error('API Request Error:', error);
+        return Promise.reject(error);
+      }
+    );
+
+    // Request interceptor for backend client
+    this.backendClient.interceptors.request.use(
+      (config: any) => {
+        console.log(`Backend Request: ${config.method?.toUpperCase()} ${config.url}`);
+        // Inject API key dynamically
+        const authHeaders = this.getAuthHeaders();
+        config.headers = { ...config.headers, ...authHeaders };
+        return config;
+      },
+      (error: any) => {
+        console.error('Backend Request Error:', error);
         return Promise.reject(error);
       }
     );
@@ -504,13 +526,14 @@ class ApiService {
 
   async createChatCompletionStream(request: ChatCompletionRequest): Promise<ReadableStream<ChatCompletionChunk>> {
     // Use fetch API for better streaming support
+    const authHeaders = this.getAuthHeaders();
     const response = await fetch(`/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer placeholder-api-key',
         'Accept': 'text/event-stream',
         'Cache-Control': 'no-cache',
+        ...authHeaders,
       },
       body: JSON.stringify({ ...request, stream: true })
     });
@@ -624,6 +647,85 @@ class ApiService {
    */
   async applyLlamaCppCommit(commitId: string): Promise<{ message: string; commit: string; commit_info?: any; requires_rebuild: boolean }> {
     const response = await this.backendClient.post(`/api/v1/llamacpp/commits/${commitId}/apply`);
+    return response.data;
+  }
+
+  // --- BFCL Benchmark Testing Methods ---
+
+  /**
+   * Start BFCL benchmark testing
+   */
+  async startBfclBenchmark(params: {
+    test_category?: string;
+    max_examples?: number;
+  }): Promise<{ benchmark_id: string; status: string; test_category: string; max_examples: number }> {
+    const response = await this.backendClient.post('/api/v1/benchmark/bfcl/start', {}, {
+      params: params
+    });
+    return response.data;
+  }
+
+  /**
+   * Get BFCL benchmark status and results
+   */
+  async getBfclBenchmarkStatus(benchmarkId?: string): Promise<{
+    status: 'starting' | 'running' | 'completed' | 'failed' | 'cancelled';
+    test_category?: string;
+    max_examples?: number;
+    started_at?: string;
+    completed_at?: string;
+    progress?: number;
+    total?: number;
+    current_test?: string;
+    results?: {
+      total: number;
+      correct: number;
+      accuracy: number;
+      errors: string[];
+    };
+    error?: string;
+  }> {
+    // For now, we'll use the list endpoint and get the most recent benchmark
+    // In the future, we can track benchmark IDs properly
+    const response = await this.backendClient.get('/api/v1/benchmark/bfcl');
+    const benchmarks = response.data;
+    
+    // Get the most recent benchmark
+    const benchmarkIds = Object.keys(benchmarks);
+    if (benchmarkIds.length === 0) {
+      return { status: 'starting' };
+    }
+    
+    const mostRecent = benchmarkIds.reduce((latest, current) => {
+      const latestTime = new Date(benchmarks[latest].started_at || 0);
+      const currentTime = new Date(benchmarks[current].started_at || 0);
+      return currentTime > latestTime ? current : latest;
+    });
+    
+    return benchmarks[mostRecent];
+  }
+
+  /**
+   * List all BFCL benchmarks
+   */
+  async listBfclBenchmarks(): Promise<Record<string, any>> {
+    const response = await this.backendClient.get('/api/v1/benchmark/bfcl');
+    return response.data;
+  }
+
+  /**
+   * Stop a running BFCL benchmark
+   */
+  async stopBfclBenchmark(benchmarkId: string): Promise<{ status: string; benchmark_id: string }> {
+    const response = await this.backendClient.delete(`/api/v1/benchmark/bfcl/${benchmarkId}`);
+    return response.data;
+  }
+
+  /**
+   * Clear completed benchmarks
+   */
+  async clearCompletedBenchmarks(): Promise<{ status: string }> {
+    const response = await this.backendClient.delete('/api/v1/benchmark/bfcl');
     return response.data;
   }
 

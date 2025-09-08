@@ -37,6 +37,11 @@ import type { ChatMessage, ChatCompletionRequest, Tool, ToolCall } from '@/types
 interface ChatPageProps {}
 
 interface ChatSettings {
+  // Connection settings
+  baseUrl: string
+  endpoint: string
+  apiKey: string
+  // Model parameters
   temperature: number
   topP: number
   topK: number
@@ -47,6 +52,11 @@ interface ChatSettings {
 }
 
 const defaultSettings: ChatSettings = {
+  // Connection settings
+  baseUrl: '', // Empty means use current domain
+  endpoint: '/v1/chat/completions',
+  apiKey: '',
+  // Model parameters
   temperature: 0.7,
   topP: 0.8,
   topK: 20,
@@ -57,6 +67,20 @@ const defaultSettings: ChatSettings = {
 }
 
 export const ChatPage: React.FC<ChatPageProps> = () => {
+  // Load settings from localStorage or use defaults
+  const loadSettings = (): ChatSettings => {
+    try {
+      const saved = localStorage.getItem('chat-settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return { ...defaultSettings, ...parsed };
+      }
+    } catch (error) {
+      console.warn('Failed to load chat settings from localStorage:', error);
+    }
+    return defaultSettings;
+  };
+
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -65,7 +89,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   ])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [settings, setSettings] = useState(defaultSettings)
+  const [settings, setSettings] = useState(loadSettings)
   const [showSettings, setShowSettings] = useState(false)
   const [error, setError] = useState(null)
   const [availableTools] = useState(ToolsService.getAvailableTools())
@@ -76,6 +100,17 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
+
+  // Save settings to localStorage whenever they change
+  const saveSettings = (newSettings: ChatSettings) => {
+    try {
+      localStorage.setItem('chat-settings', JSON.stringify(newSettings));
+      setSettings(newSettings);
+    } catch (error) {
+      console.warn('Failed to save chat settings to localStorage:', error);
+      setSettings(newSettings); // Still update state even if save fails
+    }
+  };
 
   useEffect(() => {
     scrollToBottom()
@@ -130,6 +165,92 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     }
   }
 
+  // Custom API call function that uses chat-specific settings
+  const createChatCompletionStream = async (request: ChatCompletionRequest): Promise<ReadableStream<any>> => {
+    const authHeaders = settings.apiKey ? { 'Authorization': `Bearer ${settings.apiKey}` } : {};
+    const fullUrl = settings.baseUrl ? `${settings.baseUrl.replace(/\/$/, '')}${settings.endpoint}` : settings.endpoint;
+    const response = await fetch(fullUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        ...authHeaders,
+      },
+      body: JSON.stringify({ ...request, stream: true })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    return new ReadableStream({
+      start(controller) {
+        function pump(): Promise<void> {
+          return reader.read().then(({ done, value }) => {
+            if (done) {
+              controller.close();
+              return;
+            }
+            
+            // Parse SSE data
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            
+            for (const line of lines) {
+              const trimmedLine = line.trim();
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6);
+                if (data === '[DONE]') {
+                  controller.close();
+                  return;
+                }
+                try {
+                  const parsed = JSON.parse(data);
+                  controller.enqueue(parsed);
+                } catch (e) {
+                  // Ignore malformed JSON
+                  console.warn('Failed to parse SSE data:', data);
+                }
+              }
+            }
+            
+            return pump();
+          }).catch((error) => {
+            controller.error(error);
+          });
+        }
+        return pump();
+      }
+    });
+  };
+
+  const createChatCompletion = async (request: ChatCompletionRequest): Promise<any> => {
+    const authHeaders = settings.apiKey ? { 'Authorization': `Bearer ${settings.apiKey}` } : {};
+    const fullUrl = settings.baseUrl ? `${settings.baseUrl.replace(/\/$/, '')}${settings.endpoint}` : settings.endpoint;
+    const response = await fetch(fullUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    return response.json();
+  };
+
   const handleStreamingResponse = async (request: ChatCompletionRequest) => {
     const assistantMessage: ChatMessage = {
       role: 'assistant',
@@ -138,7 +259,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     setMessages((prev: ChatMessage[]) => [...prev, assistantMessage])
 
     try {
-      const stream = await apiService.createChatCompletionStream(request)
+      const stream = await createChatCompletionStream(request)
       const reader = stream.getReader()
 
       try {
@@ -182,7 +303,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   }
 
   const handleNonStreamingResponse = async (request: ChatCompletionRequest) => {
-    const response = await apiService.createChatCompletion(request)
+    const response = await createChatCompletion(request)
     const assistantMessage = response.choices[0].message
 
     setMessages((prev: ChatMessage[]) => [...prev, assistantMessage])
@@ -233,7 +354,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           stream: false, // Use non-streaming for tool follow-ups
         }
 
-        const followUpResponse = await apiService.createChatCompletion(followUpRequest)
+        const followUpResponse = await createChatCompletion(followUpRequest)
         setMessages((prev: ChatMessage[]) => [...prev, followUpResponse.choices[0].message])
 
       } catch (error) {
@@ -296,12 +417,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   }
 
   const toggleToolSelection = (toolName: string) => {
-    setSettings((prev: ChatSettings) => ({
-      ...prev,
-      selectedTools: prev.selectedTools.includes(toolName)
-        ? prev.selectedTools.filter((name: string) => name !== toolName)
-        : [...prev.selectedTools, toolName]
-    }))
+    const newSelectedTools = settings.selectedTools.includes(toolName)
+      ? settings.selectedTools.filter((name: string) => name !== toolName)
+      : [...settings.selectedTools, toolName];
+    
+    saveSettings({ ...settings, selectedTools: newSelectedTools });
   }
 
   return (
@@ -373,12 +493,143 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             <Typography variant="h6" gutterBottom>
               Chat Settings
             </Typography>
+            
+            {/* Connection Settings */}
+            <Typography variant="h6" gutterBottom sx={{ mt: 2, mb: 1 }}>
+              Connection Settings
+            </Typography>
+            <Grid container spacing={3} sx={{ mb: 3 }}>
+              <Grid item xs={12} md={4}>
+                <TextField
+                  label="Base URL"
+                  fullWidth
+                  value={settings.baseUrl}
+                  onChange={(e) => saveSettings({ ...settings, baseUrl: e.target.value })}
+                  placeholder="https://api.openai.com (leave empty for current domain)"
+                  helperText="Base URL for the API service (optional)"
+                  sx={{ 
+                    '& .MuiOutlinedInput-root': {
+                      fontSize: '0.875rem',
+                      borderRadius: 1,
+                      backgroundColor: 'background.default',
+                      '&.Mui-focused': {
+                        borderColor: 'primary.main'
+                      }
+                    }
+                  }}
+                />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <TextField
+                  label="Endpoint Path"
+                  fullWidth
+                  value={settings.endpoint}
+                  onChange={(e) => saveSettings({ ...settings, endpoint: e.target.value })}
+                  placeholder="/v1/chat/completions"
+                  helperText="API endpoint path"
+                  sx={{ 
+                    '& .MuiOutlinedInput-root': {
+                      fontSize: '0.875rem',
+                      borderRadius: 1,
+                      backgroundColor: 'background.default',
+                      '&.Mui-focused': {
+                        borderColor: 'primary.main'
+                      }
+                    }
+                  }}
+                />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <TextField
+                  label="API Key"
+                  type="password"
+                  fullWidth
+                  value={settings.apiKey}
+                  onChange={(e) => saveSettings({ ...settings, apiKey: e.target.value })}
+                  placeholder="Enter your API key (optional)"
+                  helperText="API key for authentication (leave empty if not required)"
+                  sx={{ 
+                    '& .MuiOutlinedInput-root': {
+                      fontSize: '0.875rem',
+                      borderRadius: 1,
+                      backgroundColor: 'background.default',
+                      '&.Mui-focused': {
+                        borderColor: 'primary.main'
+                      }
+                    }
+                  }}
+                />
+              </Grid>
+              
+              {/* Quick Presets */}
+              <Grid item xs={12}>
+                <Typography variant="body2" color="text.secondary" gutterBottom>
+                  Quick Presets:
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => saveSettings({ ...settings, baseUrl: '', endpoint: '/v1/chat/completions' })}
+                    sx={{ fontSize: '0.75rem', textTransform: 'none' }}
+                  >
+                    Local (Current Domain)
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => saveSettings({ ...settings, baseUrl: 'http://localhost:8600', endpoint: '/v1/chat/completions' })}
+                    sx={{ fontSize: '0.75rem', textTransform: 'none' }}
+                  >
+                    Local LlamaCPP (8600)
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => saveSettings({ ...settings, baseUrl: 'https://api.openai.com', endpoint: '/v1/chat/completions' })}
+                    sx={{ fontSize: '0.75rem', textTransform: 'none' }}
+                  >
+                    OpenAI API
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => saveSettings({ ...settings, baseUrl: 'http://localhost:11434', endpoint: '/v1/chat/completions' })}
+                    sx={{ fontSize: '0.75rem', textTransform: 'none' }}
+                  >
+                    Ollama (11434)
+                  </Button>
+                </Box>
+              </Grid>
+
+              {/* URL Preview */}
+              <Grid item xs={12}>
+                <Box sx={{ 
+                  p: 2, 
+                  backgroundColor: 'rgba(0, 0, 0, 0.1)', 
+                  borderRadius: 1, 
+                  border: '1px solid rgba(255, 255, 255, 0.1)' 
+                }}>
+                  <Typography variant="body2" color="text.secondary" gutterBottom>
+                    Full URL Preview:
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'primary.main' }}>
+                    {settings.baseUrl ? `${settings.baseUrl.replace(/\/$/, '')}${settings.endpoint}` : `${window.location.origin}${settings.endpoint}`}
+                  </Typography>
+                </Box>
+              </Grid>
+            </Grid>
+
+            {/* Model Parameters */}
+            <Typography variant="h6" gutterBottom sx={{ mt: 2, mb: 1 }}>
+              Model Parameters
+            </Typography>
             <Grid container spacing={3}>
               <Grid item xs={12} sm={6} md={3}>
                 <Typography gutterBottom>Temperature: {settings.temperature}</Typography>
                 <Slider
                   value={settings.temperature}
-                  onChange={(_: Event, value: number | number[]) => setSettings((prev: ChatSettings) => ({ ...prev, temperature: value as number }))}
+                  onChange={(_: Event, value: number | number[]) => saveSettings({ ...settings, temperature: value as number })}
                   min={0}
                   max={2}
                   step={0.1}
@@ -393,7 +644,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 <Typography gutterBottom>Top P: {settings.topP}</Typography>
                 <Slider
                   value={settings.topP}
-                  onChange={(_: Event, value: number | number[]) => setSettings((prev: ChatSettings) => ({ ...prev, topP: value as number }))}
+                  onChange={(_: Event, value: number | number[]) => saveSettings({ ...settings, topP: value as number })}
                   min={0}
                   max={1}
                   step={0.05}
@@ -408,7 +659,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 <Typography gutterBottom>Top K: {settings.topK}</Typography>
                 <Slider
                   value={settings.topK}
-                  onChange={(_: Event, value: number | number[]) => setSettings((prev: ChatSettings) => ({ ...prev, topK: value as number }))}
+                  onChange={(_: Event, value: number | number[]) => saveSettings({ ...settings, topK: value as number })}
                   min={1}
                   max={100}
                   step={1}
@@ -423,7 +674,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 <Typography gutterBottom>Max Tokens: {settings.maxTokens}</Typography>
                 <Slider
                   value={settings.maxTokens}
-                  onChange={(_: Event, value: number | number[]) => setSettings((prev: ChatSettings) => ({ ...prev, maxTokens: value as number }))}
+                  onChange={(_: Event, value: number | number[]) => saveSettings({ ...settings, maxTokens: value as number })}
                   min={100}
                   max={4096}
                   step={100}
@@ -447,7 +698,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 <Button
                   variant={settings.enableTools ? 'contained' : 'outlined'}
                   startIcon={settings.enableTools ? <CheckBoxIcon /> : <CheckBoxOutlineBlankIcon />}
-                  onClick={() => setSettings((prev: ChatSettings) => ({ ...prev, enableTools: !prev.enableTools }))}
+                  onClick={() => saveSettings({ ...settings, enableTools: !settings.enableTools })}
                   sx={{ mb: 2 }}
                 >
                   Enable Tool Calling
