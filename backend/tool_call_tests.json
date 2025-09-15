@@ -1,0 +1,354 @@
+{
+  "tool_calling": [
+    {
+      "name": "Basic Weather Query",
+      "description": "Test if the model can correctly call the weather function",
+      "prompt": "What's the weather like in London, UK?",
+      "expected_tool": "get_weather",
+      "expected_args": {
+        "location": "London, UK"
+      },
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get current weather information for a specific location",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "location": {
+                  "type": "string",
+                  "description": "The city and state/country, e.g., \"London, UK\" or \"New York, NY\""
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": ["celsius", "fahrenheit"],
+                  "description": "Temperature unit preference"
+                }
+              },
+              "required": ["location"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Math Calculator",
+      "description": "Test if the model can perform calculations",
+      "prompt": "Calculate 15 * 23 + 7",
+      "expected_tool": "calculate",
+      "expected_args": {
+        "expression": "15 * 23 + 7"
+      },
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate",
+            "description": "Perform mathematical calculations and evaluate expressions",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "expression": {
+                  "type": "string",
+                  "description": "Mathematical expression to evaluate, e.g., \"2 + 2 * 3\" or \"sqrt(16)\""
+                }
+              },
+              "required": ["expression"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "System Information",
+      "description": "Test system info tool calling",
+      "prompt": "Check the current CPU usage on the system",
+      "expected_tool": "get_system_info",
+      "expected_args": {
+        "metric": "cpu"
+      },
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_system_info",
+            "description": "Get current system information and metrics",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "enum": ["cpu", "memory", "disk", "all"],
+                  "description": "Type of system metric to retrieve"
+                }
+              },
+              "required": ["metric"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "UUID Generation",
+      "description": "Test UUID generation tool",
+      "prompt": "Generate a new UUID for me",
+      "expected_tool": "generate_uuid",
+      "expected_args": {},
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "generate_uuid",
+            "description": "Generate a universally unique identifier (UUID)",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string",
+                  "enum": ["v4", "v1"],
+                  "description": "UUID version to generate"
+                }
+              },
+              "required": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Multi-step Weather with Unit",
+      "description": "Test weather query with specific temperature unit",
+      "prompt": "What's the temperature in New York in Fahrenheit?",
+      "expected_tool": "get_weather",
+      "expected_args": {
+        "location": "New York, NY",
+        "unit": "fahrenheit"
+      },
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get current weather information for a specific location",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "location": {
+                  "type": "string",
+                  "description": "The city and state/country, e.g., \"London, UK\" or \"New York, NY\""
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": ["celsius", "fahrenheit"],
+                  "description": "Temperature unit preference"
+                }
+              },
+              "required": ["location"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Complex Math Expression",
+      "description": "Test complex mathematical calculation",
+      "prompt": "Calculate the square root of 144 plus 5 times 3",
+      "expected_tool": "calculate",
+      "expected_args": {
+        "expression": "sqrt(144) + 5 * 3"
+      },
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate",
+            "description": "Perform mathematical calculations and evaluate expressions",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "expression": {
+                  "type": "string",
+                  "description": "Mathematical expression to evaluate, e.g., \"2 + 2 * 3\" or \"sqrt(16)\""
+                }
+              },
+              "required": ["expression"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Code Execution Request",
+      "description": "Test code execution tool calling",
+      "prompt": "Run this Python code: print('Hello, World!')",
+      "expected_tool": "execute_code",
+      "expected_args": {
+        "language": "python",
+        "code": "print('Hello, World!')"
+      },
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "execute_code",
+            "description": "Execute code in various programming languages (simulated for demo)",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "language": {
+                  "type": "string",
+                  "enum": ["python", "javascript", "bash"],
+                  "description": "Programming language to execute"
+                },
+                "code": {
+                  "type": "string",
+                  "description": "Code to execute"
+                }
+              },
+              "required": ["language", "code"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Memory Information",
+      "description": "Test system memory info retrieval",
+      "prompt": "How much memory is currently being used?",
+      "expected_tool": "get_system_info",
+      "expected_args": {
+        "metric": "memory"
+      },
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_system_info",
+            "description": "Get current system information and metrics",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "enum": ["cpu", "memory", "disk", "all"],
+                  "description": "Type of system metric to retrieve"
+                }
+              },
+              "required": ["metric"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Multiple Tool Options",
+      "description": "Test when multiple tools are available but only one should be called",
+      "prompt": "What's 25 divided by 5?",
+      "expected_tool": "calculate",
+      "expected_args": {
+        "expression": "25 / 5"
+      },
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate",
+            "description": "Perform mathematical calculations and evaluate expressions",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "expression": {
+                  "type": "string",
+                  "description": "Mathematical expression to evaluate, e.g., \"2 + 2 * 3\" or \"sqrt(16)\""
+                }
+              },
+              "required": ["expression"]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get current weather information for a specific location",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "location": {
+                  "type": "string",
+                  "description": "The city and state/country, e.g., \"London, UK\" or \"New York, NY\""
+                }
+              },
+              "required": ["location"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "All System Metrics",
+      "description": "Test requesting all system information at once",
+      "prompt": "Show me all system metrics including CPU, memory, and disk usage",
+      "expected_tool": "get_system_info",
+      "expected_args": {
+        "metric": "all"
+      },
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_system_info",
+            "description": "Get current system information and metrics",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "enum": ["cpu", "memory", "disk", "all"],
+                  "description": "Type of system metric to retrieve"
+                }
+              },
+              "required": ["metric"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "basic": [
+    {
+      "name": "Simple Addition",
+      "description": "Basic arithmetic test",
+      "prompt": "What is 2 + 2?",
+      "expected_response_contains": ["4", "four"]
+    },
+    {
+      "name": "Capital City",
+      "description": "Geography knowledge test",
+      "prompt": "What is the capital of France?",
+      "expected_response_contains": ["Paris"]
+    },
+    {
+      "name": "Color Recognition",
+      "description": "Basic knowledge test",
+      "prompt": "What color do you get when you mix red and blue?",
+      "expected_response_contains": ["purple", "violet"]
+    }
+  ],
+  "advanced": [
+    {
+      "name": "Multi-step Reasoning",
+      "description": "Complex reasoning test",
+      "prompt": "If a train travels 60 mph for 2 hours, then 80 mph for 1.5 hours, what is the total distance traveled?",
+      "expected_response_contains": ["240", "two hundred forty"]
+    },
+    {
+      "name": "Logic Problem",
+      "description": "Logical reasoning test",
+      "prompt": "All cats are animals. Fluffy is a cat. Therefore, what can we conclude about Fluffy?",
+      "expected_response_contains": ["animal", "Fluffy is an animal"]
+    }
+  ]
+}

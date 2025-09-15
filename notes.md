@@ -1037,3 +1037,64 @@ API Key: your-custom-api-key
 
 **Date**: 2025-01-05
 **Status**: Chat page now supports full URL configuration for testing external services and different deployments
+
+---
+
+## GPU/CPU Allocation Issue Analysis - IN PROGRESS ⚠️
+
+### Issue Identified
+The model is deploying significant portions to CPU instead of GPU, as evidenced by:
+```
+load_tensors: tensor 'token_embd.weight' (q8_0) (and 126 others) cannot be used with preferred buffer type CUDA_Host, using CPU instead
+load_tensors:   CPU_Mapped model buffer size =  9596.80 MiB
+load_tensors:        CUDA0 model buffer size =  2390.06 MiB
+```
+
+### Root Cause Analysis
+1. **N_CPU_MOE Parameter**: Currently set to `21` in docker-compose.yml, forcing MoE weights to CPU
+2. **Quantization Format**: q8_0 tensors may have limited GPU support in current llama.cpp version
+3. **MoE Layer Allocation**: Only 25/25 layers on GPU but MoE weights forced to CPU/Host memory
+
+### Current Configuration Issues
+- `N_CPU_MOE=21` forces first 21 MoE layers to CPU (should be 0 for full GPU)
+- Large CPU buffer (9596.80 MiB) vs smaller GPU buffer (2390.06 MiB)
+- Performance impact: Significant memory bandwidth bottleneck
+
+### Solution Analysis - COMPLETED ✅
+
+**Issue Resolved**: The problem was a combination of factors:
+
+1. **Model Configuration Mismatch**: Backend was configured for gpt-oss-120b but container was loading gpt-oss-20b
+2. **Hardcoded Script Messages**: start.sh had hardcoded "Qwen3-Coder-30B" messages regardless of actual model
+3. **Default Parameter Pollution**: Script was applying default values even when parameters weren't explicitly set
+
+**Solutions Applied**:
+
+1. **Fixed Model Consistency**: Updated docker-compose.yml to use gpt-oss-20b for both services
+2. **Dynamic Script Messages**: Made startup messages show actual MODEL_NAME instead of hardcoded text
+3. **Conditional Parameter Logic**: Rewrote start.sh to only include parameters in llama-server command if explicitly set
+4. **Optimal MoE Setting**: Set N_CPU_MOE=12 for RTX 5090 (32GB VRAM) to balance performance and memory usage
+
+**Current Status with gpt-oss-20b**:
+```
+📋 Configuration (only showing explicitly set parameters):
+   Context Size: 128000
+   GPU Layers: 999
+   CPU MoE Layers: 12
+   Temperature: 0.7
+   Top-P: 0.8
+   Top-K: 20
+   Batch Size: 2048
+
+🚀 Full llama-server command:
+llama-server --model /home/llamacpp/models/gpt-oss-20b-Q4_K_M.gguf --host 0.0.0.0 --port 8080 --api-key placeholder-api-key --ctx-size 128000 --n-gpu-layers 999 --batch-size 2048 --n-cpu-moe 12 --temp 0.7 --top-p 0.8 --top-k 20 --jinja --chat-template-file /home/llamacpp/templates/chat-template-oss.jinja --verbose --metrics --embeddings --flash-attn --cont-batching
+```
+
+**GPU Allocation Dramatically Improved**:
+- CPU_Mapped model buffer: **379.71 MiB** (down from 9,596.80 MiB - 96% reduction!)
+- CUDA0 model buffer: **10,694.15 MiB** (up from 2,390.06 MiB - 348% increase!)
+- CUDA0 KV cache: **3,018.00 MiB** total
+- CUDA0 compute buffer: **404.52 MiB**
+- **Result**: Nearly all model data now on GPU instead of CPU
+- All 25 layers successfully offloaded to GPU
+- **Performance**: Should see significant speed improvement due to GPU utilization

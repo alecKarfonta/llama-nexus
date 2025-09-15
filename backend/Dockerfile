@@ -23,6 +23,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY main.py enhanced_logger.py .
 COPY modules/ .
+COPY public/ ./public/
 
 # Expose port
 EXPOSE 8700

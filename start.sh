@@ -1,37 +1,15 @@
 #!/bin/bash
 
-echo "🚀 Starting Llama.cpp Qwen3-Coder API Server for RTX 5090..."
-echo "📊 Model: Qwen3-Coder-30B with CLINE/RooCode optimization"
+echo "🚀 Starting Llama.cpp API Server for RTX 5090..."
+echo "📊 Model: ${MODEL_NAME} with optimized configuration"
 echo "🔌 OpenAI compatible endpoints will be available on port 8080"
 
-# Set defaults from environment variables
+# Set required defaults for container startup
 MODEL_NAME=${MODEL_NAME:-"Qwen3-Coder-30B-A3B-Instruct"}
 MODEL_VARIANT=${MODEL_VARIANT:-"Q4_K_M"}
-CONTEXT_SIZE=${CONTEXT_SIZE:-65536}
-GPU_LAYERS=${GPU_LAYERS:-999}
-TEMPERATURE=${TEMPERATURE:-0.7}
-TOP_P=${TOP_P:-0.8}
-TOP_K=${TOP_K:-20}
-MIN_P=${MIN_P:-0.03}
-REPEAT_PENALTY=${REPEAT_PENALTY:-1.05}
-NUM_KEEP=${NUM_KEEP:-1024}
-NUM_PREDICT=${NUM_PREDICT:-32768}
-# Aggressive DRY sampling parameters to prevent repetition
-DRY_MULTIPLIER=${DRY_MULTIPLIER:-0.6}
-DRY_BASE=${DRY_BASE:-2.0}
-DRY_ALLOWED_LENGTH=${DRY_ALLOWED_LENGTH:-1}
-DRY_PENALTY_LAST_N=${DRY_PENALTY_LAST_N:-1024}
-# Additional anti-repetition controls
-REPEAT_LAST_N=${REPEAT_LAST_N:-256}
-FREQUENCY_PENALTY=${FREQUENCY_PENALTY:-0.3}
-PRESENCE_PENALTY=${PRESENCE_PENALTY:-0.2}
-HOST=${HOST:-0.0.0.0}
-PORT=${PORT:-8080}
+HOST=${HOST:-"0.0.0.0"}
+PORT=${PORT:-"8080"}
 API_KEY=${API_KEY:-"placeholder-api-key"}
-THREADS=${THREADS:--1}
-BATCH_SIZE=${BATCH_SIZE:-2048}
-UBATCH_SIZE=${UBATCH_SIZE:-512}
-N_CPU_MOE=${N_CPU_MOE:-0}
 
 # Model paths - determine repository based on model name
 if [[ "$MODEL_NAME" == "gpt-oss-120b" ]]; then
@@ -89,7 +67,7 @@ TEMPLATE_PATH="${TEMPLATE_DIR}/${CHAT_TEMPLATE}"
 
 # Download model if not exists
 if [ ! -f "$MODEL_PATH" ]; then
-    echo "📥 Downloading Qwen3-Coder-30B model (this may take a while on first run)..."
+    echo "📥 Downloading ${MODEL_NAME} model (this may take a while on first run)..."
     echo "   Repository: $MODEL_REPO"
     echo "   Variant: $MODEL_VARIANT (~18.6 GB for Q4_K_M)"
     echo "   File: $MODEL_FILE"
@@ -124,56 +102,50 @@ if [ ! -f "$MODEL_PATH" ]; then
     exit 1
 fi
 
-echo "🔧 Starting llama.cpp server with AGGRESSIVE anti-repetition settings..."
+echo "🔧 Starting llama.cpp server..."
 echo "   Model: $MODEL_PATH"
-echo "   Context Size: $CONTEXT_SIZE"
-echo "   GPU Layers: $GPU_LAYERS"
-echo "   Temperature: $TEMPERATURE"
-echo "   Top-P: $TOP_P"
-echo "   Top-K: $TOP_K"
-echo "   Min-P: $MIN_P"
-echo "   Repeat Penalty: $REPEAT_PENALTY (aggressive)"
-echo "   Repeat Last N: $REPEAT_LAST_N"
-echo "   Frequency Penalty: $FREQUENCY_PENALTY"
-echo "   Presence Penalty: $PRESENCE_PENALTY"
-echo "   DRY Multiplier: $DRY_MULTIPLIER (aggressive)"
-echo "   DRY Base: $DRY_BASE (aggressive)"
-echo "   DRY Allowed Length: $DRY_ALLOWED_LENGTH (strict)"
-echo "   DRY Penalty Last N: $DRY_PENALTY_LAST_N"
-echo "   Max Predict Tokens: $NUM_PREDICT"
-echo "   Threads: $THREADS"
-echo "   Batch Size: $BATCH_SIZE"
-echo ""
 
-# Start llama.cpp server with aggressive anti-repetition for tool calling
-exec llama-server \
-    --model "$MODEL_PATH" \
-    --host "$HOST" \
-    --port "$PORT" \
-    --api-key "$API_KEY" \
-    --ctx-size "$CONTEXT_SIZE" \
-    --n-gpu-layers "$GPU_LAYERS" \
-    --n-predict "$NUM_PREDICT" \
-    --threads "$THREADS" \
-    --batch-size "$BATCH_SIZE" \
-    --ubatch-size "$UBATCH_SIZE" \
-    --n-cpu-moe "$N_CPU_MOE" \
-    --temp "$TEMPERATURE" \
-    --top-p "$TOP_P" \
-    --top-k "$TOP_K" \
-    --min-p "$MIN_P" \
-    --repeat-penalty "$REPEAT_PENALTY" \
-    --repeat-last-n "$REPEAT_LAST_N" \
-    --frequency-penalty "$FREQUENCY_PENALTY" \
-    --presence-penalty "$PRESENCE_PENALTY" \
-    --dry-multiplier "$DRY_MULTIPLIER" \
-    --dry-base "$DRY_BASE" \
-    --dry-allowed-length "$DRY_ALLOWED_LENGTH" \
-    --dry-penalty-last-n "$DRY_PENALTY_LAST_N" \
-    --jinja \
-    --chat-template-file "$TEMPLATE_PATH" \
-    --verbose \
-    --metrics \
-    --embeddings \
-    --flash-attn \
-    --cont-batching
+# Check if we're being called with arguments (API override) or without (default startup)
+if [ $# -eq 0 ]; then
+    # Default startup - no arguments passed
+    echo "📋 Using default container startup configuration"
+    
+    # Simple default command - the backend API will override this with proper parameters when needed
+    CMD_ARGS=(
+        "llama-server"
+        "--model" "$MODEL_PATH"
+        "--host" "$HOST"
+        "--port" "$PORT"
+        "--api-key" "$API_KEY"
+        "--verbose"
+        "--metrics" 
+        "--embeddings"
+        "--flash-attn"
+        "--cont-batching"
+    )
+
+    # Add template if it exists
+    if [[ -f "$TEMPLATE_PATH" ]]; then
+        CMD_ARGS+=("--jinja" "--chat-template-file" "$TEMPLATE_PATH")
+    fi
+
+    echo "🚀 Starting llama-server with command:"
+    printf '%s ' "${CMD_ARGS[@]}"
+    echo ""
+    echo ""
+    echo "ℹ️  Note: When deployed via API, this command will be overridden with your configured parameters."
+    echo ""
+
+    # Execute the command
+    exec "${CMD_ARGS[@]}"
+else
+    # API override - arguments were passed
+    echo "🎯 Using API-configured parameters (Deploy page restart)"
+    echo "🚀 Starting llama-server with command:"
+    printf '%s ' "$@"
+    echo ""
+    echo ""
+    
+    # Execute the command with the provided arguments
+    exec "$@"
+fi

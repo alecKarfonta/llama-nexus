@@ -10,9 +10,9 @@ import { DeployPage } from '@/pages/DeployPage'
 import { ChatPage } from '@/pages/ChatPage'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { TemplatesPage } from '@/pages/TemplatesPage'
+import { TestingPage } from '@/pages/TestingPage'
 
 // Placeholder pages for new routes until we implement them
-const TestingPage = () => <Box><h1>Testing Page</h1><p>Coming soon...</p></Box>
 const MonitoringPage = () => <Box><h1>Monitoring Page</h1><p>Coming soon...</p></Box>
 
 function App() {
