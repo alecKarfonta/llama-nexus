@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState, useMemo } from 'react'
 import {
   Box,
   Grid,
@@ -34,6 +34,7 @@ import {
 import { apiService } from '@/services/api'
 import type { ModelInfo } from '@/types/api'
 import LlamaCppCommitSelector from '@/components/LlamaCppCommitSelector'
+import { settingsManager } from '@/utils/settings'
 
 // Local Config type mirrors backend snake_case fields to avoid camelCase/casing drift
 interface Config {
@@ -105,11 +106,11 @@ interface Config {
   };
 }
 
-// Default values for all parameters based on llama.cpp documentation
+// Default values matching backend's load_default_config() method
 const DEFAULT_VALUES = {
   model: {
-    context_size: 512,
-    gpu_layers: 0,
+    context_size: 128000,
+    gpu_layers: 999,
     lora: '',
     lora_base: '',
     mmproj: '',
@@ -119,26 +120,26 @@ const DEFAULT_VALUES = {
     n_cpu_moe: 0,
   },
   sampling: {
-    temperature: 0.8,
-    top_p: 0.95,
-    top_k: 40,
-    min_p: 0.05,
-    repeat_penalty: 1.1,
-    repeat_last_n: 64,
-    frequency_penalty: 0.0,
-    presence_penalty: 0.0,
-    dry_multiplier: 0.0,
-    dry_base: 1.75,
-    dry_allowed_length: 2,
-    dry_penalty_last_n: -1,
+    temperature: 0.7,
+    top_p: 0.8,
+    top_k: 20,
+    min_p: 0.03,
+    repeat_penalty: 1.05,
+    repeat_last_n: 256,
+    frequency_penalty: 0.3,
+    presence_penalty: 0.2,
+    dry_multiplier: 0.6,
+    dry_base: 2.0,
+    dry_allowed_length: 1,
+    dry_penalty_last_n: 1024,
   },
   performance: {
-    threads: 8,
-    threads_batch: 8,
-    batch_size: 512,
+    threads: -1,
+    threads_batch: -1,
+    batch_size: 2048,
     ubatch_size: 512,
-    num_keep: 0,
-    num_predict: -1,
+    num_keep: 1024,
+    num_predict: 64768,
     memory_f32: false,
     mlock: false,
     no_mmap: false,
@@ -160,9 +161,9 @@ const DEFAULT_VALUES = {
     group_attn_w: 512,
   },
   server: {
-    host: '127.0.0.1',
+    host: '0.0.0.0',
     port: 8080,
-    api_key: '',
+    api_key: 'placeholder-api-key',
     timeout: 600,
     embedding: false,
     system_prompt_file: '',
@@ -171,6 +172,63 @@ const DEFAULT_VALUES = {
     slots_endpoint_disable: false,
     metrics: false,
   },
+};
+
+// LocalStorage key for persisting deployment settings
+const DEPLOY_SETTINGS_KEY = 'llama-nexus-deploy-settings';
+
+// Helper functions for localStorage persistence
+const saveDeploySettings = (config: Config, selectedApiKey: string) => {
+  try {
+    const settingsToSave = {
+      config,
+      selectedApiKey,
+      timestamp: Date.now()
+    };
+    localStorage.setItem(DEPLOY_SETTINGS_KEY, JSON.stringify(settingsToSave));
+  } catch (error) {
+    console.warn('Failed to save deploy settings to localStorage:', error);
+  }
+};
+
+const loadDeploySettings = (): { config: Config | null; selectedApiKey: string } => {
+  try {
+    const stored = localStorage.getItem(DEPLOY_SETTINGS_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      return {
+        config: parsed.config || null,
+        selectedApiKey: parsed.selectedApiKey || ''
+      };
+    }
+  } catch (error) {
+    console.warn('Failed to load deploy settings from localStorage:', error);
+  }
+  return { config: null, selectedApiKey: '' };
+};
+
+// API Key management helpers
+const API_KEYS_STORAGE_KEY = 'llama-nexus-api-keys';
+
+const getStoredApiKeys = (): string[] => {
+  try {
+    const stored = localStorage.getItem(API_KEYS_STORAGE_KEY);
+    if (stored) {
+      const keys = JSON.parse(stored);
+      return Array.isArray(keys) ? keys : [];
+    }
+  } catch (error) {
+    console.warn('Failed to load API keys from localStorage:', error);
+  }
+  return [];
+};
+
+const saveApiKeys = (keys: string[]) => {
+  try {
+    localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(keys));
+  } catch (error) {
+    console.warn('Failed to save API keys to localStorage:', error);
+  }
 };
 
 // Reusable component for parameter inputs with descriptions and reset functionality
@@ -203,7 +261,8 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
   onChange,
   onReset,
 }) => {
-  const isDefault = value === defaultValue || (value === '' && defaultValue === '');
+  const isEmpty = value === '' || value === null || value === undefined;
+  const isDefault = value === defaultValue || (isEmpty && defaultValue === '');
   
   return (
     <Box sx={{ position: 'relative' }}>
@@ -211,7 +270,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
         <>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
             <Typography gutterBottom sx={{ fontSize: '0.875rem', mb: 0 }}>{label}</Typography>
-            <Tooltip title={`Reset to default (${defaultValue})`}>
+            <Tooltip title={isEmpty ? `Set to default (${defaultValue})` : `Clear (use llama-server default)`}>
               <IconButton
                 size="small"
                 onClick={() => onReset(path)}
@@ -228,8 +287,8 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
           </Box>
           <Select
             fullWidth
-            value={value}
-            onChange={(e) => onChange(path, e.target.value)}
+            value={value || ''}
+            onChange={(e) => onChange(path, e.target.value === '' ? undefined : e.target.value)}
             sx={{ 
               fontSize: '0.875rem',
               '& .MuiOutlinedInput-root': {
@@ -238,6 +297,9 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
               }
             }}
           >
+            <MenuItem value="">
+              <em>Use llama-server default ({typeof defaultValue === 'boolean' ? (defaultValue ? 'Enabled' : 'Disabled') : defaultValue})</em>
+            </MenuItem>
             {options?.map((option) => (
               <MenuItem key={option.value} value={option.value}>
                 {option.label}
@@ -250,20 +312,30 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
           label={label}
           type={type}
           fullWidth
-          value={value}
-          onChange={(e) => onChange(path, type === 'number' ? (step && step < 1 ? parseFloat(e.target.value) : parseInt(e.target.value)) : e.target.value)}
+          value={value ?? ''}
+          placeholder={`Default: ${typeof defaultValue === 'boolean' ? (defaultValue ? 'Enabled' : 'Disabled') : defaultValue}`}
+          onChange={(e) => {
+            const inputValue = e.target.value;
+            if (inputValue === '') {
+              onChange(path, undefined);
+            } else if (type === 'number') {
+              const numValue = step && step < 1 ? parseFloat(inputValue) : parseInt(inputValue);
+              onChange(path, isNaN(numValue) ? undefined : numValue);
+            } else {
+              onChange(path, inputValue);
+            }
+          }}
           inputProps={{ min, max, step }}
           InputProps={{
             endAdornment: (
-              <Tooltip title={`Reset to default (${defaultValue})`}>
+              <Tooltip title={isEmpty ? `Set to default (${defaultValue})` : `Clear (use llama-server default)`}>
                 <IconButton
                   size="small"
-                  onClick={() => onReset(path)}
-                  disabled={isDefault}
+                  onClick={() => onChange(path, undefined)}
                   sx={{ 
-                    opacity: isDefault ? 0.3 : 1,
+                    opacity: 1,
                     transition: 'opacity 0.2s',
-                    '&:hover': { opacity: isDefault ? 0.3 : 0.7 }
+                    '&:hover': { opacity: 0.7 }
                   }}
                 >
                   <ResetIcon fontSize="small" />
@@ -275,7 +347,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
             '& .MuiOutlinedInput-root': {
               fontSize: '0.875rem',
               borderRadius: 1,
-              backgroundColor: 'background.default',
+              backgroundColor: isEmpty ? 'rgba(255, 255, 255, 0.02)' : 'background.default',
               '&.Mui-focused': {
                 borderColor: 'primary.main'
               }
@@ -287,7 +359,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
         />
       )}
       <FormHelperText sx={{ mt: 0.5, fontSize: '0.75rem', color: 'text.secondary' }}>
-        {description} (Default: {typeof defaultValue === 'boolean' ? (defaultValue ? 'Enabled' : 'Disabled') : defaultValue})
+        {description} {isEmpty ? '(Using llama-server default)' : `(llama-server default: ${typeof defaultValue === 'boolean' ? (defaultValue ? 'Enabled' : 'Disabled') : defaultValue})`}
       </FormHelperText>
     </Box>
   );
@@ -312,19 +384,32 @@ export const DeployPage: React.FC = () => {
   const [selectedTemplate, setSelectedTemplate] = useState<string>('')
   const [templatesDir, setTemplatesDir] = useState<string>('')
   const [templatesLoading, setTemplatesLoading] = useState<boolean>(false)
+  
+  // API Key management
+  const [selectedApiKey, setSelectedApiKey] = useState<string>('')
+  const [availableApiKeys, setAvailableApiKeys] = useState<string[]>([])
+  const [newApiKey, setNewApiKey] = useState<string>('')
 
   useEffect(() => {
     const init = async () => {
       try {
         setLoading(true)
+        
+        // Load persisted settings first
+        const persistedSettings = loadDeploySettings()
+        
         // Load available local models
         const list = await apiService.getModels()
         setModels(list)
+        
         // Load current service config + generated command
         const cfgRes = await fetch(`/api/v1/service/config`)
         if (!cfgRes.ok) throw new Error('Failed to fetch configuration')
         const cfgJson = await cfgRes.json()
-        setConfig(cfgJson.config)
+        
+        // Use persisted config if available, otherwise use server config
+        const configToUse = persistedSettings.config || cfgJson.config
+        setConfig(configToUse)
         setOriginalConfig(JSON.parse(JSON.stringify(cfgJson.config)))
         setCommandLine(cfgJson.command || '')
 
@@ -344,6 +429,13 @@ export const DeployPage: React.FC = () => {
         } finally {
           setTemplatesLoading(false)
         }
+        
+        // Initialize API key management
+        const currentApiKey = settingsManager.getApiKey()
+        const storedKeys = getStoredApiKeys()
+        setAvailableApiKeys(storedKeys)
+        setSelectedApiKey(persistedSettings.selectedApiKey || currentApiKey || '')
+        
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to initialize deploy page')
       } finally {
@@ -368,6 +460,30 @@ export const DeployPage: React.FC = () => {
     [config, originalConfig]
   )
 
+  // Function to update command line preview in real-time
+  const updateCommandPreview = async (configToPreview: Config) => {
+    try {
+      // Convert undefined values to null so they get properly serialized and handled by backend
+      const configForPreview = JSON.parse(JSON.stringify(configToPreview, (key, value) => {
+        return value === undefined ? null : value
+      }))
+      
+      // Send the config to backend to get command preview without saving
+      const response = await fetch('/api/v1/service/config/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: configForPreview })
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setCommandLine(data.command || '')
+      }
+    } catch (error) {
+      // If preview fails, keep the old command line
+      console.warn('Failed to update command preview:', error)
+    }
+  }
+
   const updateConfig = (path: string, value: any) => {
     if (!config) return
     const next: Config = JSON.parse(JSON.stringify(config))
@@ -376,15 +492,17 @@ export const DeployPage: React.FC = () => {
     for (let i = 0; i < keys.length - 1; i++) ref = ref[keys[i]]
     ref[keys[keys.length - 1]] = value
     setConfig(next)
+    
+    // Save to localStorage for persistence
+    saveDeploySettings(next, selectedApiKey)
+    
+    // Update command line preview in real-time
+    updateCommandPreview(next)
   }
 
   const resetToDefault = (path: string) => {
-    const keys = path.split('.')
-    let defaultValue: any = DEFAULT_VALUES
-    for (const key of keys) {
-      defaultValue = defaultValue[key]
-    }
-    updateConfig(path, defaultValue)
+    // Set to undefined so backend skips the parameter (uses llama-server defaults)
+    updateConfig(path, undefined)
   }
 
   const getDefaultValue = (path: string) => {
@@ -396,13 +514,57 @@ export const DeployPage: React.FC = () => {
     return defaultValue
   }
 
+  // API Key management functions
+  const handleApiKeyChange = (apiKey: string) => {
+    setSelectedApiKey(apiKey)
+    if (config) {
+      saveDeploySettings(config, apiKey)
+    }
+    // Update the global settings manager
+    settingsManager.setApiKey(apiKey)
+  }
+
+  const handleAddApiKey = () => {
+    if (!newApiKey.trim()) return
+    const trimmedKey = newApiKey.trim()
+    if (availableApiKeys.includes(trimmedKey)) {
+      setError('API key already exists')
+      return
+    }
+    const updatedKeys = [...availableApiKeys, trimmedKey]
+    setAvailableApiKeys(updatedKeys)
+    saveApiKeys(updatedKeys)
+    setSelectedApiKey(trimmedKey)
+    setNewApiKey('')
+    handleApiKeyChange(trimmedKey)
+    setSuccess('API key added successfully')
+  }
+
+  const handleRemoveApiKey = (keyToRemove: string) => {
+    const updatedKeys = availableApiKeys.filter(key => key !== keyToRemove)
+    setAvailableApiKeys(updatedKeys)
+    saveApiKeys(updatedKeys)
+    if (selectedApiKey === keyToRemove) {
+      const newSelected = updatedKeys.length > 0 ? updatedKeys[0] : ''
+      setSelectedApiKey(newSelected)
+      handleApiKeyChange(newSelected)
+    }
+    setSuccess('API key removed successfully')
+  }
+
   const handleValidate = async () => {
     if (!config) return
     try {
       setValidating(true)
       setValidateErrors(null)
       setValidateWarnings(null)
-      const data = await apiService.validateServiceConfig(config as any)
+      
+      // Convert undefined values to null for proper backend handling
+      const configForValidation = JSON.parse(JSON.stringify(config, (key, value) => {
+        return value === undefined ? null : value
+      }))
+      
+      const data = await apiService.validateServiceConfig(configForValidation as any)
       setValidateErrors(data.errors || null)
       setValidateWarnings(data.warnings || null)
       if (data.valid) setSuccess('Configuration is valid')
@@ -417,8 +579,14 @@ export const DeployPage: React.FC = () => {
     if (!config) return
     try {
       setSaving(true)
+      
+      // Convert undefined values to null for proper backend handling
+      const configForSave = JSON.parse(JSON.stringify(config, (key, value) => {
+        return value === undefined ? null : value
+      }))
+      
       const data = await (async () => {
-        const updated = await apiService.updateServiceConfig({ config: config as any })
+        const updated = await apiService.updateServiceConfig({ config: configForSave as any })
         // Re-query command line preview from backend since apiService doesn't return it
         const cfgRes = await fetch(`/api/v1/service/config`)
         const cfgJson = await cfgRes.json()
@@ -438,7 +606,13 @@ export const DeployPage: React.FC = () => {
     if (!config && action !== 'stop') return
     try {
       setActionLoading(action)
-      await apiService.performServiceAction(action === 'stop' ? { action } : { action, config: config as any })
+      
+      // Convert undefined values to null for proper backend handling
+      const configForAction = config ? JSON.parse(JSON.stringify(config, (key, value) => {
+        return value === undefined ? null : value
+      })) : null
+      
+      await apiService.performServiceAction(action === 'stop' ? { action } : { action, config: configForAction as any })
       // Refresh current model info after action
       try {
         const res = await fetch(`/api/v1/models/current`)
@@ -526,14 +700,23 @@ export const DeployPage: React.FC = () => {
             onClick={() => {
               if (!config) return;
               const sections = ['model', 'sampling', 'performance', 'context_extension', 'server'];
+              const resetConfig = JSON.parse(JSON.stringify(config));
+              
               sections.forEach(section => {
                 const sectionDefaults = DEFAULT_VALUES[section as keyof typeof DEFAULT_VALUES];
-                if (sectionDefaults) {
+                if (sectionDefaults && resetConfig[section as keyof Config]) {
                   Object.keys(sectionDefaults).forEach(key => {
-                    resetToDefault(`${section}.${key}`);
+                    // Set to undefined so backend uses llama-server defaults
+                    (resetConfig[section as keyof Config] as any)[key] = undefined;
                   });
                 }
               });
+              
+              setConfig(resetConfig);
+              saveDeploySettings(resetConfig, selectedApiKey);
+              
+              // Update command line preview
+              updateCommandPreview(resetConfig);
             }}
             sx={{ 
               borderRadius: 1,
@@ -544,7 +727,7 @@ export const DeployPage: React.FC = () => {
               '&:hover': { borderColor: 'warning.main', bgcolor: 'warning.50' }
             }}
           >
-            Reset All to Defaults
+            Clear All (Use Server Defaults)
           </Button>
           <Button
             variant="outlined"
@@ -789,14 +972,18 @@ export const DeployPage: React.FC = () => {
                   }
                 }}
               >
-                {templates.length === 0 && (
-                  <MenuItem value="" disabled>
-                    No templates found in {templatesDir || '/home/llamacpp/templates'}
+                <MenuItem value="">
+                  <em>Use tokenizer default (no custom template)</em>
+                </MenuItem>
+                {templates.length === 0 ? (
+                  <MenuItem value="no-templates" disabled>
+                    No custom templates found in {templatesDir || '/home/llamacpp/templates'}
                   </MenuItem>
+                ) : (
+                  templates.map((f) => (
+                    <MenuItem key={f} value={f}>{f}</MenuItem>
+                  ))
                 )}
-                {templates.map((f) => (
-                  <MenuItem key={f} value={f}>{f}</MenuItem>
-                ))}
               </Select>
               <Box mt={1}>
                 <Chip 
@@ -958,9 +1145,9 @@ export const DeployPage: React.FC = () => {
               <Grid item xs={12} md={6}>
                 <ParameterField
                   label="RoPE Scaling Method"
-                  description="RoPE (Rotary Position Embedding) frequency scaling method for extending context length. Linear scaling works for most cases, YaRN is more sophisticated."
+                  description="RoPE (Rotary Position Embedding) frequency scaling method for extending context length. Leave empty to use model default."
                   path="model.rope_scaling"
-                  value={config.model.rope_scaling || 'linear'}
+                  value={config.model.rope_scaling ?? ''}
                   defaultValue={getDefaultValue('model.rope_scaling')}
                   type="select"
                   options={[
@@ -975,9 +1162,9 @@ export const DeployPage: React.FC = () => {
               <Grid item xs={12} md={6}>
                 <ParameterField
                   label="RoPE Base Frequency"
-                  description="Base frequency for RoPE calculations. Set to 0 to use the model's default value. Higher values may help with longer contexts."
+                  description="Base frequency for RoPE calculations. Leave empty to use the model's default value. Higher values may help with longer contexts."
                   path="model.rope_freq_base"
-                  value={config.model.rope_freq_base || 0}
+                  value={config.model.rope_freq_base ?? ''}
                   defaultValue={getDefaultValue('model.rope_freq_base')}
                   type="number"
                   min={0}
@@ -989,9 +1176,9 @@ export const DeployPage: React.FC = () => {
               <Grid item xs={12} md={6}>
                 <ParameterField
                   label="RoPE Frequency Scale"
-                  description="RoPE frequency scaling factor. Values less than 1.0 expand the context window. For example, 0.5 doubles the effective context length."
+                  description="RoPE frequency scaling factor. Values less than 1.0 expand the context window. Leave empty to use model default."
                   path="model.rope_freq_scale"
-                  value={config.model.rope_freq_scale || 0}
+                  value={config.model.rope_freq_scale ?? ''}
                   defaultValue={getDefaultValue('model.rope_freq_scale')}
                   type="number"
                   min={0}
@@ -1005,7 +1192,7 @@ export const DeployPage: React.FC = () => {
                   label="CPU MoE Layers"
                   description="Keep the Mixture of Experts (MoE) weights of the first N layers in the CPU. Set to 0 to disable."
                   path="model.n_cpu_moe"
-                  value={config.model.n_cpu_moe || 21}
+                  value={config.model.n_cpu_moe ?? ''}
                   defaultValue={getDefaultValue('model.n_cpu_moe')}
                   type="number"
                   min={0}
@@ -1835,28 +2022,107 @@ export const DeployPage: React.FC = () => {
                   }}
                 />
               </Grid>
-              <Grid item xs={12} md={4}>
-                <TextField
-                  label="API Key"
-                  type="text"
-                  fullWidth
-                  value={config.server.api_key}
-                  onChange={(e) => updateConfig('server.api_key', e.target.value)}
-                  helperText="API key for authentication (--api-key)"
-                  sx={{ 
-                    '& .MuiOutlinedInput-root': {
-                      fontSize: '0.875rem',
-                      borderRadius: 1,
-                      backgroundColor: 'background.default',
-                      '&.Mui-focused': {
-                        borderColor: 'primary.main'
-                      }
-                    },
-                    '& .MuiInputLabel-root': {
-                      fontSize: '0.875rem'
-                    }
-                  }}
-                />
+              <Grid item xs={12}>
+                <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600, mt: 2 }}>API Key Management</Typography>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} md={6}>
+                    <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Select API Key</Typography>
+                    <Select
+                      fullWidth
+                      value={selectedApiKey}
+                      onChange={(e) => {
+                        const newKey = e.target.value as string
+                        handleApiKeyChange(newKey)
+                        updateConfig('server.api_key', newKey)
+                      }}
+                      sx={{ 
+                        fontSize: '0.875rem',
+                        '& .MuiOutlinedInput-root': {
+                          borderRadius: 1
+                        }
+                      }}
+                    >
+                      <MenuItem value="">
+                        <em>No API key (open access)</em>
+                      </MenuItem>
+                      {availableApiKeys.map((key) => (
+                        <MenuItem key={key} value={key}>
+                          {key.length > 20 ? `${key.substring(0, 20)}...` : key}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                    <FormHelperText sx={{ mt: 0.5, fontSize: '0.75rem', color: 'text.secondary' }}>
+                      Choose an API key for authentication. Leave empty for open access.
+                    </FormHelperText>
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Add New API Key</Typography>
+                    <Box sx={{ display: 'flex', gap: 1 }}>
+                      <TextField
+                        placeholder="Enter new API key"
+                        value={newApiKey}
+                        onChange={(e) => setNewApiKey(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && handleAddApiKey()}
+                        sx={{ 
+                          flex: 1,
+                          '& .MuiOutlinedInput-root': {
+                            fontSize: '0.875rem',
+                            borderRadius: 1,
+                            backgroundColor: 'background.default',
+                          }
+                        }}
+                      />
+                      <Button
+                        variant="outlined"
+                        onClick={handleAddApiKey}
+                        disabled={!newApiKey.trim()}
+                        sx={{ 
+                          borderRadius: 1,
+                          fontSize: '0.8125rem',
+                          textTransform: 'none',
+                          borderColor: 'rgba(255, 255, 255, 0.2)',
+                        }}
+                      >
+                        Add
+                      </Button>
+                    </Box>
+                    <FormHelperText sx={{ mt: 0.5, fontSize: '0.75rem', color: 'text.secondary' }}>
+                      Add a new API key to the list of available keys.
+                    </FormHelperText>
+                  </Grid>
+                  {selectedApiKey && (
+                    <Grid item xs={12}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Chip 
+                          label={`Current: ${selectedApiKey.length > 30 ? `${selectedApiKey.substring(0, 30)}...` : selectedApiKey}`}
+                          variant="outlined"
+                          sx={{ 
+                            borderRadius: '4px',
+                            fontWeight: 500,
+                            fontSize: '0.6875rem',
+                            height: '24px',
+                            borderColor: 'rgba(255, 255, 255, 0.2)'
+                          }}
+                        />
+                        <Button
+                          size="small"
+                          color="error"
+                          variant="outlined"
+                          onClick={() => handleRemoveApiKey(selectedApiKey)}
+                          sx={{ 
+                            borderRadius: 1,
+                            fontSize: '0.75rem',
+                            textTransform: 'none',
+                            minWidth: 'auto',
+                            px: 1
+                          }}
+                        >
+                          Remove
+                        </Button>
+                      </Box>
+                    </Grid>
+                  )}
+                </Grid>
               </Grid>
               <Grid item xs={12} md={4}>
                 <TextField
