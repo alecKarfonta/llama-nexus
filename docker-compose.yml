@@ -8,9 +8,9 @@ services:
     ports:
       - "8700:8700"    # Management API port
     environment:
-      # Default LlamaCPP configuration
+      # Default LlamaCPP configuration - Native MXFP4
       - MODEL_NAME=gpt-oss-20b
-      - MODEL_VARIANT=Q4_K_M
+      - MODEL_VARIANT=MXFP4
       # Host path for chat templates so backend can mount it into the managed container
       - TEMPLATES_HOST_DIR=/home/alec/git/llama-nexus/chat-templates
       - CONTEXT_SIZE=128000
@@ -82,13 +82,13 @@ services:
       - ./chat-templates:/home/llamacpp/templates:ro
     environment:
       - TEMPLATE_DIR=/home/llamacpp/templates
-      #- CHAT_TEMPLATE=chat-template-oss.jinja
+      - CHAT_TEMPLATE=builtin-gpt-oss
       # CUDA optimizations
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=0
-      # Model configuration
-      - MODEL_NAME=gpt-oss-20b
-      - MODEL_VARIANT=Q4_K_M
+      # Model configuration - GPT-OSS-20B GGUF (official pre-converted)
+      - MODEL_NAME=ggml-org/gpt-oss-20b-GGUF
+      - MODEL_VARIANT=mxfp4
       - CONTEXT_SIZE=128000
       - GPU_LAYERS=999
       - TEMPERATURE=0.7
@@ -130,8 +130,53 @@ services:
       retries: 3
       start_period: 30s
 
+  # vLLM API Server - Native MXFP4 GPT-OSS-20B
+  vllm-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.vllm
+    container_name: vllm-api
+    hostname: vllm
+    ports:
+      - "8601:8080"    # vLLM API server port (different from llamacpp)
+    runtime: nvidia
+    shm_size: '16gb'
+    environment:
+      - MODEL_NAME=openai/gpt-oss-20b
+      - HOST=0.0.0.0
+      - PORT=8080
+      - API_KEY=placeholder-api-key
+      - MAX_MODEL_LEN=131072
+      - GPU_MEMORY_UTILIZATION=0.8
+      - TENSOR_PARALLEL_SIZE=1
+      - DTYPE=auto
+      - TRUST_REMOTE_CODE=true
+      - ENABLE_CHUNKED_PREFILL=true
+      - MAX_NUM_BATCHED_TOKENS=8192
+      - MAX_NUM_SEQS=256
+      - SERVED_MODEL_NAME=gpt-oss-20b
+      # HuggingFace token for downloads
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+      # CUDA optimizations
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=0
+    volumes:
+      - vllm_models:/home/vllm/models
+      - vllm_cache:/home/vllm/.cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s  # vLLM takes longer to start due to model download
+
 volumes:
   gpt_oss_models:
     driver: local
   llamacpp_bin:
+    driver: local
+  vllm_models:
+    driver: local
+  vllm_cache:
     driver: local

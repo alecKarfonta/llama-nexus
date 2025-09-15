@@ -23,7 +23,7 @@ RUN pip3 install huggingface_hub hf_transfer
 WORKDIR /build
 RUN git clone https://github.com/ggml-org/llama.cpp.git && \
     cd llama.cpp && \
-    git checkout b6181 && \
+    git checkout master && \
     echo "Building llama.cpp version: $(git describe --tags --always)" && \
     cmake . -B build \
         -DBUILD_SHARED_LIBS=OFF \
@@ -62,8 +62,9 @@ COPY --from=builder /build/llama.cpp/build/bin/llama-gguf-split /usr/local/bin/
 
 # Copy configuration files
 COPY start.sh /start.sh
-COPY chat-template-oss.jinja /home/llamacpp/chat-template.jinja
-RUN chmod +x /start.sh
+COPY chat-template-oss.jinja /home/llamacpp/templates/chat-template-oss.jinja
+COPY simple-chat-template.jinja /home/llamacpp/templates/simple-chat-template.jinja
+RUN mkdir -p /home/llamacpp/templates && chmod +x /start.sh
 
 # Set up environment for GPU
 ENV NVIDIA_VISIBLE_DEVICES=all
@@ -81,5 +82,5 @@ HEALTHCHECK --interval=60s --timeout=30s --start-period=300s --retries=3 \
 USER llamacpp
 WORKDIR /home/llamacpp
 
-# Start the service
-CMD ["/start.sh"]
+# Use start.sh as entrypoint
+ENTRYPOINT ["/start.sh"]

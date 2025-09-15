@@ -116,11 +116,12 @@ if [ $# -eq 0 ]; then
         "--model" "$MODEL_PATH"
         "--host" "$HOST"
         "--port" "$PORT"
+        "-c" "${CONTEXT_SIZE:-4096}"
         "--api-key" "$API_KEY"
         "--verbose"
         "--metrics" 
         "--embeddings"
-        "--flash-attn"
+        "--flash-attn" "auto"
         "--cont-batching"
     )
 
