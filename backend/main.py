@@ -28,6 +28,7 @@ from dataclasses import dataclass, asdict
 from huggingface_hub import hf_hub_url
 from huggingface_hub import HfApi
 import re
+import uuid
 
 # Import enhanced logger
 from enhanced_logger import enhanced_logger as logger
@@ -195,39 +196,112 @@ class LlamaCPPManager:
             model_path = possible_paths[0]
             logger.warning(f"Model file not found, using default path: {model_path}")
         
+        # Helper function to add parameter if value is not None/undefined
+        def add_param_if_set(cmd_list, flag, value, convert_to_str=True):
+            if value is not None and value != "":
+                if convert_to_str:
+                    cmd_list.extend([flag, str(value)])
+                else:
+                    cmd_list.extend([flag, value])
+        
         cmd = [
             "llama-server",
             "--model", model_path,
             "--host", self.config["server"]["host"],
             "--port", str(self.config["server"]["port"]),
             "--api-key", self.config["server"]["api_key"],
-            "--ctx-size", str(self.config["model"]["context_size"]),
-            "--n-gpu-layers", str(self.config["model"]["gpu_layers"]),
-            "--n-predict", str(self.config["performance"]["num_predict"]),
-            "--threads", str(self.config["performance"]["threads"]),
-            "--batch-size", str(self.config["performance"]["batch_size"]),
-            "--ubatch-size", str(self.config["performance"]["ubatch_size"]),
-            "--n-cpu-moe", str(self.config["model"]["n_cpu_moe"]),
-            "--temp", str(self.config["sampling"]["temperature"]),
-            "--top-p", str(self.config["sampling"]["top_p"]),
-            "--top-k", str(self.config["sampling"]["top_k"]),
-            "--min-p", str(self.config["sampling"]["min_p"]),
-            "--repeat-penalty", str(self.config["sampling"]["repeat_penalty"]),
-            "--repeat-last-n", str(self.config["sampling"]["repeat_last_n"]),
-            "--frequency-penalty", str(self.config["sampling"]["frequency_penalty"]),
-            "--presence-penalty", str(self.config["sampling"]["presence_penalty"]),
-            "--dry-multiplier", str(self.config["sampling"]["dry_multiplier"]),
-            "--dry-base", str(self.config["sampling"]["dry_base"]),
-            "--dry-allowed-length", str(self.config["sampling"]["dry_allowed_length"]),
-            "--dry-penalty-last-n", str(self.config["sampling"]["dry_penalty_last_n"]),
-            "--jinja",
-            "--chat-template-file", str(Path(self.config["template"]["directory"]) / self.config["template"]["selected"]),
-            "--verbose",
-            "--metrics",
-            "--embeddings",
-            "--flash-attn",
-            "--cont-batching"
         ]
+        
+        # Add optional model parameters only if they are set
+        add_param_if_set(cmd, "--ctx-size", self.config["model"].get("context_size"))
+        add_param_if_set(cmd, "--n-gpu-layers", self.config["model"].get("gpu_layers"))
+        add_param_if_set(cmd, "--n-cpu-moe", self.config["model"].get("n_cpu_moe"))
+        
+        # Add optional RoPE parameters
+        add_param_if_set(cmd, "--rope-scaling", self.config["model"].get("rope_scaling"))
+        add_param_if_set(cmd, "--rope-freq-base", self.config["model"].get("rope_freq_base"))
+        add_param_if_set(cmd, "--rope-freq-scale", self.config["model"].get("rope_freq_scale"))
+        
+        # Add optional LoRA parameters
+        add_param_if_set(cmd, "--lora", self.config["model"].get("lora"))
+        add_param_if_set(cmd, "--lora-base", self.config["model"].get("lora_base"))
+        add_param_if_set(cmd, "--mmproj", self.config["model"].get("mmproj"))
+        
+        # Add optional performance parameters
+        add_param_if_set(cmd, "--n-predict", self.config["performance"].get("num_predict"))
+        add_param_if_set(cmd, "--threads", self.config["performance"].get("threads"))
+        add_param_if_set(cmd, "--threads-batch", self.config["performance"].get("threads_batch"))
+        add_param_if_set(cmd, "--batch-size", self.config["performance"].get("batch_size"))
+        add_param_if_set(cmd, "--ubatch-size", self.config["performance"].get("ubatch_size"))
+        add_param_if_set(cmd, "--keep", self.config["performance"].get("num_keep"))
+        add_param_if_set(cmd, "--parallel", self.config["performance"].get("parallel_slots"))
+        add_param_if_set(cmd, "--split-mode", self.config["performance"].get("split_mode"))
+        add_param_if_set(cmd, "--tensor-split", self.config["performance"].get("tensor_split"))
+        add_param_if_set(cmd, "--main-gpu", self.config["performance"].get("main_gpu"))
+        add_param_if_set(cmd, "--cache-type-k", self.config["performance"].get("cache_type_k"))
+        add_param_if_set(cmd, "--cache-type-v", self.config["performance"].get("cache_type_v"))
+        
+        # Add optional sampling parameters
+        add_param_if_set(cmd, "--temp", self.config["sampling"].get("temperature"))
+        add_param_if_set(cmd, "--top-p", self.config["sampling"].get("top_p"))
+        add_param_if_set(cmd, "--top-k", self.config["sampling"].get("top_k"))
+        add_param_if_set(cmd, "--min-p", self.config["sampling"].get("min_p"))
+        add_param_if_set(cmd, "--repeat-penalty", self.config["sampling"].get("repeat_penalty"))
+        add_param_if_set(cmd, "--repeat-last-n", self.config["sampling"].get("repeat_last_n"))
+        add_param_if_set(cmd, "--frequency-penalty", self.config["sampling"].get("frequency_penalty"))
+        add_param_if_set(cmd, "--presence-penalty", self.config["sampling"].get("presence_penalty"))
+        add_param_if_set(cmd, "--dry-multiplier", self.config["sampling"].get("dry_multiplier"))
+        add_param_if_set(cmd, "--dry-base", self.config["sampling"].get("dry_base"))
+        add_param_if_set(cmd, "--dry-allowed-length", self.config["sampling"].get("dry_allowed_length"))
+        add_param_if_set(cmd, "--dry-penalty-last-n", self.config["sampling"].get("dry_penalty_last_n"))
+        
+        # Add optional server parameters
+        add_param_if_set(cmd, "--timeout", self.config["server"].get("timeout"))
+        add_param_if_set(cmd, "--system-prompt-file", self.config["server"].get("system_prompt_file"))
+        add_param_if_set(cmd, "--log-format", self.config["server"].get("log_format"))
+        
+        # Add boolean flags only if they are explicitly set to True
+        if self.config["server"].get("embedding"):
+            cmd.append("--embeddings")
+        if self.config["server"].get("metrics"):
+            cmd.append("--metrics")
+        if self.config["server"].get("log_disable"):
+            cmd.append("--log-disable")
+        if self.config["server"].get("slots_endpoint_disable"):
+            cmd.append("--slots-endpoint-disable")
+        if self.config["performance"].get("memory_f32"):
+            cmd.append("--memory-f32")
+        if self.config["performance"].get("mlock"):
+            cmd.append("--mlock")
+        if self.config["performance"].get("no_mmap"):
+            cmd.append("--no-mmap")
+        if self.config["performance"].get("continuous_batching"):
+            cmd.append("--cont-batching")
+        
+        # Add NUMA parameter if set
+        add_param_if_set(cmd, "--numa", self.config["performance"].get("numa"))
+        
+        # Add context extension parameters if set
+        if "context_extension" in self.config:
+            add_param_if_set(cmd, "--yarn-ext-factor", self.config["context_extension"].get("yarn_ext_factor"))
+            add_param_if_set(cmd, "--yarn-attn-factor", self.config["context_extension"].get("yarn_attn_factor"))
+            add_param_if_set(cmd, "--yarn-beta-slow", self.config["context_extension"].get("yarn_beta_slow"))
+            add_param_if_set(cmd, "--yarn-beta-fast", self.config["context_extension"].get("yarn_beta_fast"))
+            add_param_if_set(cmd, "--grp-attn-n", self.config["context_extension"].get("group_attn_n"))
+            add_param_if_set(cmd, "--grp-attn-w", self.config["context_extension"].get("group_attn_w"))
+        
+        # Only add chat template file if one is selected (not empty)
+        if self.config.get("template", {}).get("selected"):
+            cmd.extend([
+                "--jinja",
+                "--chat-template-file", str(Path(self.config["template"]["directory"]) / self.config["template"]["selected"]),
+            ])
+        
+        # Add default flags that are always enabled
+        cmd.extend([
+            "--verbose",
+            "--flash-attn"
+        ])
         
         return cmd
     
@@ -466,13 +540,16 @@ class LlamaCPPManager:
                 logger.error(f"Model file validation failed: {error_msg}")
                 raise HTTPException(status_code=400, detail=error_msg)
             
-            # Validate chat template file exists
-            template_path = str(Path(self.config["template"]["directory"]) / self.config["template"]["selected"]) 
-            logger.info(f"Validating chat template file at path='{template_path}'")
-            if not os.path.exists(template_path):
-                error_msg = f"Chat template file not found: {template_path}"
-                logger.error(f"Chat template validation failed: {error_msg}")
-                raise HTTPException(status_code=400, detail=error_msg)
+            # Validate chat template file exists (only if one is selected)
+            if self.config["template"]["selected"]:
+                template_path = str(Path(self.config["template"]["directory"]) / self.config["template"]["selected"]) 
+                logger.info(f"Validating chat template file at path='{template_path}'")
+                if not os.path.exists(template_path):
+                    error_msg = f"Chat template file not found: {template_path}"
+                    logger.error(f"Chat template validation failed: {error_msg}")
+                    raise HTTPException(status_code=400, detail=error_msg)
+            else:
+                logger.info("No custom chat template selected, will use tokenizer default")
             
             # Check if llama-server executable exists
             try:
@@ -1551,7 +1628,7 @@ class ModelDownloadManager:
                             "vram_used_mb": int(values[0]),
                             "vram_total_mb": int(values[1]),
                             "gpu_usage_percent": float(values[2]),
-                            "temperature_c": float(values[3])
+                            "temperature_c": float(values[3]),
                         }
                 else:
                     logger.warning(f"nvidia-smi command failed with return code: {result.returncode}")
@@ -1581,12 +1658,14 @@ class ModelDownloadManager:
     
     def update_config(self, new_config: Dict[str, Any]) -> Dict[str, Any]:
         """Update configuration"""
-        # Deep merge configs
+        # Deep merge configs, filtering out None values
         for category in ["model", "sampling", "performance", "server"]:
             if category in new_config:
                 if category not in self.config:
                     self.config[category] = {}
-                self.config[category].update(new_config[category])
+                # Filter out None values before updating
+                filtered_category = {k: v for k, v in new_config[category].items() if v is not None}
+                self.config[category].update(filtered_category)
         
         # Save config to file for persistence
         config_file = Path("/tmp/llamacpp_config.json")
@@ -1623,11 +1702,22 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting LlamaCPP Management API")
     
-    # Load saved config if exists
+    # Load saved config if exists and merge with defaults
     config_file = Path("/tmp/llamacpp_config.json")
     if config_file.exists():
         with open(config_file) as f:
             saved_config = json.load(f)
+            # Merge saved config with default config to ensure all required fields exist
+            default_config = manager.load_default_config()
+            for category in default_config:
+                if category in saved_config:
+                    # Merge category, keeping saved values but adding missing defaults
+                    for key, default_value in default_config[category].items():
+                        if key not in saved_config[category] or saved_config[category][key] is None:
+                            saved_config[category][key] = default_value
+                else:
+                    # Add missing category entirely
+                    saved_config[category] = default_config[category]
             manager.config = saved_config
     
     yield
@@ -1760,12 +1850,34 @@ async def get_config():
 
 def _merge_and_persist_config(new_config: Dict[str, Any]) -> Dict[str, Any]:
     # Deep merge into manager.config and persist to disk
-    base = manager.config
-    for category in ["model", "sampling", "performance", "server"]:
-        if category in new_config:
+    import copy
+    base = copy.deepcopy(manager.config)  # Create a deep copy to avoid modifying original
+    
+    # The new_config comes wrapped in a 'config' key, so extract it
+    config_data = new_config.get('config', new_config)
+    
+    # Required fields that should never be removed
+    required_fields = {
+        "model": ["name", "variant"],
+        "server": ["host", "port", "api_key"]
+    }
+    
+    for category in ["model", "sampling", "performance", "context_extension", "server", "template"]:
+        if category in config_data:
             if category not in base:
                 base[category] = {}
-            base[category].update(new_config[category])
+            # Update with new values, removing keys that are None or undefined
+            for key, value in config_data[category].items():
+                if value is None or value == "":
+                    # Only remove the key if it's not a required field
+                    if category not in required_fields or key not in required_fields[category]:
+                        base[category].pop(key, None)
+                else:
+                    base[category][key] = value
+    
+    # Update the manager's config with the modified base
+    manager.config = base
+    
     # Persist
     config_file = Path("/tmp/llamacpp_config.json")
     with open(config_file, "w") as f:
@@ -1784,6 +1896,56 @@ async def update_config(config: Dict[str, Any]):
             "message": "Configuration updated. Restart service to apply changes."
         }
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/service/config/preview")
+async def preview_config(config: Dict[str, Any]):
+    """Preview command line for a configuration without saving it"""
+    try:
+        # Create a minimal base config with only required fields
+        import copy
+        temp_config = {
+            "model": {
+                "name": manager.config["model"]["name"],
+                "variant": manager.config["model"]["variant"]
+            },
+            "server": {
+                "host": manager.config["server"]["host"],
+                "port": manager.config["server"]["port"],
+                "api_key": manager.config["server"]["api_key"]
+            },
+            "sampling": {},
+            "performance": {},
+            "context_extension": {},
+            "template": manager.config.get("template", {})
+        }
+        
+        # Apply the preview config changes - only add non-null values
+        config_data = config.get('config', config)
+        for category in ["model", "sampling", "performance", "context_extension", "server", "template"]:
+            if category in config_data:
+                if category not in temp_config:
+                    temp_config[category] = {}
+                # Only add values that are not None or empty string
+                for key, value in config_data[category].items():
+                    if value is not None and value != "":
+                        temp_config[category][key] = value
+        
+        # Temporarily replace manager's config to build the command
+        original_config = manager.config
+        manager.config = temp_config
+        
+        try:
+            command = " ".join(manager.build_command())
+        finally:
+            # Restore original config
+            manager.config = original_config
+        
+        return {
+            "command": command
+        }
+    except Exception as e:
+        logger.error(f"Preview config error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Add aliases without /api prefix for frontend compatibility
@@ -2376,10 +2538,11 @@ async def list_downloads():
 async def list_templates():
     try:
         templates_dir = Path(manager.config["template"]["directory"])
+        selected = manager.config["template"].get("selected", "")
         if not templates_dir.exists():
-            return {"success": True, "data": {"directory": str(templates_dir), "files": [], "selected": manager.config["template"]["selected"]}}
+            return {"success": True, "data": {"directory": str(templates_dir), "files": [], "selected": selected}}
         files = [p.name for p in templates_dir.glob("*.jinja") if p.is_file()]
-        return {"success": True, "data": {"directory": str(templates_dir), "files": files, "selected": manager.config["template"]["selected"]}}
+        return {"success": True, "data": {"directory": str(templates_dir), "files": files, "selected": selected}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2419,15 +2582,25 @@ async def update_template(filename: str, payload: Dict[str, Any]):
 async def select_template(payload: Dict[str, Any]):
     try:
         filename = payload.get("filename")
-        if not filename or not isinstance(filename, str):
+        if filename is None or not isinstance(filename, str):
             raise HTTPException(status_code=400, detail="'filename' is required")
+        
         templates_dir = Path(manager.config["template"]["directory"]) 
+        
+        # Allow empty filename for tokenizer default
+        if filename == "":
+            # Update config to use no template (tokenizer default)
+            updated = _merge_and_persist_config({"template": {"directory": str(templates_dir), "selected": ""}})
+            return {"success": True, "data": {"selected": updated["template"].get("selected", "")}}
+        
+        # For non-empty filenames, validate the file exists
         path = templates_dir / filename
         if not path.exists():
             raise HTTPException(status_code=404, detail="Template not found")
+        
         # Update config and persist
         updated = _merge_and_persist_config({"template": {"directory": str(templates_dir), "selected": filename}})
-        return {"success": True, "data": {"selected": updated["template"]["selected"]}}
+        return {"success": True, "data": {"selected": updated["template"].get("selected", filename)}}
     except HTTPException:
         raise
     except Exception as e:
@@ -2560,6 +2733,463 @@ async def record_token_usage(request: Request):
     except Exception as e:
         logger.error(f"Error recording token usage: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- Benchmark Testing Endpoints ---
+
+# In-memory storage for benchmarks (in production, this would be a database)
+benchmarks_storage: Dict[str, Dict[str, Any]] = {}
+
+class BenchmarkStatus(str, Enum):
+    STARTING = "starting"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+def load_benchmark_tests():
+    """Load benchmark tests from JSON file"""
+    try:
+        # Try to load from frontend public directory first (for development)
+        test_file_path = "/app/public/tool_call_tests.json"
+        if not os.path.exists(test_file_path):
+            # Fallback to local file for development
+            test_file_path = "tool_call_tests.json"
+        
+        with open(test_file_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading benchmark tests: {e}")
+        return {
+            "tool_calling": [],
+            "basic": [],
+            "advanced": []
+        }
+
+def create_benchmark_result(benchmark_id: str, test_category: str, max_examples: int):
+    """Create a new benchmark result entry"""
+    benchmarks_storage[benchmark_id] = {
+        "benchmark_id": benchmark_id,
+        "status": BenchmarkStatus.STARTING,
+        "test_category": test_category,
+        "max_examples": max_examples,
+        "started_at": datetime.now().isoformat(),
+        "progress": 0,
+        "total": 0,
+        "current_test": None,
+        "results": {
+            "total": 0,
+            "correct": 0,
+            "accuracy": 0.0,
+            "errors": []
+        }
+    }
+    return benchmarks_storage[benchmark_id]
+
+def update_benchmark_progress(benchmark_id: str, status: BenchmarkStatus, **kwargs):
+    """Update benchmark progress"""
+    if benchmark_id in benchmarks_storage:
+        benchmarks_storage[benchmark_id]["status"] = status
+        for key, value in kwargs.items():
+            benchmarks_storage[benchmark_id][key] = value
+        
+        # Update accuracy if results changed
+        if "results" in kwargs and "total" in kwargs["results"] and kwargs["results"]["total"] > 0:
+            accuracy = (kwargs["results"]["correct"] / kwargs["results"]["total"]) * 100
+            benchmarks_storage[benchmark_id]["results"]["accuracy"] = round(accuracy, 2)
+
+async def run_single_test(test: Dict[str, Any], test_category: str) -> bool:
+    """Run a single benchmark test and return success/failure"""
+    try:
+        if test_category == "tool_calling":
+            return await run_tool_calling_test(test)
+        elif test_category == "basic":
+            return await run_basic_test(test)
+        elif test_category == "advanced":
+            return await run_advanced_test(test)
+        else:
+            logger.warning(f"Unknown test category: {test_category}")
+            return False
+    except Exception as e:
+        logger.error(f"Error running test {test.get('name', 'Unknown')}: {e}")
+        return False
+
+async def run_tool_calling_test(test: Dict[str, Any]) -> bool:
+    """Run a tool calling test against the LLM"""
+    try:
+        # Check if LLM service is running
+        status = manager.get_status()
+        if not status.get("running", False):
+            logger.error("LLM service is not running")
+            return False
+        
+        # Prepare the chat completion request
+        messages = [
+            {"role": "user", "content": test["prompt"]}
+        ]
+        
+        tools = test.get("tools", [])
+        
+        # Make request to the LLM
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            llamacpp_url = f"http://localhost:{manager.config['server']['port']}"
+            
+            request_data = {
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": "auto",
+                "temperature": 0.1,  # Low temperature for consistent results
+                "max_tokens": 500
+            }
+            
+            response = await client.post(
+                f"{llamacpp_url}/v1/chat/completions",
+                json=request_data,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"LLM request failed: {response.status_code} - {response.text}")
+                return False
+            
+            result = response.json()
+            
+            # Check if the LLM made the expected tool call
+            return validate_tool_call_response(result, test)
+            
+    except Exception as e:
+        logger.error(f"Tool calling test failed: {e}")
+        return False
+
+async def run_basic_test(test: Dict[str, Any]) -> bool:
+    """Run a basic knowledge test"""
+    try:
+        # Check if LLM service is running
+        status = manager.get_status()
+        if not status.get("running", False):
+            logger.error("LLM service is not running")
+            return False
+        
+        messages = [
+            {"role": "user", "content": test["prompt"]}
+        ]
+        
+        # Make request to the LLM
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            llamacpp_url = f"http://localhost:{manager.config['server']['port']}"
+            
+            request_data = {
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": 200
+            }
+            
+            response = await client.post(
+                f"{llamacpp_url}/v1/chat/completions",
+                json=request_data,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"LLM request failed: {response.status_code} - {response.text}")
+                return False
+            
+            result = response.json()
+            
+            # Check if response contains expected content
+            return validate_basic_response(result, test)
+            
+    except Exception as e:
+        logger.error(f"Basic test failed: {e}")
+        return False
+
+async def run_advanced_test(test: Dict[str, Any]) -> bool:
+    """Run an advanced reasoning test"""
+    try:
+        # Check if LLM service is running
+        status = manager.get_status()
+        if not status.get("running", False):
+            logger.error("LLM service is not running")
+            return False
+        
+        messages = [
+            {"role": "user", "content": test["prompt"]}
+        ]
+        
+        # Make request to the LLM
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            llamacpp_url = f"http://localhost:{manager.config['server']['port']}"
+            
+            request_data = {
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": 400
+            }
+            
+            response = await client.post(
+                f"{llamacpp_url}/v1/chat/completions",
+                json=request_data,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"LLM request failed: {response.status_code} - {response.text}")
+                return False
+            
+            result = response.json()
+            
+            # Check if response contains expected reasoning
+            return validate_advanced_response(result, test)
+            
+    except Exception as e:
+        logger.error(f"Advanced test failed: {e}")
+        return False
+
+def validate_tool_call_response(response: Dict[str, Any], test: Dict[str, Any]) -> bool:
+    """Validate that the LLM made the correct tool call"""
+    try:
+        choices = response.get("choices", [])
+        if not choices:
+            return False
+        
+        message = choices[0].get("message", {})
+        tool_calls = message.get("tool_calls", [])
+        
+        if not tool_calls:
+            logger.info(f"No tool calls made for test: {test.get('name')}")
+            return False
+        
+        # Check if the expected tool was called
+        expected_tool = test.get("expected_tool")
+        expected_args = test.get("expected_args", {})
+        
+        for tool_call in tool_calls:
+            function = tool_call.get("function", {})
+            function_name = function.get("name")
+            
+            if function_name == expected_tool:
+                # Parse arguments
+                try:
+                    args_str = function.get("arguments", "{}")
+                    actual_args = json.loads(args_str)
+                    
+                    # Check if required arguments are present
+                    for key, expected_value in expected_args.items():
+                        if key not in actual_args:
+                            logger.info(f"Missing argument '{key}' in tool call")
+                            continue
+                        
+                        # For location-based arguments, do fuzzy matching
+                        if key == "location" and isinstance(expected_value, str) and isinstance(actual_args[key], str):
+                            if expected_value.lower() in actual_args[key].lower() or actual_args[key].lower() in expected_value.lower():
+                                continue
+                        
+                        # For exact matches
+                        if actual_args[key] == expected_value:
+                            continue
+                        
+                        # If we get here, the argument doesn't match
+                        logger.info(f"Argument mismatch for '{key}': expected {expected_value}, got {actual_args[key]}")
+                    
+                    # If we made it here, the tool call is valid
+                    logger.info(f"Successful tool call validation for test: {test.get('name')}")
+                    return True
+                    
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON in tool call arguments: {function.get('arguments')}")
+                    return False
+        
+        logger.info(f"Expected tool '{expected_tool}' not called")
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error validating tool call response: {e}")
+        return False
+
+def validate_basic_response(response: Dict[str, Any], test: Dict[str, Any]) -> bool:
+    """Validate basic test response contains expected content"""
+    try:
+        choices = response.get("choices", [])
+        if not choices:
+            return False
+        
+        message = choices[0].get("message", {})
+        content = message.get("content", "").lower()
+        
+        expected_contains = test.get("expected_response_contains", [])
+        
+        # Check if any of the expected phrases are in the response
+        for expected in expected_contains:
+            if expected.lower() in content:
+                logger.info(f"Basic test passed: found '{expected}' in response")
+                return True
+        
+        logger.info(f"Basic test failed: none of {expected_contains} found in response")
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error validating basic response: {e}")
+        return False
+
+def validate_advanced_response(response: Dict[str, Any], test: Dict[str, Any]) -> bool:
+    """Validate advanced test response shows reasoning"""
+    try:
+        choices = response.get("choices", [])
+        if not choices:
+            return False
+        
+        message = choices[0].get("message", {})
+        content = message.get("content", "").lower()
+        
+        expected_contains = test.get("expected_response_contains", [])
+        
+        # For advanced tests, we need more sophisticated validation
+        # Check if response contains expected reasoning elements
+        for expected in expected_contains:
+            if expected.lower() in content:
+                logger.info(f"Advanced test passed: found '{expected}' in response")
+                return True
+        
+        # Also check for reasoning indicators
+        reasoning_indicators = ["because", "therefore", "since", "thus", "so", "step", "first", "then", "calculate"]
+        reasoning_found = any(indicator in content for indicator in reasoning_indicators)
+        
+        if reasoning_found and len(content) > 50:  # Ensure substantial response
+            logger.info("Advanced test passed: reasoning indicators found")
+            return True
+        
+        logger.info(f"Advanced test failed: insufficient reasoning in response")
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error validating advanced response: {e}")
+        return False
+
+@app.post("/api/v1/benchmark/bfcl/start")
+async def start_bfcl_benchmark(
+    test_category: str = "tool_calling",
+    max_examples: int = 10
+):
+    """Start a new BFCL benchmark test"""
+    try:
+        benchmark_id = str(uuid.uuid4())
+        
+        # Load test cases
+        test_cases = load_benchmark_tests()
+        category_tests = test_cases.get(test_category, [])
+        
+        # Limit tests to max_examples
+        if max_examples > 0:
+            category_tests = category_tests[:max_examples]
+        
+        # Create benchmark entry
+        benchmark = create_benchmark_result(benchmark_id, test_category, len(category_tests))
+        benchmark["total"] = len(category_tests)
+        
+        # Run the actual benchmark tests
+        benchmark["status"] = BenchmarkStatus.RUNNING
+        
+        async def run_benchmark_tests():
+            try:
+                test_cases_data = load_benchmark_tests()
+                tests = test_cases_data.get(test_category, [])[:max_examples]
+                total_tests = len(tests)
+                
+                benchmarks_storage[benchmark_id]["total"] = total_tests
+                benchmarks_storage[benchmark_id]["progress"] = 0
+                
+                # Run actual tests
+                for i, test in enumerate(tests):
+                    if benchmarks_storage[benchmark_id]["status"] == BenchmarkStatus.CANCELLED:
+                        break
+                    
+                    benchmarks_storage[benchmark_id]["current_test"] = test.get("name", f"Test {i+1}")
+                    benchmarks_storage[benchmark_id]["progress"] = i + 1
+                    
+                    # Run the actual test
+                    try:
+                        success = await run_single_test(test, test_category)
+                        if success:
+                            benchmarks_storage[benchmark_id]["results"]["correct"] += 1
+                        else:
+                            benchmarks_storage[benchmark_id]["results"]["errors"].append(
+                                f"Failed test: {test.get('name', f'Test {i+1}')}"
+                            )
+                    except Exception as test_error:
+                        logger.error(f"Test execution error: {test_error}")
+                        benchmarks_storage[benchmark_id]["results"]["errors"].append(
+                            f"Error in {test.get('name', f'Test {i+1}')}: {str(test_error)}"
+                        )
+                
+                # Finalize results
+                if benchmarks_storage[benchmark_id]["status"] != BenchmarkStatus.CANCELLED:
+                    benchmarks_storage[benchmark_id]["results"]["total"] = total_tests
+                    if total_tests > 0:
+                        accuracy = (benchmarks_storage[benchmark_id]["results"]["correct"] / total_tests) * 100
+                        benchmarks_storage[benchmark_id]["results"]["accuracy"] = round(accuracy, 2)
+                    
+                    benchmarks_storage[benchmark_id]["status"] = BenchmarkStatus.COMPLETED
+                    benchmarks_storage[benchmark_id]["completed_at"] = datetime.now().isoformat()
+                
+            except Exception as e:
+                logger.error(f"Benchmark execution failed: {e}")
+                benchmarks_storage[benchmark_id]["status"] = BenchmarkStatus.FAILED
+                benchmarks_storage[benchmark_id]["error"] = str(e)
+                benchmarks_storage[benchmark_id]["completed_at"] = datetime.now().isoformat()
+        
+        # Start the benchmark tests in background
+        asyncio.create_task(run_benchmark_tests())
+        
+        return {
+            "benchmark_id": benchmark_id,
+            "status": benchmark["status"],
+            "test_category": test_category,
+            "max_examples": len(category_tests)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error starting benchmark: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/benchmark/bfcl")
+async def list_bfcl_benchmarks():
+    """List all BFCL benchmarks"""
+    return benchmarks_storage
+
+@app.get("/api/v1/benchmark/bfcl/{benchmark_id}")
+async def get_bfcl_benchmark(benchmark_id: str):
+    """Get specific BFCL benchmark status"""
+    if benchmark_id not in benchmarks_storage:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+    return benchmarks_storage[benchmark_id]
+
+@app.delete("/api/v1/benchmark/bfcl/{benchmark_id}")
+async def stop_bfcl_benchmark(benchmark_id: str):
+    """Stop a running BFCL benchmark"""
+    if benchmark_id not in benchmarks_storage:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+    
+    if benchmarks_storage[benchmark_id]["status"] in [BenchmarkStatus.RUNNING, BenchmarkStatus.STARTING]:
+        benchmarks_storage[benchmark_id]["status"] = BenchmarkStatus.CANCELLED
+        benchmarks_storage[benchmark_id]["completed_at"] = datetime.now().isoformat()
+    
+    return {
+        "status": benchmarks_storage[benchmark_id]["status"],
+        "benchmark_id": benchmark_id
+    }
+
+@app.delete("/api/v1/benchmark/bfcl")
+async def clear_completed_benchmarks():
+    """Clear completed/failed/cancelled benchmarks"""
+    completed_statuses = [BenchmarkStatus.COMPLETED, BenchmarkStatus.FAILED, BenchmarkStatus.CANCELLED]
+    to_remove = [
+        bid for bid, benchmark in benchmarks_storage.items() 
+        if benchmark["status"] in completed_statuses
+    ]
+    
+    for bid in to_remove:
+        del benchmarks_storage[bid]
+    
+    return {"status": "success", "cleared": len(to_remove)}
 
 if __name__ == "__main__":
     import uvicorn
