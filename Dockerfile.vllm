@@ -1,0 +1,72 @@
+# vLLM Dockerfile for native MXFP4 GPT-OSS-20B deployment
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies and Python 3.12
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    curl \
+    git \
+    build-essential \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment with Python 3.12
+RUN python3.12 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip and install uv for faster package management
+RUN pip install --upgrade pip uv
+
+# Install vLLM with GPT-OSS support
+RUN uv pip install --pre vllm==0.10.1+gptoss \
+    --extra-index-url https://wheels.vllm.ai/gpt-oss/ \
+    --extra-index-url https://download.pytorch.org/whl/nightly/cu128 \
+    --index-strategy unsafe-best-match
+
+# Install additional dependencies for model management
+RUN uv pip install \
+    transformers \
+    torch \
+    huggingface_hub \
+    hf_transfer \
+    xformers
+
+# Install FlashAttention separately (requires torch to be installed first)
+RUN uv pip install flash-attn>=2.7.0 --no-build-isolation
+
+# Create user for security
+RUN useradd -m -u 1000 vllm && \
+    mkdir -p /home/vllm/models /home/vllm/.cache && \
+    chown -R vllm:vllm /home/vllm
+
+# Set up environment variables
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+ENV CUDA_VISIBLE_DEVICES=0
+ENV NVIDIA_VISIBLE_DEVICES=0
+
+# Copy startup script
+COPY start-vllm.sh /start-vllm.sh
+RUN chmod +x /start-vllm.sh
+
+# Switch to non-root user
+USER vllm
+WORKDIR /home/vllm
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Start vLLM server
+CMD ["/start-vllm.sh"]
