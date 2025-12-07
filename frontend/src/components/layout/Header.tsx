@@ -35,6 +35,7 @@ const pageConfig: Record<string, { title: string; description: string; color: st
   '/batch': { title: 'Batch', description: 'Batch processing jobs', color: '#ec4899' },
   '/compare': { title: 'Compare', description: 'Model comparison', color: '#f43f5e' },
   '/workflows': { title: 'Workflows', description: 'Multi-step LLM pipelines', color: '#a855f7' },
+  '/knowledge': { title: 'Knowledge Base', description: 'RAG document management', color: '#06b6d4' },
   '/monitoring': { title: 'Monitoring', description: 'System monitoring', color: '#0ea5e9' },
   '/api-docs': { title: 'API Docs', description: 'Interactive API documentation', color: '#14b8a6' },
   '/configuration': { title: 'Settings', description: 'Application settings', color: '#64748b' },

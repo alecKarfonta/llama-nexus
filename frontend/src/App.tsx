@@ -19,6 +19,7 @@ import ModelComparisonPage from '@/pages/ModelComparisonPage'
 import MonitoringPage from '@/pages/MonitoringPage'
 import ApiDocsPage from '@/pages/ApiDocsPage'
 import WorkflowBuilderPage from '@/pages/WorkflowBuilderPage'
+import KnowledgeBasePage from '@/pages/KnowledgeBasePage'
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = React.useState(true)
@@ -88,6 +89,7 @@ function App() {
               <Route path="/batch" element={<BatchProcessingPage />} />
               <Route path="/compare" element={<ModelComparisonPage />} />
               <Route path="/workflows" element={<WorkflowBuilderPage />} />
+              <Route path="/knowledge" element={<KnowledgeBasePage />} />
               <Route path="/monitoring" element={<MonitoringPage />} />
               <Route path="/api-docs" element={<ApiDocsPage />} />
               <Route path="/configuration" element={<ConfigurationPage />} />

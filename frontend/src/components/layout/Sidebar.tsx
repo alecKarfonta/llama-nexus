@@ -29,6 +29,7 @@ import {
   CompareArrows as CompareIcon,
   Api as ApiIcon,
   AccountTree as WorkflowIcon,
+  Storage as KnowledgeIcon,
 } from '@mui/icons-material'
 import type { NavigationSection } from '@/types'
 
@@ -61,6 +62,7 @@ const navigationSections: NavigationSection[] = [
       { id: 'batch', label: 'Batch', path: '/batch', icon: 'batch', color: '#ec4899' },
       { id: 'compare', label: 'Compare', path: '/compare', icon: 'compare', color: '#f43f5e' },
       { id: 'workflows', label: 'Workflows', path: '/workflows', icon: 'workflow', color: '#a855f7' },
+      { id: 'knowledge', label: 'Knowledge', path: '/knowledge', icon: 'knowledge', color: '#06b6d4' },
     ],
   },
   {
@@ -101,6 +103,7 @@ const iconMap: Record<string, React.ElementType> = {
   compare: CompareIcon,
   api: ApiIcon,
   workflow: WorkflowIcon,
+  knowledge: KnowledgeIcon,
 }
 
 const getIcon = (iconName: string) => {
