@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
 import {
   Box,
   Grid,
@@ -34,6 +34,7 @@ import {
 import { apiService } from '@/services/api'
 import type { ModelInfo } from '@/types/api'
 import LlamaCppCommitSelector from '@/components/LlamaCppCommitSelector'
+import LogViewer, { LogViewerRef } from '@/components/LogViewer'
 import { settingsManager } from '@/utils/settings'
 
 // Local Config type mirrors backend snake_case fields to avoid camelCase/casing drift
@@ -117,7 +118,7 @@ const DEFAULT_VALUES = {
     rope_scaling: 'linear' as const,
     rope_freq_base: 0,
     rope_freq_scale: 0,
-    n_cpu_moe: 0,
+    n_cpu_moe: 12,
   },
   sampling: {
     temperature: 0.7,
@@ -145,7 +146,7 @@ const DEFAULT_VALUES = {
     no_mmap: false,
     numa: '' as const,
     split_mode: 'layer' as const,
-    tensor_split: '',
+    tensor_split: '2,1',
     main_gpu: 0,
     continuous_batching: false,
     parallel_slots: 1,
@@ -389,6 +390,9 @@ export const DeployPage: React.FC = () => {
   const [selectedApiKey, setSelectedApiKey] = useState<string>('')
   const [availableApiKeys, setAvailableApiKeys] = useState<string[]>([])
   const [newApiKey, setNewApiKey] = useState<string>('')
+  
+  // Ref for LogViewer to control logs
+  const logViewerRef = useRef<LogViewerRef>(null)
 
   useEffect(() => {
     const init = async () => {
@@ -606,6 +610,11 @@ export const DeployPage: React.FC = () => {
     if (!config && action !== 'stop') return
     try {
       setActionLoading(action)
+      
+      // Clear logs when restarting
+      if (action === 'restart' && logViewerRef.current) {
+        logViewerRef.current.clearLogs()
+      }
       
       // Convert undefined values to null for proper backend handling
       const configForAction = config ? JSON.parse(JSON.stringify(config, (key, value) => {
@@ -2292,6 +2301,37 @@ export const DeployPage: React.FC = () => {
             }}>
               {commandLine || 'Save configuration to refresh command preview.'}
             </Paper>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Container Logs Section */}
+      {currentModel && currentModel.status === 'loaded' && (
+        <Card sx={{ 
+          borderRadius: 1,
+          boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1)',
+          bgcolor: 'background.paper',
+          mt: 3
+        }}>
+          <CardHeader
+            title="Container Logs"
+            titleTypographyProps={{ 
+              variant: 'h6', 
+              sx: { fontSize: '0.9375rem', fontWeight: 600 } 
+            }}
+            subheader="Real-time logs from the deployed container"
+            subheaderTypographyProps={{ 
+              variant: 'caption', 
+              sx: { fontSize: '0.75rem' } 
+            }}
+          />
+          <CardContent sx={{ pt: 0 }}>
+            <LogViewer 
+              ref={logViewerRef}
+              containerName="llamacpp-api"
+              maxLines={500}
+              height={500}
+            />
           </CardContent>
         </Card>
       )}

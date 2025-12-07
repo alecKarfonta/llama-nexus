@@ -189,6 +189,7 @@ export interface ChatMessage {
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  tokensPerSecond?: number; // Generation speed in tokens per second
 }
 
 export interface ChatCompletionRequest {

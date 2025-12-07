@@ -300,7 +300,7 @@ class LlamaCPPManager:
         # Add default flags that are always enabled
         cmd.extend([
             "--verbose",
-            "--flash-attn"
+            "--flash-attn", "auto"
         ])
         
         return cmd
@@ -375,8 +375,8 @@ class LlamaCPPManager:
                 host_templates_dir: {"bind": "/home/llamacpp/templates", "mode": "ro"}
             },
             environment={
-                "CUDA_VISIBLE_DEVICES": "0",
-                "NVIDIA_VISIBLE_DEVICES": "0",
+                "CUDA_VISIBLE_DEVICES": "0,1",
+                "NVIDIA_VISIBLE_DEVICES": "0,1",
                 "MODEL_NAME": self.config['model']['name'],
                 "MODEL_VARIANT": self.config['model']['variant'],
             },
@@ -453,8 +453,8 @@ class LlamaCPPManager:
             '--network', self.docker_network,
             '-v', 'llama-nexus_gpt_oss_models:/home/llamacpp/models',
             '-v', f'{host_templates_dir}:/home/llamacpp/templates:ro',
-            '-e', 'CUDA_VISIBLE_DEVICES=0',
-            '-e', 'NVIDIA_VISIBLE_DEVICES=0',
+            '-e', 'CUDA_VISIBLE_DEVICES=0,1',
+            '-e', 'NVIDIA_VISIBLE_DEVICES=0,1',
             '-e', f'MODEL_NAME={self.config["model"]["name"]}',
             '-e', f'MODEL_VARIANT={self.config["model"]["variant"]}',
             image_name
@@ -2048,6 +2048,65 @@ async def clear_logs():
     manager.log_buffer.clear()
     return {"message": "Logs cleared"}
 
+@app.get("/api/v1/logs/container")
+async def get_container_logs(lines: int = 100):
+    """Get recent logs from the Docker container"""
+    try:
+        result = subprocess.run(
+            ['docker', 'logs', '--tail', str(lines), manager.container_name],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        logs = (result.stdout + result.stderr).strip().split('\n')
+        return {
+            "success": True,
+            "logs": [{"timestamp": "", "level": "INFO", "message": line} for line in logs if line],
+            "container": manager.container_name
+        }
+    except Exception as e:
+        logger.error(f"Failed to get container logs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/logs/container/stream")
+async def stream_container_logs():
+    """Stream logs from the Docker container using Server-Sent Events"""
+    from fastapi.responses import StreamingResponse
+    
+    async def log_generator():
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'docker', 'logs', '-f', '--tail', '50', manager.container_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT
+            )
+            
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                
+                log_line = line.decode('utf-8').strip()
+                if log_line:
+                    # Format as SSE
+                    yield f"data: {json.dumps({'message': log_line, 'timestamp': datetime.now().isoformat()})}\n\n"
+                
+                await asyncio.sleep(0.01)  # Small delay to prevent overwhelming the client
+                
+        except Exception as e:
+            logger.error(f"Error streaming logs: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        log_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 @app.websocket("/api/v1/logs/stream")
 async def websocket_logs(websocket: WebSocket):
     """Stream logs via WebSocket"""
@@ -2477,13 +2536,97 @@ async def list_models():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/v1/models/local-files")
+async def list_local_model_files():
+    """List all downloaded model files in the models directory"""
+    try:
+        models_dir = Path("/home/llamacpp/models")
+        if not models_dir.exists():
+            return {"success": True, "data": {"files": [], "total_size": 0}, "timestamp": datetime.now().isoformat()}
+        
+        files = []
+        total_size = 0
+        
+        # Walk through the directory
+        for item in models_dir.rglob('*'):
+            if item.is_file():
+                # Filter for model files
+                if item.suffix.lower() in ['.gguf', '.safetensors', '.bin', '.pth', '.pt']:
+                    stat = item.stat()
+                    files.append({
+                        "name": item.name,
+                        "path": str(item.relative_to(models_dir)),
+                        "full_path": str(item),
+                        "size": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        "extension": item.suffix
+                    })
+                    total_size += stat.st_size
+        
+        # Sort by modified date (newest first)
+        files.sort(key=lambda x: x['modified'], reverse=True)
+        
+        logger.info(f"Found {len(files)} local model files, total size: {total_size / (1024**3):.2f} GB")
+        return {
+            "success": True, 
+            "data": {
+                "files": files,
+                "total_size": total_size,
+                "total_count": len(files)
+            }, 
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error listing local model files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/v1/models/local-files")
+async def delete_local_model_file(file_path: str):
+    """Delete a model file from the local filesystem"""
+    try:
+        models_dir = Path("/home/llamacpp/models")
+        # Resolve the full path and ensure it's within models_dir
+        full_path = (models_dir / file_path).resolve()
+        
+        # Security check: ensure the path is within models directory
+        if not str(full_path).startswith(str(models_dir.resolve())):
+            raise HTTPException(status_code=403, detail="Access denied: path outside models directory")
+        
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        if not full_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+        
+        # Get file info before deletion
+        file_size = full_path.stat().st_size
+        file_name = full_path.name
+        
+        # Delete the file
+        full_path.unlink()
+        
+        logger.info(f"Deleted model file: {file_name} ({file_size / (1024**3):.2f} GB)")
+        return {
+            "success": True,
+            "data": {
+                "deleted_file": file_name,
+                "size_freed": file_size
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting model file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/v1/models/repo-files")
 async def list_repo_files(repo_id: str, revision: str = "main"):
-    """List available .gguf files in a HuggingFace model repository.
+    """List available model files in a HuggingFace model repository.
 
     Uses the Hugging Face Hub API to enumerate files from the specified repo
-    and returns only filenames ending with .gguf. This helps the frontend
-    present valid choices and avoid 404s from incorrect filenames.
+    and returns filenames ending with supported extensions (.gguf, .safetensors, .bin, .pth, .pt).
+    This helps the frontend present valid choices and avoid 404s from incorrect filenames.
     """
     try:
         # Validate repo_id format
@@ -2494,9 +2637,11 @@ async def list_repo_files(repo_id: str, revision: str = "main"):
         try:
             logger.info(f"Listing repo files for {repo_id} with token: {'*****' if os.getenv('HUGGINGFACE_TOKEN') else 'None'}")
             files = api.list_repo_files(repo_id=repo_id, revision=revision, repo_type="model")
-            gguf_files = [f for f in files if f.lower().endswith(".gguf")]
-            logger.info(f"Found {len(gguf_files)} GGUF files in repo {repo_id}")
-            return {"success": True, "data": {"files": gguf_files}, "timestamp": datetime.now().isoformat()}
+            # Support multiple model formats, not just GGUF
+            model_extensions = ('.gguf', '.safetensors', '.bin', '.pth', '.pt')
+            model_files = [f for f in files if f.lower().endswith(model_extensions)]
+            logger.info(f"Found {len(model_files)} model files in repo {repo_id}")
+            return {"success": True, "data": {"files": model_files}, "timestamp": datetime.now().isoformat()}
         except Exception as e:
             logger.error(f"Error listing repo files for {repo_id}: {str(e)}")
             # Surface clear error up to the client; do not suppress
@@ -2514,8 +2659,10 @@ async def download_model(payload: Dict[str, Any]):
     filename = payload.get("filename")
     if not repo_id or not filename:
         raise HTTPException(status_code=400, detail="'repositoryId' and 'filename' are required")
-    if not str(filename).endswith('.gguf'):
-        raise HTTPException(status_code=400, detail="filename must end with .gguf")
+    # Support multiple model formats
+    supported_extensions = ('.gguf', '.safetensors', '.bin', '.pth', '.pt')
+    if not str(filename).lower().endswith(supported_extensions):
+        raise HTTPException(status_code=400, detail=f"Only files with extensions {supported_extensions} are supported")
     try:
         rec = await download_manager.start_download(repo_id=repo_id, filename=filename)
         return {"success": True, "data": asdict(rec), "timestamp": datetime.now().isoformat()}

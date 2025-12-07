@@ -11,14 +11,21 @@ HOST=${HOST:-"0.0.0.0"}
 PORT=${PORT:-"8080"}
 API_KEY=${API_KEY:-"placeholder-api-key"}
 
-# Model paths - determine repository based on model name
-if [[ "$MODEL_NAME" == "gpt-oss-120b" ]]; then
-    MODEL_REPO="unsloth/gpt-oss-120b-GGUF"
-elif [[ "$MODEL_NAME" == "gpt-oss-20b" ]]; then
-    MODEL_REPO="unsloth/gpt-oss-20b-GGUF"
-else
-    MODEL_REPO="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+# Model paths - determine repository based on model name or use provided MODEL_REPO
+if [ -z "$MODEL_REPO" ]; then
+    # Auto-detect repository based on model name if not explicitly provided
+    if [[ "$MODEL_NAME" == "gpt-oss-120b" ]]; then
+        MODEL_REPO="unsloth/gpt-oss-120b-GGUF"
+    elif [[ "$MODEL_NAME" == "gpt-oss-20b" ]]; then
+        MODEL_REPO="ggml-org/models"
+    elif [[ "$MODEL_NAME" == "Qwen_Qwen3-VL-4B-Thinking" ]]; then
+        MODEL_REPO="bartowski/Qwen_Qwen3-VL-4B-Thinking-GGUF"
+    else
+        MODEL_REPO="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+    fi
 fi
+
+echo "📦 Model Repository: $MODEL_REPO"
 
 # Try different filename patterns to find the actual model file
 # Check multiple patterns for existing files, including multi-part files
@@ -33,6 +40,7 @@ patterns=(
     "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}.gguf"  # In variant subdirectory
     "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"  # Multi-part in subdirectory
     "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00003.gguf"  # 3-part in subdirectory
+    "gpt-oss-20b-GGUF/${MODEL_NAME}-${MODEL_VARIANT}.gguf" # Specific pattern for gpt-oss-20b
 )
 
 for pattern in "${patterns[@]}"; do
@@ -51,7 +59,7 @@ if [ -z "$MODEL_PATH" ]; then
     if [[ "$MODEL_NAME" == "gpt-oss-120b" ]]; then
         MODEL_FILE="${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"
     elif [[ "$MODEL_NAME" == "gpt-oss-20b" ]]; then
-        MODEL_FILE="${MODEL_NAME}-${MODEL_VARIANT}.gguf"  # Single file for 20b
+        MODEL_FILE="gpt-oss-20b-GGUF/${MODEL_NAME}-${MODEL_VARIANT}.gguf"  # Subdirectory in models repo
     else
         MODEL_FILE="${MODEL_NAME}-${MODEL_VARIANT}.gguf"
     fi
@@ -102,6 +110,38 @@ if [ ! -f "$MODEL_PATH" ]; then
     exit 1
 fi
 
+# Download multimodal projection file if specified (for vision-language models)
+if [ -n "$MMPROJ_FILE" ]; then
+    MMPROJ_PATH="/home/llamacpp/models/${MMPROJ_FILE}"
+    if [ ! -f "$MMPROJ_PATH" ]; then
+        echo "📥 Downloading multimodal projection file for vision support..."
+        echo "   File: $MMPROJ_FILE"
+        
+        cd /home/llamacpp/models
+        python3 -c "
+import os
+os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
+from huggingface_hub import hf_hub_download
+
+print('Downloading mmproj file...')
+hf_hub_download(
+    repo_id='${MODEL_REPO}',
+    filename='${MMPROJ_FILE}',
+    local_dir='.',
+    local_dir_use_symlinks=False
+)
+print('Download completed!')
+"
+        
+        if [ $? -ne 0 ]; then
+            echo "❌ Failed to download mmproj file"
+            exit 1
+        fi
+    else
+        echo "✅ Multimodal projection file already exists: $MMPROJ_PATH"
+    fi
+fi
+
 echo "🔧 Starting llama.cpp server..."
 echo "   Model: $MODEL_PATH"
 
@@ -120,10 +160,28 @@ if [ $# -eq 0 ]; then
         "--api-key" "$API_KEY"
         "--verbose"
         "--metrics" 
-        "--embeddings"
         "--flash-attn" "auto"
         "--cont-batching"
     )
+    
+    # Add embeddings flag only for non-multimodal models (multimodal models don't support it)
+    if [ -z "$MMPROJ_FILE" ]; then
+        CMD_ARGS+=("--embeddings")
+    fi
+
+    # Add special parameters for Qwen3-VL-4B-Thinking model (reasoning model)
+    if [[ "$MODEL_NAME" == "Qwen_Qwen3-VL-4B-Thinking" ]]; then
+        CMD_ARGS+=("--reasoning-format" "deepseek")
+        # Skip warmup to avoid assertion error with multimodal reasoning models
+        CMD_ARGS+=("--no-warmup")
+        echo "✨ Enabled reasoning mode for Qwen3-VL-4B-Thinking"
+    fi
+
+    # Add multimodal projection file if specified (for vision-language models)
+    if [ -n "$MMPROJ_FILE" ] && [ -f "/home/llamacpp/models/${MMPROJ_FILE}" ]; then
+        CMD_ARGS+=("--mmproj" "/home/llamacpp/models/${MMPROJ_FILE}")
+        echo "🖼️  Enabled vision support with multimodal projection"
+    fi
 
     # Add template if it exists
     if [[ -f "$TEMPLATE_PATH" ]]; then

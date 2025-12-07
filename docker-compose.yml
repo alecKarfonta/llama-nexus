@@ -8,12 +8,14 @@ services:
     ports:
       - "8700:8700"    # Management API port
     environment:
-      # Default LlamaCPP configuration - Native MXFP4
-      - MODEL_NAME=gpt-oss-20b
-      - MODEL_VARIANT=MXFP4
+      # Default LlamaCPP configuration - Qwen3-VL-4B-Thinking
+      - MODEL_NAME=Qwen_Qwen3-VL-4B-Thinking
+      - MODEL_VARIANT=Q4_K_M
+      - MODEL_REPO=bartowski/Qwen_Qwen3-VL-4B-Thinking-GGUF
+      - MMPROJ_FILE=mmproj-Qwen_Qwen3-VL-4B-Thinking-f16.gguf
       # Host path for chat templates so backend can mount it into the managed container
       - TEMPLATES_HOST_DIR=/home/alec/git/llama-nexus/chat-templates
-      - CONTEXT_SIZE=128000
+      - CONTEXT_SIZE=40960
       - GPU_LAYERS=999
       - TEMPERATURE=0.7
       - TOP_P=0.8
@@ -84,15 +86,17 @@ services:
       - TEMPLATE_DIR=/home/llamacpp/templates
       - CHAT_TEMPLATE=builtin-gpt-oss
       # CUDA optimizations
-      - CUDA_VISIBLE_DEVICES=0
-      - NVIDIA_VISIBLE_DEVICES=0
-      # Model configuration - GPT-OSS-20B GGUF (official pre-converted)
-      - MODEL_NAME=ggml-org/gpt-oss-20b-GGUF
-      - MODEL_VARIANT=mxfp4
-      - CONTEXT_SIZE=128000
+      - CUDA_VISIBLE_DEVICES=0,1
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      # Model configuration - Qwen3-VL-4B-Thinking (Vision-Language with Reasoning)
+      - MODEL_NAME=Qwen_Qwen3-VL-4B-Thinking
+      - MODEL_VARIANT=Q4_K_M
+      - MODEL_REPO=bartowski/Qwen_Qwen3-VL-4B-Thinking-GGUF
+      - MMPROJ_FILE=mmproj-Qwen_Qwen3-VL-4B-Thinking-f16.gguf
+      - CONTEXT_SIZE=40960
       - GPU_LAYERS=999
-      - TEMPERATURE=0.7
-      - TOP_P=0.8
+      - TEMPERATURE=0.6
+      - TOP_P=0.95
       - TOP_K=20
       - API_KEY=placeholder-api-key
       - BATCH_SIZE=2048
@@ -115,7 +119,7 @@ services:
     container_name: llamacpp-frontend
     hostname: frontend
     ports:
-      - "3000:80"    # Frontend web interface
+      - "3002:80"    # Frontend web interface
     depends_on:
       - backend-api
       - llamacpp-api
@@ -136,6 +140,8 @@ services:
       context: .
       dockerfile: Dockerfile.vllm
     container_name: vllm-api
+    profiles: 
+      - vllm
     hostname: vllm
     ports:
       - "8601:8080"    # vLLM API server port (different from llamacpp)
@@ -158,8 +164,8 @@ services:
       # HuggingFace token for downloads
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
       # CUDA optimizations
-      - CUDA_VISIBLE_DEVICES=0
-      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0,1
+      - NVIDIA_VISIBLE_DEVICES=0,1
     volumes:
       - vllm_models:/home/vllm/models
       - vllm_cache:/home/vllm/.cache

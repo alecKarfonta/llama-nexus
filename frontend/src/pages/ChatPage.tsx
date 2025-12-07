@@ -81,10 +81,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     return defaultSettings;
   };
 
+  const [currentModelName, setCurrentModelName] = useState<string>('AI Model')
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content: 'Hello! I\'m your AI assistant powered by Qwen3-Coder. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.'
+      content: 'Hello! I\'m your AI assistant. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.'
     }
   ])
   const [input, setInput] = useState('')
@@ -115,6 +116,29 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   useEffect(() => {
     scrollToBottom()
   }, [messages])
+
+  // Fetch current model info on mount
+  useEffect(() => {
+    const fetchCurrentModel = async () => {
+      try {
+        const modelInfo = await apiService.getCurrentModel()
+        if (modelInfo && modelInfo.name) {
+          setCurrentModelName(modelInfo.name)
+          // Update the initial greeting message with the model name
+          setMessages([
+            {
+              role: 'assistant',
+              content: `Hello! I'm your AI assistant powered by ${modelInfo.name}. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.`
+            }
+          ])
+        }
+      } catch (error) {
+        console.warn('Failed to fetch current model:', error)
+        // Keep default generic message if model fetch fails
+      }
+    }
+    fetchCurrentModel()
+  }, [])
 
   const handleSendMessage = async () => {
     if (!input.trim() || isLoading) return
@@ -254,7 +278,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const handleStreamingResponse = async (request: ChatCompletionRequest) => {
     const assistantMessage: ChatMessage = {
       role: 'assistant',
-      content: ''
+      content: '',
+      tokensPerSecond: undefined
     }
     setMessages((prev: ChatMessage[]) => [...prev, assistantMessage])
 
@@ -274,12 +299,34 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
           console.log('Received stream chunk:', value)
 
-          if (value.choices?.[0]?.delta?.content) {
+          // Check for content in multiple locations
+          // reasoning_content: thinking tokens from reasoning models (DeepSeek, Qwen, etc.)
+          // content: actual response content
+          // __verbose.content: llama.cpp verbose output
+          const contentDelta = value.choices?.[0]?.delta?.content || 
+                              value.choices?.[0]?.delta?.reasoning_content ||
+                              value.__verbose?.content ||
+                              ''
+          
+          if (contentDelta) {
             setMessages((prev: ChatMessage[]) => {
               const newMessages = [...prev]
               const lastMessage = newMessages[newMessages.length - 1]
               if (lastMessage.role === 'assistant') {
-                lastMessage.content += value.choices[0].delta.content
+                lastMessage.content += contentDelta
+              }
+              return newMessages
+            })
+          }
+
+          // Extract timing information if available
+          const timings = value.timings || value.__verbose?.timings
+          if (timings?.predicted_per_second) {
+            setMessages((prev: ChatMessage[]) => {
+              const newMessages = [...prev]
+              const lastMessage = newMessages[newMessages.length - 1]
+              if (lastMessage.role === 'assistant') {
+                lastMessage.tokensPerSecond = timings.predicted_per_second
               }
               return newMessages
             })
@@ -378,7 +425,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     setMessages([
       {
         role: 'assistant',
-        content: 'Hello! I\'m your AI assistant powered by Qwen3-Coder. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.'
+        content: `Hello! I'm your AI assistant powered by ${currentModelName}. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.`
       }
     ])
     setError(null)
@@ -456,7 +503,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               mb: { xs: 1, sm: 2 }
             }}
           >
-            Interact with your AI assistant powered by Qwen3-Coder
+            Interact with your AI assistant powered by {currentModelName}
           </Typography>
         </Box>
         <Box>
@@ -817,6 +864,14 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     size="small"
                     color={getRoleColor(message.role) as 'primary' | 'secondary' | 'info'}
                   />
+                  {message.tokensPerSecond && message.role === 'assistant' && (
+                    <Chip
+                      label={`${message.tokensPerSecond.toFixed(2)} tok/s`}
+                      size="small"
+                      variant="outlined"
+                      sx={{ ml: 1, fontSize: '0.7rem', height: 20 }}
+                    />
+                  )}
                   <Tooltip title="Copy to clipboard">
                     <IconButton
                       size="small"

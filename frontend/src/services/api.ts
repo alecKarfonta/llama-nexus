@@ -210,7 +210,7 @@ class ApiService {
 
   // Model Management APIs
   async getModels(): Promise<ModelInfo[]> {
-    const response = await this.client.get('/v1/models');
+    const response = await this.backendClient.get('/v1/models');
     const apiData = response.data;
     
     // Check if we have data in the expected format from our backend
@@ -287,12 +287,12 @@ class ApiService {
 
 
   async getCurrentModel(): Promise<any> {
-    const response = await this.client.get('/v1/models/current');
+    const response = await this.backendClient.get('/v1/models/current');
     return response.data;
   }
 
   async listRepoFiles(repoId: string, revision: string = 'main'): Promise<string[]> {
-    const response = await this.client.get<ApiResponse<{ files: string[] }>>('/v1/models/repo-files', {
+    const response = await this.backendClient.get<ApiResponse<{ files: string[] }>>('/v1/models/repo-files', {
       params: { repo_id: repoId, revision }
     });
     const files = (response.data as any)?.data?.files || [];
@@ -300,18 +300,30 @@ class ApiService {
   }
 
   async downloadModel(request: ModelDownloadRequest): Promise<ModelDownload> {
-    const response = await this.client.post<ApiResponse<ModelDownload>>('/v1/models/download', request);
+    const response = await this.backendClient.post<ApiResponse<ModelDownload>>('/v1/models/download', request);
     return this.normalizeModelDownload(response.data.data);
   }
 
   async getModelDownloads(): Promise<ModelDownload[]> {
-    const response = await this.client.get<ApiResponse<ModelDownload[]>>('/v1/models/downloads');
+    const response = await this.backendClient.get<ApiResponse<ModelDownload[]>>('/v1/models/downloads');
     const data = response.data.data || [];
     return (data as any[]).map((item) => this.normalizeModelDownload(item));
   }
 
   async cancelModelDownload(modelId: string): Promise<void> {
-    await this.client.delete(`/v1/models/downloads/${modelId}`);
+    await this.backendClient.delete(`/v1/models/downloads/${modelId}`);
+  }
+
+  async getLocalModelFiles(): Promise<{ files: any[]; total_size: number; total_count: number }> {
+    const response = await this.backendClient.get<ApiResponse<any>>('/v1/models/local-files');
+    return response.data.data || { files: [], total_size: 0, total_count: 0 };
+  }
+
+  async deleteLocalModelFile(filePath: string): Promise<{ deleted_file: string; size_freed: number }> {
+    const response = await this.backendClient.delete<ApiResponse<any>>('/v1/models/local-files', {
+      params: { file_path: filePath }
+    });
+    return response.data.data;
   }
 
   // Service Configuration APIs
