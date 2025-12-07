@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, ChangeEvent, KeyboardEvent } from 'react'
+import React, { useState, useRef, useEffect, useCallback, ChangeEvent, KeyboardEvent } from 'react'
 import {
   Box,
   Card,
@@ -18,6 +18,8 @@ import {
   Collapse,
   Divider,
   CircularProgress,
+  Badge,
+  LinearProgress,
 } from '@mui/material'
 import {
   Send as SendIcon,
@@ -29,10 +31,15 @@ import {
   Build as ToolIcon,
   CheckBox as CheckBoxIcon,
   CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon,
+  History as HistoryIcon,
+  Save as SaveIcon,
+  Add as AddIcon,
 } from '@mui/icons-material'
 import { apiService } from '@/services/api'
 import { ToolsService } from '@/services/tools'
-import type { ChatMessage, ChatCompletionRequest, Tool, ToolCall } from '@/types/api'
+import { MarkdownRenderer } from '@/components/chat'
+import { ConversationSidebar } from '@/components/chat/ConversationSidebar'
+import type { ChatMessage, ChatCompletionRequest, Tool, ToolCall, ConversationListItem } from '@/types/api'
 
 interface ChatPageProps {}
 
@@ -95,6 +102,17 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const [error, setError] = useState(null)
   const [availableTools] = useState(ToolsService.getAvailableTools())
   
+  // Conversation management state
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
+  const [conversationTitle, setConversationTitle] = useState<string>('New Conversation')
+  const [isSaving, setIsSaving] = useState(false)
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  
+  // Context window tracking state
+  const [tokenCount, setTokenCount] = useState({ prompt: 0, total: 0 })
+  const maxContextTokens = 128000 // Default, can be made configurable
+  
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -112,6 +130,112 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       setSettings(newSettings); // Still update state even if save fails
     }
   };
+
+  // Estimate token count (rough approximation: ~4 chars per token)
+  const estimateTokenCount = useCallback((msgs: ChatMessage[]) => {
+    let totalChars = 0;
+    msgs.forEach(msg => {
+      totalChars += (msg.content || '').length;
+      if (msg.reasoning_content) {
+        totalChars += msg.reasoning_content.length;
+      }
+    });
+    return Math.ceil(totalChars / 4);
+  }, []);
+
+  // Save conversation to backend
+  const saveConversation = useCallback(async (forceNew: boolean = false) => {
+    if (messages.length <= 1) return; // Don't save empty conversations
+    
+    setIsSaving(true);
+    try {
+      const conversationData = {
+        title: conversationTitle || 'New Conversation',
+        messages: messages.map(msg => ({
+          role: msg.role,
+          content: msg.content,
+          reasoning_content: msg.reasoning_content,
+          tool_calls: msg.tool_calls,
+          tool_call_id: msg.tool_call_id,
+        })),
+        model: currentModelName,
+        settings: {
+          temperature: settings.temperature,
+          topP: settings.topP,
+          topK: settings.topK,
+          maxTokens: settings.maxTokens,
+        },
+      };
+
+      if (currentConversationId && !forceNew) {
+        // Update existing conversation
+        await apiService.updateConversation(currentConversationId, conversationData);
+      } else {
+        // Create new conversation
+        // Auto-generate title from first user message
+        const firstUserMsg = messages.find(m => m.role === 'user');
+        if (firstUserMsg && conversationTitle === 'New Conversation') {
+          conversationData.title = firstUserMsg.content.slice(0, 50) + (firstUserMsg.content.length > 50 ? '...' : '');
+          setConversationTitle(conversationData.title);
+        }
+        
+        const newConversation = await apiService.createConversation(conversationData);
+        setCurrentConversationId(newConversation.id);
+      }
+      setHasUnsavedChanges(false);
+    } catch (err) {
+      console.error('Failed to save conversation:', err);
+      setError('Failed to save conversation');
+    } finally {
+      setIsSaving(false);
+    }
+  }, [messages, conversationTitle, currentModelName, settings, currentConversationId]);
+
+  // Load a conversation from the sidebar
+  const handleSelectConversation = useCallback(async (conversation: ConversationListItem) => {
+    try {
+      const fullConversation = await apiService.getConversation(conversation.id);
+      setCurrentConversationId(fullConversation.id);
+      setConversationTitle(fullConversation.title);
+      setMessages(fullConversation.messages.map((msg: any) => ({
+        role: msg.role,
+        content: msg.content,
+        reasoning_content: msg.reasoning_content,
+        tool_calls: msg.tool_calls,
+        tool_call_id: msg.tool_call_id,
+      })));
+      setHasUnsavedChanges(false);
+      setError(null);
+    } catch (err) {
+      console.error('Failed to load conversation:', err);
+      setError('Failed to load conversation');
+    }
+  }, []);
+
+  // Start a new conversation
+  const handleNewConversation = useCallback(() => {
+    setCurrentConversationId(null);
+    setConversationTitle('New Conversation');
+    setMessages([
+      {
+        role: 'assistant',
+        content: `Hello! I'm your AI assistant powered by ${currentModelName}. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.`
+      }
+    ]);
+    setHasUnsavedChanges(false);
+    setError(null);
+  }, [currentModelName]);
+
+  // Update token count when messages change
+  useEffect(() => {
+    const count = estimateTokenCount(messages);
+    setTokenCount({ prompt: count, total: count });
+    
+    // Mark as having unsaved changes when messages change (except initial load)
+    if (messages.length > 1) {
+      setHasUnsavedChanges(true);
+    }
+  }, [messages, estimateTokenCount]);
 
   useEffect(() => {
     scrollToBottom()
@@ -279,6 +403,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     const assistantMessage: ChatMessage = {
       role: 'assistant',
       content: '',
+      reasoning_content: '',
       tokensPerSecond: undefined
     }
     setMessages((prev: ChatMessage[]) => [...prev, assistantMessage])
@@ -300,11 +425,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           console.log('Received stream chunk:', value)
 
           // Check for content in multiple locations
-          // reasoning_content: thinking tokens from reasoning models (DeepSeek, Qwen, etc.)
           // content: actual response content
           // __verbose.content: llama.cpp verbose output
           const contentDelta = value.choices?.[0]?.delta?.content || 
-                              value.choices?.[0]?.delta?.reasoning_content ||
                               value.__verbose?.content ||
                               ''
           
@@ -332,6 +455,18 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             })
           }
 
+          // Handle reasoning/thinking content (for models like DeepSeek R1, QwQ)
+          if (value.choices?.[0]?.delta?.reasoning_content) {
+            setMessages((prev: ChatMessage[]) => {
+              const newMessages = [...prev]
+              const lastMessage = newMessages[newMessages.length - 1]
+              if (lastMessage.role === 'assistant') {
+                lastMessage.reasoning_content = (lastMessage.reasoning_content || '') + value.choices[0].delta.reasoning_content
+              }
+              return newMessages
+            })
+          }
+
           if (value.choices?.[0]?.delta?.tool_calls) {
             accumulatedToolCalls.push(...value.choices[0].delta.tool_calls)
           }
@@ -351,7 +486,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
   const handleNonStreamingResponse = async (request: ChatCompletionRequest) => {
     const response = await createChatCompletion(request)
-    const assistantMessage = response.choices[0].message
+    const assistantMessage: ChatMessage = {
+      ...response.choices[0].message,
+      // Include reasoning_content if present in the response
+      reasoning_content: response.choices[0].message.reasoning_content
+    }
 
     setMessages((prev: ChatMessage[]) => [...prev, assistantMessage])
 
@@ -482,31 +621,89 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     }}>
       {/* Header */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-        <Box>
-          <Typography 
-            variant="h1" 
-            sx={{ 
-              fontWeight: 700, 
-              color: 'text.primary',
-              mb: 0.5,
-              fontSize: { xs: '1.25rem', sm: '1.5rem' },
-              lineHeight: 1
-            }}
-          >
-            Chat with AI Model
-          </Typography>
-          <Typography 
-            variant="body2" 
-            color="text.secondary" 
-            sx={{ 
-              fontSize: '0.8125rem',
-              mb: { xs: 1, sm: 2 }
-            }}
-          >
-            Interact with your AI assistant powered by {currentModelName}
-          </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Tooltip title="Conversation History">
+            <IconButton 
+              onClick={() => setSidebarOpen(true)}
+              size="small"
+              sx={{
+                bgcolor: sidebarOpen ? 'action.selected' : 'transparent',
+                '&:hover': { bgcolor: 'action.hover' }
+              }}
+            >
+              <Badge badgeContent={hasUnsavedChanges ? 1 : 0} color="warning" variant="dot">
+                <HistoryIcon fontSize="small" />
+              </Badge>
+            </IconButton>
+          </Tooltip>
+          <Box>
+            <Typography 
+              variant="h1" 
+              sx={{ 
+                fontWeight: 700, 
+                color: 'text.primary',
+                mb: 0.5,
+                fontSize: { xs: '1.25rem', sm: '1.5rem' },
+                lineHeight: 1
+              }}
+            >
+              {conversationTitle}
+            </Typography>
+            <Typography 
+              variant="body2" 
+              color="text.secondary" 
+              sx={{ 
+                fontSize: '0.8125rem',
+              }}
+            >
+              {currentModelName} | ~{tokenCount.prompt.toLocaleString()} tokens
+            </Typography>
+          </Box>
         </Box>
-        <Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          {/* Context window progress bar */}
+          <Tooltip title={`Context: ${tokenCount.prompt.toLocaleString()} / ${maxContextTokens.toLocaleString()} tokens (${((tokenCount.prompt / maxContextTokens) * 100).toFixed(1)}%)`}>
+            <Box sx={{ width: 100, mr: 1 }}>
+              <LinearProgress 
+                variant="determinate" 
+                value={Math.min((tokenCount.prompt / maxContextTokens) * 100, 100)}
+                sx={{
+                  height: 6,
+                  borderRadius: 3,
+                  bgcolor: 'action.hover',
+                  '& .MuiLinearProgress-bar': {
+                    bgcolor: tokenCount.prompt > maxContextTokens * 0.9 ? 'error.main' : 
+                             tokenCount.prompt > maxContextTokens * 0.7 ? 'warning.main' : 'primary.main'
+                  }
+                }}
+              />
+            </Box>
+          </Tooltip>
+          <Tooltip title={hasUnsavedChanges ? "Save Conversation" : "Conversation Saved"}>
+            <span>
+              <IconButton 
+                onClick={() => saveConversation()}
+                size="small"
+                disabled={isSaving || !hasUnsavedChanges}
+                sx={{
+                  '&:hover': { bgcolor: 'action.hover' }
+                }}
+              >
+                {isSaving ? <CircularProgress size={16} /> : <SaveIcon fontSize="small" />}
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="New Conversation">
+            <IconButton 
+              onClick={handleNewConversation}
+              size="small"
+              sx={{
+                '&:hover': { bgcolor: 'action.hover' }
+              }}
+            >
+              <AddIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Chat Settings">
             <IconButton 
               onClick={() => setShowSettings(!showSettings)}
@@ -882,9 +1079,10 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     </IconButton>
                   </Tooltip>
                 </Box>
-                <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
-                  {message.content}
-                </Typography>
+                <MarkdownRenderer 
+                  content={message.content} 
+                  reasoning_content={message.reasoning_content}
+                />
               </Paper>
             </Box>
           ))}
@@ -960,6 +1158,15 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           </Button>
         </Box>
       </Paper>
+
+      {/* Conversation Sidebar */}
+      <ConversationSidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        onSelectConversation={handleSelectConversation}
+        onNewConversation={handleNewConversation}
+        currentConversationId={currentConversationId || undefined}
+      />
     </Box>
   )
 }

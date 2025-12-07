@@ -175,6 +175,74 @@ const DEFAULT_VALUES = {
   },
 };
 
+// Parameter Presets for different use cases
+interface ParameterPreset {
+  name: string;
+  description: string;
+  category: 'coding' | 'creative' | 'balanced' | 'precise';
+  sampling: Partial<Config['sampling']>;
+  performance?: Partial<Config['performance']>;
+}
+
+const PARAMETER_PRESETS: ParameterPreset[] = [
+  {
+    name: 'Balanced',
+    description: 'Good general-purpose settings for most tasks',
+    category: 'balanced',
+    sampling: {
+      temperature: 0.7,
+      top_p: 0.8,
+      top_k: 20,
+      min_p: 0.03,
+      repeat_penalty: 1.05,
+      frequency_penalty: 0.3,
+      presence_penalty: 0.2,
+    },
+  },
+  {
+    name: 'Coding',
+    description: 'Optimized for code generation with higher precision',
+    category: 'coding',
+    sampling: {
+      temperature: 0.2,
+      top_p: 0.95,
+      top_k: 40,
+      min_p: 0.05,
+      repeat_penalty: 1.1,
+      frequency_penalty: 0.1,
+      presence_penalty: 0.0,
+    },
+  },
+  {
+    name: 'Creative',
+    description: 'Higher creativity for storytelling and brainstorming',
+    category: 'creative',
+    sampling: {
+      temperature: 1.0,
+      top_p: 0.9,
+      top_k: 50,
+      min_p: 0.02,
+      repeat_penalty: 1.15,
+      frequency_penalty: 0.5,
+      presence_penalty: 0.5,
+    },
+  },
+  {
+    name: 'Precise',
+    description: 'Maximum determinism for factual and analytical tasks',
+    category: 'precise',
+    sampling: {
+      temperature: 0.1,
+      top_p: 0.5,
+      top_k: 10,
+      min_p: 0.1,
+      repeat_penalty: 1.0,
+      frequency_penalty: 0.0,
+      presence_penalty: 0.0,
+    },
+  },
+];
+
 // LocalStorage key for persisting deployment settings
 const DEPLOY_SETTINGS_KEY = 'llama-nexus-deploy-settings';
 
@@ -393,6 +461,29 @@ export const DeployPage: React.FC = () => {
   
   // Ref for LogViewer to control logs
   const logViewerRef = useRef<LogViewerRef>(null)
+  
+  // Parameter preset selection
+  const [selectedPreset, setSelectedPreset] = useState<string | null>(null)
+  
+  // Apply a parameter preset
+  const applyPreset = (preset: ParameterPreset) => {
+    if (!config) return;
+    
+    setConfig({
+      ...config,
+      sampling: {
+        ...config.sampling,
+        ...preset.sampling,
+      },
+      ...(preset.performance && {
+        performance: {
+          ...config.performance,
+          ...preset.performance,
+        },
+      }),
+    });
+    setSelectedPreset(preset.name);
+  }
 
   useEffect(() => {
     const init = async () => {
@@ -1223,7 +1314,36 @@ export const DeployPage: React.FC = () => {
           bgcolor: 'background.paper'
         }}>
           <CardContent>
-            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Sampling Configuration</Typography>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+              <Typography variant="h6" sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Sampling Configuration</Typography>
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontSize: '0.75rem' }}>
+                  Quick Presets:
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                  {PARAMETER_PRESETS.map((preset) => (
+                    <Tooltip key={preset.name} title={preset.description}>
+                      <Chip
+                        label={preset.name}
+                        size="small"
+                        variant={selectedPreset === preset.name ? 'filled' : 'outlined'}
+                        color={
+                          preset.category === 'coding' ? 'info' :
+                          preset.category === 'creative' ? 'secondary' :
+                          preset.category === 'precise' ? 'success' : 'primary'
+                        }
+                        onClick={() => applyPreset(preset)}
+                        sx={{ 
+                          cursor: 'pointer',
+                          fontWeight: selectedPreset === preset.name ? 600 : 400,
+                          '&:hover': { opacity: 0.8 }
+                        }}
+                      />
+                    </Tooltip>
+                  ))}
+                </Box>
+              </Box>
+            </Box>
             <Grid container spacing={3}>
               <Grid item xs={12} md={6}>
                 <ParameterField

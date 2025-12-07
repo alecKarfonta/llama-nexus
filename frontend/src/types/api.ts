@@ -5,10 +5,11 @@
 
 // Model Management Types
 export interface ModelInfo {
+  id: number | string;
   name: string;
   variant: string;
   size: number; // Size in bytes
-  status: 'available' | 'downloading' | 'loading' | 'error';
+  status: 'available' | 'downloading' | 'loading' | 'error' | 'running' | 'stopped';
   downloadProgress?: number; // 0-100 percentage
   repositoryId?: string; // HuggingFace repository ID
   contextLength?: number;
@@ -18,6 +19,12 @@ export interface ModelInfo {
   license?: string;
   vramRequired?: number; // GB required
   lastModified?: Date;
+  // Additional fields for running models
+  framework?: 'transformers' | 'llama.cpp' | 'vllm' | 'ggml' | 'onnx';
+  port?: number;
+  latency?: string;
+  memory?: string;
+  path?: string;
 }
 
 export interface ModelDownload {
@@ -189,6 +196,8 @@ export interface ChatMessage {
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  // Reasoning model support (e.g., DeepSeek R1, QwQ)
+  reasoning_content?: string;
   tokensPerSecond?: number; // Generation speed in tokens per second
 }
 
@@ -235,6 +244,7 @@ export interface ChatCompletionChunk {
     delta: {
       role?: string;
       content?: string;
+      reasoning_content?: string;
       tool_calls?: ToolCall[];
     };
     finish_reason: 'stop' | 'length' | 'content_filter' | 'tool_calls' | null;
@@ -287,6 +297,73 @@ export interface TokenUsageData {
   requests: number;
 }
 
+// Conversation Storage Types
+export interface Conversation {
+  id: string;
+  title: string;
+  model?: string;
+  created_at: string;
+  updated_at: string;
+  is_archived: boolean;
+  messages: ConversationMessage[];
+  metadata?: Record<string, any>;
+}
+
+export interface ConversationMessage {
+  id: number;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  name?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+  reasoning_content?: string;
+  created_at: string;
+  metadata?: Record<string, any>;
+}
+
+export interface ConversationListItem {
+  id: string;
+  title: string;
+  model?: string;
+  created_at: string;
+  updated_at: string;
+  is_archived: boolean;
+  message_count: number;
+  last_message?: string;
+}
+
+export interface ConversationListResponse {
+  conversations: ConversationListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface ConversationStats {
+  active_conversations: number;
+  archived_conversations: number;
+  total_conversations: number;
+  total_messages: number;
+  models_used: { model: string; count: number }[];
+  first_conversation?: string;
+}
+
+// VRAM Estimation Types
+export interface VRAMEstimate {
+  model_vram_gb: number;
+  kv_cache_gb: number;
+  total_vram_gb: number;
+  breakdown: {
+    weights: number;
+    kv_cache: number;
+    compute_buffer: number;
+    overhead: number;
+  };
+  recommendation: string;
+  fits_in_vram: boolean;
+}
+
 // Built-in example tools for testing
 export interface WeatherQuery {
   location: string;
@@ -315,4 +392,127 @@ export interface LlamaCppCommitsResponse {
   current_commit: string;
   releases: LlamaCppCommit[];
   recent_commits: LlamaCppCommit[];
+}
+
+// Prompt Library Types
+export interface PromptTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  content: string;
+  category: string;
+  tags: string[];
+  variables: string[];
+  is_system_prompt: boolean;
+  is_favorite: boolean;
+  use_count: number;
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+  metadata: Record<string, any>;
+}
+
+export interface PromptCategory {
+  id: string;
+  name: string;
+  description?: string;
+  color: string;
+  icon: string;
+  parent_id?: string;
+  sort_order: number;
+  prompt_count: number;
+}
+
+export interface PromptVersion {
+  id: number;
+  prompt_id: string;
+  version: number;
+  content: string;
+  change_note?: string;
+  created_at: string;
+}
+
+export interface PromptListResponse {
+  prompts: PromptTemplate[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface PromptLibraryStats {
+  total_prompts: number;
+  system_prompts: number;
+  favorites: number;
+  total_uses: number;
+  categories_used: number;
+}
+
+// Model Registry Types
+export interface CachedModel {
+  id: string;
+  repo_id: string;
+  name: string;
+  description?: string;
+  author?: string;
+  downloads: number;
+  likes: number;
+  tags: string[];
+  model_type?: string;
+  license?: string;
+  last_modified?: string;
+  created_at: string;
+  updated_at: string;
+  metadata: Record<string, any>;
+}
+
+export interface ModelVariant {
+  id: number;
+  model_id: string;
+  filename: string;
+  quantization: string;
+  size_bytes?: number;
+  vram_required_mb?: number;
+  quality_score?: number;
+  speed_score?: number;
+  created_at: string;
+}
+
+export interface ModelUsageStats {
+  model_id: string;
+  variant?: string;
+  load_count: number;
+  inference_count: number;
+  total_tokens_generated: number;
+  total_inference_time_ms: number;
+  last_used?: string;
+  name?: string;
+  repo_id?: string;
+}
+
+export interface ModelRating {
+  id: number;
+  model_id: string;
+  variant?: string;
+  rating: number;
+  notes?: string;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelRegistryStats {
+  cached_models: number;
+  total_variants: number;
+  total_loads: number;
+  total_inferences: number;
+  rated_models: number;
+}
+
+export interface CachedModelListResponse {
+  models: CachedModel[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
 }

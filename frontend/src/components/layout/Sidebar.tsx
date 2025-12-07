@@ -22,6 +22,10 @@ import {
   Speed as TestingIcon,
   Insights as MonitoringIcon,
   Description as TemplatesIcon,
+  LibraryBooks as PromptsIcon,
+  Hub as RegistryIcon,
+  Timer as BenchmarkIcon,
+  BatchPrediction as BatchIcon,
 } from '@mui/icons-material'
 import type { NavigationItem, NavigationSection } from '@/types'
 
@@ -73,6 +77,12 @@ const navigationSections: NavigationSection[] = [
         path: '/models',
         icon: 'models',
       },
+      {
+        id: 'registry',
+        label: 'Registry',
+        path: '/registry',
+        icon: 'registry',
+      },
     ],
   },
   {
@@ -92,6 +102,12 @@ const navigationSections: NavigationSection[] = [
         icon: 'templates',
       },
       {
+        id: 'prompts',
+        label: 'Prompts',
+        path: '/prompts',
+        icon: 'prompts',
+      },
+      {
         id: 'deploy',
         label: 'Deploy',
         path: '/deploy',
@@ -102,6 +118,18 @@ const navigationSections: NavigationSection[] = [
         label: 'Testing',
         path: '/testing',
         icon: 'testing',
+      },
+      {
+        id: 'benchmark',
+        label: 'Benchmark',
+        path: '/benchmark',
+        icon: 'benchmark',
+      },
+      {
+        id: 'batch',
+        label: 'Batch',
+        path: '/batch',
+        icon: 'batch',
       },
     ],
   },
@@ -143,6 +171,14 @@ const getIcon = (iconName: string) => {
       return <MonitoringIcon />
     case 'templates':
       return <TemplatesIcon />
+    case 'prompts':
+      return <PromptsIcon />
+    case 'registry':
+      return <RegistryIcon />
+    case 'benchmark':
+      return <BenchmarkIcon />
+    case 'batch':
+      return <BatchIcon />
     default:
       return <DashboardIcon />
   }

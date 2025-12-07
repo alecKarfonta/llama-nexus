@@ -11,6 +11,10 @@ import { ChatPage } from '@/pages/ChatPage'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { TemplatesPage } from '@/pages/TemplatesPage'
 import { TestingPage } from '@/pages/TestingPage'
+import PromptLibraryPage from '@/pages/PromptLibraryPage'
+import ModelRegistryPage from '@/pages/ModelRegistryPage'
+import BenchmarkPage from '@/pages/BenchmarkPage'
+import BatchProcessingPage from '@/pages/BatchProcessingPage'
 
 // Placeholder pages for new routes until we implement them
 const MonitoringPage = () => <Box><h1>Monitoring Page</h1><p>Coming soon...</p></Box>
@@ -49,7 +53,11 @@ function App() {
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/deploy" element={<DeployPage />} />
             <Route path="/templates" element={<TemplatesPage />} />
+            <Route path="/prompts" element={<PromptLibraryPage />} />
+            <Route path="/registry" element={<ModelRegistryPage />} />
             <Route path="/testing" element={<TestingPage />} />
+            <Route path="/benchmark" element={<BenchmarkPage />} />
+            <Route path="/batch" element={<BatchProcessingPage />} />
             <Route path="/monitoring" element={<MonitoringPage />} />
             <Route path="/configuration" element={<ConfigurationPage />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />

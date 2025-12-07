@@ -17,11 +17,46 @@ try:
 except ImportError as e:
     print(f"Error importing token modules: {e}")
     print(f"Current sys.path: {sys.path}")
-    # Create fallback objects to prevent crashes
     token_tracker = None
     
     class TokenUsageMiddleware:
         async def dispatch(self, request, call_next):
             return await call_next(request)
 
-__all__ = ['token_tracker', 'TokenUsageMiddleware']
+try:
+    from .conversation_store import conversation_store
+except ImportError as e:
+    print(f"Error importing conversation_store: {e}")
+    conversation_store = None
+
+try:
+    from .event_bus import event_bus
+except ImportError as e:
+    print(f"Error importing event_bus: {e}")
+    event_bus = None
+
+try:
+    from .model_registry import model_registry
+except ImportError as e:
+    print(f"Error importing model_registry: {e}")
+    model_registry = None
+
+try:
+    from .prompt_library import prompt_library
+except ImportError as e:
+    print(f"Error importing prompt_library: {e}")
+    prompt_library = None
+
+try:
+    from .benchmark import benchmark_runner
+except ImportError as e:
+    print(f"Error importing benchmark: {e}")
+    benchmark_runner = None
+
+try:
+    from .batch_processor import batch_processor
+except ImportError as e:
+    print(f"Error importing batch_processor: {e}")
+    batch_processor = None
+
+__all__ = ['token_tracker', 'TokenUsageMiddleware', 'conversation_store', 'event_bus', 'model_registry', 'prompt_library', 'benchmark_runner', 'batch_processor']

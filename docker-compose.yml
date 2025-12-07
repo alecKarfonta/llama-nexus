@@ -1,4 +1,20 @@
 services:
+  # Redis for event-driven architecture and caching
+  redis:
+    image: redis:7-alpine
+    container_name: llama-nexus-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   # Backend Management API - Controls LlamaCPP
   backend-api:
     build:
@@ -33,7 +49,13 @@ services:
       # Enable colored logging
       - FORCE_COLOR=1
       - TERM=xterm-256color
+      # Redis for event bus and caching
+      - REDIS_URL=redis://redis:6379/0
+      # Database paths for persistent storage
+      - TOKEN_DB_PATH=/data/token_usage.db
+      - CONVERSATION_DB_PATH=/data/conversations.db
     volumes:
+      - backend_data:/data
       - gpt_oss_models:/home/llamacpp/models
       - ./chat-templates:/home/llamacpp/templates:ro
       # Mount llamacpp binaries
@@ -44,11 +66,15 @@ services:
       - .:/home/alec/git/llama-nexus:ro
       # Mount Dockerfile separately as read-write for version management
       - ./Dockerfile:/home/alec/git/llama-nexus/Dockerfile
+      # Conversation storage
+      - conversation_data:/data/conversations
     runtime: nvidia
     shm_size: '16gb'
     depends_on:
       llamacpp-builder:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   # Build container for LlamaCPP binaries
@@ -122,10 +148,10 @@ services:
       - "3002:80"    # Frontend web interface
     depends_on:
       - backend-api
-      - llamacpp-api
+      # llamacpp-api dependency removed - GPU may not always be available
     environment:
-      - VITE_API_BASE_URL=http://192.168.1.77:8600
-      - VITE_BACKEND_URL=http://192.168.1.77:8700
+      - VITE_API_BASE_URL=
+      - VITE_BACKEND_URL=
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/health"]
@@ -185,4 +211,10 @@ volumes:
   vllm_models:
     driver: local
   vllm_cache:
+    driver: local
+  conversation_data:
+    driver: local
+  redis_data:
+    driver: local
+  backend_data:
     driver: local

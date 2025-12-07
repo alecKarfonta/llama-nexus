@@ -42,6 +42,57 @@ except Exception:
         async def dispatch(self, request, call_next):
             return await call_next(request)
 
+# Conversation storage imports
+try:
+    from modules.conversation_store import conversation_store
+except ImportError:
+    try:
+        from conversation_store import conversation_store  # type: ignore
+    except ImportError:
+        conversation_store = None  # type: ignore
+        logger.warning("Conversation store not available")
+
+# Model registry imports
+try:
+    from modules.model_registry import model_registry
+except ImportError:
+    try:
+        from model_registry import model_registry  # type: ignore
+    except ImportError:
+        model_registry = None  # type: ignore
+        logger.warning("Model registry not available")
+
+# Prompt library imports
+try:
+    from modules.prompt_library import prompt_library
+except ImportError:
+    try:
+        from prompt_library import prompt_library  # type: ignore
+    except ImportError:
+        prompt_library = None  # type: ignore
+        logger.warning("Prompt library not available")
+
+# Benchmark runner imports
+try:
+    from modules.benchmark import benchmark_runner, BenchmarkConfig
+except ImportError:
+    try:
+        from benchmark import benchmark_runner, BenchmarkConfig  # type: ignore
+    except ImportError:
+        benchmark_runner = None  # type: ignore
+        BenchmarkConfig = None  # type: ignore
+        logger.warning("Benchmark runner not available")
+
+# Batch processor imports
+try:
+    from modules.batch_processor import batch_processor
+except ImportError:
+    try:
+        from batch_processor import batch_processor  # type: ignore
+    except ImportError:
+        batch_processor = None  # type: ignore
+        logger.warning("Batch processor not available")
+
 # Try to import docker, fallback to subprocess if not available
 try:
     import docker
@@ -366,7 +417,7 @@ class LlamaCPPManager:
         self.docker_container = docker_client.containers.run(
             image=image_name,
             name=self.container_name,
-            command=" ".join(cmd),
+            command=cmd,
             detach=True,
             auto_remove=False,
             network=self.docker_network,
@@ -2144,6 +2195,115 @@ async def websocket_logs(websocket: WebSocket):
         if websocket in manager.websocket_clients:
             manager.websocket_clients.remove(websocket)
 
+
+# General WebSocket endpoint for real-time updates
+_ws_clients: List[WebSocket] = []
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    General WebSocket endpoint for real-time updates.
+    Broadcasts metrics, status changes, download progress, and model events.
+    """
+    await websocket.accept()
+    _ws_clients.append(websocket)
+    
+    try:
+        # Send connection confirmation with current status
+        await websocket.send_json({
+            "type": "connected",
+            "timestamp": datetime.now().isoformat(),
+            "data": {
+                "service_running": manager.running,
+                "model_name": manager.current_model_name if hasattr(manager, 'current_model_name') else None
+            }
+        })
+        
+        # Keep connection alive and periodically send metrics
+        while True:
+            await asyncio.sleep(5)  # Send updates every 5 seconds
+            
+            try:
+                # Gather current metrics
+                metrics_data = {
+                    "cpu": {
+                        "percent": psutil.cpu_percent(),
+                    },
+                    "memory": {
+                        "total_mb": psutil.virtual_memory().total / (1024 * 1024),
+                        "used_mb": psutil.virtual_memory().used / (1024 * 1024),
+                        "percent": psutil.virtual_memory().percent
+                    },
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Try to get GPU info
+                try:
+                    result = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=memory.used,memory.total,utilization.gpu",
+                         "--format=csv,noheader,nounits"],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    if result.returncode == 0:
+                        parts = result.stdout.strip().split(",")
+                        if len(parts) >= 3:
+                            metrics_data["gpu"] = {
+                                "vram_used_mb": float(parts[0].strip()),
+                                "vram_total_mb": float(parts[1].strip()),
+                                "usage_percent": float(parts[2].strip())
+                            }
+                except:
+                    pass  # GPU info not available
+                
+                await websocket.send_json({
+                    "type": "metrics",
+                    "timestamp": datetime.now().isoformat(),
+                    "payload": metrics_data
+                })
+                
+                # Also send status update
+                await websocket.send_json({
+                    "type": "status",
+                    "timestamp": datetime.now().isoformat(),
+                    "payload": {
+                        "running": manager.running,
+                        "model_name": manager.current_model_name if hasattr(manager, 'current_model_name') else None,
+                        "uptime": manager.uptime if hasattr(manager, 'uptime') else 0
+                    }
+                })
+                
+            except Exception as e:
+                logger.warning(f"Error sending metrics via WebSocket: {e}")
+                
+    except WebSocketDisconnect:
+        _ws_clients.remove(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        if websocket in _ws_clients:
+            _ws_clients.remove(websocket)
+
+
+async def broadcast_ws_event(event_type: str, data: dict):
+    """Broadcast an event to all connected WebSocket clients"""
+    message = {
+        "type": event_type,
+        "timestamp": datetime.now().isoformat(),
+        "payload": data
+    }
+    
+    disconnected = []
+    for client in _ws_clients:
+        try:
+            await client.send_json(message)
+        except:
+            disconnected.append(client)
+    
+    for client in disconnected:
+        _ws_clients.remove(client)
+
+
 # Resource monitoring endpoint
 @app.get("/api/v1/resources")
 async def get_resources():
@@ -2679,6 +2839,113 @@ async def list_downloads():
         return {"success": True, "data": downloads, "timestamp": datetime.now().isoformat()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/models/estimate-vram")
+async def estimate_vram(payload: Dict[str, Any]):
+    """
+    Estimate VRAM requirements for a model configuration.
+    
+    Takes model parameters, quantization level, context size, and batch size
+    to calculate approximate VRAM requirements.
+    """
+    try:
+        # Extract parameters with defaults
+        params_b = payload.get("parameters_b", 7.0)  # Model parameters in billions
+        quant_bits = payload.get("quant_bits", 4.0)  # Bits per weight (e.g., 4 for Q4_K_M)
+        context_size = payload.get("context_size", 4096)
+        batch_size = payload.get("batch_size", 1)
+        num_layers = payload.get("num_layers", 32)  # Number of transformer layers
+        head_dim = payload.get("head_dim", 128)  # Head dimension
+        num_kv_heads = payload.get("num_kv_heads", 8)  # Number of KV heads (for GQA)
+        available_vram_gb = payload.get("available_vram_gb", 24.0)
+        
+        # Quantization bits mapping for common formats
+        quant_map = {
+            "F32": 32.0, "F16": 16.0, "BF16": 16.0,
+            "Q8_0": 8.5, "Q6_K": 6.5, "Q5_K_M": 5.5, "Q5_K_S": 5.5,
+            "Q4_K_M": 4.5, "Q4_K_S": 4.5, "Q4_0": 4.0,
+            "Q3_K_M": 3.5, "Q3_K_S": 3.5, "Q2_K": 2.5,
+            "IQ4_XS": 4.25, "IQ3_XXS": 3.0, "IQ2_XXS": 2.0,
+            "MXFP4": 4.5  # Native MXFP4 format
+        }
+        
+        # If quant_bits is a string (quantization name), look it up
+        if isinstance(quant_bits, str):
+            quant_bits = quant_map.get(quant_bits.upper(), 4.5)
+        
+        # Calculate model weights VRAM (in GB)
+        # Formula: params_b * (bits/8) * overhead_factor
+        overhead_factor = 1.1  # 10% overhead for model loading
+        model_vram_gb = params_b * (quant_bits / 8) * overhead_factor
+        
+        # Calculate KV cache VRAM (in GB)
+        # Formula: 2 * num_layers * context_size * batch_size * num_kv_heads * head_dim * 2 (bytes) / 1e9
+        # The "2" at the start is for K and V caches
+        kv_cache_gb = (2 * num_layers * context_size * batch_size * num_kv_heads * head_dim * 2) / 1e9
+        
+        # Compute buffer (temporary activations) - rough estimate
+        # Typically 0.5-1GB for most models
+        compute_buffer_gb = 0.5 + (params_b / 20)  # Scale with model size
+        
+        # Additional overhead (CUDA context, etc.)
+        cuda_overhead_gb = 0.5
+        
+        # Total VRAM
+        total_vram_gb = model_vram_gb + kv_cache_gb + compute_buffer_gb + cuda_overhead_gb
+        
+        # Determine if model fits
+        fits_in_vram = total_vram_gb <= available_vram_gb
+        
+        # Generate recommendation
+        if fits_in_vram:
+            headroom = available_vram_gb - total_vram_gb
+            if headroom > 4:
+                recommendation = f"Model fits comfortably with {headroom:.1f}GB headroom. You could increase context size or use a higher quality quantization."
+            elif headroom > 1:
+                recommendation = f"Model fits with {headroom:.1f}GB headroom. Should work well for typical workloads."
+            else:
+                recommendation = f"Model fits with minimal headroom ({headroom:.1f}GB). Consider reducing context size for stability."
+        else:
+            overage = total_vram_gb - available_vram_gb
+            suggestion_bits = quant_bits * (available_vram_gb / total_vram_gb) * 0.9
+            suggestions = [q for q, b in quant_map.items() if b <= suggestion_bits]
+            suggestion = suggestions[0] if suggestions else "Q2_K"
+            recommendation = f"Model exceeds available VRAM by {overage:.1f}GB. Consider using {suggestion} quantization or reducing context size to {int(context_size * 0.5)}."
+        
+        return {
+            "success": True,
+            "data": {
+                "model_vram_gb": round(model_vram_gb, 2),
+                "kv_cache_gb": round(kv_cache_gb, 2),
+                "compute_buffer_gb": round(compute_buffer_gb, 2),
+                "overhead_gb": round(cuda_overhead_gb, 2),
+                "total_vram_gb": round(total_vram_gb, 2),
+                "available_vram_gb": available_vram_gb,
+                "fits_in_vram": fits_in_vram,
+                "utilization_percent": round((total_vram_gb / available_vram_gb) * 100, 1),
+                "breakdown": {
+                    "weights": round(model_vram_gb, 2),
+                    "kv_cache": round(kv_cache_gb, 2),
+                    "compute_buffer": round(compute_buffer_gb, 2),
+                    "overhead": round(cuda_overhead_gb, 2)
+                },
+                "recommendation": recommendation,
+                "input_parameters": {
+                    "parameters_b": params_b,
+                    "quant_bits": quant_bits,
+                    "context_size": context_size,
+                    "batch_size": batch_size,
+                    "num_layers": num_layers,
+                    "num_kv_heads": num_kv_heads
+                }
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error estimating VRAM: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # --- Chat template management endpoints ---
 @app.get("/v1/templates")
@@ -3297,6 +3564,196 @@ async def start_bfcl_benchmark(
         logger.error(f"Error starting benchmark: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============================================================================
+# Conversation Storage API Endpoints
+# ============================================================================
+
+@app.post("/api/v1/conversations")
+async def create_conversation(
+    title: Optional[str] = None,
+    model: Optional[str] = None
+):
+    """Create a new conversation"""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    try:
+        conversation_id = conversation_store.create_conversation(
+            title=title,
+            model=model
+        )
+        return {"id": conversation_id, "title": title or "New Conversation", "model": model}
+    except Exception as e:
+        logger.error(f"Error creating conversation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/conversations")
+async def list_conversations(
+    include_archived: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+    search: Optional[str] = None
+):
+    """List conversations with pagination and optional search"""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    try:
+        result = conversation_store.list_conversations(
+            include_archived=include_archived,
+            limit=limit,
+            offset=offset,
+            search=search
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error listing conversations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/conversations/stats")
+async def get_conversation_statistics():
+    """Get conversation statistics"""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    try:
+        return conversation_store.get_statistics()
+    except Exception as e:
+        logger.error(f"Error getting statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """Get a conversation by ID with all messages"""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    try:
+        conversation = conversation_store.get_conversation(conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return conversation
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting conversation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/v1/conversations/{conversation_id}")
+async def update_conversation(
+    conversation_id: str,
+    title: Optional[str] = None,
+    model: Optional[str] = None,
+    is_archived: Optional[bool] = None
+):
+    """Update a conversation's properties"""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    try:
+        success = conversation_store.update_conversation(
+            conversation_id=conversation_id,
+            title=title,
+            model=model,
+            is_archived=is_archived
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating conversation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v1/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete a conversation and all its messages"""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    try:
+        success = conversation_store.delete_conversation(conversation_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting conversation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/conversations/{conversation_id}/messages")
+async def add_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    name: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    reasoning_content: Optional[str] = None
+):
+    """Add a message to a conversation"""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    if role not in ['system', 'user', 'assistant', 'tool']:
+        raise HTTPException(status_code=400, detail="Invalid role. Must be: system, user, assistant, or tool")
+    
+    try:
+        message_id = conversation_store.add_message(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            name=name,
+            tool_call_id=tool_call_id,
+            reasoning_content=reasoning_content
+        )
+        return {"id": message_id, "role": role}
+    except Exception as e:
+        logger.error(f"Error adding message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/conversations/{conversation_id}/export")
+async def export_conversation(
+    conversation_id: str,
+    format: str = "json"
+):
+    """Export a conversation to JSON or Markdown format"""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    if format not in ['json', 'markdown']:
+        raise HTTPException(status_code=400, detail="Invalid format. Must be: json or markdown")
+    
+    try:
+        exported = conversation_store.export_conversation(conversation_id, format)
+        if exported is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        content_type = "application/json" if format == "json" else "text/markdown"
+        return {
+            "content": exported,
+            "content_type": content_type,
+            "format": format
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting conversation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# BFCL Benchmark Endpoints
+# ============================================================================
+
 @app.get("/api/v1/benchmark/bfcl")
 async def list_bfcl_benchmarks():
     """List all BFCL benchmarks"""
@@ -3337,6 +3794,1039 @@ async def clear_completed_benchmarks():
         del benchmarks_storage[bid]
     
     return {"status": "success", "cleared": len(to_remove)}
+
+
+# ============================================================================
+# VRAM Estimation Endpoint
+# ============================================================================
+
+@app.post("/api/v1/estimate/vram")
+async def estimate_vram_requirements(request: Request):
+    """
+    Estimate VRAM requirements for a model configuration.
+    
+    Formula based on:
+    - Model weights: params_b * (bits_per_param / 8) * overhead_factor
+    - KV cache: 2 * layers * head_dim * num_heads * ctx_size * batch_size * bytes_per_element
+    - Activation memory: Additional overhead for computation
+    """
+    try:
+        data = await request.json()
+        
+        # Model parameters (in billions)
+        params_b = float(data.get('parameters', 7))  # Default to 7B
+        
+        # Quantization bits (approximate)
+        quant_type = data.get('quantization', 'Q4_K_M')
+        quant_bits = {
+            'Q2_K': 2.5,
+            'Q3_K_S': 3.0,
+            'Q3_K_M': 3.3,
+            'Q3_K_L': 3.5,
+            'Q4_0': 4.0,
+            'Q4_K_S': 4.3,
+            'Q4_K_M': 4.5,
+            'Q5_0': 5.0,
+            'Q5_K_S': 5.3,
+            'Q5_K_M': 5.5,
+            'Q6_K': 6.5,
+            'Q8_0': 8.0,
+            'F16': 16.0,
+            'F32': 32.0,
+            'MXFP4': 4.0,  # Microsoft FP4 format
+        }.get(quant_type.upper(), 4.5)
+        
+        # Context and batch settings
+        ctx_size = int(data.get('context_size', 8192))
+        batch_size = int(data.get('batch_size', 1))
+        
+        # Model architecture estimates (reasonable defaults for transformer models)
+        num_layers = int(data.get('num_layers', 0))
+        if num_layers == 0:
+            # Estimate layers based on model size
+            if params_b <= 3:
+                num_layers = 26
+            elif params_b <= 7:
+                num_layers = 32
+            elif params_b <= 13:
+                num_layers = 40
+            elif params_b <= 20:
+                num_layers = 48
+            elif params_b <= 34:
+                num_layers = 60
+            elif params_b <= 70:
+                num_layers = 80
+            else:
+                num_layers = 96
+        
+        head_dim = int(data.get('head_dim', 128))
+        num_kv_heads = int(data.get('num_kv_heads', 0))
+        if num_kv_heads == 0:
+            # Estimate KV heads (GQA models use fewer)
+            if params_b <= 7:
+                num_kv_heads = 8
+            elif params_b <= 13:
+                num_kv_heads = 8
+            elif params_b <= 34:
+                num_kv_heads = 8
+            else:
+                num_kv_heads = 8
+        
+        # KV cache quantization
+        kv_cache_type = data.get('kv_cache_type', 'f16')
+        kv_bytes = {
+            'f32': 4,
+            'f16': 2,
+            'q8_0': 1,
+            'q4_0': 0.5,
+        }.get(kv_cache_type.lower(), 2)
+        
+        # Calculate model weights VRAM (in GB)
+        model_vram_gb = params_b * (quant_bits / 8) * 1.1  # 10% overhead for tensor structures
+        
+        # Calculate KV cache VRAM (in GB)
+        # KV cache = 2 (K and V) * layers * head_dim * num_kv_heads * ctx_size * batch_size * bytes / 1e9
+        kv_cache_gb = (2 * num_layers * head_dim * num_kv_heads * ctx_size * batch_size * kv_bytes) / 1e9
+        
+        # Activation memory (rough estimate: ~10-20% of model weights for inference)
+        activation_gb = model_vram_gb * 0.15
+        
+        # Total VRAM estimate
+        total_vram_gb = model_vram_gb + kv_cache_gb + activation_gb
+        
+        # Add buffer for CUDA runtime and other overhead
+        cuda_overhead_gb = 0.5
+        total_with_overhead_gb = total_vram_gb + cuda_overhead_gb
+        
+        # Recommendation
+        if total_with_overhead_gb <= 6:
+            recommendation = "Should fit on 8GB GPUs"
+        elif total_with_overhead_gb <= 10:
+            recommendation = "Recommended: 12GB+ GPU"
+        elif total_with_overhead_gb <= 14:
+            recommendation = "Recommended: 16GB+ GPU"
+        elif total_with_overhead_gb <= 22:
+            recommendation = "Recommended: 24GB+ GPU"
+        elif total_with_overhead_gb <= 44:
+            recommendation = "Recommended: 48GB+ GPU or multi-GPU"
+        else:
+            recommendation = "Requires multi-GPU setup or model offloading"
+        
+        return {
+            "estimate": {
+                "model_weights_gb": round(model_vram_gb, 2),
+                "kv_cache_gb": round(kv_cache_gb, 2),
+                "activation_memory_gb": round(activation_gb, 2),
+                "cuda_overhead_gb": round(cuda_overhead_gb, 2),
+                "total_vram_gb": round(total_with_overhead_gb, 2),
+            },
+            "inputs": {
+                "parameters_b": params_b,
+                "quantization": quant_type,
+                "quantization_bits": quant_bits,
+                "context_size": ctx_size,
+                "batch_size": batch_size,
+                "num_layers": num_layers,
+                "head_dim": head_dim,
+                "num_kv_heads": num_kv_heads,
+                "kv_cache_type": kv_cache_type,
+            },
+            "recommendation": recommendation,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error estimating VRAM: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Conversation Storage Endpoints
+# ============================================================================
+
+@app.get("/api/v1/conversations")
+async def list_conversations(
+    limit: int = 50,
+    offset: int = 0,
+    search: Optional[str] = None,
+    tags: Optional[str] = None,
+):
+    """List all conversations with optional filtering."""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    tag_list = tags.split(',') if tags else None
+    result = conversation_store.list_conversations(
+        limit=limit,
+        offset=offset,
+        search=search,
+        tags=tag_list,
+    )
+    return result
+
+
+@app.post("/api/v1/conversations")
+async def create_conversation(request: Request):
+    """Create a new conversation."""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    try:
+        data = await request.json()
+        conversation = conversation_store.create_conversation(
+            title=data.get('title'),
+            messages=data.get('messages', []),
+            model=data.get('model'),
+            settings=data.get('settings'),
+            tags=data.get('tags', []),
+        )
+        return conversation.to_dict()
+    except Exception as e:
+        logger.error(f"Error creating conversation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """Get a specific conversation by ID."""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    conversation = conversation_store.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    return conversation.to_dict()
+
+
+@app.put("/api/v1/conversations/{conversation_id}")
+async def update_conversation(conversation_id: str, request: Request):
+    """Update an existing conversation."""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    try:
+        data = await request.json()
+        conversation = conversation_store.update_conversation(
+            conversation_id=conversation_id,
+            messages=data.get('messages'),
+            title=data.get('title'),
+            model=data.get('model'),
+            settings=data.get('settings'),
+            tags=data.get('tags'),
+        )
+        
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return conversation.to_dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating conversation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/conversations/{conversation_id}/messages")
+async def add_message_to_conversation(conversation_id: str, request: Request):
+    """Add a message to an existing conversation."""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    try:
+        data = await request.json()
+        conversation = conversation_store.add_message(
+            conversation_id=conversation_id,
+            message=data,
+        )
+        
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return conversation.to_dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v1/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete a conversation."""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    success = conversation_store.delete_conversation(conversation_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    return {"status": "success", "deleted": conversation_id}
+
+
+@app.get("/api/v1/conversations/{conversation_id}/export")
+async def export_conversation(
+    conversation_id: str,
+    format: str = "json",
+):
+    """Export a conversation in the specified format (json or markdown)."""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    if format not in ['json', 'markdown']:
+        raise HTTPException(status_code=400, detail="Format must be 'json' or 'markdown'")
+    
+    exported = conversation_store.export_conversation(conversation_id, format)
+    if exported is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    media_type = 'application/json' if format == 'json' else 'text/markdown'
+    filename = f"conversation-{conversation_id}.{'json' if format == 'json' else 'md'}"
+    
+    from fastapi.responses import Response
+    return Response(
+        content=exported,
+        media_type=media_type,
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+    )
+
+
+@app.get("/api/v1/conversations/search")
+async def search_conversations(query: str):
+    """Search conversations by content."""
+    if conversation_store is None:
+        raise HTTPException(status_code=503, detail="Conversation storage not available")
+    
+    results = conversation_store.search_conversations(query)
+    return {"results": results}
+
+
+# ============================================================================
+# Model Registry Endpoints
+# ============================================================================
+
+@app.get("/api/v1/registry/stats")
+async def get_registry_stats():
+    """Get model registry statistics."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    return model_registry.get_registry_stats()
+
+
+@app.get("/api/v1/registry/models")
+async def list_cached_models(
+    limit: int = 50,
+    offset: int = 0,
+    search: str = None,
+    model_type: str = None,
+):
+    """List all cached models with optional filtering."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    return model_registry.list_cached_models(
+        limit=limit,
+        offset=offset,
+        search=search,
+        model_type=model_type,
+    )
+
+
+@app.post("/api/v1/registry/models")
+async def cache_model(request: Request):
+    """Cache model metadata from HuggingFace."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    data = await request.json()
+    model_id = model_registry.cache_model(
+        repo_id=data.get('repo_id'),
+        name=data.get('name'),
+        description=data.get('description'),
+        author=data.get('author'),
+        downloads=data.get('downloads', 0),
+        likes=data.get('likes', 0),
+        tags=data.get('tags', []),
+        model_type=data.get('model_type'),
+        license=data.get('license'),
+        last_modified=data.get('last_modified'),
+        metadata=data.get('metadata', {}),
+    )
+    
+    return {"status": "cached", "model_id": model_id}
+
+
+@app.get("/api/v1/registry/models/{repo_id:path}")
+async def get_cached_model(repo_id: str):
+    """Get cached model metadata."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    model = model_registry.get_cached_model(repo_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found in cache")
+    
+    return model
+
+
+@app.delete("/api/v1/registry/models/{repo_id:path}")
+async def delete_cached_model(repo_id: str):
+    """Delete a model from the cache."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    deleted = model_registry.delete_model_cache(repo_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Model not found in cache")
+    
+    return {"status": "deleted", "repo_id": repo_id}
+
+
+@app.post("/api/v1/registry/models/{repo_id:path}/variants")
+async def add_model_variant(repo_id: str, request: Request):
+    """Add a quantization variant for a model."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    data = await request.json()
+    model_registry.add_variant(
+        repo_id=repo_id,
+        filename=data.get('filename'),
+        quantization=data.get('quantization'),
+        size_bytes=data.get('size_bytes'),
+        vram_required_mb=data.get('vram_required_mb'),
+        quality_score=data.get('quality_score'),
+        speed_score=data.get('speed_score'),
+    )
+    
+    return {"status": "added"}
+
+
+@app.get("/api/v1/registry/models/{repo_id:path}/variants")
+async def get_model_variants(repo_id: str):
+    """Get all quantization variants for a model."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    return {"variants": model_registry.get_variants(repo_id)}
+
+
+@app.post("/api/v1/registry/models/{repo_id:path}/usage/load")
+async def record_model_load(repo_id: str, variant: str = None):
+    """Record that a model was loaded."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    model_registry.record_model_load(repo_id, variant)
+    return {"status": "recorded"}
+
+
+@app.post("/api/v1/registry/models/{repo_id:path}/usage/inference")
+async def record_inference(repo_id: str, request: Request):
+    """Record inference statistics."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    data = await request.json()
+    model_registry.record_inference(
+        repo_id=repo_id,
+        variant=data.get('variant'),
+        tokens_generated=data.get('tokens_generated', 0),
+        inference_time_ms=data.get('inference_time_ms', 0),
+    )
+    
+    return {"status": "recorded"}
+
+
+@app.get("/api/v1/registry/usage")
+async def get_usage_stats(repo_id: str = None):
+    """Get usage statistics for models."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    return {"usage": model_registry.get_usage_stats(repo_id)}
+
+
+@app.get("/api/v1/registry/most-used")
+async def get_most_used_models(limit: int = 10):
+    """Get the most frequently used models."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    return {"models": model_registry.get_most_used_models(limit)}
+
+
+@app.post("/api/v1/registry/models/{repo_id:path}/rating")
+async def set_model_rating(repo_id: str, request: Request):
+    """Set user rating and notes for a model."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    data = await request.json()
+    try:
+        model_registry.set_rating(
+            repo_id=repo_id,
+            rating=data.get('rating'),
+            variant=data.get('variant'),
+            notes=data.get('notes'),
+            tags=data.get('tags'),
+        )
+        return {"status": "saved"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/registry/models/{repo_id:path}/rating")
+async def get_model_rating(repo_id: str, variant: str = None):
+    """Get user rating for a model."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    rating = model_registry.get_rating(repo_id, variant)
+    if rating is None:
+        return {"rating": None}
+    
+    return rating
+
+
+@app.post("/api/v1/registry/models/{repo_id:path}/hardware")
+async def set_hardware_recommendation(repo_id: str, request: Request):
+    """Set hardware recommendations for a model variant."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    data = await request.json()
+    model_registry.set_hardware_recommendation(
+        repo_id=repo_id,
+        variant=data.get('variant'),
+        min_vram_gb=data.get('min_vram_gb'),
+        recommended_vram_gb=data.get('recommended_vram_gb'),
+        min_ram_gb=data.get('min_ram_gb'),
+        recommended_context_size=data.get('recommended_context_size'),
+        gpu_layers_recommendation=data.get('gpu_layers_recommendation'),
+        notes=data.get('notes'),
+    )
+    
+    return {"status": "saved"}
+
+
+@app.get("/api/v1/registry/recommendations")
+async def get_recommendations_for_hardware(
+    vram_gb: float,
+    ram_gb: float = None,
+):
+    """Get model recommendations based on available hardware."""
+    if model_registry is None:
+        raise HTTPException(status_code=503, detail="Model registry not available")
+    
+    return {
+        "recommendations": model_registry.get_recommendations_for_hardware(
+            available_vram_gb=vram_gb,
+            available_ram_gb=ram_gb,
+        )
+    }
+
+
+# ============================================================================
+# Prompt Library Endpoints
+# ============================================================================
+
+@app.get("/api/v1/prompts/stats")
+async def get_prompt_stats():
+    """Get prompt library statistics."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    return prompt_library.get_stats()
+
+
+@app.get("/api/v1/prompts/categories")
+async def list_prompt_categories():
+    """List all prompt categories."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    return {"categories": prompt_library.list_categories()}
+
+
+@app.post("/api/v1/prompts/categories")
+async def create_prompt_category(request: Request):
+    """Create a new prompt category."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    data = await request.json()
+    category = prompt_library.create_category(
+        name=data.get('name'),
+        description=data.get('description'),
+        color=data.get('color', '#6B7280'),
+        icon=data.get('icon', 'folder'),
+        parent_id=data.get('parent_id'),
+    )
+    return category
+
+
+@app.get("/api/v1/prompts")
+async def list_prompts(
+    category: str = None,
+    search: str = None,
+    is_system_prompt: bool = None,
+    is_favorite: bool = None,
+    limit: int = 50,
+    offset: int = 0,
+    order_by: str = 'updated_at',
+    order_dir: str = 'DESC',
+):
+    """List prompts with optional filtering."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    return prompt_library.list_prompts(
+        category=category,
+        search=search,
+        is_system_prompt=is_system_prompt,
+        is_favorite=is_favorite,
+        limit=limit,
+        offset=offset,
+        order_by=order_by,
+        order_dir=order_dir,
+    )
+
+
+@app.post("/api/v1/prompts")
+async def create_prompt(request: Request):
+    """Create a new prompt template."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    data = await request.json()
+    prompt = prompt_library.create_prompt(
+        name=data.get('name'),
+        content=data.get('content'),
+        description=data.get('description'),
+        category=data.get('category', 'general'),
+        tags=data.get('tags', []),
+        is_system_prompt=data.get('is_system_prompt', False),
+        created_by=data.get('created_by'),
+        metadata=data.get('metadata', {}),
+    )
+    return prompt
+
+
+@app.get("/api/v1/prompts/{prompt_id}")
+async def get_prompt(prompt_id: str):
+    """Get a prompt by ID."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    prompt = prompt_library.get_prompt(prompt_id)
+    if prompt is None:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    return prompt
+
+
+@app.put("/api/v1/prompts/{prompt_id}")
+async def update_prompt(prompt_id: str, request: Request):
+    """Update a prompt."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    data = await request.json()
+    prompt = prompt_library.update_prompt(
+        prompt_id=prompt_id,
+        name=data.get('name'),
+        content=data.get('content'),
+        description=data.get('description'),
+        category=data.get('category'),
+        tags=data.get('tags'),
+        is_system_prompt=data.get('is_system_prompt'),
+        is_favorite=data.get('is_favorite'),
+        metadata=data.get('metadata'),
+        change_note=data.get('change_note'),
+    )
+    
+    if prompt is None:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    return prompt
+
+
+@app.delete("/api/v1/prompts/{prompt_id}")
+async def delete_prompt(prompt_id: str):
+    """Delete a prompt."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    deleted = prompt_library.delete_prompt(prompt_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    return {"status": "deleted", "prompt_id": prompt_id}
+
+
+@app.get("/api/v1/prompts/{prompt_id}/versions")
+async def get_prompt_versions(prompt_id: str):
+    """Get all versions of a prompt."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    return {"versions": prompt_library.get_versions(prompt_id)}
+
+
+@app.post("/api/v1/prompts/{prompt_id}/restore/{version}")
+async def restore_prompt_version(prompt_id: str, version: int):
+    """Restore a prompt to a specific version."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    prompt = prompt_library.restore_version(prompt_id, version)
+    if prompt is None:
+        raise HTTPException(status_code=404, detail="Prompt or version not found")
+    
+    return prompt
+
+
+@app.post("/api/v1/prompts/{prompt_id}/render")
+async def render_prompt(prompt_id: str, request: Request):
+    """Render a prompt template with given variables."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    data = await request.json()
+    try:
+        rendered = prompt_library.render_prompt(
+            prompt_id=prompt_id,
+            variables=data.get('variables', {}),
+        )
+        return {"rendered": rendered}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/v1/prompts/export")
+async def export_prompts(request: Request):
+    """Export prompts to JSON."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    data = await request.json()
+    prompt_ids = data.get('prompt_ids')  # None exports all
+    
+    exported = prompt_library.export_prompts(prompt_ids)
+    return {"data": exported}
+
+
+@app.post("/api/v1/prompts/import")
+async def import_prompts(request: Request):
+    """Import prompts from JSON."""
+    if prompt_library is None:
+        raise HTTPException(status_code=503, detail="Prompt library not available")
+    
+    data = await request.json()
+    result = prompt_library.import_prompts(
+        json_data=data.get('data'),
+        overwrite=data.get('overwrite', False),
+    )
+    return result
+
+
+# ============================================================================
+# Benchmark Endpoints
+# ============================================================================
+
+@app.get("/api/v1/benchmark/stats")
+async def get_benchmark_stats():
+    """Get overall benchmark statistics."""
+    if benchmark_runner is None:
+        raise HTTPException(status_code=503, detail="Benchmark runner not available")
+    
+    return benchmark_runner.get_stats()
+
+
+@app.get("/api/v1/benchmark/presets")
+async def list_benchmark_presets():
+    """List available benchmark presets."""
+    if benchmark_runner is None:
+        raise HTTPException(status_code=503, detail="Benchmark runner not available")
+    
+    return {"presets": benchmark_runner.list_presets()}
+
+
+@app.get("/api/v1/benchmark/history")
+async def list_benchmarks(
+    limit: int = 50,
+    offset: int = 0,
+    status: str = None,
+):
+    """List benchmark history."""
+    if benchmark_runner is None:
+        raise HTTPException(status_code=503, detail="Benchmark runner not available")
+    
+    return benchmark_runner.list_benchmarks(limit=limit, offset=offset, status=status)
+
+
+@app.post("/api/v1/benchmark/run")
+async def run_benchmark(request: Request, background_tasks: BackgroundTasks):
+    """Start a new benchmark run."""
+    if benchmark_runner is None:
+        raise HTTPException(status_code=503, detail="Benchmark runner not available")
+    
+    data = await request.json()
+    
+    # Get preset or custom config
+    preset_name = data.get('preset', 'standard')
+    config = benchmark_runner.get_preset(preset_name)
+    
+    # Override with custom values if provided
+    if 'prompt_tokens' in data:
+        config.prompt_tokens = data['prompt_tokens']
+    if 'max_output_tokens' in data:
+        config.max_output_tokens = data['max_output_tokens']
+    if 'num_runs' in data:
+        config.num_runs = data['num_runs']
+    if 'warmup_runs' in data:
+        config.warmup_runs = data['warmup_runs']
+    if 'temperature' in data:
+        config.temperature = data['temperature']
+    
+    model_name = data.get('model_name', 'unknown')
+    model_variant = data.get('model_variant', 'unknown')
+    api_key = data.get('api_key')
+    
+    # Run benchmark in background
+    async def run_in_background():
+        try:
+            await benchmark_runner.run_benchmark(
+                config=config,
+                model_name=model_name,
+                model_variant=model_variant,
+                api_key=api_key,
+            )
+        except Exception as e:
+            logger.error(f"Background benchmark failed: {e}")
+    
+    # Start the benchmark
+    import asyncio
+    loop = asyncio.get_event_loop()
+    task = loop.create_task(run_in_background())
+    
+    # Wait a moment to get the benchmark ID
+    await asyncio.sleep(0.1)
+    
+    # Find the active benchmark
+    active = list(benchmark_runner._active_benchmarks.keys())
+    benchmark_id = active[-1] if active else None
+    
+    return {
+        "status": "started",
+        "benchmark_id": benchmark_id,
+        "config": {
+            "preset": preset_name,
+            "prompt_tokens": config.prompt_tokens,
+            "max_output_tokens": config.max_output_tokens,
+            "num_runs": config.num_runs,
+        }
+    }
+
+
+@app.get("/api/v1/benchmark/{benchmark_id}")
+async def get_benchmark(benchmark_id: str):
+    """Get benchmark status and results."""
+    if benchmark_runner is None:
+        raise HTTPException(status_code=503, detail="Benchmark runner not available")
+    
+    result = benchmark_runner.get_benchmark(benchmark_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+    
+    return result
+
+
+@app.delete("/api/v1/benchmark/{benchmark_id}")
+async def delete_benchmark(benchmark_id: str):
+    """Delete a benchmark."""
+    if benchmark_runner is None:
+        raise HTTPException(status_code=503, detail="Benchmark runner not available")
+    
+    deleted = benchmark_runner.delete_benchmark(benchmark_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+    
+    return {"status": "deleted", "benchmark_id": benchmark_id}
+
+
+# ============================================================================
+# Batch Processing Endpoints
+# ============================================================================
+
+@app.get("/api/v1/batch/stats")
+async def get_batch_stats():
+    """Get batch processing statistics."""
+    if batch_processor is None:
+        raise HTTPException(status_code=503, detail="Batch processor not available")
+    
+    return batch_processor.get_stats()
+
+
+@app.get("/api/v1/batch/jobs")
+async def list_batch_jobs(
+    status: str = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List batch jobs."""
+    if batch_processor is None:
+        raise HTTPException(status_code=503, detail="Batch processor not available")
+    
+    return batch_processor.list_jobs(status=status, limit=limit, offset=offset)
+
+
+@app.post("/api/v1/batch/jobs")
+async def create_batch_job(request: Request):
+    """Create a new batch job."""
+    if batch_processor is None:
+        raise HTTPException(status_code=503, detail="Batch processor not available")
+    
+    data = await request.json()
+    
+    # Parse input data
+    items = []
+    if 'items' in data:
+        # Direct items array
+        items = data['items']
+    elif 'content' in data and 'file_type' in data:
+        # File content to parse
+        items = batch_processor.parse_input_file(data['content'], data['file_type'])
+    else:
+        raise HTTPException(status_code=400, detail="Must provide 'items' or 'content' with 'file_type'")
+    
+    if not items:
+        raise HTTPException(status_code=400, detail="No items to process")
+    
+    config = data.get('config', {})
+    name = data.get('name', f"Batch Job {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    
+    job = batch_processor.create_batch_job(name=name, items=items, config=config)
+    
+    return {
+        "status": "created",
+        "job_id": job.id,
+        "total_items": job.total_items,
+    }
+
+
+@app.post("/api/v1/batch/jobs/{job_id}/run")
+async def run_batch_job(job_id: str, request: Request, background_tasks: BackgroundTasks):
+    """Start running a batch job."""
+    if batch_processor is None:
+        raise HTTPException(status_code=503, detail="Batch processor not available")
+    
+    job = batch_processor.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if job['status'] not in ['pending', 'failed']:
+        raise HTTPException(status_code=400, detail=f"Job cannot be run (status: {job['status']})")
+    
+    data = await request.json() if request.headers.get('content-type') == 'application/json' else {}
+    api_key = data.get('api_key')
+    
+    # Run in background
+    async def run_in_background():
+        try:
+            await batch_processor.run_batch_job(job_id, api_key=api_key)
+        except Exception as e:
+            logger.error(f"Background batch job failed: {e}")
+    
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_in_background())
+    
+    return {"status": "started", "job_id": job_id}
+
+
+@app.get("/api/v1/batch/jobs/{job_id}")
+async def get_batch_job(job_id: str):
+    """Get batch job details."""
+    if batch_processor is None:
+        raise HTTPException(status_code=503, detail="Batch processor not available")
+    
+    job = batch_processor.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return job
+
+
+@app.get("/api/v1/batch/jobs/{job_id}/items")
+async def get_batch_job_items(
+    job_id: str,
+    status: str = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Get items for a batch job."""
+    if batch_processor is None:
+        raise HTTPException(status_code=503, detail="Batch processor not available")
+    
+    return batch_processor.get_job_items(job_id, status=status, limit=limit, offset=offset)
+
+
+@app.post("/api/v1/batch/jobs/{job_id}/cancel")
+async def cancel_batch_job(job_id: str):
+    """Cancel a running batch job."""
+    if batch_processor is None:
+        raise HTTPException(status_code=503, detail="Batch processor not available")
+    
+    job = batch_processor.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if job['status'] != 'running':
+        raise HTTPException(status_code=400, detail="Job is not running")
+    
+    batch_processor.cancel_job(job_id)
+    return {"status": "cancelling", "job_id": job_id}
+
+
+@app.get("/api/v1/batch/jobs/{job_id}/export")
+async def export_batch_job(job_id: str, format: str = "json"):
+    """Export batch job results."""
+    if batch_processor is None:
+        raise HTTPException(status_code=503, detail="Batch processor not available")
+    
+    try:
+        content = batch_processor.export_results(job_id, format=format)
+        
+        if format == 'csv':
+            return Response(
+                content=content,
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename=batch_{job_id}.csv"}
+            )
+        else:
+            return Response(
+                content=content,
+                media_type="application/json",
+                headers={"Content-Disposition": f"attachment; filename=batch_{job_id}.json"}
+            )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/v1/batch/jobs/{job_id}")
+async def delete_batch_job(job_id: str):
+    """Delete a batch job."""
+    if batch_processor is None:
+        raise HTTPException(status_code=503, detail="Batch processor not available")
+    
+    deleted = batch_processor.delete_job(job_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return {"status": "deleted", "job_id": job_id}
+
 
 if __name__ == "__main__":
     import uvicorn

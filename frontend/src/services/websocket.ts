@@ -16,15 +16,14 @@ class WebSocketService {
     // Use WebSocket protocol in development, wss in production
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     
-    // Always use the API port (8600) for WebSocket connections
+    // Use the same host/port as the frontend - nginx will proxy /ws to backend
     let host: string;
     if ((import.meta as any).env?.DEV) {
-      // In development, use localhost
-      host = 'localhost:8600';
+      // In development, use localhost on the dev server port
+      host = window.location.host || 'localhost:3000';
     } else {
-      // In production, use the same hostname but API port
-      const currentHost = window.location.hostname;
-      host = `${currentHost}:8600`;
+      // In production, use the same host (nginx proxies /ws to backend)
+      host = window.location.host;
     }
     
     this.url = `${protocol}//${host}/ws`;

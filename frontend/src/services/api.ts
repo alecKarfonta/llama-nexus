@@ -748,6 +748,687 @@ class ApiService {
     const response = await this.backendClient.post('/api/v1/llamacpp/rebuild');
     return response.data;
   }
+
+  // --- VRAM Estimation Methods ---
+
+  /**
+   * Estimate VRAM requirements for a model configuration
+   */
+  async estimateVram(params: {
+    parameters?: number;
+    quantization?: string;
+    context_size?: number;
+    batch_size?: number;
+    num_layers?: number;
+    head_dim?: number;
+    num_kv_heads?: number;
+    kv_cache_type?: string;
+  }): Promise<{
+    estimate: {
+      model_weights_gb: number;
+      kv_cache_gb: number;
+      activation_memory_gb: number;
+      cuda_overhead_gb: number;
+      total_vram_gb: number;
+    };
+    inputs: {
+      parameters_b: number;
+      quantization: string;
+      quantization_bits: number;
+      context_size: number;
+      batch_size: number;
+      num_layers: number;
+      head_dim: number;
+      num_kv_heads: number;
+      kv_cache_type: string;
+    };
+    recommendation: string;
+  }> {
+    const response = await this.backendClient.post('/api/v1/estimate/vram', params);
+    return response.data;
+  }
+
+  // --- Conversation Storage Methods ---
+
+  /**
+   * List all conversations with optional filtering
+   */
+  async listConversations(params?: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    tags?: string[];
+  }): Promise<{
+    conversations: Array<{
+      id: string;
+      title: string;
+      created_at: string;
+      updated_at: string;
+      model?: string;
+      tags: string[];
+      message_count: number;
+    }>;
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
+  }> {
+    const response = await this.backendClient.get('/api/v1/conversations', {
+      params: {
+        limit: params?.limit || 50,
+        offset: params?.offset || 0,
+        search: params?.search,
+        tags: params?.tags?.join(','),
+      },
+    });
+    return response.data;
+  }
+
+  /**
+   * Create a new conversation
+   */
+  async createConversation(data: {
+    title?: string;
+    messages?: Array<{
+      role: string;
+      content: string;
+      reasoning_content?: string;
+      tool_calls?: any[];
+      tool_call_id?: string;
+    }>;
+    model?: string;
+    settings?: Record<string, any>;
+    tags?: string[];
+  }): Promise<{
+    id: string;
+    title: string;
+    messages: any[];
+    created_at: string;
+    updated_at: string;
+    model?: string;
+    settings?: Record<string, any>;
+    tags: string[];
+  }> {
+    const response = await this.backendClient.post('/api/v1/conversations', data);
+    return response.data;
+  }
+
+  /**
+   * Get a specific conversation by ID
+   */
+  async getConversation(conversationId: string): Promise<{
+    id: string;
+    title: string;
+    messages: Array<{
+      role: string;
+      content: string;
+      timestamp: string;
+      reasoning_content?: string;
+      tool_calls?: any[];
+      tool_call_id?: string;
+    }>;
+    created_at: string;
+    updated_at: string;
+    model?: string;
+    settings?: Record<string, any>;
+    tags: string[];
+  }> {
+    const response = await this.backendClient.get(`/api/v1/conversations/${conversationId}`);
+    return response.data;
+  }
+
+  /**
+   * Update an existing conversation
+   */
+  async updateConversation(conversationId: string, data: {
+    title?: string;
+    messages?: any[];
+    model?: string;
+    settings?: Record<string, any>;
+    tags?: string[];
+  }): Promise<{
+    id: string;
+    title: string;
+    messages: any[];
+    created_at: string;
+    updated_at: string;
+    model?: string;
+    settings?: Record<string, any>;
+    tags: string[];
+  }> {
+    const response = await this.backendClient.put(`/api/v1/conversations/${conversationId}`, data);
+    return response.data;
+  }
+
+  /**
+   * Add a message to an existing conversation
+   */
+  async addMessageToConversation(conversationId: string, message: {
+    role: string;
+    content: string;
+    reasoning_content?: string;
+    tool_calls?: any[];
+    tool_call_id?: string;
+  }): Promise<{
+    id: string;
+    title: string;
+    messages: any[];
+    created_at: string;
+    updated_at: string;
+  }> {
+    const response = await this.backendClient.post(
+      `/api/v1/conversations/${conversationId}/messages`,
+      message
+    );
+    return response.data;
+  }
+
+  /**
+   * Delete a conversation
+   */
+  async deleteConversation(conversationId: string): Promise<{ status: string; deleted: string }> {
+    const response = await this.backendClient.delete(`/api/v1/conversations/${conversationId}`);
+    return response.data;
+  }
+
+  /**
+   * Export a conversation in the specified format
+   */
+  async exportConversation(conversationId: string, format: 'json' | 'markdown' = 'json'): Promise<string> {
+    const response = await this.backendClient.get(
+      `/api/v1/conversations/${conversationId}/export`,
+      { params: { format }, responseType: 'text' }
+    );
+    return response.data;
+  }
+
+  /**
+   * Search conversations by content
+   */
+  async searchConversations(query: string): Promise<{
+    results: Array<{
+      id: string;
+      title: string;
+      created_at: string;
+      updated_at: string;
+      model?: string;
+      tags: string[];
+      message_count: number;
+    }>;
+  }> {
+    const response = await this.backendClient.get('/api/v1/conversations/search', {
+      params: { query },
+    });
+    return response.data;
+  }
+
+  // ============================================================================
+  // Prompt Library API
+  // ============================================================================
+
+  /**
+   * Get prompt library statistics
+   */
+  async getPromptStats(): Promise<{
+    total_prompts: number;
+    system_prompts: number;
+    favorites: number;
+    total_uses: number;
+    categories_used: number;
+  }> {
+    const response = await this.backendClient.get('/api/v1/prompts/stats');
+    return response.data;
+  }
+
+  /**
+   * List prompt categories
+   */
+  async listPromptCategories(): Promise<{
+    categories: Array<{
+      id: string;
+      name: string;
+      description?: string;
+      color: string;
+      icon: string;
+      parent_id?: string;
+      sort_order: number;
+      prompt_count: number;
+    }>;
+  }> {
+    const response = await this.backendClient.get('/api/v1/prompts/categories');
+    return response.data;
+  }
+
+  /**
+   * Create a new prompt category
+   */
+  async createPromptCategory(data: {
+    name: string;
+    description?: string;
+    color?: string;
+    icon?: string;
+    parent_id?: string;
+  }): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    color: string;
+    icon: string;
+    parent_id?: string;
+  }> {
+    const response = await this.backendClient.post('/api/v1/prompts/categories', data);
+    return response.data;
+  }
+
+  /**
+   * List prompts with optional filtering
+   */
+  async listPrompts(params?: {
+    category?: string;
+    search?: string;
+    is_system_prompt?: boolean;
+    is_favorite?: boolean;
+    limit?: number;
+    offset?: number;
+    order_by?: string;
+    order_dir?: 'ASC' | 'DESC';
+  }): Promise<{
+    prompts: Array<{
+      id: string;
+      name: string;
+      description?: string;
+      content: string;
+      category: string;
+      tags: string[];
+      variables: string[];
+      is_system_prompt: boolean;
+      is_favorite: boolean;
+      use_count: number;
+      created_at: string;
+      updated_at: string;
+    }>;
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
+  }> {
+    const response = await this.backendClient.get('/api/v1/prompts', { params });
+    return response.data;
+  }
+
+  /**
+   * Create a new prompt template
+   */
+  async createPrompt(data: {
+    name: string;
+    content: string;
+    description?: string;
+    category?: string;
+    tags?: string[];
+    is_system_prompt?: boolean;
+    metadata?: Record<string, any>;
+  }): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    content: string;
+    category: string;
+    tags: string[];
+    variables: string[];
+    is_system_prompt: boolean;
+    is_favorite: boolean;
+    use_count: number;
+    created_at: string;
+    updated_at: string;
+  }> {
+    const response = await this.backendClient.post('/api/v1/prompts', data);
+    return response.data;
+  }
+
+  /**
+   * Get a prompt by ID
+   */
+  async getPrompt(promptId: string): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    content: string;
+    category: string;
+    tags: string[];
+    variables: string[];
+    is_system_prompt: boolean;
+    is_favorite: boolean;
+    use_count: number;
+    created_at: string;
+    updated_at: string;
+    metadata: Record<string, any>;
+  }> {
+    const response = await this.backendClient.get(`/api/v1/prompts/${promptId}`);
+    return response.data;
+  }
+
+  /**
+   * Update a prompt
+   */
+  async updatePrompt(promptId: string, data: {
+    name?: string;
+    content?: string;
+    description?: string;
+    category?: string;
+    tags?: string[];
+    is_system_prompt?: boolean;
+    is_favorite?: boolean;
+    metadata?: Record<string, any>;
+    change_note?: string;
+  }): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    content: string;
+    category: string;
+    tags: string[];
+    variables: string[];
+    is_system_prompt: boolean;
+    is_favorite: boolean;
+    use_count: number;
+    created_at: string;
+    updated_at: string;
+  }> {
+    const response = await this.backendClient.put(`/api/v1/prompts/${promptId}`, data);
+    return response.data;
+  }
+
+  /**
+   * Delete a prompt
+   */
+  async deletePrompt(promptId: string): Promise<{ status: string; prompt_id: string }> {
+    const response = await this.backendClient.delete(`/api/v1/prompts/${promptId}`);
+    return response.data;
+  }
+
+  /**
+   * Get prompt version history
+   */
+  async getPromptVersions(promptId: string): Promise<{
+    versions: Array<{
+      id: number;
+      prompt_id: string;
+      version: number;
+      content: string;
+      change_note?: string;
+      created_at: string;
+    }>;
+  }> {
+    const response = await this.backendClient.get(`/api/v1/prompts/${promptId}/versions`);
+    return response.data;
+  }
+
+  /**
+   * Restore a prompt to a specific version
+   */
+  async restorePromptVersion(promptId: string, version: number): Promise<{
+    id: string;
+    name: string;
+    content: string;
+    updated_at: string;
+  }> {
+    const response = await this.backendClient.post(`/api/v1/prompts/${promptId}/restore/${version}`);
+    return response.data;
+  }
+
+  /**
+   * Render a prompt with variables
+   */
+  async renderPrompt(promptId: string, variables: Record<string, string>): Promise<{ rendered: string }> {
+    const response = await this.backendClient.post(`/api/v1/prompts/${promptId}/render`, { variables });
+    return response.data;
+  }
+
+  /**
+   * Export prompts to JSON
+   */
+  async exportPrompts(promptIds?: string[]): Promise<{ data: string }> {
+    const response = await this.backendClient.post('/api/v1/prompts/export', { prompt_ids: promptIds });
+    return response.data;
+  }
+
+  /**
+   * Import prompts from JSON
+   */
+  async importPrompts(data: string, overwrite?: boolean): Promise<{
+    imported: number;
+    skipped: number;
+    errors: string[];
+  }> {
+    const response = await this.backendClient.post('/api/v1/prompts/import', { data, overwrite });
+    return response.data;
+  }
+
+  // ============================================================================
+  // Model Registry API
+  // ============================================================================
+
+  /**
+   * Get model registry statistics
+   */
+  async getRegistryStats(): Promise<{
+    cached_models: number;
+    total_variants: number;
+    total_loads: number;
+    total_inferences: number;
+    rated_models: number;
+  }> {
+    const response = await this.backendClient.get('/api/v1/registry/stats');
+    return response.data;
+  }
+
+  /**
+   * List cached models
+   */
+  async listCachedModels(params?: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    model_type?: string;
+  }): Promise<{
+    models: Array<{
+      id: string;
+      repo_id: string;
+      name: string;
+      description?: string;
+      author?: string;
+      downloads: number;
+      likes: number;
+      tags: string[];
+      model_type?: string;
+      license?: string;
+      last_modified?: string;
+      created_at: string;
+      updated_at: string;
+    }>;
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
+  }> {
+    const response = await this.backendClient.get('/api/v1/registry/models', { params });
+    return response.data;
+  }
+
+  /**
+   * Cache a model's metadata
+   */
+  async cacheModel(data: {
+    repo_id: string;
+    name: string;
+    description?: string;
+    author?: string;
+    downloads?: number;
+    likes?: number;
+    tags?: string[];
+    model_type?: string;
+    license?: string;
+    last_modified?: string;
+    metadata?: Record<string, any>;
+  }): Promise<{ status: string; model_id: string }> {
+    const response = await this.backendClient.post('/api/v1/registry/models', data);
+    return response.data;
+  }
+
+  /**
+   * Get a cached model
+   */
+  async getCachedModel(repoId: string): Promise<{
+    id: string;
+    repo_id: string;
+    name: string;
+    description?: string;
+    author?: string;
+    downloads: number;
+    likes: number;
+    tags: string[];
+    model_type?: string;
+    license?: string;
+    metadata: Record<string, any>;
+  }> {
+    const response = await this.backendClient.get(`/api/v1/registry/models/${encodeURIComponent(repoId)}`);
+    return response.data;
+  }
+
+  /**
+   * Delete a cached model
+   */
+  async deleteCachedModel(repoId: string): Promise<{ status: string; repo_id: string }> {
+    const response = await this.backendClient.delete(`/api/v1/registry/models/${encodeURIComponent(repoId)}`);
+    return response.data;
+  }
+
+  /**
+   * Get model variants
+   */
+  async getModelVariants(repoId: string): Promise<{
+    variants: Array<{
+      id: number;
+      model_id: string;
+      filename: string;
+      quantization: string;
+      size_bytes?: number;
+      vram_required_mb?: number;
+      quality_score?: number;
+      speed_score?: number;
+    }>;
+  }> {
+    const response = await this.backendClient.get(`/api/v1/registry/models/${encodeURIComponent(repoId)}/variants`);
+    return response.data;
+  }
+
+  /**
+   * Record model load
+   */
+  async recordModelLoad(repoId: string, variant?: string): Promise<{ status: string }> {
+    const response = await this.backendClient.post(
+      `/api/v1/registry/models/${encodeURIComponent(repoId)}/usage/load`,
+      null,
+      { params: { variant } }
+    );
+    return response.data;
+  }
+
+  /**
+   * Get model usage stats
+   */
+  async getModelUsageStats(repoId?: string): Promise<{
+    usage: Array<{
+      model_id: string;
+      variant?: string;
+      load_count: number;
+      inference_count: number;
+      total_tokens_generated: number;
+      last_used?: string;
+      name?: string;
+      repo_id?: string;
+    }>;
+  }> {
+    const response = await this.backendClient.get('/api/v1/registry/usage', {
+      params: { repo_id: repoId },
+    });
+    return response.data;
+  }
+
+  /**
+   * Get most used models
+   */
+  async getMostUsedModels(limit?: number): Promise<{
+    models: Array<{
+      id: string;
+      repo_id: string;
+      name: string;
+      model_type?: string;
+      total_loads: number;
+      total_inferences: number;
+      last_used?: string;
+    }>;
+  }> {
+    const response = await this.backendClient.get('/api/v1/registry/most-used', {
+      params: { limit },
+    });
+    return response.data;
+  }
+
+  /**
+   * Set model rating
+   */
+  async setModelRating(repoId: string, data: {
+    rating: number;
+    variant?: string;
+    notes?: string;
+    tags?: string[];
+  }): Promise<{ status: string }> {
+    const response = await this.backendClient.post(
+      `/api/v1/registry/models/${encodeURIComponent(repoId)}/rating`,
+      data
+    );
+    return response.data;
+  }
+
+  /**
+   * Get model rating
+   */
+  async getModelRating(repoId: string, variant?: string): Promise<{
+    rating?: number;
+    notes?: string;
+    tags?: string[];
+  }> {
+    const response = await this.backendClient.get(
+      `/api/v1/registry/models/${encodeURIComponent(repoId)}/rating`,
+      { params: { variant } }
+    );
+    return response.data;
+  }
+
+  /**
+   * Get hardware recommendations
+   */
+  async getHardwareRecommendations(vramGb: number, ramGb?: number): Promise<{
+    recommendations: Array<{
+      id: string;
+      repo_id: string;
+      name: string;
+      model_type?: string;
+      filename: string;
+      quantization: string;
+      size_bytes?: number;
+      quality_score?: number;
+      min_vram_gb?: number;
+      recommended_vram_gb?: number;
+      rating?: number;
+    }>;
+  }> {
+    const response = await this.backendClient.get('/api/v1/registry/recommendations', {
+      params: { vram_gb: vramGb, ram_gb: ramGb },
+    });
+    return response.data;
+  }
 }
 
 // Create singleton instance
