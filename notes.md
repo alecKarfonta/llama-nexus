@@ -1307,11 +1307,53 @@ API Key: your-custom-api-key
 - Benchmark: Stats and presets working
 - Batch Processing: Jobs creation and management working
 
-### Next Steps (Phase 6)
+5. **VRAM Estimation Tool** - DONE
+   - Created: backend/modules/vram_estimator.py
+   - Features:
+     - Automatic model architecture detection from filename
+     - Support for 24+ quantization types (Q2_K through F32)
+     - Known architectures for Llama, Qwen, Mistral, DeepSeek, Phi, Yi, Gemma
+     - KV cache calculation with flash attention support
+     - Compute buffer and overhead estimation
+     - Utilization percentage and fit warnings
+     - Real-time display on Deploy page
+   - API endpoints: /api/v1/vram/estimate, /api/v1/vram/quantizations, /api/v1/vram/architectures
+
+### Files Created (Phase 6)
+- `backend/modules/vram_estimator.py` - VRAM requirement estimation
+
+### Files Modified (Phase 6)
+- `backend/modules/__init__.py` - Added vram_estimator export
+- `backend/main.py` - Added VRAM estimation API endpoints
+- `backend/Dockerfile` - Fixed modules directory copy
+- `frontend/src/pages/DeployPage.tsx` - Added VRAM estimation display
+
+6. **Function Calling Playground Improvements** - DONE
+   - Enhanced: frontend/src/pages/TestingPage.tsx
+   - Features:
+     - Visual tool schema builder with parameter editor
+     - Interactive playground for testing tool calls
+     - Mock response support for end-to-end testing
+     - Tool call visualization with expandable details
+     - OpenAI schema preview and copy
+     - Default example tools (calculator, weather, search)
+     - Three tabs: Playground, Tool Builder, Benchmark
+   - Capabilities:
+     - Create custom tools with UI
+     - Define parameters with types (string, number, boolean, array, object)
+     - Set required/optional parameters
+     - Configure mock JSON responses
+     - See tool call chain with arguments
+     - Copy generated OpenAI tool schema
+
+### Files Modified (Phase 6 continued)
+- `frontend/src/pages/TestingPage.tsx` - Complete rewrite with playground features
+
+### Next Steps (Phase 7)
 - [ ] RAG pipeline integration
 - [ ] Multi-user authentication
-- [ ] Function calling playground improvements
 - [ ] Prompt caching dashboard
+- [ ] Model comparison view
 
 ---
 

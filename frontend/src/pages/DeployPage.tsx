@@ -465,6 +465,21 @@ export const DeployPage: React.FC = () => {
   // Parameter preset selection
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null)
   
+  // VRAM estimation state
+  const [vramEstimate, setVramEstimate] = useState<{
+    model_weights_mb: number
+    kv_cache_mb: number
+    compute_buffer_mb: number
+    overhead_mb: number
+    total_mb: number
+    total_gb: number
+    fits_in_vram: boolean
+    available_vram_gb: number
+    utilization_percent: number
+    warnings: string[]
+  } | null>(null)
+  const [vramLoading, setVramLoading] = useState(false)
+  
   // Apply a parameter preset
   const applyPreset = (preset: ParameterPreset) => {
     if (!config) return;
@@ -484,6 +499,56 @@ export const DeployPage: React.FC = () => {
     });
     setSelectedPreset(preset.name);
   }
+  
+  // Fetch VRAM estimation when config changes
+  const fetchVramEstimate = async () => {
+    if (!config?.model?.name) return;
+    
+    setVramLoading(true);
+    try {
+      const modelName = config.model.variant 
+        ? `${config.model.name}-${config.model.variant}` 
+        : config.model.name;
+      
+      const response = await fetch('/backend/api/v1/vram/estimate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model_name: modelName,
+          context_size: config.performance?.contextSize || 4096,
+          batch_size: config.performance?.batchSize || 1,
+          gpu_layers: config.performance?.gpuLayers ?? -1,
+          flash_attention: config.performance?.flashAttention ?? true,
+          available_vram_gb: 24, // Default, could be detected
+        }),
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setVramEstimate(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch VRAM estimate:', err);
+    } finally {
+      setVramLoading(false);
+    }
+  };
+  
+  // Debounced VRAM estimation update
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchVramEstimate();
+    }, 500); // Debounce 500ms
+    
+    return () => clearTimeout(timer);
+  }, [
+    config?.model?.name,
+    config?.model?.variant,
+    config?.performance?.contextSize,
+    config?.performance?.batchSize,
+    config?.performance?.gpuLayers,
+    config?.performance?.flashAttention,
+  ]);
 
   useEffect(() => {
     const init = async () => {
@@ -1137,6 +1202,98 @@ export const DeployPage: React.FC = () => {
           </Box>
         </CardContent>
       </Card>
+
+      {/* VRAM Estimation Display */}
+      {vramEstimate && (
+        <Card sx={{ 
+          mb: 3, 
+          borderRadius: 1, 
+          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
+          border: vramEstimate.fits_in_vram 
+            ? '1px solid rgba(76, 175, 80, 0.3)' 
+            : '1px solid rgba(244, 67, 54, 0.3)',
+          bgcolor: 'background.paper'
+        }}>
+          <CardContent sx={{ py: 2, '&:last-child': { pb: 2 } }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Typography variant="h6" sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>
+                  VRAM Estimation
+                </Typography>
+                {vramLoading && <CircularProgress size={16} />}
+              </Box>
+              <Chip 
+                label={vramEstimate.fits_in_vram ? 'Fits in VRAM' : 'Exceeds VRAM'} 
+                color={vramEstimate.fits_in_vram ? 'success' : 'error'}
+                size="small"
+                sx={{ fontWeight: 500 }}
+              />
+            </Box>
+            
+            <Grid container spacing={2}>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="text.secondary">Model Weights</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                  {(vramEstimate.model_weights_mb / 1024).toFixed(1)} GB
+                </Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="text.secondary">KV Cache</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                  {(vramEstimate.kv_cache_mb / 1024).toFixed(2)} GB
+                </Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="text.secondary">Compute Buffer</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                  {(vramEstimate.compute_buffer_mb / 1024).toFixed(2)} GB
+                </Typography>
+              </Grid>
+              <Grid item xs={6} sm={3}>
+                <Typography variant="caption" color="text.secondary">Total Required</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: vramEstimate.fits_in_vram ? 'success.main' : 'error.main' }}>
+                  {vramEstimate.total_gb.toFixed(1)} GB / {vramEstimate.available_vram_gb} GB
+                </Typography>
+              </Grid>
+            </Grid>
+            
+            {/* VRAM Usage Bar */}
+            <Box sx={{ mt: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">VRAM Utilization</Typography>
+                <Typography variant="caption" color="text.secondary">{vramEstimate.utilization_percent}%</Typography>
+              </Box>
+              <Box sx={{ 
+                width: '100%', 
+                height: 8, 
+                bgcolor: 'rgba(255,255,255,0.1)', 
+                borderRadius: 1,
+                overflow: 'hidden'
+              }}>
+                <Box sx={{ 
+                  width: `${Math.min(vramEstimate.utilization_percent, 100)}%`, 
+                  height: '100%', 
+                  bgcolor: vramEstimate.utilization_percent > 95 ? 'error.main' : 
+                           vramEstimate.utilization_percent > 85 ? 'warning.main' : 'success.main',
+                  borderRadius: 1,
+                  transition: 'width 0.3s ease'
+                }} />
+              </Box>
+            </Box>
+            
+            {/* Warnings */}
+            {vramEstimate.warnings.length > 0 && (
+              <Box sx={{ mt: 2 }}>
+                {vramEstimate.warnings.map((warning, idx) => (
+                  <Alert key={idx} severity="warning" sx={{ mb: 1, py: 0, fontSize: '0.75rem' }}>
+                    {warning}
+                  </Alert>
+                ))}
+              </Box>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Tabs for settings */}
       <Tabs 

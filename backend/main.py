@@ -4828,6 +4828,68 @@ async def delete_batch_job(job_id: str):
     return {"status": "deleted", "job_id": job_id}
 
 
+# =============================================================================
+# VRAM Estimation Endpoints
+# =============================================================================
+
+try:
+    from modules import vram_estimator
+except ImportError:
+    vram_estimator = None
+
+
+@app.post("/api/v1/vram/estimate")
+async def estimate_vram_api(request: Request):
+    """Estimate VRAM requirements for model deployment."""
+    if vram_estimator is None:
+        raise HTTPException(status_code=503, detail="VRAM estimator not available")
+    
+    data = await request.json()
+    
+    estimate = vram_estimator.estimate_vram(
+        model_name=data.get("model_name", ""),
+        params_b=data.get("params_b"),
+        quantization=data.get("quantization", "Q4_K_M"),
+        context_size=data.get("context_size", 4096),
+        batch_size=data.get("batch_size", 1),
+        gpu_layers=data.get("gpu_layers", -1),
+        kv_cache_type=data.get("kv_cache_type", "f16"),
+        available_vram_gb=data.get("available_vram_gb", 24.0),
+        flash_attention=data.get("flash_attention", True),
+    )
+    
+    return {
+        "model_weights_mb": estimate.model_weights_mb,
+        "kv_cache_mb": estimate.kv_cache_mb,
+        "compute_buffer_mb": estimate.compute_buffer_mb,
+        "overhead_mb": estimate.overhead_mb,
+        "total_mb": estimate.total_mb,
+        "total_gb": estimate.total_gb,
+        "fits_in_vram": estimate.fits_in_vram,
+        "available_vram_gb": estimate.available_vram_gb,
+        "utilization_percent": estimate.utilization_percent,
+        "warnings": estimate.warnings,
+    }
+
+
+@app.get("/api/v1/vram/quantizations")
+async def get_quantization_options():
+    """Get available quantization options with bits per weight."""
+    if vram_estimator is None:
+        raise HTTPException(status_code=503, detail="VRAM estimator not available")
+    
+    return {"quantizations": vram_estimator.get_quantization_options()}
+
+
+@app.get("/api/v1/vram/architectures")
+async def get_model_architectures():
+    """Get known model architectures."""
+    if vram_estimator is None:
+        raise HTTPException(status_code=503, detail="VRAM estimator not available")
+    
+    return {"architectures": vram_estimator.get_model_architectures()}
+
+
 if __name__ == "__main__":
     import uvicorn
     

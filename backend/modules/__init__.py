@@ -59,4 +59,10 @@ except ImportError as e:
     print(f"Error importing batch_processor: {e}")
     batch_processor = None
 
-__all__ = ['token_tracker', 'TokenUsageMiddleware', 'conversation_store', 'event_bus', 'model_registry', 'prompt_library', 'benchmark_runner', 'batch_processor']
+try:
+    from . import vram_estimator
+except ImportError as e:
+    print(f"Error importing vram_estimator: {e}")
+    vram_estimator = None
+
+__all__ = ['token_tracker', 'TokenUsageMiddleware', 'conversation_store', 'event_bus', 'model_registry', 'prompt_library', 'benchmark_runner', 'batch_processor', 'vram_estimator']

@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py enhanced_logger.py tool_call_tests.json .
-COPY modules/ .
+COPY modules/ modules/
 
 # Expose port
 EXPOSE 8700
