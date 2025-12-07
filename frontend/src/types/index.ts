@@ -23,6 +23,7 @@ export interface NavigationItem {
   path: string;
   icon?: string;
   badge?: string | number;
+  color?: string;
 }
 
 export interface NavigationSection {

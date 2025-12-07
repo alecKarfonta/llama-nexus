@@ -8,17 +8,124 @@ import {
   IconButton,
   Tooltip,
   Collapse,
-  Divider,
-  Paper
+  alpha,
+  Chip,
 } from '@mui/material'
 import {
-  Settings as SettingsIcon
+  Settings as SettingsIcon,
+  Refresh as RefreshIcon,
+  TrendingUp as TrendingUpIcon,
+  Schedule as ScheduleIcon,
 } from '@mui/icons-material'
 import { RealTimeMetricsDisplay } from '@/components/monitoring'
 import { ServiceStatusDisplay } from '@/components/monitoring/ServiceStatusDisplay'
 import { LogViewer } from '@/components/monitoring/LogViewer'
 import { TokenUsageTracker } from '@/components/monitoring/TokenUsageTracker'
 import { StatCard } from '@/components/dashboard/StatCard'
+
+// Section wrapper component for consistent styling
+interface SectionCardProps {
+  title: string
+  subtitle?: string
+  icon?: React.ReactNode
+  accentColor?: string
+  children: React.ReactNode
+  action?: React.ReactNode
+}
+
+const SectionCard: React.FC<SectionCardProps> = ({ 
+  title, 
+  subtitle, 
+  icon, 
+  accentColor = '#6366f1', 
+  children,
+  action 
+}) => (
+  <Card
+    sx={{
+      position: 'relative',
+      overflow: 'hidden',
+      background: 'linear-gradient(145deg, rgba(30, 30, 63, 0.6) 0%, rgba(26, 26, 46, 0.8) 100%)',
+      backdropFilter: 'blur(12px)',
+      border: '1px solid rgba(255, 255, 255, 0.06)',
+      borderRadius: 3,
+      transition: 'all 0.3s ease-in-out',
+      '&:hover': {
+        borderColor: alpha(accentColor, 0.2),
+        boxShadow: `0 8px 32px ${alpha(accentColor, 0.15)}`,
+      },
+    }}
+  >
+    {/* Top accent gradient */}
+    <Box
+      sx={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        height: 3,
+        background: `linear-gradient(90deg, ${accentColor} 0%, ${alpha(accentColor, 0.3)} 100%)`,
+      }}
+    />
+    
+    <CardContent sx={{ p: 2.5 }}>
+      {/* Header */}
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          {icon && (
+            <Box
+              sx={{
+                width: 36,
+                height: 36,
+                borderRadius: 2,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                bgcolor: alpha(accentColor, 0.1),
+                color: accentColor,
+                '& .MuiSvgIcon-root': {
+                  fontSize: 20,
+                },
+              }}
+            >
+              {icon}
+            </Box>
+          )}
+          <Box>
+            <Typography
+              variant="h6"
+              sx={{
+                fontWeight: 600,
+                fontSize: '1rem',
+                color: 'text.primary',
+                lineHeight: 1.3,
+              }}
+            >
+              {title}
+            </Typography>
+            {subtitle && (
+              <Typography
+                variant="caption"
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: '0.75rem',
+                }}
+              >
+                {subtitle}
+              </Typography>
+            )}
+          </Box>
+        </Box>
+        {action}
+      </Box>
+      
+      {/* Content */}
+      <Box sx={{ maxWidth: '100%', overflow: 'auto' }}>
+        {children}
+      </Box>
+    </CardContent>
+  </Card>
+)
 
 export const DashboardPage: React.FC = () => {
   // Stats for dashboard (would come from API in production)
@@ -36,57 +143,103 @@ export const DashboardPage: React.FC = () => {
       width: '100%', 
       maxWidth: '100vw',
       overflow: 'hidden',
-      px: 3,
-      py: 2,
-      boxSizing: 'border-box'
+      px: { xs: 2, sm: 3, md: 4 },
+      py: 3,
+      boxSizing: 'border-box',
+      minHeight: '100%',
     }}>
       {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+      <Box sx={{ 
+        display: 'flex', 
+        flexDirection: { xs: 'column', sm: 'row' },
+        justifyContent: 'space-between', 
+        alignItems: { xs: 'flex-start', sm: 'center' }, 
+        mb: 4,
+        gap: 2,
+      }}>
         <Box>
-          <Typography 
-            variant="h1" 
-            sx={{ 
-              fontWeight: 700, 
-              color: 'text.primary',
-              mb: 0.5,
-              fontSize: { xs: '1.25rem', sm: '1.5rem' },
-              lineHeight: 1
-            }}
-          >
-            ML Model Manager Dashboard
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 1 }}>
+            <Typography 
+              variant="h1" 
+              sx={{ 
+                fontWeight: 700, 
+                color: 'text.primary',
+                fontSize: { xs: '1.5rem', sm: '1.75rem', md: '2rem' },
+                lineHeight: 1,
+                background: 'linear-gradient(135deg, #f1f5f9 0%, #94a3b8 100%)',
+                WebkitBackgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+              }}
+            >
+              Dashboard
+            </Typography>
+            <Chip
+              size="small"
+              label="Live"
+              sx={{
+                height: 22,
+                bgcolor: alpha('#10b981', 0.1),
+                border: `1px solid ${alpha('#10b981', 0.2)}`,
+                color: '#34d399',
+                fontWeight: 600,
+                fontSize: '0.6875rem',
+                '& .MuiChip-label': {
+                  px: 1,
+                },
+              }}
+            />
+          </Box>
           <Typography 
             variant="body2" 
             color="text.secondary" 
             sx={{ 
-              fontSize: '0.8125rem',
-              mb: { xs: 1, sm: 2 }
+              fontSize: '0.875rem',
+              maxWidth: 400,
             }}
           >
-            Monitor your ML models and service performance in real-time
+            Monitor your ML models and infrastructure performance in real-time
           </Typography>
         </Box>
-        <Box>
+        
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Tooltip title="Refresh Data">
+            <IconButton 
+              size="small"
+              sx={{
+                width: 38,
+                height: 38,
+                borderRadius: 2,
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                bgcolor: 'rgba(255, 255, 255, 0.03)',
+                transition: 'all 0.2s ease-in-out',
+                '&:hover': {
+                  bgcolor: 'rgba(255, 255, 255, 0.08)',
+                  borderColor: 'rgba(255, 255, 255, 0.15)',
+                },
+              }}
+            >
+              <RefreshIcon sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Dashboard Settings">
             <IconButton 
               onClick={() => setShowSettings(!showSettings)}
               size="small"
               sx={{
-                bgcolor: showSettings ? 'action.selected' : 'transparent',
-                '&:hover': { bgcolor: 'action.hover' }
+                width: 38,
+                height: 38,
+                borderRadius: 2,
+                border: '1px solid',
+                borderColor: showSettings ? alpha('#6366f1', 0.3) : 'rgba(255, 255, 255, 0.08)',
+                bgcolor: showSettings ? alpha('#6366f1', 0.1) : 'rgba(255, 255, 255, 0.03)',
+                transition: 'all 0.2s ease-in-out',
+                '&:hover': {
+                  bgcolor: showSettings ? alpha('#6366f1', 0.15) : 'rgba(255, 255, 255, 0.08)',
+                  borderColor: showSettings ? alpha('#6366f1', 0.4) : 'rgba(255, 255, 255, 0.15)',
+                },
               }}
             >
-              <SettingsIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Refresh Data">
-            <IconButton 
-              size="small"
-              sx={{
-                '&:hover': { bgcolor: 'action.hover' }
-              }}
-            >
-              ⟲
+              <SettingsIcon sx={{ fontSize: 18 }} />
             </IconButton>
           </Tooltip>
         </Box>
@@ -94,48 +247,57 @@ export const DashboardPage: React.FC = () => {
 
       {/* Settings Panel */}
       <Collapse in={showSettings}>
-        <Card sx={{ mb: 2, borderRadius: 0.5, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.1)', border: '1px solid', borderColor: 'grey.200' }}>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
+        <Card 
+          sx={{ 
+            mb: 3, 
+            background: 'linear-gradient(145deg, rgba(30, 30, 63, 0.6) 0%, rgba(26, 26, 46, 0.8) 100%)',
+            backdropFilter: 'blur(12px)',
+            border: '1px solid rgba(255, 255, 255, 0.06)',
+            borderRadius: 3,
+          }}
+        >
+          <CardContent sx={{ p: 2.5 }}>
+            <Typography variant="h6" sx={{ fontWeight: 600, mb: 1 }}>
               Dashboard Settings
             </Typography>
             <Typography variant="body2" color="text.secondary">
               Configure dashboard refresh rate, displayed metrics, and other preferences.
-            </Typography>
-            <Divider sx={{ my: 2 }} />
-            <Typography variant="body2" color="text.secondary">
-              Settings panel content would go here.
             </Typography>
           </CardContent>
         </Card>
       </Collapse>
       
       {/* Stats Cards */}
-      <Paper sx={{ 
-        p: 2, 
-        mb: 3, 
-        borderRadius: 0.5,
-        bgcolor: 'background.paper',
-        border: '1px solid',
-        borderColor: 'grey.200'
-      }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-          {/* Dashboard icon would go here */}
-          <Typography variant="h6">Key Metrics</Typography>
+      <Box sx={{ mb: 4 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
+          <TrendingUpIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
+          <Typography 
+            variant="overline" 
+            sx={{ 
+              color: 'text.secondary',
+              fontSize: '0.6875rem',
+              fontWeight: 600,
+              letterSpacing: '0.08em',
+            }}
+          >
+            Key Metrics
+          </Typography>
         </Box>
-        <Grid container spacing={1.5} sx={{ width: 'auto', mx: 0 }}>
+        <Grid container spacing={2}>
           <Grid item xs={12} sm={6} lg={3}>
             <StatCard 
               variant="models" 
               value={stats.totalModels} 
-              label="Total Models" 
+              label="Total Models"
+              trend={{ value: 12, positive: true }}
             />
           </Grid>
           <Grid item xs={12} sm={6} lg={3}>
             <StatCard 
               variant="active" 
               value={stats.activeServices} 
-              label="Active Services" 
+              label="Active Services"
+              trend={{ value: 5, positive: true }}
             />
           </Grid>
           <Grid item xs={12} sm={6} lg={3}>
@@ -149,76 +311,61 @@ export const DashboardPage: React.FC = () => {
             <StatCard 
               variant="performance" 
               value={stats.performance} 
-              label="Avg Performance" 
+              label="Avg Performance"
+              trend={{ value: 3, positive: true }}
             />
           </Grid>
         </Grid>
-      </Paper>
+      </Box>
       
       {/* Main Content */}
-      <Box sx={{ flexGrow: 1, overflow: 'auto', maxWidth: '100%' }}>
-        <Grid container spacing={1.5} sx={{ width: 'auto', mx: 0 }}>
-          <Grid item xs={12}>
-            <Paper sx={{ 
-              p: 2, 
-              borderRadius: 0.5,
-              bgcolor: 'background.paper',
-              border: '1px solid',
-              borderColor: 'grey.200'
-            }}>
-              <Typography variant="h6" gutterBottom>Service Status</Typography>
-              <Box sx={{ maxWidth: '100%', overflow: 'auto' }}>
-                <ServiceStatusDisplay />
-              </Box>
-            </Paper>
-          </Grid>
-          
-          <Grid item xs={12}>
-            <Paper sx={{ 
-              p: 2, 
-              borderRadius: 0.5,
-              bgcolor: 'background.paper',
-              border: '1px solid',
-              borderColor: 'grey.200'
-            }}>
-              <Typography variant="h6" gutterBottom>Real-Time Metrics</Typography>
-              <Box sx={{ maxWidth: '100%', overflow: 'auto' }}>
-                <RealTimeMetricsDisplay showWebSocketStatus />
-              </Box>
-            </Paper>
-          </Grid>
-          
-          <Grid item xs={12}>
-            <Paper sx={{ 
-              p: 2, 
-              borderRadius: 0.5,
-              bgcolor: 'background.paper',
-              border: '1px solid',
-              borderColor: 'grey.200'
-            }}>
-              <Typography variant="h6" gutterBottom>Token Usage Tracking</Typography>
-              <Box sx={{ maxWidth: '100%', overflow: 'auto' }}>
-                <TokenUsageTracker />
-              </Box>
-            </Paper>
-          </Grid>
-
-          <Grid item xs={12}>
-            <Paper sx={{ 
-              p: 2, 
-              borderRadius: 0.5,
-              bgcolor: 'background.paper',
-              border: '1px solid',
-              borderColor: 'grey.200'
-            }}>
-              <Typography variant="h6" gutterBottom>System Logs</Typography>
-              <Box sx={{ maxWidth: '100%', overflow: 'auto' }}>
-                <LogViewer />
-              </Box>
-            </Paper>
-          </Grid>
+      <Grid container spacing={3}>
+        {/* Service Status */}
+        <Grid item xs={12} lg={6}>
+          <SectionCard
+            title="Service Status"
+            subtitle="Infrastructure health overview"
+            accentColor="#10b981"
+            icon={<ScheduleIcon />}
+          >
+            <ServiceStatusDisplay />
+          </SectionCard>
         </Grid>
-      </Box>
+        
+        {/* Real-Time Metrics */}
+        <Grid item xs={12} lg={6}>
+          <SectionCard
+            title="Real-Time Metrics"
+            subtitle="System resource utilization"
+            accentColor="#06b6d4"
+            icon={<TrendingUpIcon />}
+          >
+            <RealTimeMetricsDisplay showWebSocketStatus />
+          </SectionCard>
+        </Grid>
+        
+        {/* Token Usage */}
+        <Grid item xs={12}>
+          <SectionCard
+            title="Token Usage Tracking"
+            subtitle="Monitor API consumption"
+            accentColor="#8b5cf6"
+          >
+            <TokenUsageTracker />
+          </SectionCard>
+        </Grid>
+
+        {/* System Logs */}
+        <Grid item xs={12}>
+          <SectionCard
+            title="System Logs"
+            subtitle="Real-time log stream"
+            accentColor="#f59e0b"
+          >
+            <LogViewer />
+          </SectionCard>
+        </Grid>
+      </Grid>
     </Box>
   )
 }
