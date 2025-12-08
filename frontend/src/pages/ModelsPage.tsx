@@ -101,6 +101,9 @@ export const ModelsPage: React.FC = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [fileToDelete, setFileToDelete] = useState<any | null>(null)
   const [deleting, setDeleting] = useState(false)
+  
+  // State for highlighting a local file when linked from model
+  const [highlightedFilePath, setHighlightedFilePath] = useState<string | null>(null)
 
   // Fetch models on component mount
   useEffect(() => {
@@ -306,6 +309,14 @@ export const ModelsPage: React.FC = () => {
   const handleDeleteClick = (file: any) => {
     setFileToDelete(file)
     setDeleteDialogOpen(true)
+  }
+  
+  // Handle clicking on a model's local file link
+  const handleLocalFileClick = (localPath: string) => {
+    setHighlightedFilePath(localPath)
+    setActiveTab(1) // Switch to Downloaded Files tab
+    // Clear highlight after 3 seconds
+    setTimeout(() => setHighlightedFilePath(null), 3000)
   }
   
   const handleDeleteConfirm = async () => {
@@ -743,6 +754,44 @@ export const ModelsPage: React.FC = () => {
                         Size: {formatBytes(model.size)}
                       </Typography>
                     )}
+                    
+                    {/* Local File Link */}
+                    {model.localPath && (
+                      <Tooltip title={`View file: ${model.filename || model.localPath}`}>
+                        <Box 
+                          onClick={() => handleLocalFileClick(model.localPath!)}
+                          sx={{ 
+                            mt: 0.5, 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: 0.5,
+                            cursor: 'pointer',
+                            '&:hover': {
+                              '& .MuiTypography-root': {
+                                color: 'primary.main',
+                                textDecoration: 'underline'
+                              }
+                            }
+                          }}
+                        >
+                          <FolderIcon sx={{ fontSize: '0.8rem', color: 'text.secondary' }} />
+                          <Typography 
+                            variant="caption" 
+                            color="text.secondary" 
+                            sx={{ 
+                              fontSize: '0.65rem',
+                              fontFamily: 'monospace',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              maxWidth: '150px'
+                            }}
+                          >
+                            {model.filename || model.localPath}
+                          </Typography>
+                        </Box>
+                      </Tooltip>
+                    )}
                 </CardContent>
                 <CardActions sx={{ pt: 0, pb: 1, px: 1, gap: 0.5 }}>
                     <Button 
@@ -891,7 +940,15 @@ export const ModelsPage: React.FC = () => {
                       key={file.path}
                       sx={{ 
                         '&:hover': { bgcolor: 'grey.50' },
-                        '&:last-child td, &:last-child th': { border: 0 }
+                        '&:last-child td, &:last-child th': { border: 0 },
+                        ...(highlightedFilePath === file.path && {
+                          bgcolor: 'primary.50',
+                          animation: 'highlight-pulse 1s ease-in-out 2',
+                          '@keyframes highlight-pulse': {
+                            '0%, 100%': { bgcolor: 'primary.50' },
+                            '50%': { bgcolor: 'primary.100' }
+                          }
+                        })
                       }}
                     >
                       <TableCell sx={{ fontSize: '0.8rem' }}>
@@ -1023,6 +1080,29 @@ export const ModelsPage: React.FC = () => {
                   <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
                     {selectedModel.repositoryId}
                   </Typography>
+                </Box>
+              )}
+              
+              {selectedModel.localPath && (
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary">Local File</Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
+                    <FolderIcon sx={{ fontSize: '1rem', color: 'text.secondary' }} />
+                    <Typography 
+                      variant="body2" 
+                      sx={{ 
+                        fontFamily: 'monospace',
+                        cursor: 'pointer',
+                        '&:hover': { color: 'primary.main', textDecoration: 'underline' }
+                      }}
+                      onClick={() => {
+                        setInfoDialogOpen(false)
+                        handleLocalFileClick(selectedModel.localPath!)
+                      }}
+                    >
+                      {selectedModel.filename || selectedModel.localPath}
+                    </Typography>
+                  </Box>
                 </Box>
               )}
               

@@ -149,9 +149,9 @@ export default function BenchmarkPage() {
     setError(null)
     try {
       const [presetsRes, historyRes, statsRes] = await Promise.all([
-        fetch('/backend/api/v1/benchmark/presets').then(r => r.json()),
-        fetch('/backend/api/v1/benchmark/history?limit=20').then(r => r.json()),
-        fetch('/backend/api/v1/benchmark/stats').then(r => r.json()),
+        fetch('/api/v1/benchmark/presets').then(r => r.json()),
+        fetch('/api/v1/benchmark/history?limit=20').then(r => r.json()),
+        fetch('/api/v1/benchmark/stats').then(r => r.json()),
       ])
       setPresets(presetsRes.presets || {})
       setBenchmarkHistory(historyRes.benchmarks || [])
@@ -180,7 +180,7 @@ export default function BenchmarkPage() {
   // Poll for active benchmark status
   const pollBenchmarkStatus = useCallback(async (benchmarkId: string) => {
     try {
-      const response = await fetch(`/backend/api/v1/benchmark/${benchmarkId}`)
+      const response = await fetch(`/api/v1/benchmark/${benchmarkId}`)
       if (response.ok) {
         const result = await response.json()
         setActiveBenchmark(result)
@@ -206,7 +206,7 @@ export default function BenchmarkPage() {
     setActiveBenchmark(null)
     
     try {
-      const response = await fetch('/backend/api/v1/benchmark/run', {
+      const response = await fetch('/api/v1/benchmark/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -253,7 +253,7 @@ export default function BenchmarkPage() {
   // Delete a benchmark
   const handleDeleteBenchmark = async (benchmarkId: string) => {
     try {
-      await fetch(`/backend/api/v1/benchmark/${benchmarkId}`, {
+      await fetch(`/api/v1/benchmark/${benchmarkId}`, {
         method: 'DELETE',
       })
       loadData()
@@ -265,7 +265,7 @@ export default function BenchmarkPage() {
   // View benchmark details
   const handleViewBenchmark = async (benchmarkId: string) => {
     try {
-      const response = await fetch(`/backend/api/v1/benchmark/${benchmarkId}`)
+      const response = await fetch(`/api/v1/benchmark/${benchmarkId}`)
       if (response.ok) {
         const result = await response.json()
         setActiveBenchmark(result)

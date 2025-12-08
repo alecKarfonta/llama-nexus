@@ -1,6 +1,655 @@
 # Llama Nexus Deployment Notes
 
-## Latest Deployment: Native MXFP4 GPT-OSS-20B with llama.cpp - IN PROGRESS 🚀
+## Feature: Multi-Modal Chat Inputs (Images & Voice) - COMPLETED
+
+**Date**: 2025-12-08
+**Status**: Implemented
+
+### Overview
+Added support for multi-modal inputs in the Chat page, including:
+1. Image upload functionality with preview
+2. Voice input with OpenAI Whisper transcription
+
+### Changes Made
+
+#### Frontend (`frontend/src/pages/ChatPage.tsx`)
+
+1. **Image Upload Functionality**:
+   - Added file input for selecting multiple images
+   - Image preview section showing thumbnails with remove buttons
+   - Support for multiple image uploads
+   - Client-side validation (file type and size limits - max 20MB)
+   - Images converted to base64 and included in message content
+   - Multi-modal message format: `{ type: 'multi_modal', text: '...', images: [...] }`
+
+2. **Voice Recording & Transcription**:
+   - Microphone button with recording indicator (animated pulse effect)
+   - Web Audio API integration for capturing audio
+   - Audio recording dialog with visual feedback
+   - OpenAI Whisper API integration for transcription
+   - Transcribed text automatically inserted into input field
+   - Separate API key setting for OpenAI services (voice transcription)
+
+3. **Settings Updates**:
+   - Added `openaiApiKey` field to ChatSettings interface
+   - New settings field: "OpenAI API Key (for voice)" for Whisper API access
+   - API key stored in localStorage with other chat settings
+
+4. **Message Rendering**:
+   - Enhanced message display to handle multi-modal content
+   - Images rendered inline with messages
+   - Responsive image display with proper sizing and borders
+
+5. **UI Components Added**:
+   - AttachFile icon button for image uploads
+   - Mic icon button for voice recording (changes to Stop when recording)
+   - Image preview grid with thumbnails and remove buttons
+   - Audio recording dialog with:
+     - Animated microphone icon during recording
+     - Loading spinner during transcription
+     - Error display for failures
+     - Stop/Cancel buttons
+
+6. **State Management**:
+   - `uploadedImages`: Array of uploaded images with file, preview URL, and base64 data
+   - `isRecording`: Boolean flag for recording state
+   - `isTranscribing`: Boolean flag for transcription in progress
+   - `audioError`: Error message display for recording/transcription failures
+   - `showAudioDialog`: Controls audio recording dialog visibility
+
+7. **Memory Management**:
+   - Proper cleanup of image preview URLs using `URL.revokeObjectURL()`
+   - Cleanup effect on component unmount
+   - Images cleared after message is sent
+
+### Usage
+
+**Image Upload**:
+1. Click the paperclip (AttachFile) icon next to the input field
+2. Select one or more images (jpg, png, gif, webp)
+3. Images appear as thumbnails above the input
+4. Click X on thumbnail to remove an image
+5. Send message - images are included in the message content
+
+**Voice Input**:
+1. Ensure OpenAI API key is configured in Chat Settings
+2. Click the microphone icon
+3. Grant microphone permissions when prompted
+4. Speak your message
+5. Click "Stop Recording" when done
+6. Wait for transcription to complete
+7. Transcribed text appears in the input field
+
+### Technical Notes
+
+- **Image format**: Base64-encoded data URLs included in message content array
+- **Message format**: OpenAI-compatible multi-modal format
+  - Content is an array of parts: `[{type: 'text', text: '...'}, {type: 'image_url', image_url: {url: '...'}}]`
+  - String content for text-only messages (backwards compatible)
+- **Audio format**: WebM audio sent to OpenAI Whisper API
+- **Transcription endpoint**: `https://api.openai.com/v1/audio/transcriptions`
+- **Whisper model**: `whisper-1`
+- **Token estimation**: Images are estimated at ~100 tokens each for context tracking
+- **TypeScript types**: `ChatMessage.content` can be string or array of content parts
+
+### API Compatibility
+
+The multi-modal message format follows OpenAI's Vision API standard:
+```typescript
+{
+  role: 'user',
+  content: [
+    { type: 'text', text: 'What is in this image?' },
+    { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,...' } }
+  ]
+}
+```
+
+This format is compatible with:
+- OpenAI GPT-4 Vision
+- GPT-4o (mini/regular)
+- Claude 3 models (Anthropic)
+- LLaVA models (via llama.cpp)
+- Other vision-capable models that support OpenAI format
+
+### Troubleshooting
+
+**Issue**: 400 Bad Request when sending images
+- **Cause**: Message content was being sent as JSON string instead of array
+- **Fix**: Content is now properly formatted as array of content parts
+- **Verified**: Messages now use OpenAI-compatible format
+
+**Issue**: Images not displaying in messages
+- **Cause**: Renderer was trying to parse JSON string
+- **Fix**: Renderer now checks if content is array and handles both formats
+
+**Issue**: TypeScript errors with content field
+- **Cause**: ChatMessage type only allowed string content
+- **Fix**: Updated type to allow `string | Array<ContentPart>`
+
+### Future Enhancements
+
+- Support for video uploads
+- Integration with local Whisper model (avoid external API dependency)
+- Drag-and-drop image upload
+- Image editing/cropping before sending
+- Audio playback of recordings before transcription
+- Support for other audio transcription services
+- Image compression for large files
+- Support for other vision model formats (Anthropic, etc.)
+
+---
+
+## Feature: Embedding Model Deployment Control - COMPLETED
+
+**Date**: 2025-12-08
+**Status**: Completed
+
+### Overview
+Added the ability to deploy and control a dedicated embedding model service for RAG functionality.
+
+### Implementation
+
+#### Backend (`backend/main.py`)
+1. **EmbeddingManager Class**:
+   - Created `EmbeddingManager` similar to `LlamaCppManager`
+   - Manages lifecycle of embedding service Docker container
+   - Handles configuration for embedding models
+   - Supports both GPU and CPU execution modes
+   - Configurable CUDA device selection
+
+2. **API Endpoints**:
+   - `POST /api/v1/embedding/start` - Start embedding service
+   - `POST /api/v1/embedding/stop` - Stop embedding service
+   - `POST /api/v1/embedding/restart` - Restart embedding service
+   - `GET /api/v1/embedding/status` - Get service status
+   - `GET /api/v1/embedding/config` - Get configuration and available models
+   - `PUT /api/v1/embedding/config` - Update configuration
+
+3. **Supported Models**:
+   - nomic-embed-text-v1.5 (768D, 8192 tokens) - Recommended
+   - e5-mistral-7b (4096D, 32768 tokens)
+   - bge-m3 (1024D, 8192 tokens)
+   - gte-Qwen2-1.5B (1536D, 32768 tokens)
+
+#### Docker (`docker-compose.yml`)
+1. **llamacpp-embed Service**:
+   - Optional service with `embed` profile
+   - Uses same Dockerfile as main service
+   - Runs on port 8602
+   - Uses start-embed.sh entrypoint
+   - Shares model volume with main service
+   - Supports GPU/CPU execution
+   - Independent from main LLM service
+
+#### Frontend (`frontend/src/pages/DeployPage.tsx`)
+1. **New "Embedding Service" Tab**:
+   - Status display with running/stopped indicator
+   - Start/Stop/Restart controls
+   - Model selection dropdown with descriptions
+   - Quantization variant selection (Q8_0, Q4_K_M, Q4_0)
+   - Context size configuration
+   - GPU layers configuration
+   - Execution mode selection (GPU/CPU)
+   - CUDA device selection
+   - Save configuration button
+
+2. **State Management**:
+   - Embedding service status tracking
+   - Configuration management
+   - Periodic status refresh (5s interval)
+   - Error and success notifications
+
+### Usage
+1. **Deploy Embedding Service**:
+   - Navigate to Deploy page > Embedding Service tab
+   - Select embedding model and configuration
+   - Click "Start" to deploy the service
+   - Service will be available at port 8602
+
+2. **Configure Embedding Model**:
+   - Choose from 4 pre-configured models
+   - Select quantization level (Q8_0 recommended)
+   - Set context size and GPU layers
+   - Choose GPU or CPU execution
+   - Save configuration and restart service
+
+3. **Integration with RAG**:
+   - Embedding service provides OpenAI-compatible API
+   - Can be used by RAG document manager
+   - Endpoint: `http://localhost:8602/v1/embeddings`
+
+### Benefits
+- Dedicated embedding service separate from main LLM
+- Supports multiple embedding models
+- GPU-accelerated embedding generation
+- Easy deployment and management through UI
+- OpenAI-compatible API for easy integration
+
+### RAG System Integration
+
+#### Backend Integration (`backend/main.py`)
+
+1. **Updated APIEmbedder** (`modules/rag/embedders/api_embedder.py`):
+   - Added support for local llama.cpp embedding models
+   - Models use `llamacpp` provider with default endpoint `http://localhost:8602/v1`
+   - OpenAI-compatible API format for seamless integration
+
+2. **Environment Variables**:
+   - `USE_DEPLOYED_EMBEDDINGS` - Enable/disable deployed service (default: false)
+   - `EMBEDDING_SERVICE_URL` - Service endpoint (default: http://localhost:8602/v1)
+   - `DEFAULT_EMBEDDING_MODEL` - Default model name (default: all-MiniLM-L6-v2)
+
+3. **Embedder Factory Function** (`create_embedder`):
+   - Automatically selects between local and deployed embeddings
+   - Falls back to local if deployed service is not running
+   - Checks if requested model is supported by deployed service
+   - Provides centralized configuration point
+
+4. **API Endpoints**:
+   - `GET /api/v1/rag/embeddings/config` - Get RAG embedding configuration
+   - `PUT /api/v1/rag/embeddings/config` - Update RAG embedding configuration
+   - Returns service status and current settings
+
+5. **RAG Endpoint Updates**:
+   - All RAG endpoints now use `create_embedder()` factory
+   - Document processing uses configured embedding source
+   - Retrieval operations use configured embedding source
+   - Seamless fallback to local embeddings
+
+#### Frontend Integration
+
+1. **New EmbeddingDeployPage** (`frontend/src/pages/EmbeddingDeployPage.tsx`):
+   - Dedicated page for embedding model deployment (separate from LLM Deploy page)
+   - Service status with real-time updates
+   - Start/Stop/Restart controls with visual feedback
+   - Model configuration (selection, quantization, context size, GPU layers)
+   - Execution mode selection (GPU/CPU)
+   - CUDA device selection
+   - RAG System Integration section
+   - Toggle between local and deployed embedding service
+   - Configure default embedding model and service URL
+   - Save configurations with status feedback
+   - **Test Embedding Section**:
+     - Input text field for testing
+     - Generate embedding button
+     - Results display showing:
+       - Vector dimensions
+       - Processing time
+       - Model used
+       - Token usage
+       - Sample of embedding vector (first 10 dimensions)
+
+2. **Navigation** (`frontend/src/App.tsx` and `frontend/src/components/layout/Sidebar.tsx`):
+   - Moved to **Knowledge & RAG** section (renamed from "Knowledge Base")
+   - Listed as "Embeddings" (first item in section)
+   - Route: `/embedding-deploy`
+   - New **Deployment** section created for LLM deployment
+   - Refined menu structure:
+     - **Overview**: Dashboard, Models, Registry
+     - **Development**: Chat, Prompts, Templates, Workflows, Testing, Benchmark, Batch, Compare
+     - **Deployment**: Deploy LLM
+     - **Knowledge & RAG**: Embeddings, Documents, Knowledge Graph, Discovery, RAG Search
+     - **Operations**: Monitoring, API Docs, Settings
+
+3. **Features**:
+   - Real-time service status display (updates every 5 seconds)
+   - Warning when service is not running
+   - Automatic fallback indication
+   - Clear visual feedback on configuration changes
+   - Uptime display when service is running
+   - Service endpoint information
+   - **Live Testing**: Test embeddings directly from the deployment page
+   - Performance metrics display (processing time, dimensions, tokens)
+
+### Troubleshooting
+
+**Issue: Embedding service failed to start**
+
+Common causes and solutions:
+
+1. **Missing Docker Image**
+   - Error: `Unable to find image 'llamacpp-api:latest' locally`
+   - Solution: Build the image first:
+     ```bash
+     cd /home/alec/git/llama-nexus
+     docker compose build llamacpp-api
+     docker tag llama-nexus-llamacpp-api:latest llamacpp-api:latest
+     ```
+
+2. **Incorrect Entrypoint Path**
+   - Error: `/home/alec/git/llama-nexus/start-embed.sh: No such file or directory`
+   - Solution: Ensure start-embed.sh is mounted as a volume and path is correct in docker-compose.yml:
+     ```yaml
+     volumes:
+       - ./start-embed.sh:/start-embed.sh:ro
+     entrypoint: ["/bin/bash", "/start-embed.sh"]
+     ```
+
+3. **Flash Attention Argument Error**
+   - Error: `error: unknown value for --flash-attn: '--cont-batching'`
+   - Solution: Ensure --flash-attn has a value (auto, on, or off):
+     ```bash
+     --flash-attn auto \
+     --cont-batching
+     ```
+
+4. **CUDA Device Not Found (Warning Only)**
+   - Warning: `no CUDA-capable device is detected`
+   - Note: This is a warning, not an error. Service will run on CPU if GPU unavailable.
+   - For GPU acceleration, ensure:
+     - NVIDIA drivers are installed
+     - Docker has nvidia runtime configured
+     - Container has `runtime: nvidia` in docker-compose.yml
+
+5. **Context Size Capping**
+   - Warning: `slot context exceeds training context - capping`
+   - Note: Model will cap context to its training size (e.g., 2048 for some models)
+   - This is normal and expected behavior
+
+### Usage Workflow
+
+1. **Deploy Embedding Service**:
+   ```bash
+   # Start with docker-compose
+   docker-compose --profile embed up -d llamacpp-embed
+   
+   # Or use the UI: Deploy > Embedding Service > Start
+   ```
+
+2. **Configure RAG Integration**:
+   - Navigate to Deploy > Embedding Service tab
+   - Scroll to "RAG System Integration" section
+   - Toggle "Use Deployed Embedding Service" to "Deployed Service"
+   - Click "Save RAG Configuration"
+
+3. **Process Documents**:
+   - Documents uploaded to RAG system will automatically use deployed embeddings
+   - No changes needed to existing RAG API calls
+   - Factory function handles routing transparently
+
+4. **Fallback Behavior**:
+   - If deployed service stops, system automatically falls back to local embeddings
+   - No errors or interruptions in document processing
+   - Warning logged when fallback occurs
+
+### Supported Models by Source
+
+**Deployed Service Models** (via llama.cpp):
+- nomic-embed-text-v1.5 (768D, 8192 tokens)
+- e5-mistral-7b (4096D, 32768 tokens)
+- bge-m3 (1024D, 8192 tokens)
+- gte-Qwen2-1.5B (1536D, 32768 tokens)
+
+**Local Models** (via sentence-transformers):
+- all-MiniLM-L6-v2 (384D, 256 tokens)
+- all-mpnet-base-v2 (768D, 384 tokens)
+- BAAI/bge-large-en-v1.5 (1024D, 512 tokens)
+- BAAI/bge-small-en-v1.5 (384D, 512 tokens)
+- intfloat/e5-large-v2 (1024D, 512 tokens)
+- thenlper/gte-large (1024D, 512 tokens)
+
+### Performance Benefits
+
+**Deployed Service Advantages**:
+- GPU-accelerated embedding generation (up to 10x faster)
+- Larger context windows (up to 32K tokens)
+- Better support for long documents
+- Dedicated resources (doesn't compete with LLM)
+- Batch processing optimization
+
+**When to Use Local**:
+- Small documents with short context
+- Limited GPU memory
+- Testing and development
+- Offline environments
+- Quick prototyping
+
+---
+
+## Feature: GPU/CPU Execution Mode Selection - COMPLETED
+
+**Date**: 2025-12-07
+**Status**: Implemented
+
+### Overview
+Added the ability to choose between GPU and CPU execution modes, and select specific GPU devices for model deployment.
+
+### Changes Made
+
+#### Backend (`backend/main.py`)
+1. **New GPU Listing Endpoint**:
+   - Added `/api/v1/system/gpus` endpoint
+   - Lists all available GPUs with detailed information (name, VRAM, utilization, temperature, etc.)
+   - Returns structured data with `available`, `gpus`, and `count` fields
+
+2. **Configuration Update**:
+   - Added `execution` section to config with two fields:
+     - `mode`: "gpu" or "cpu" - determines execution mode
+     - `cuda_devices`: "all", "0", "0,1", etc. - specifies which GPU(s) to use
+   - Default values: `mode: "gpu"`, `cuda_devices: "all"`
+
+3. **Docker Container Startup**:
+   - Updated `start_docker_sdk()` to respect execution mode
+   - Updated `start_docker_cli()` to conditionally add `--runtime nvidia` only for GPU mode
+   - CUDA environment variables (`CUDA_VISIBLE_DEVICES`, `NVIDIA_VISIBLE_DEVICES`) now use configured values
+   - Runtime is set to `None` for CPU mode (no NVIDIA runtime)
+
+4. **Command Building**:
+   - Modified `build_command()` to override `--n-gpu-layers` to 0 when execution mode is "cpu"
+   - Respects user-configured GPU layers when mode is "gpu"
+
+#### Frontend (`frontend/src/pages/DeployPage.tsx`)
+1. **Configuration Interface**:
+   - Added `execution` section to `Config` type
+   - Added default values for execution settings
+
+2. **GPU State Management**:
+   - Added `gpuList` state to store detected GPUs
+   - Added `gpusAvailable` flag
+   - Fetches GPU list during initialization via `/api/v1/system/gpus`
+
+3. **New UI Components** (Model Tab):
+   - **Execution Mode Selector**: Dropdown to choose between "GPU Acceleration" and "CPU Only"
+   - **CUDA Devices Selector**: 
+     - Dropdown showing individual GPUs with their specs
+     - Option for "All GPUs"
+     - Option for "Custom" to enter comma-separated GPU indices (e.g., "0,1")
+     - Automatically switches to text field for custom values
+     - Disabled when CPU mode is selected
+   - **GPU Information Panel**: Shows all detected GPUs with:
+     - GPU index and name
+     - VRAM usage (used/total with percentage)
+     - Utilization percentage and temperature
+
+### Benefits
+- **Flexibility**: Can now choose to run models on CPU for testing or when GPU is unavailable
+- **Multi-GPU Support**: Allows selection of specific GPUs or GPU combinations
+- **Resource Management**: Better control over which hardware resources are used
+- **Transparency**: Shows all available GPUs and their current state
+
+### Usage
+1. Navigate to Deploy page
+2. In the Model tab, find the "Execution Settings" section
+3. Select execution mode (GPU or CPU)
+4. If GPU mode, select which GPU(s) to use
+5. Save and restart the service
+
+### Technical Details
+- CPU mode automatically sets GPU layers to 0 regardless of configuration
+- GPU device selection uses `CUDA_VISIBLE_DEVICES` environment variable
+- Docker containers are started without NVIDIA runtime in CPU mode
+- Frontend persists execution settings in localStorage
+
+---
+
+## Bug Fix: Deploy Page Model Dropdown Not Working - FIXED
+
+**Date**: 2025-12-07
+**Status**: Fixed
+
+### Problem
+- Model dropdown on Deploy page didn't match the styling of other dropdowns
+- Originally used native HTML `<select>` for debugging
+- After switching to MUI `Select`, dropdown wouldn't change selection when clicking menu items
+- onChange event never fired
+
+### Root Cause (Multiple Issues)
+1. **Initial**: Native HTML select with hardcoded styles left in for debugging, MUI Select hidden
+2. **After restoring MUI Select**: Complex issues preventing selection:
+   - `displayEmpty` prop combined with `value={config.model.name || ''}` caused display issues
+   - `onClick` handler on Select component interfered with internal selection mechanism
+   - Debug `onClick`/`onMouseDown` handlers on MenuItem prevented event propagation
+   - Complex conditional MenuItem rendering (showing current model if not in list, etc.)
+
+### Solution
+Simplified the model Select to match the working variant Select exactly:
+- Removed `displayEmpty` prop
+- Removed all `onClick` handlers from Select component
+- Removed all event handlers from MenuItem components
+- Simplified MenuItem rendering to just `availableModelNames.map()`
+- Removed excessive console logging
+- Removed MenuProps customization
+
+### Key Lesson
+MUI Select components are sensitive to:
+- Event handlers that interfere with internal click handling
+- Complex conditional MenuItem rendering
+- Keep it simple - just value, onChange, and map MenuItems
+
+### Files Fixed
+- `frontend/src/pages/DeployPage.tsx`: Simplified model dropdown to match variant dropdown structure
+
+---
+
+## Bug Fix: Benchmark Page and Batch Processing Page - FIXED
+
+**Date**: 2025-12-07
+**Status**: Fixed
+
+### Problem
+- Benchmark page displayed error: `Unexpected token '<', "<!DOCTYPE "... is not valid JSON`
+- Hitting `http://192.168.1.77:3002/benchmark` returned HTML page instead of API response
+
+### Root Cause
+- Frontend pages were using `/backend/api/v1/...` paths for API calls
+- Nginx config has no `/backend/` location - these requests fell through to the catch-all `/` location
+- The catch-all serves `index.html` (SPA routing), returning HTML instead of JSON
+
+### Files Fixed
+1. `frontend/src/pages/BenchmarkPage.tsx`:
+   - Changed all `/backend/api/v1/benchmark/...` to `/api/v1/benchmark/...`
+   
+2. `frontend/src/pages/BatchProcessingPage.tsx`:
+   - Changed all `/backend/api/v1/batch/...` to `/api/v1/batch/...`
+
+### Correct Path Pattern
+- Nginx routes `/api/v1/` to `backend-api:8700/api/v1/`
+- Frontend should use `/api/v1/...` paths (without `/backend` prefix)
+
+---
+
+## Bug Fix: Token Tracker Import - FIXED
+
+**Date**: 2025-12-07
+**Status**: Fixed
+
+### Problem
+- Dashboard showed 503 error for `/v1/usage/tokens?timeRange=24h`
+- Backend returned `{"detail":"Token tracker not available"}`
+
+### Root Cause
+- Import in `main.py` tried `from token_tracker import token_tracker`
+- Dockerfile copies modules to `/app/modules/`, not `/app/`
+- Import path should be `from modules.token_tracker import token_tracker`
+
+### Fix
+Updated imports in `backend/main.py` to:
+1. First try `from modules.token_tracker import ...` (Docker path)
+2. Fallback to `from token_tracker import ...` (local dev path)
+3. Log warning if neither works
+
+---
+
+## Bug Fix: MonitoringPage Metrics Path - FIXED
+
+**Date**: 2025-12-07
+**Status**: Fixed
+
+### Problem
+- MonitoringPage was fetching `/llamacpp/metrics` which doesn't exist in nginx
+
+### Fix
+- Changed to `/metrics` which is the correct nginx route to llamacpp-api:8080/metrics
+
+---
+
+## Feature: Model to Local File Linking - COMPLETED
+
+**Date**: 2025-12-07
+**Status**: Implemented
+
+### Changes Made
+1. **Backend** (`backend/main.py`):
+   - Modified `list_local_models()` in DownloadManager to include `localPath` and `filename` fields
+   - `localPath`: Relative path from models directory
+   - `filename`: Actual filename on disk
+
+2. **Frontend Types** (`frontend/src/types/api.ts`):
+   - Added `localPath?: string` and `filename?: string` to ModelInfo interface
+
+3. **Frontend API** (`frontend/src/services/api.ts`):
+   - Updated `getModels()` to map new fields from backend response
+
+4. **Frontend UI** (`frontend/src/pages/ModelsPage.tsx`):
+   - Added clickable local file link on each model card (shows filename with folder icon)
+   - Clicking the link switches to "Downloaded Files" tab and highlights the file
+   - Added local file info to Model Info dialog
+   - Highlighted row pulses for 3 seconds with primary color background
+
+### User Flow
+1. User sees a model card with a filename link (e.g., `model-Q4_K_M.gguf`)
+2. Clicking the link:
+   - Switches to "Downloaded Files" tab
+   - Highlights the corresponding file row with a pulsing animation
+3. User can also see the local file path in the model Info dialog
+
+---
+
+## Current Issue: Deploy Page Model Selection Not Working - IN PROGRESS
+
+**Date**: 2025-12-07
+**Status**: Debugging
+
+### Problem
+- On the Deploy page, clicking a model in the dropdown does nothing
+- No logs appear in the browser console
+- User cannot select and deploy models
+
+### Debug Steps Taken
+1. Added comprehensive frontend logging to `DeployPage.tsx`:
+   - `deployLog()` utility function with timestamps and context
+   - Logging on component mount/unmount
+   - Logging on initialization (fetching models, config, templates)
+   - Logging on model/variant selection changes
+   - Logging on config updates
+   - Logging on command preview updates
+   - Logging on action execution (start/stop/restart)
+   - Logging on save/validate operations
+   - Logging on template selection
+   - Logging on preset application
+   - Logging on render state
+
+### Next Steps
+1. Check browser console for log output when clicking models
+2. Verify models are being loaded correctly
+3. Check if onChange handlers are firing
+4. Verify Select component value binding
+5. Check for React event propagation issues
+
+---
+
+## Latest Deployment: Native MXFP4 GPT-OSS-20B with llama.cpp - IN PROGRESS
 
 **Date**: 2025-09-15
 **Model**: openai/gpt-oss-20b (Native MXFP4 quantization)
@@ -1629,3 +2278,503 @@ Docker SDK handles list commands properly, passing each element as a separate ar
 - [ ] CLI tool
 - [ ] End-to-end testing
 - [ ] Output constraint editor (JSON Schema builder)
+
+---
+
+## Phase 9: Advanced Features - COMPLETED (Dec 7, 2025)
+
+### New Components Created
+
+1. **Output Constraint Editor** (`frontend/src/components/chat/ConstraintEditor.tsx`)
+   - Visual JSON Schema builder for structured LLM outputs
+   - Property types: string, number, integer, boolean, array, object, null
+   - Constraints:
+     - String: minLength, maxLength, pattern, format, enum
+     - Number: minimum, maximum, multipleOf
+     - Array: minItems, maxItems, item type
+     - Object: nested properties
+   - Format validations: email, date-time, URI, UUID, hostname, IP addresses
+   - GBNF grammar generation tab
+   - Preset templates: Q&A Response, Classification, Entity Extraction, Summary
+   - Export JSON Schema with copy functionality
+
+2. **Knowledge Base Page** (`frontend/src/pages/KnowledgeBasePage.tsx`)
+   - RAG (Retrieval-Augmented Generation) document management
+   - Features:
+     - Upload documents (PDF, TXT, MD, HTML)
+     - Import from URL
+     - Paste text content
+     - Collection management (create, organize)
+     - Document processing status tracking
+     - Semantic search with similarity scores
+     - Document statistics (chunks, size)
+   - UI Elements:
+     - Collections sidebar with document counts
+     - Documents table with actions
+     - Upload dialog with multiple modes
+     - Search dialog with top-K results
+     - New collection dialog
+
+3. **Semantic Diff Component** (`frontend/src/components/chat/SemanticDiff.tsx`)
+   - Compare regenerated LLM responses
+   - Features:
+     - Word-level diff algorithm
+     - Inline and side-by-side view modes
+     - Similarity percentage scoring
+     - Concept extraction and analysis
+     - Added/removed concept tracking
+     - Statistics: words added, removed, unchanged
+   - Copy report functionality
+
+### Files Created
+- `frontend/src/components/chat/ConstraintEditor.tsx`
+- `frontend/src/components/chat/SemanticDiff.tsx`
+- `frontend/src/pages/KnowledgeBasePage.tsx`
+
+### Files Modified
+- `frontend/src/App.tsx` - Added /knowledge route
+- `frontend/src/components/chat/index.ts` - Added exports
+- `frontend/src/components/layout/Header.tsx` - Added Knowledge Base config
+- `frontend/src/components/layout/Sidebar.tsx` - Added Knowledge nav item
+
+### Navigation Updates
+- Added Knowledge Base to Development section (cyan color)
+
+### Current Service Status
+- Redis: Running on port 6379 (healthy)
+- Backend API: Running on port 8700 (healthy)
+- Frontend: Running on port 3002 (healthy)
+- LlamaCPP API: Not running (requires GPU)
+
+### Complete Feature List from imprvement.md
+
+**Foundation (DONE)**
+- [x] Event-driven architecture (Redis)
+- [x] Model registry with metadata caching
+- [x] Conversation persistence
+- [x] VRAM estimation
+
+**Core Features (DONE)**
+- [x] Chat markdown rendering
+- [x] Thinking trace visualizer
+- [x] Context window manager
+- [x] WebSocket real-time updates
+
+**Advanced Features (DONE)**
+- [x] Deploy page parameter presets
+- [x] Prompt library with templates
+- [x] Model registry UI
+- [x] Inference benchmark tool
+- [x] Batch processing interface
+- [x] Function calling playground
+- [x] Model comparison view
+- [x] Monitoring page with KV cache
+
+**Innovation & Tools (DONE)**
+- [x] UI beautification
+- [x] API documentation page
+- [x] Workflow builder
+- [x] Output constraint editor (JSON Schema)
+- [x] Knowledge Base page (RAG)
+- [x] Semantic diff for responses
+
+### Remaining Items (Future Work)
+- [ ] Multi-user authentication
+- [ ] CLI tool
+- [ ] End-to-end testing
+
+---
+
+## Phase 9: Comprehensive RAG System - IN PROGRESS (Dec 7, 2025)
+
+### Overview
+Implementing a full-featured RAG (Retrieval-Augmented Generation) system with:
+- Document management with domain hierarchy
+- Qdrant vector store integration
+- GraphRAG with entity/relationship extraction
+- Multiple chunking and retrieval strategies
+- Document discovery with web search
+- Knowledge graph visualization
+
+### Backend RAG Modules Created
+
+1. **Vector Store Layer** (`backend/modules/rag/vector_stores/`)
+   - `base.py` - Abstract vector store interface with SearchResult, CollectionConfig
+   - `qdrant_store.py` - Full Qdrant integration with batch operations, filtering, hybrid search
+
+2. **Document Management** (`backend/modules/rag/document_manager.py`)
+   - Domain-based organization with hierarchy
+   - Document CRUD with metadata
+   - Chunk storage with vector ID mapping
+   - Duplicate detection via content hash
+   - SQLite persistence
+
+3. **Chunking Strategies** (`backend/modules/rag/chunkers/`)
+   - `base.py` - Abstract chunker with config and utilities
+   - `fixed_chunker.py` - Fixed-size chunks with overlap
+   - `semantic_chunker.py` - Sentence/paragraph-aware chunking
+   - `recursive_chunker.py` - Hierarchical splitting for structured docs
+
+4. **Embedding Models** (`backend/modules/rag/embedders/`)
+   - `base.py` - Abstract embedder interface
+   - `local_embedder.py` - sentence-transformers integration (MiniLM, BGE, Nomic)
+   - `api_embedder.py` - OpenAI, Cohere, Voyage AI support
+
+5. **Retrieval Mechanisms** (`backend/modules/rag/retrievers/`)
+   - `base.py` - Abstract retriever with RetrievalConfig
+   - `vector_retriever.py` - Dense vector search with MMR
+   - `hybrid_retriever.py` - Dense + sparse (BM25) with RRF
+   - `graph_retriever.py` - Knowledge graph-enhanced retrieval
+
+6. **GraphRAG** (`backend/modules/rag/graph_rag.py`)
+   - Entity extraction using LLM
+   - Relationship extraction
+   - SQLite-based graph storage
+   - In-memory adjacency for fast traversal
+   - Subgraph extraction
+   - Community detection
+   - Entity merging
+
+7. **Document Discovery** (`backend/modules/rag/discovery.py`)
+   - Web search integration (DuckDuckGo, Serper)
+   - URL content extraction
+   - Relevance and quality scoring
+   - Review queue with approve/reject workflow
+   - Bulk operations
+
+### Backend API Endpoints Added
+
+**Domain Management:**
+- `GET /api/v1/rag/domains` - List domains
+- `POST /api/v1/rag/domains` - Create domain
+- `GET /api/v1/rag/domains/{id}` - Get domain
+- `DELETE /api/v1/rag/domains/{id}` - Delete domain
+- `GET /api/v1/rag/domains/tree` - Get hierarchy
+
+**Document Management:**
+- `GET /api/v1/rag/documents` - List with filters
+- `POST /api/v1/rag/documents` - Create/upload
+- `GET /api/v1/rag/documents/{id}` - Get document
+- `DELETE /api/v1/rag/documents/{id}` - Delete
+- `GET /api/v1/rag/documents/{id}/chunks` - Get chunks
+- `POST /api/v1/rag/documents/{id}/process` - Chunk and embed
+
+**Vector Store:**
+- `GET /api/v1/rag/collections` - List collections
+- `GET /api/v1/rag/collections/{name}` - Collection info
+- `DELETE /api/v1/rag/collections/{name}` - Delete
+
+**Retrieval:**
+- `POST /api/v1/rag/retrieve` - Vector retrieval
+- `POST /api/v1/rag/retrieve/hybrid` - Hybrid retrieval
+
+**GraphRAG:**
+- `GET /api/v1/rag/graph/entities` - List entities
+- `POST /api/v1/rag/graph/entities` - Create entity
+- `PUT /api/v1/rag/graph/entities/{id}` - Update entity
+- `DELETE /api/v1/rag/graph/entities/{id}` - Delete entity
+- `POST /api/v1/rag/graph/entities/merge` - Merge entities
+- `GET /api/v1/rag/graph/relationships` - Get relationships
+- `POST /api/v1/rag/graph/relationships` - Create relationship
+- `DELETE /api/v1/rag/graph/relationships/{id}` - Delete
+- `GET /api/v1/rag/graph/visualize` - Full graph data
+- `GET /api/v1/rag/graph/subgraph` - Subgraph extraction
+- `POST /api/v1/rag/graph/extract` - Extract from text
+- `GET /api/v1/rag/graph/statistics` - Graph stats
+
+**Discovery:**
+- `POST /api/v1/rag/discover/search` - Web search
+- `GET /api/v1/rag/discover/queue` - Review queue
+- `POST /api/v1/rag/discover/{id}/extract` - Extract content
+- `POST /api/v1/rag/discover/{id}/approve` - Approve
+- `POST /api/v1/rag/discover/{id}/reject` - Reject
+- `POST /api/v1/rag/discover/bulk-approve` - Bulk approve
+- `GET /api/v1/rag/discover/statistics` - Discovery stats
+
+**Embeddings:**
+- `GET /api/v1/rag/embeddings/models` - List models
+- `POST /api/v1/rag/embeddings/embed` - Embed text
+
+**Statistics:**
+- `GET /api/v1/rag/statistics` - Full RAG stats
+
+### Infrastructure Changes
+
+**docker-compose.yml:**
+- Added Qdrant service (ports 6333, 6334)
+- Added qdrant_data volume
+- Backend depends on qdrant health check
+- Added QDRANT_HOST, QDRANT_PORT, RAG_DB_PATH env vars
+
+### imprvement.md Updates
+
+Added comprehensive RAG system plan in section 4.4 including:
+- 4.4.1 Document Management System
+- 4.4.2 GraphRAG Implementation
+- 4.4.3 Qdrant Vector Store Integration
+- 4.4.4 Embedding Model Management
+- 4.4.5 Chunking Strategies
+- 4.4.6 Retrieval Mechanisms
+- 4.4.7 Search & Discovery
+- 4.4.8 RAG Pipeline & Chat Integration
+- 4.4.9 Frontend Pages & Components
+- 4.4.10 Implementation Phases
+
+### Files Created
+- `backend/modules/rag/__init__.py`
+- `backend/modules/rag/document_manager.py`
+- `backend/modules/rag/graph_rag.py`
+- `backend/modules/rag/discovery.py`
+- `backend/modules/rag/vector_stores/__init__.py`
+- `backend/modules/rag/vector_stores/base.py`
+- `backend/modules/rag/vector_stores/qdrant_store.py`
+- `backend/modules/rag/chunkers/__init__.py`
+- `backend/modules/rag/chunkers/base.py`
+- `backend/modules/rag/chunkers/fixed_chunker.py`
+- `backend/modules/rag/chunkers/semantic_chunker.py`
+- `backend/modules/rag/chunkers/recursive_chunker.py`
+- `backend/modules/rag/embedders/__init__.py`
+- `backend/modules/rag/embedders/base.py`
+- `backend/modules/rag/embedders/local_embedder.py`
+- `backend/modules/rag/embedders/api_embedder.py`
+- `backend/modules/rag/retrievers/__init__.py`
+- `backend/modules/rag/retrievers/base.py`
+- `backend/modules/rag/retrievers/vector_retriever.py`
+- `backend/modules/rag/retrievers/hybrid_retriever.py`
+- `backend/modules/rag/retrievers/graph_retriever.py`
+
+### Files Modified
+- `docker-compose.yml` - Added Qdrant service and backend deps
+- `backend/main.py` - Added RAG imports, initialization, and 50+ API endpoints
+
+### Frontend Pages Created (Dec 7, 2025)
+
+1. **Knowledge Graph Page** (`frontend/src/pages/KnowledgeGraphPage.tsx`)
+   - World-class force-directed graph visualization
+   - Interactive canvas with smooth physics simulation
+   - Beautiful node styling with gradients, glows, and shadows
+   - Particle flow effects along edges
+   - Zoom, pan, and drag interactions
+   - Entity type color-coding with legend
+   - Entity search and filtering
+   - Entity/relationship CRUD operations
+   - Extract from text feature
+   - Merge entities functionality
+   - Fullscreen mode
+   - Settings panel for display options
+   - Statistics dashboard cards
+
+2. **Documents Page** (`frontend/src/pages/DocumentsPage.tsx`)
+   - Domain hierarchy tree navigation
+   - Document list with filtering (status, type, search)
+   - Document table with pagination
+   - Document details panel with stats
+   - Chunk viewer with slider navigation
+   - Domain CRUD dialogs
+   - Document upload dialog
+   - Process document dialog (chunking options)
+   - View content dialog
+   - Status indicators with icons and colors
+
+3. **Discovery Page** (`frontend/src/pages/DiscoveryPage.tsx`)
+   - Web search interface
+   - Search results display
+   - Review queue with filtering
+   - Document cards with relevance/quality scores
+   - Approve/reject workflow
+   - Bulk selection and operations
+   - Domain assignment for approved docs
+   - Statistics dashboard
+   - Content extraction feature
+   - Document preview dialog
+
+### Navigation Updates
+- Added "Knowledge Base" section to sidebar with:
+  - Documents (green)
+  - Graph (indigo)
+  - Discovery (purple)
+  - RAG Search (cyan)
+- Updated Header with new page configs
+
+### Tests Created
+- `backend/test_rag_system.py` - Comprehensive test suite:
+  - Document manager tests
+  - GraphRAG tests
+  - Chunker tests
+  - Embedder tests
+  - Discovery tests
+  - Integration tests
+
+### Requirements Updated
+- Added aiosqlite, qdrant-client, sentence-transformers
+- Added beautifulsoup4, numpy
+- Added pytest, pytest-asyncio
+
+### Files Created
+- `frontend/src/pages/KnowledgeGraphPage.tsx`
+- `frontend/src/pages/DocumentsPage.tsx`
+- `frontend/src/pages/DiscoveryPage.tsx`
+- `backend/test_rag_system.py`
+
+### Files Modified
+- `frontend/src/App.tsx` - Added new routes
+- `frontend/src/components/layout/Sidebar.tsx` - Added Knowledge Base section
+- `frontend/src/components/layout/Header.tsx` - Added page configs
+- `backend/requirements.txt` - Added RAG dependencies
+
+### RAG System Status: COMPLETE
+
+All planned features implemented:
+- [x] Document management with domain hierarchy
+- [x] Qdrant vector store integration
+- [x] GraphRAG with entity/relationship extraction
+- [x] Multiple chunking strategies (fixed, semantic, recursive)
+- [x] Embedding model management (local + API)
+- [x] Retrieval mechanisms (vector, hybrid, graph-enhanced)
+- [x] Document discovery with web search
+- [x] Review queue with approve/reject workflow
+- [x] Knowledge graph visualization
+- [x] 50+ backend API endpoints
+- [x] Comprehensive test suite
+
+---
+
+## Dec 7, 2025 - Model Deployment Issue
+
+### Problem
+Failed to deploy model with error:
+```
+nvidia-container-cli: device error: 1: unknown device: unknown
+```
+
+### Root Cause
+The deployment code in `start_docker_cli()` and `start_docker_sdk()` hardcodes:
+```
+CUDA_VISIBLE_DEVICES=0,1
+NVIDIA_VISIBLE_DEVICES=0,1
+```
+
+This assumes 2 GPUs (devices 0 and 1), but the system only has 1 GPU (device 0).
+
+### Files Affected
+- `backend/main.py` - Lines 526-527 (CLI) and 448-449 (SDK)
+- `docker-compose.yml` - Lines 140-141 (llamacpp-api environment)
+
+### Solution Applied
+Changed from hardcoded `0,1` to `all` (with env var override):
+
+**backend/main.py:**
+- SDK: `os.getenv("CUDA_VISIBLE_DEVICES", "all")`
+- CLI: `os.getenv("NVIDIA_VISIBLE_DEVICES", "all")`
+
+**docker-compose.yml:**
+- `CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}`
+- `NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}`
+
+Using `all` lets the NVIDIA container runtime auto-detect available GPUs.
+Can be overridden by setting env vars if needed (e.g., `CUDA_VISIBLE_DEVICES=0`).
+
+### Tests Created
+Created `backend/test_deployment.py` with:
+- Service start/stop/restart tests
+- Status polling during async deployment (2-5 min)
+- GPU configuration validation
+- Error handling for missing GPUs
+- Health check waiting logic
+- Full deployment lifecycle test
+
+Run tests:
+```bash
+# Quick tests only
+pytest backend/test_deployment.py -v -m "not slow"
+
+# All tests including slow deployment tests
+pytest backend/test_deployment.py -v --timeout=600
+
+# Just the full cycle test
+pytest backend/test_deployment.py::TestDeploymentFullCycle -v --timeout=720
+```
+
+---
+
+## Dec 7, 2025 - Deploy Page Issues
+
+### Issue 1: 405 Method Not Allowed on VRAM Estimate
+**Problem**: Frontend was calling `/backend/api/v1/vram/estimate` which doesn't exist
+
+**Fix**: Changed to `/api/v1/vram/estimate` in `DeployPage.tsx`
+
+Also fixed incorrect config field references:
+- `config.performance?.contextSize` -> `config.model?.context_size`
+- `config.performance?.batchSize` -> `config.performance?.batch_size`
+- `config.performance?.gpuLayers` -> `config.model?.gpu_layers`
+
+### Issue 2: Cannot Select Model
+**Possible causes**:
+1. No models downloaded - dropdown shows "No local models found"
+2. Config model name doesn't match any available models
+3. Backend `/v1/models` endpoint returning empty array
+
+**Debugging**:
+- Check browser console for errors
+- Check if models are downloaded: `/v1/models` endpoint
+- The config's `model.name` must match one of the available model names
+
+**Files Modified**:
+- `frontend/src/pages/DeployPage.tsx` - Fixed VRAM estimate endpoint path
+
+---
+
+## Dec 7, 2025 - Test Coverage Improvements
+
+### Added Unit Tests For:
+
+1. **VRAMEstimator** (`backend/modules/vram_estimator.py`)
+   - Quantization detection from filenames (Q4_K_M, Q8_0, F16, etc.)
+   - Model architecture detection (Llama, Qwen, Mistral)
+   - Model weights VRAM calculation
+   - KV cache scaling with context size
+   - Partial GPU offload calculations
+   - High VRAM usage warnings
+
+2. **TokenTracker** (`backend/modules/token_tracker.py`)
+   - Recording token usage with metadata
+   - Aggregating usage by model
+   - Time range filtering (1h, 24h, 7d, 30d)
+   - Total usage statistics
+   - Usage over time queries
+
+3. **EventBus** (`backend/modules/event_bus.py`)
+   - Local subscription/unsubscription
+   - Publishing events to local handlers
+   - Async handler support
+   - Convenience methods (emit_status_change, emit_model_event, etc.)
+
+4. **FixedChunker** (`backend/modules/rag/chunkers/fixed_chunker.py`)
+   - Empty/whitespace text handling
+   - Chunk indexing and positioning
+   - Metadata preservation
+   - Overlap functionality
+   - Sentence boundary preservation
+
+5. **ConversationStore Edge Cases** (`backend/modules/conversation_store.py`)
+   - Auto-title generation from first message
+   - Long title truncation
+   - Nonexistent conversation handling
+   - JSON/Markdown export formats
+   - Search and tag filtering
+   - Archived conversation filtering
+   - Tool calls and reasoning content
+
+### Running Tests
+
+```bash
+cd backend
+pytest test_new_features.py -v
+```
+
+### Test File Structure
+- `test_new_features.py` - Unit tests for modules (PromptLibrary, ModelRegistry, VRAMEstimator, etc.)
+- `test_deployment.py` - Integration tests for deployment endpoints
+- `test_token_tracking.py` - Integration tests for token tracking API
+- `test_rag_system.py` - RAG system tests

@@ -141,8 +141,8 @@ export default function BatchProcessingPage() {
   const loadData = useCallback(async () => {
     try {
       const [jobsRes, statsRes] = await Promise.all([
-        fetch('/backend/api/v1/batch/jobs?limit=50').then(r => r.json()),
-        fetch('/backend/api/v1/batch/stats').then(r => r.json()),
+        fetch('/api/v1/batch/jobs?limit=50').then(r => r.json()),
+        fetch('/api/v1/batch/stats').then(r => r.json()),
       ])
       setJobs(jobsRes.jobs || [])
       setStats(statsRes)
@@ -195,7 +195,7 @@ export default function BatchProcessingPage() {
         requestBody.file_type = fileType
       }
       
-      const response = await fetch('/backend/api/v1/batch/jobs', {
+      const response = await fetch('/api/v1/batch/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
@@ -229,7 +229,7 @@ export default function BatchProcessingPage() {
   // Run job
   const handleRunJob = async (jobId: string) => {
     try {
-      const response = await fetch(`/backend/api/v1/batch/jobs/${jobId}/run`, {
+      const response = await fetch(`/api/v1/batch/jobs/${jobId}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -249,7 +249,7 @@ export default function BatchProcessingPage() {
   // Cancel job
   const handleCancelJob = async (jobId: string) => {
     try {
-      await fetch(`/backend/api/v1/batch/jobs/${jobId}/cancel`, {
+      await fetch(`/api/v1/batch/jobs/${jobId}/cancel`, {
         method: 'POST',
       })
       loadData()
@@ -262,7 +262,7 @@ export default function BatchProcessingPage() {
   const handleDeleteJob = async (jobId: string) => {
     if (!confirm('Delete this job and all its items?')) return
     try {
-      await fetch(`/backend/api/v1/batch/jobs/${jobId}`, {
+      await fetch(`/api/v1/batch/jobs/${jobId}`, {
         method: 'DELETE',
       })
       loadData()
@@ -278,7 +278,7 @@ export default function BatchProcessingPage() {
     setViewDialogOpen(true)
     
     try {
-      const response = await fetch(`/backend/api/v1/batch/jobs/${job.id}/items?limit=100`)
+      const response = await fetch(`/api/v1/batch/jobs/${job.id}/items?limit=100`)
       const data = await response.json()
       setJobItems(data.items || [])
     } catch (err: any) {
@@ -291,7 +291,7 @@ export default function BatchProcessingPage() {
   // Export job
   const handleExportJob = async (jobId: string, format: string) => {
     try {
-      const response = await fetch(`/backend/api/v1/batch/jobs/${jobId}/export?format=${format}`)
+      const response = await fetch(`/api/v1/batch/jobs/${jobId}/export?format=${format}`)
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')

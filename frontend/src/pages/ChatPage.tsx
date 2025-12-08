@@ -20,6 +20,10 @@ import {
   CircularProgress,
   Badge,
   LinearProgress,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material'
 import {
   Send as SendIcon,
@@ -34,6 +38,13 @@ import {
   History as HistoryIcon,
   Save as SaveIcon,
   Add as AddIcon,
+  Speed as SpeedIcon,
+  Timer as TimerIcon,
+  AttachFile as AttachFileIcon,
+  Image as ImageIcon,
+  Close as CloseIcon,
+  Mic as MicIcon,
+  Stop as StopIcon,
 } from '@mui/icons-material'
 import { apiService } from '@/services/api'
 import { ToolsService } from '@/services/tools'
@@ -48,6 +59,7 @@ interface ChatSettings {
   baseUrl: string
   endpoint: string
   apiKey: string
+  openaiApiKey: string // For audio transcription
   // Model parameters
   temperature: number
   topP: number
@@ -56,6 +68,18 @@ interface ChatSettings {
   streamResponse: boolean
   enableTools: boolean
   selectedTools: string[]
+  // Display settings
+  showPerformanceMetrics: boolean
+}
+
+interface PerformanceMetrics {
+  startTime: number | null
+  firstTokenTime: number | null
+  endTime: number | null
+  tokensGenerated: number
+  tokensPerSecond: number | null
+  promptTokens: number | null
+  timeToFirstToken: number | null
 }
 
 const defaultSettings: ChatSettings = {
@@ -63,6 +87,7 @@ const defaultSettings: ChatSettings = {
   baseUrl: '', // Empty means use current domain
   endpoint: '/v1/chat/completions',
   apiKey: '',
+  openaiApiKey: '', // For audio transcription
   // Model parameters
   temperature: 0.7,
   topP: 0.8,
@@ -71,6 +96,18 @@ const defaultSettings: ChatSettings = {
   streamResponse: true,
   enableTools: false,
   selectedTools: [],
+  // Display settings
+  showPerformanceMetrics: false,
+}
+
+const initialPerformanceMetrics: PerformanceMetrics = {
+  startTime: null,
+  firstTokenTime: null,
+  endTime: null,
+  tokensGenerated: 0,
+  tokensPerSecond: null,
+  promptTokens: null,
+  timeToFirstToken: null,
 }
 
 export const ChatPage: React.FC<ChatPageProps> = () => {
@@ -113,6 +150,22 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const [tokenCount, setTokenCount] = useState({ prompt: 0, total: 0 })
   const maxContextTokens = 128000 // Default, can be made configurable
   
+  // Performance metrics tracking
+  const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetrics>(initialPerformanceMetrics)
+  const performanceRef = useRef<PerformanceMetrics>(initialPerformanceMetrics)
+  
+  // Multi-modal inputs state
+  const [uploadedImages, setUploadedImages] = useState<Array<{ file: File; preview: string; base64: string }>>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  
+  // Audio recording state
+  const [isRecording, setIsRecording] = useState(false)
+  const [isTranscribing, setIsTranscribing] = useState(false)
+  const [audioError, setAudioError] = useState<string | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const [showAudioDialog, setShowAudioDialog] = useState(false)
+  
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -135,7 +188,22 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const estimateTokenCount = useCallback((msgs: ChatMessage[]) => {
     let totalChars = 0;
     msgs.forEach(msg => {
-      totalChars += (msg.content || '').length;
+      // Handle string content
+      if (typeof msg.content === 'string') {
+        totalChars += msg.content.length;
+      } 
+      // Handle array content (multi-modal)
+      else if (Array.isArray(msg.content)) {
+        msg.content.forEach((part: any) => {
+          if (part.type === 'text' && part.text) {
+            totalChars += part.text.length;
+          }
+          // Approximate image tokens (images typically use ~85-170 tokens in vision models)
+          if (part.type === 'image_url') {
+            totalChars += 100 * 4; // Estimate 100 tokens per image
+          }
+        });
+      }
       if (msg.reasoning_content) {
         totalChars += msg.reasoning_content.length;
       }
@@ -175,7 +243,17 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         // Auto-generate title from first user message
         const firstUserMsg = messages.find(m => m.role === 'user');
         if (firstUserMsg && conversationTitle === 'New Conversation') {
-          conversationData.title = firstUserMsg.content.slice(0, 50) + (firstUserMsg.content.length > 50 ? '...' : '');
+          let titleText = '';
+          if (typeof firstUserMsg.content === 'string') {
+            titleText = firstUserMsg.content;
+          } else if (Array.isArray(firstUserMsg.content)) {
+            // Extract text from multi-modal content
+            const textParts = firstUserMsg.content
+              .filter((part: any) => part.type === 'text' && part.text)
+              .map((part: any) => part.text);
+            titleText = textParts.join(' ');
+          }
+          conversationData.title = titleText.slice(0, 50) + (titleText.length > 50 ? '...' : '');
           setConversationTitle(conversationData.title);
         }
         
@@ -237,6 +315,13 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     }
   }, [messages, estimateTokenCount]);
 
+  // Cleanup image previews on unmount
+  useEffect(() => {
+    return () => {
+      uploadedImages.forEach(img => URL.revokeObjectURL(img.preview))
+    }
+  }, [uploadedImages]);
+
   useEffect(() => {
     scrollToBottom()
   }, [messages])
@@ -265,17 +350,55 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   }, [])
 
   const handleSendMessage = async () => {
-    if (!input.trim() || isLoading) return
+    if ((!input.trim() && uploadedImages.length === 0) || isLoading) return
+
+    // Construct message content with images if present
+    let messageContent: any = input.trim()
+    
+    // If images are uploaded, format the content for multi-modal models (OpenAI format)
+    if (uploadedImages.length > 0) {
+      // OpenAI multi-modal format: content is an array of parts
+      const contentParts: any[] = []
+      
+      // Add text if present
+      if (input.trim()) {
+        contentParts.push({
+          type: 'text',
+          text: input.trim()
+        })
+      }
+      
+      // Add images
+      uploadedImages.forEach(img => {
+        contentParts.push({
+          type: 'image_url',
+          image_url: {
+            url: img.base64
+          }
+        })
+      })
+      
+      messageContent = contentParts
+    }
 
     const userMessage: ChatMessage = {
       role: 'user',
-      content: input.trim()
+      content: messageContent
     }
 
     setMessages((prev: ChatMessage[]) => [...prev, userMessage])
     setInput('')
+    
+    // Clear uploaded images after sending
+    uploadedImages.forEach(img => URL.revokeObjectURL(img.preview))
+    setUploadedImages([])
+    
     setIsLoading(true)
     setError(null)
+    
+    // Reset performance metrics for new generation
+    performanceRef.current = initialPerformanceMetrics
+    setPerformanceMetrics(initialPerformanceMetrics)
 
     try {
       const selectedToolsForRequest = settings.enableTools 
@@ -408,17 +531,36 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     }
     setMessages((prev: ChatMessage[]) => [...prev, assistantMessage])
 
+    // Initialize performance tracking
+    const startTime = performance.now()
+    performanceRef.current = {
+      ...initialPerformanceMetrics,
+      startTime,
+    }
+    setPerformanceMetrics(performanceRef.current)
+
     try {
       const stream = await createChatCompletionStream(request)
       const reader = stream.getReader()
 
       try {
         let accumulatedToolCalls: ToolCall[] = []
+        let tokenCount = 0
+        let firstTokenReceived = false
         
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
             console.log('Stream ended naturally')
+            // Finalize performance metrics
+            const endTime = performance.now()
+            const totalTime = (endTime - startTime) / 1000
+            performanceRef.current = {
+              ...performanceRef.current,
+              endTime,
+              tokensPerSecond: tokenCount > 0 ? tokenCount / totalTime : null,
+            }
+            setPerformanceMetrics({ ...performanceRef.current })
             break
           }
 
@@ -432,6 +574,32 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                               ''
           
           if (contentDelta) {
+            // Track first token time
+            if (!firstTokenReceived) {
+              firstTokenReceived = true
+              const firstTokenTime = performance.now()
+              performanceRef.current = {
+                ...performanceRef.current,
+                firstTokenTime,
+                timeToFirstToken: firstTokenTime - startTime,
+              }
+              setPerformanceMetrics({ ...performanceRef.current })
+            }
+            
+            // Count tokens (rough estimate: split by whitespace and punctuation)
+            const newTokens = contentDelta.split(/[\s\n]+/).filter((t: string) => t.length > 0).length
+            tokenCount += Math.max(1, newTokens) // At least 1 token per chunk
+            
+            // Update metrics periodically
+            const currentTime = performance.now()
+            const elapsedTime = (currentTime - startTime) / 1000
+            performanceRef.current = {
+              ...performanceRef.current,
+              tokensGenerated: tokenCount,
+              tokensPerSecond: tokenCount / elapsedTime,
+            }
+            setPerformanceMetrics({ ...performanceRef.current })
+            
             setMessages((prev: ChatMessage[]) => {
               const newMessages = [...prev]
               const lastMessage = newMessages[newMessages.length - 1]
@@ -442,9 +610,15 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             })
           }
 
-          // Extract timing information if available
+          // Extract timing information if available (more accurate from server)
           const timings = value.timings || value.__verbose?.timings
           if (timings?.predicted_per_second) {
+            performanceRef.current = {
+              ...performanceRef.current,
+              tokensPerSecond: timings.predicted_per_second,
+            }
+            setPerformanceMetrics({ ...performanceRef.current })
+            
             setMessages((prev: ChatMessage[]) => {
               const newMessages = [...prev]
               const lastMessage = newMessages[newMessages.length - 1]
@@ -453,6 +627,15 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               }
               return newMessages
             })
+          }
+          
+          // Extract prompt processing info if available
+          if (timings?.prompt_per_second) {
+            performanceRef.current = {
+              ...performanceRef.current,
+              promptTokens: timings.prompt_n || performanceRef.current.promptTokens,
+            }
+            setPerformanceMetrics({ ...performanceRef.current })
           }
 
           // Handle reasoning/thinking content (for models like DeepSeek R1, QwQ)
@@ -570,8 +753,18 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     setError(null)
   }
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text)
+  const copyToClipboard = (content: string | Array<{type: string; text?: string; image_url?: {url: string}}>) => {
+    let text = '';
+    if (typeof content === 'string') {
+      text = content;
+    } else if (Array.isArray(content)) {
+      // Extract text parts from multi-modal content
+      text = content
+        .filter((part: any) => part.type === 'text' && part.text)
+        .map((part: any) => part.text)
+        .join('\n');
+    }
+    navigator.clipboard.writeText(text);
   }
 
   const formatRole = (role: string) => {
@@ -608,6 +801,153 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       : [...settings.selectedTools, toolName];
     
     saveSettings({ ...settings, selectedTools: newSelectedTools });
+  }
+
+  // Image upload handlers
+  const handleImageUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (!files || files.length === 0) return
+
+    const newImages: Array<{ file: File; preview: string; base64: string }> = []
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        setError(`File ${file.name} is not an image`)
+        continue
+      }
+
+      // Validate file size (max 20MB)
+      if (file.size > 20 * 1024 * 1024) {
+        setError(`File ${file.name} is too large (max 20MB)`)
+        continue
+      }
+
+      // Create preview URL
+      const preview = URL.createObjectURL(file)
+
+      // Convert to base64
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+
+      newImages.push({ file, preview, base64 })
+    }
+
+    setUploadedImages((prev) => [...prev, ...newImages])
+    
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const handleRemoveImage = (index: number) => {
+    setUploadedImages((prev) => {
+      const updated = [...prev]
+      // Revoke the preview URL to free memory
+      URL.revokeObjectURL(updated[index].preview)
+      updated.splice(index, 1)
+      return updated
+    })
+  }
+
+  // Audio recording handlers
+  const startRecording = async () => {
+    try {
+      setAudioError(null)
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      
+      const mediaRecorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = mediaRecorder
+      audioChunksRef.current = []
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data)
+        }
+      }
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+        await transcribeAudio(audioBlob)
+        
+        // Stop all tracks
+        stream.getTracks().forEach((track) => track.stop())
+      }
+
+      mediaRecorder.start()
+      setIsRecording(true)
+      setShowAudioDialog(true)
+    } catch (err) {
+      console.error('Failed to start recording:', err)
+      setAudioError('Failed to access microphone. Please check permissions.')
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+    }
+  }
+
+  const cancelRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+      audioChunksRef.current = []
+    }
+    setShowAudioDialog(false)
+    setAudioError(null)
+  }
+
+  const transcribeAudio = async (audioBlob: Blob) => {
+    setIsTranscribing(true)
+    try {
+      // Convert webm to a format OpenAI accepts (mp3, mp4, mpeg, mpga, m4a, wav, or webm)
+      const formData = new FormData()
+      formData.append('file', audioBlob, 'audio.webm')
+      formData.append('model', 'whisper-1')
+
+      // Get OpenAI API key from settings
+      const apiKey = settings.openaiApiKey || localStorage.getItem('openai-api-key') || ''
+      
+      if (!apiKey) {
+        throw new Error('OpenAI API key not configured. Please add it in Chat Settings.')
+      }
+
+      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: formData
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error?.message || `Transcription failed: ${response.statusText}`)
+      }
+
+      const data = await response.json()
+      const transcription = data.text
+
+      // Append transcription to input
+      setInput((prev) => prev ? `${prev} ${transcription}` : transcription)
+      setShowAudioDialog(false)
+      setAudioError(null)
+    } catch (err) {
+      console.error('Transcription error:', err)
+      setAudioError(err instanceof Error ? err.message : 'Transcription failed')
+    } finally {
+      setIsTranscribing(false)
+    }
   }
 
   return (
@@ -704,6 +1044,18 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               <AddIcon fontSize="small" />
             </IconButton>
           </Tooltip>
+          <Tooltip title={settings.showPerformanceMetrics ? "Hide Performance Metrics" : "Show Performance Metrics"}>
+            <IconButton 
+              onClick={() => saveSettings({ ...settings, showPerformanceMetrics: !settings.showPerformanceMetrics })}
+              size="small"
+              sx={{
+                bgcolor: settings.showPerformanceMetrics ? 'action.selected' : 'transparent',
+                '&:hover': { bgcolor: 'action.hover' }
+              }}
+            >
+              <SpeedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Chat Settings">
             <IconButton 
               onClick={() => setShowSettings(!showSettings)}
@@ -730,6 +1082,100 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         </Box>
       </Box>
 
+      {/* Performance Metrics Display */}
+      <Collapse in={settings.showPerformanceMetrics}>
+        <Paper 
+          sx={{ 
+            mb: 2, 
+            p: 1.5, 
+            borderRadius: 1, 
+            bgcolor: 'background.paper',
+            border: '1px solid rgba(255, 255, 255, 0.1)'
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <SpeedIcon fontSize="small" color="primary" />
+              <Typography variant="body2" color="text.secondary">
+                Performance Metrics
+              </Typography>
+            </Box>
+            
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                Generation:
+              </Typography>
+              <Chip 
+                size="small" 
+                label={performanceMetrics.tokensPerSecond 
+                  ? `${performanceMetrics.tokensPerSecond.toFixed(1)} tok/s` 
+                  : '--'
+                }
+                color={performanceMetrics.tokensPerSecond && performanceMetrics.tokensPerSecond > 20 ? 'success' : 'default'}
+                sx={{ height: 20, fontSize: '0.7rem' }}
+              />
+            </Box>
+            
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <TimerIcon fontSize="small" sx={{ color: 'text.secondary', width: 16, height: 16 }} />
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                TTFT:
+              </Typography>
+              <Chip 
+                size="small" 
+                label={performanceMetrics.timeToFirstToken 
+                  ? `${performanceMetrics.timeToFirstToken.toFixed(0)} ms` 
+                  : '--'
+                }
+                color={performanceMetrics.timeToFirstToken && performanceMetrics.timeToFirstToken < 500 ? 'success' : 'default'}
+                sx={{ height: 20, fontSize: '0.7rem' }}
+              />
+            </Box>
+            
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                Tokens:
+              </Typography>
+              <Chip 
+                size="small" 
+                label={performanceMetrics.tokensGenerated > 0 
+                  ? performanceMetrics.tokensGenerated.toString() 
+                  : '--'
+                }
+                variant="outlined"
+                sx={{ height: 20, fontSize: '0.7rem' }}
+              />
+            </Box>
+            
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                Total Time:
+              </Typography>
+              <Chip 
+                size="small" 
+                label={performanceMetrics.startTime && performanceMetrics.endTime
+                  ? `${((performanceMetrics.endTime - performanceMetrics.startTime) / 1000).toFixed(2)}s`
+                  : performanceMetrics.startTime && !performanceMetrics.endTime
+                    ? 'Running...'
+                    : '--'
+                }
+                variant="outlined"
+                sx={{ height: 20, fontSize: '0.7rem' }}
+              />
+            </Box>
+            
+            {isLoading && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, ml: 'auto' }}>
+                <CircularProgress size={14} />
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                  Generating...
+                </Typography>
+              </Box>
+            )}
+          </Box>
+        </Paper>
+      </Collapse>
+
       {/* Settings Panel */}
       <Collapse in={showSettings}>
         <Card sx={{ mb: 2, borderRadius: 1, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)' }}>
@@ -743,7 +1189,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               Connection Settings
             </Typography>
             <Grid container spacing={3} sx={{ mb: 3 }}>
-              <Grid item xs={12} md={4}>
+              <Grid item xs={12} sm={6}>
                 <TextField
                   label="Base URL"
                   fullWidth
@@ -763,7 +1209,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   }}
                 />
               </Grid>
-              <Grid item xs={12} md={4}>
+              <Grid item xs={12} sm={6}>
                 <TextField
                   label="Endpoint Path"
                   fullWidth
@@ -783,7 +1229,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   }}
                 />
               </Grid>
-              <Grid item xs={12} md={4}>
+              <Grid item xs={12} sm={6}>
                 <TextField
                   label="API Key"
                   type="password"
@@ -792,6 +1238,27 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   onChange={(e) => saveSettings({ ...settings, apiKey: e.target.value })}
                   placeholder="Enter your API key (optional)"
                   helperText="API key for authentication (leave empty if not required)"
+                  sx={{ 
+                    '& .MuiOutlinedInput-root': {
+                      fontSize: '0.875rem',
+                      borderRadius: 1,
+                      backgroundColor: 'background.default',
+                      '&.Mui-focused': {
+                        borderColor: 'primary.main'
+                      }
+                    }
+                  }}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  label="OpenAI API Key (for voice)"
+                  type="password"
+                  fullWidth
+                  value={settings.openaiApiKey}
+                  onChange={(e) => saveSettings({ ...settings, openaiApiKey: e.target.value })}
+                  placeholder="Enter OpenAI API key for transcription"
+                  helperText="Required for voice input transcription"
                   sx={{ 
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
@@ -1079,10 +1546,69 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     </IconButton>
                   </Tooltip>
                 </Box>
-                <MarkdownRenderer 
-                  content={message.content} 
-                  reasoning_content={message.reasoning_content}
-                />
+                {/* Check if message contains multi-modal content (array format) */}
+                {(() => {
+                  // Check if content is an array (multi-modal format)
+                  if (Array.isArray(message.content)) {
+                    const textParts: string[] = []
+                    const imageParts: any[] = []
+                    
+                    // Separate text and images
+                    message.content.forEach((part: any) => {
+                      if (part.type === 'text') {
+                        textParts.push(part.text)
+                      } else if (part.type === 'image_url') {
+                        imageParts.push(part.image_url.url)
+                      }
+                    })
+                    
+                    return (
+                      <Box>
+                        {/* Render images */}
+                        {imageParts.length > 0 && (
+                          <Box sx={{ mb: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                            {imageParts.map((imageUrl: string, idx: number) => (
+                              <Box
+                                key={idx}
+                                sx={{
+                                  maxWidth: 200,
+                                  borderRadius: 1,
+                                  overflow: 'hidden',
+                                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                                }}
+                              >
+                                <img
+                                  src={imageUrl}
+                                  alt={`Attachment ${idx + 1}`}
+                                  style={{
+                                    width: '100%',
+                                    height: 'auto',
+                                    display: 'block',
+                                  }}
+                                />
+                              </Box>
+                            ))}
+                          </Box>
+                        )}
+                        {/* Render text */}
+                        {textParts.length > 0 && (
+                          <MarkdownRenderer 
+                            content={textParts.join('\n')} 
+                            reasoning_content={message.reasoning_content}
+                          />
+                        )}
+                      </Box>
+                    )
+                  }
+                  
+                  // String content - render normally
+                  return (
+                    <MarkdownRenderer 
+                      content={message.content} 
+                      reasoning_content={message.reasoning_content}
+                    />
+                  )
+                })()}
               </Paper>
             </Box>
           ))}
@@ -1114,7 +1640,98 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         bgcolor: 'background.paper',
         border: '1px solid rgba(255, 255, 255, 0.1)'
       }}>
-        <Box sx={{ display: 'flex', gap: 2 }}>
+        {/* Image Preview Section */}
+        {uploadedImages.length > 0 && (
+          <Box sx={{ mb: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            {uploadedImages.map((image, index) => (
+              <Box
+                key={index}
+                sx={{
+                  position: 'relative',
+                  width: 100,
+                  height: 100,
+                  borderRadius: 1,
+                  overflow: 'hidden',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                }}
+              >
+                <img
+                  src={image.preview}
+                  alt={`Upload ${index + 1}`}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                  }}
+                />
+                <IconButton
+                  size="small"
+                  onClick={() => handleRemoveImage(index)}
+                  sx={{
+                    position: 'absolute',
+                    top: 2,
+                    right: 2,
+                    bgcolor: 'rgba(0, 0, 0, 0.6)',
+                    color: 'white',
+                    '&:hover': {
+                      bgcolor: 'rgba(0, 0, 0, 0.8)',
+                    },
+                    padding: '2px',
+                  }}
+                >
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              </Box>
+            ))}
+          </Box>
+        )}
+
+        <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-end' }}>
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            style={{ display: 'none' }}
+            onChange={handleImageUpload}
+          />
+          
+          {/* Attachment button */}
+          <Tooltip title="Attach images">
+            <IconButton
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isLoading}
+              size="small"
+              sx={{
+                color: 'text.secondary',
+                '&:hover': { color: 'primary.main' }
+              }}
+            >
+              <AttachFileIcon />
+            </IconButton>
+          </Tooltip>
+
+          {/* Microphone button */}
+          <Tooltip title={isRecording ? 'Recording...' : 'Voice input'}>
+            <IconButton
+              onClick={isRecording ? stopRecording : startRecording}
+              disabled={isLoading || isTranscribing}
+              size="small"
+              sx={{
+                color: isRecording ? 'error.main' : 'text.secondary',
+                '&:hover': { color: isRecording ? 'error.dark' : 'primary.main' },
+                animation: isRecording ? 'pulse 1.5s ease-in-out infinite' : 'none',
+                '@keyframes pulse': {
+                  '0%, 100%': { opacity: 1 },
+                  '50%': { opacity: 0.5 },
+                },
+              }}
+            >
+              {isRecording ? <StopIcon /> : <MicIcon />}
+            </IconButton>
+          </Tooltip>
+
           <TextField
             ref={inputRef}
             fullWidth
@@ -1140,7 +1757,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           <Button
             variant="contained"
             onClick={handleSendMessage}
-            disabled={!input.trim() || isLoading}
+            disabled={(!input.trim() && uploadedImages.length === 0) || isLoading}
             sx={{ 
               minWidth: 100,
               borderRadius: 1,
@@ -1158,6 +1775,81 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           </Button>
         </Box>
       </Paper>
+
+      {/* Audio Recording Dialog */}
+      <Dialog 
+        open={showAudioDialog} 
+        onClose={cancelRecording}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          {isTranscribing ? 'Transcribing Audio...' : isRecording ? 'Recording Audio' : 'Audio Transcription'}
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ textAlign: 'center', py: 3 }}>
+            {isRecording && (
+              <Box>
+                <Box
+                  sx={{
+                    width: 80,
+                    height: 80,
+                    borderRadius: '50%',
+                    bgcolor: 'error.main',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    margin: '0 auto',
+                    animation: 'pulse 1.5s ease-in-out infinite',
+                    '@keyframes pulse': {
+                      '0%, 100%': { transform: 'scale(1)', opacity: 1 },
+                      '50%': { transform: 'scale(1.1)', opacity: 0.8 },
+                    },
+                  }}
+                >
+                  <MicIcon sx={{ fontSize: 40, color: 'white' }} />
+                </Box>
+                <Typography variant="body1" sx={{ mt: 2 }}>
+                  Recording in progress...
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  Click stop when you're done speaking
+                </Typography>
+              </Box>
+            )}
+            {isTranscribing && (
+              <Box>
+                <CircularProgress size={60} />
+                <Typography variant="body1" sx={{ mt: 2 }}>
+                  Transcribing your audio...
+                </Typography>
+              </Box>
+            )}
+            {audioError && (
+              <Box>
+                <Typography variant="body1" color="error" sx={{ mt: 2 }}>
+                  {audioError}
+                </Typography>
+              </Box>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={cancelRecording} disabled={isTranscribing}>
+            Cancel
+          </Button>
+          {isRecording && (
+            <Button 
+              onClick={stopRecording} 
+              variant="contained" 
+              color="error"
+              startIcon={<StopIcon />}
+            >
+              Stop Recording
+            </Button>
+          )}
+        </DialogActions>
+      </Dialog>
 
       {/* Conversation Sidebar */}
       <ConversationSidebar

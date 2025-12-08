@@ -7,6 +7,7 @@ import { DashboardPage } from '@/pages/DashboardPage'
 import { ModelsPage } from '@/pages/ModelsPage'
 import { ConfigurationPage } from '@/pages/ConfigurationPage'
 import { DeployPage } from '@/pages/DeployPage'
+import { EmbeddingDeployPage } from '@/pages/EmbeddingDeployPage'
 import { ChatPage } from '@/pages/ChatPage'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { TemplatesPage } from '@/pages/TemplatesPage'
@@ -20,6 +21,9 @@ import MonitoringPage from '@/pages/MonitoringPage'
 import ApiDocsPage from '@/pages/ApiDocsPage'
 import WorkflowBuilderPage from '@/pages/WorkflowBuilderPage'
 import KnowledgeBasePage from '@/pages/KnowledgeBasePage'
+import KnowledgeGraphPage from '@/pages/KnowledgeGraphPage'
+import DocumentsPage from '@/pages/DocumentsPage'
+import DiscoveryPage from '@/pages/DiscoveryPage'
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = React.useState(true)
@@ -81,6 +85,7 @@ function App() {
               <Route path="/chat" element={<ChatPage />} />
               <Route path="/models" element={<ModelsPage />} />
               <Route path="/deploy" element={<DeployPage />} />
+              <Route path="/embedding-deploy" element={<EmbeddingDeployPage />} />
               <Route path="/templates" element={<TemplatesPage />} />
               <Route path="/prompts" element={<PromptLibraryPage />} />
               <Route path="/registry" element={<ModelRegistryPage />} />
@@ -90,6 +95,9 @@ function App() {
               <Route path="/compare" element={<ModelComparisonPage />} />
               <Route path="/workflows" element={<WorkflowBuilderPage />} />
               <Route path="/knowledge" element={<KnowledgeBasePage />} />
+              <Route path="/knowledge-graph" element={<KnowledgeGraphPage />} />
+              <Route path="/documents" element={<DocumentsPage />} />
+              <Route path="/discovery" element={<DiscoveryPage />} />
               <Route path="/monitoring" element={<MonitoringPage />} />
               <Route path="/api-docs" element={<ApiDocsPage />} />
               <Route path="/configuration" element={<ConfigurationPage />} />

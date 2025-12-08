@@ -32,15 +32,21 @@ import uuid
 
 # Import enhanced logger
 from enhanced_logger import enhanced_logger as logger
-# Token tracking imports (Docker image copies module files to /app)
+# Token tracking imports
 try:
-    from token_tracker import token_tracker  # type: ignore
-    from token_middleware import TokenUsageMiddleware  # type: ignore
-except Exception:
-    token_tracker = None  # type: ignore
-    class TokenUsageMiddleware(BaseHTTPMiddleware):  # type: ignore
-        async def dispatch(self, request, call_next):
-            return await call_next(request)
+    from modules.token_tracker import token_tracker  # type: ignore
+    from modules.token_middleware import TokenUsageMiddleware  # type: ignore
+except ImportError:
+    try:
+        # Fallback for local development without modules prefix
+        from token_tracker import token_tracker  # type: ignore
+        from token_middleware import TokenUsageMiddleware  # type: ignore
+    except ImportError:
+        token_tracker = None  # type: ignore
+        class TokenUsageMiddleware(BaseHTTPMiddleware):  # type: ignore
+            async def dispatch(self, request, call_next):
+                return await call_next(request)
+        logger.warning("Token tracker not available")
 
 # Conversation storage imports
 try:
@@ -92,6 +98,66 @@ except ImportError:
     except ImportError:
         batch_processor = None  # type: ignore
         logger.warning("Batch processor not available")
+
+# RAG system imports
+try:
+    from modules.rag import DocumentManager, Document, Domain, QdrantStore, GraphRAG
+    from modules.rag.chunkers import FixedChunker, SemanticChunker, RecursiveChunker, ChunkingConfig
+    from modules.rag.embedders import LocalEmbedder, APIEmbedder
+    from modules.rag.retrievers import VectorRetriever, HybridRetriever, GraphRetriever, RetrievalConfig
+    from modules.rag.discovery import DocumentDiscovery
+    RAG_AVAILABLE = True
+    logger.info("RAG system loaded successfully")
+except ImportError as e:
+    RAG_AVAILABLE = False
+    DocumentManager = None  # type: ignore
+    Document = None  # type: ignore
+    Domain = None  # type: ignore
+    QdrantStore = None  # type: ignore
+    GraphRAG = None  # type: ignore
+    DocumentDiscovery = None  # type: ignore
+    logger.warning(f"RAG system not available: {e}")
+
+# RAG Embedding Configuration
+USE_DEPLOYED_EMBEDDINGS = os.getenv("USE_DEPLOYED_EMBEDDINGS", "false").lower() == "true"
+# Use Docker network name for inter-container communication
+EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "http://llamacpp-embed:8080/v1")
+DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+
+
+def create_embedder(model_name: Optional[str] = None, use_deployed: Optional[bool] = None):
+    """
+    Factory function to create an embedder instance.
+    
+    Args:
+        model_name: Name of the embedding model to use
+        use_deployed: Whether to use the deployed embedding service.
+                     If None, uses the USE_DEPLOYED_EMBEDDINGS env var.
+    
+    Returns:
+        An Embedder instance (LocalEmbedder or APIEmbedder)
+    """
+    if not RAG_AVAILABLE:
+        raise RuntimeError("RAG system not available")
+    
+    model_name = model_name or DEFAULT_EMBEDDING_MODEL
+    use_deployed = USE_DEPLOYED_EMBEDDINGS if use_deployed is None else use_deployed
+    
+    # Check if the requested model is one supported by the deployed service
+    deployed_models = ["nomic-embed-text-v1.5", "e5-mistral-7b", "bge-m3", "gte-Qwen2-1.5B"]
+    
+    if use_deployed and model_name in deployed_models:
+        logger.info(f"Using deployed embedding service for model: {model_name} at {EMBEDDING_SERVICE_URL}")
+        # Use APIEmbedder with llama.cpp provider
+        return APIEmbedder(
+            model_name=model_name,
+            api_key="llamacpp-embed",  # Match the API key from embedding service
+            base_url=EMBEDDING_SERVICE_URL,
+            timeout=300  # Longer timeout for large documents
+        )
+    else:
+        logger.info(f"Using local sentence-transformers embedder for model: {model_name}")
+        return LocalEmbedder(model_name=model_name)
 
 # Try to import docker, fallback to subprocess if not available
 try:
@@ -206,10 +272,16 @@ class LlamaCPPManager:
                 "num_keep": int(os.getenv("NUM_KEEP", "1024")),
                 "num_predict": int(os.getenv("NUM_PREDICT", "64768")),
             },
+            "execution": {
+                "mode": os.getenv("EXECUTION_MODE", "gpu"),  # "gpu" or "cpu"
+                "cuda_devices": os.getenv("CUDA_DEVICES", "all"),  # "all", "0", "0,1", etc.
+            },
             "server": {
                 "host": "0.0.0.0",
                 "port": 8080,
                 "api_key": os.getenv("API_KEY", "placeholder-api-key"),
+                "metrics": True,
+                "embedding": True,
             }
         }
     
@@ -265,7 +337,14 @@ class LlamaCPPManager:
         
         # Add optional model parameters only if they are set
         add_param_if_set(cmd, "--ctx-size", self.config["model"].get("context_size"))
-        add_param_if_set(cmd, "--n-gpu-layers", self.config["model"].get("gpu_layers"))
+        
+        # Override GPU layers based on execution mode
+        execution_mode = self.config.get("execution", {}).get("mode", "gpu")
+        if execution_mode == "cpu":
+            add_param_if_set(cmd, "--n-gpu-layers", 0)
+        else:
+            add_param_if_set(cmd, "--n-gpu-layers", self.config["model"].get("gpu_layers"))
+        
         add_param_if_set(cmd, "--n-cpu-moe", self.config["model"].get("n_cpu_moe"))
         
         # Add optional RoPE parameters
@@ -413,6 +492,20 @@ class LlamaCPPManager:
             str(Path(__file__).resolve().parents[1] / "chat-templates")
         )
 
+        # Determine runtime and device visibility based on execution mode
+        execution_mode = self.config.get("execution", {}).get("mode", "gpu")
+        cuda_devices = self.config.get("execution", {}).get("cuda_devices", "all")
+        
+        runtime_config = "nvidia" if execution_mode == "gpu" else None
+        env_vars = {
+            "MODEL_NAME": self.config['model']['name'],
+            "MODEL_VARIANT": self.config['model']['variant'],
+        }
+        
+        if execution_mode == "gpu":
+            env_vars["CUDA_VISIBLE_DEVICES"] = cuda_devices
+            env_vars["NVIDIA_VISIBLE_DEVICES"] = cuda_devices
+        
         # Run container with the command
         self.docker_container = docker_client.containers.run(
             image=image_name,
@@ -425,13 +518,8 @@ class LlamaCPPManager:
                 "llamacpp-api_gpt_oss_models": {"bind": "/home/llamacpp/models", "mode": "rw"},
                 host_templates_dir: {"bind": "/home/llamacpp/templates", "mode": "ro"}
             },
-            environment={
-                "CUDA_VISIBLE_DEVICES": "0,1",
-                "NVIDIA_VISIBLE_DEVICES": "0,1",
-                "MODEL_NAME": self.config['model']['name'],
-                "MODEL_VARIANT": self.config['model']['variant'],
-            },
-            runtime="nvidia",
+            environment=env_vars,
+            runtime=runtime_config,
             shm_size="16g",
             ports={"8080/tcp": 8600}
         )
@@ -495,21 +583,31 @@ class LlamaCPPManager:
             "TEMPLATES_HOST_DIR",
             str(Path(__file__).resolve().parents[1] / "chat-templates")
         )
+        
+        # Determine runtime and device visibility based on execution mode
+        execution_mode = self.config.get("execution", {}).get("mode", "gpu")
+        cuda_devices = self.config.get("execution", {}).get("cuda_devices", "all")
+        
         docker_cmd = [
             'docker', 'run', '-d',
             '--name', self.container_name,
-            '--runtime', 'nvidia',
             '--shm-size', '16g',
             '-p', '8600:8080',
             '--network', self.docker_network,
             '-v', 'llama-nexus_gpt_oss_models:/home/llamacpp/models',
             '-v', f'{host_templates_dir}:/home/llamacpp/templates:ro',
-            '-e', 'CUDA_VISIBLE_DEVICES=0,1',
-            '-e', 'NVIDIA_VISIBLE_DEVICES=0,1',
             '-e', f'MODEL_NAME={self.config["model"]["name"]}',
             '-e', f'MODEL_VARIANT={self.config["model"]["variant"]}',
-            image_name
-        ] + cmd
+        ]
+        
+        # Add runtime and CUDA env vars only for GPU mode
+        if execution_mode == "gpu":
+            docker_cmd.extend(['--runtime', 'nvidia'])
+            docker_cmd.extend(['-e', f'CUDA_VISIBLE_DEVICES={cuda_devices}'])
+            docker_cmd.extend(['-e', f'NVIDIA_VISIBLE_DEVICES={cuda_devices}'])
+        
+        docker_cmd.append(image_name)
+        docker_cmd.extend(cmd)
         
         logger.info(f"Starting container with CLI command: {' '.join(docker_cmd)}")
         
@@ -1050,12 +1148,16 @@ class ModelDownloadManager:
                 # Only add if we haven't seen this model before
                 if model_key not in seen_models:
                     seen_models.add(model_key)
+                    # Get relative path for linking to local files
+                    relative_path = str(entry.relative_to(self.models_dir))
                     items.append({
                         "name": name,
                         "variant": variant or "unknown",
                         "size": total_size,
                         "status": "available",
-                        "lastModified": datetime.fromtimestamp(latest_mtime).isoformat()
+                        "lastModified": datetime.fromtimestamp(latest_mtime).isoformat(),
+                        "localPath": relative_path,
+                        "filename": entry.name
                     })
                     
             except Exception as e:
@@ -1745,14 +1847,379 @@ class ModelDownloadManager:
                 "error": str(e)
             }
 
-# Initialize manager
+class EmbeddingManager:
+    """Manages Embedding Service lifecycle and configuration"""
+    
+    def __init__(self):
+        self.docker_container = None
+        self.config: Dict[str, Any] = self.load_default_config()
+        self.log_buffer = deque(maxlen=1000)
+        self.start_time: Optional[datetime] = None
+        self.use_docker = DOCKER_AVAILABLE and os.getenv("USE_DOCKER", "false").lower() == "true"
+        self.container_name = "llamacpp-embed"
+        self.docker_network = os.getenv("DOCKER_NETWORK", "llama-nexus_default")
+    
+    def load_default_config(self) -> Dict[str, Any]:
+        """Load default embedding configuration"""
+        return {
+            "model": {
+                "name": os.getenv("EMBED_MODEL_NAME", "nomic-embed-text-v1.5"),
+                "variant": os.getenv("EMBED_MODEL_VARIANT", "Q8_0"),
+                "context_size": int(os.getenv("EMBED_CONTEXT_SIZE", "8192")),
+                "gpu_layers": int(os.getenv("EMBED_GPU_LAYERS", "999")),
+            },
+            "performance": {
+                "threads": int(os.getenv("EMBED_THREADS", "-1")),
+                "batch_size": int(os.getenv("EMBED_BATCH_SIZE", "512")),
+                "ubatch_size": int(os.getenv("EMBED_UBATCH_SIZE", "512")),
+                "pooling_type": os.getenv("EMBED_POOLING_TYPE", "mean"),
+            },
+            "execution": {
+                "mode": os.getenv("EMBED_EXECUTION_MODE", "gpu"),
+                "cuda_devices": os.getenv("EMBED_CUDA_DEVICES", "all"),
+            },
+            "server": {
+                "host": "0.0.0.0",
+                "port": 8602,
+                "api_key": os.getenv("EMBED_API_KEY", "llamacpp-embed"),
+            }
+        }
+    
+    def build_command(self) -> List[str]:
+        """Build llama-server embedding command"""
+        model_name = self.config['model']['name']
+        variant = self.config['model']['variant']
+        
+        # Map model names to HuggingFace repositories
+        model_mappings = {
+            "nomic-embed-text-v1.5": ("nomic-ai/nomic-embed-text-v1.5-GGUF", f"nomic-embed-text-v1.5.{variant}.gguf"),
+            "e5-mistral-7b": ("intfloat/e5-mistral-7b-instruct-GGUF", f"e5-mistral-7b-instruct.{variant}.gguf"),
+            "bge-m3": ("BAAI/bge-m3-GGUF", f"bge-m3.{variant}.gguf"),
+            "gte-Qwen2-1.5B": ("Alibaba-NLP/gte-Qwen2-1.5B-instruct-GGUF", f"gte-Qwen2-1.5B-instruct.{variant}.gguf"),
+        }
+        
+        if model_name in model_mappings:
+            _, model_file = model_mappings[model_name]
+        else:
+            model_file = f"{model_name}.{variant}.gguf"
+        
+        model_path = f"/home/llamacpp/models/{model_file}"
+        
+        cmd = [
+            "llama-server",
+            "--model", model_path,
+            "--host", self.config["server"]["host"],
+            "--port", str(self.config["server"]["port"]),
+            "--api-key", self.config["server"]["api_key"],
+            "--ctx-size", str(self.config["model"]["context_size"]),
+            "--batch-size", str(self.config["performance"]["batch_size"]),
+            "--ubatch-size", str(self.config["performance"]["ubatch_size"]),
+            "--pooling", self.config["performance"]["pooling_type"],
+            "--embeddings",
+            "--metrics",
+            "--verbose",
+            "--flash-attn",
+            "--cont-batching",
+        ]
+        
+        # Override GPU layers based on execution mode
+        execution_mode = self.config.get("execution", {}).get("mode", "gpu")
+        if execution_mode == "cpu":
+            cmd.extend(["--n-gpu-layers", "0"])
+        else:
+            cmd.extend(["--n-gpu-layers", str(self.config["model"]["gpu_layers"])])
+        
+        # Add threads if specified
+        threads = self.config["performance"].get("threads", -1)
+        if threads != 0:
+            cmd.extend(["--threads", str(threads)])
+        
+        return cmd
+    
+    async def start_docker(self) -> bool:
+        """Start embedding service in Docker"""
+        try:
+            if DOCKER_AVAILABLE and docker_client:
+                return await self.start_docker_sdk()
+            else:
+                return await self.start_docker_cli()
+        except Exception as e:
+            logger.error(f"Failed to start embedding Docker: {e}")
+            return False
+    
+    async def start_docker_sdk(self) -> bool:
+        """Start using Docker SDK"""
+        try:
+            # Check if container already exists
+            try:
+                existing = docker_client.containers.get(self.container_name)
+                if existing.status == "running":
+                    logger.info(f"Embedding container already running: {self.container_name}")
+                    self.docker_container = existing
+                    self.start_time = datetime.now()
+                    return True
+                else:
+                    # Remove stopped container
+                    existing.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+            
+            # Build environment
+            execution_mode = self.config.get("execution", {}).get("mode", "gpu")
+            cuda_devices = self.config.get("execution", {}).get("cuda_devices", "all")
+            
+            environment = {
+                "MODEL_NAME": self.config["model"]["name"],
+                "MODEL_VARIANT": self.config["model"]["variant"],
+                "CONTEXT_SIZE": str(self.config["model"]["context_size"]),
+                "GPU_LAYERS": str(self.config["model"]["gpu_layers"]),
+                "HOST": self.config["server"]["host"],
+                "PORT": str(self.config["server"]["port"]),
+                "API_KEY": self.config["server"]["api_key"],
+                "THREADS": str(self.config["performance"]["threads"]),
+                "BATCH_SIZE": str(self.config["performance"]["batch_size"]),
+                "UBATCH_SIZE": str(self.config["performance"]["ubatch_size"]),
+                "POOLING_TYPE": self.config["performance"]["pooling_type"],
+                "CUDA_VISIBLE_DEVICES": cuda_devices,
+                "NVIDIA_VISIBLE_DEVICES": cuda_devices,
+            }
+            
+            # Create container config
+            container_config = {
+                "image": "llamacpp-api:latest",
+                "name": self.container_name,
+                "hostname": "llamacpp-embed",
+                "detach": True,
+                "environment": environment,
+                "command": " ".join(self.build_command()),
+                "network": self.docker_network,
+                "ports": {f"{self.config['server']['port']}/tcp": self.config['server']['port']},
+                "volumes": {
+                    "llama-nexus_gpt_oss_models": {"bind": "/home/llamacpp/models", "mode": "rw"}
+                },
+                "shm_size": "8gb",
+            }
+            
+            # Add GPU runtime only for GPU mode
+            if execution_mode == "gpu":
+                container_config["runtime"] = "nvidia"
+            
+            # Create and start container
+            self.docker_container = docker_client.containers.run(**container_config)
+            self.start_time = datetime.now()
+            logger.info(f"Embedding container started: {self.container_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start embedding via Docker SDK: {e}")
+            return False
+    
+    async def start_docker_cli(self) -> bool:
+        """Start using Docker CLI"""
+        try:
+            # Check if container exists
+            check_cmd = ["docker", "ps", "-a", "--filter", f"name={self.container_name}", "--format", "{{.Names}}"]
+            check_process = await asyncio.create_subprocess_exec(
+                *check_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await check_process.communicate()
+            
+            if self.container_name in stdout.decode():
+                # Container exists, remove it
+                rm_cmd = ["docker", "rm", "-f", self.container_name]
+                await asyncio.create_subprocess_exec(*rm_cmd)
+            
+            # Build environment and command
+            execution_mode = self.config.get("execution", {}).get("mode", "gpu")
+            cuda_devices = self.config.get("execution", {}).get("cuda_devices", "all")
+            
+            docker_cmd = [
+                "docker", "run",
+                "-d",
+                "--name", self.container_name,
+                "--hostname", "llamacpp-embed",
+                f"--network={self.docker_network}",
+                f"-p", f"{self.config['server']['port']}:{self.config['server']['port']}",
+                "-v", "llama-nexus_gpt_oss_models:/home/llamacpp/models",
+                "--shm-size", "8gb",
+                "-e", f"MODEL_NAME={self.config['model']['name']}",
+                "-e", f"MODEL_VARIANT={self.config['model']['variant']}",
+                "-e", f"CONTEXT_SIZE={self.config['model']['context_size']}",
+                "-e", f"GPU_LAYERS={self.config['model']['gpu_layers']}",
+                "-e", f"HOST={self.config['server']['host']}",
+                "-e", f"PORT={self.config['server']['port']}",
+                "-e", f"API_KEY={self.config['server']['api_key']}",
+                "-e", f"CUDA_VISIBLE_DEVICES={cuda_devices}",
+                "-e", f"NVIDIA_VISIBLE_DEVICES={cuda_devices}",
+            ]
+            
+            # Add GPU runtime only for GPU mode
+            if execution_mode == "gpu":
+                docker_cmd.insert(2, "--runtime=nvidia")
+            
+            docker_cmd.extend([
+                "llamacpp-api:latest",
+                "bash", "-c",
+                " ".join(self.build_command())
+            ])
+            
+            # Start container
+            start_process = await asyncio.create_subprocess_exec(
+                *docker_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await start_process.communicate()
+            
+            if start_process.returncode != 0:
+                logger.error(f"Failed to start embedding container: {stderr.decode()}")
+                return False
+            
+            self.start_time = datetime.now()
+            logger.info(f"Embedding container started via CLI: {self.container_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start embedding via Docker CLI: {e}")
+            return False
+    
+    async def stop_docker(self) -> bool:
+        """Stop embedding service Docker container"""
+        try:
+            if DOCKER_AVAILABLE and docker_client:
+                return await self.stop_docker_sdk()
+            else:
+                return await self.stop_docker_cli()
+        except Exception as e:
+            logger.error(f"Failed to stop embedding Docker: {e}")
+            return False
+    
+    async def stop_docker_sdk(self) -> bool:
+        """Stop using Docker SDK"""
+        try:
+            container = docker_client.containers.get(self.container_name)
+            container.stop(timeout=10)
+            container.remove()
+            self.docker_container = None
+            self.start_time = None
+            logger.info(f"Embedding container stopped: {self.container_name}")
+            return True
+        except docker.errors.NotFound:
+            logger.warning(f"Embedding container not found: {self.container_name}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to stop embedding via SDK: {e}")
+            return False
+    
+    async def stop_docker_cli(self) -> bool:
+        """Stop using Docker CLI"""
+        try:
+            stop_cmd = ["docker", "stop", self.container_name]
+            stop_process = await asyncio.create_subprocess_exec(
+                *stop_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await stop_process.communicate()
+            
+            rm_cmd = ["docker", "rm", self.container_name]
+            rm_process = await asyncio.create_subprocess_exec(
+                *rm_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await rm_process.communicate()
+            
+            self.start_time = None
+            logger.info(f"Embedding container stopped via CLI: {self.container_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to stop embedding via CLI: {e}")
+            return False
+    
+    async def start(self) -> bool:
+        """Start the embedding service"""
+        return await self.start_docker()
+    
+    async def stop(self) -> bool:
+        """Stop the embedding service"""
+        return await self.stop_docker()
+    
+    async def restart(self) -> bool:
+        """Restart the embedding service"""
+        await self.stop()
+        await asyncio.sleep(2)
+        return await self.start()
+    
+    def is_running(self) -> bool:
+        """Check if embedding service is running"""
+        try:
+            if DOCKER_AVAILABLE and docker_client:
+                try:
+                    container = docker_client.containers.get(self.container_name)
+                    return container.status == "running"
+                except docker.errors.NotFound:
+                    return False
+            else:
+                # CLI check
+                result = subprocess.run(
+                    ["docker", "ps", "--filter", f"name={self.container_name}", "--format", "{{.Names}}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                return self.container_name in result.stdout
+        except Exception:
+            return False
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get current status"""
+        is_running = self.is_running()
+        
+        status = {
+            "running": is_running,
+            "uptime": (datetime.now() - self.start_time).total_seconds() if self.start_time and is_running else 0,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "config": self.config,
+            "model": {
+                "name": self.config["model"]["name"],
+                "variant": self.config["model"]["variant"],
+                "context_size": self.config["model"]["context_size"],
+                "gpu_layers": self.config["model"]["gpu_layers"],
+            },
+            "endpoint": f"http://{self.config['server']['host']}:{self.config['server']['port']}"
+        }
+        
+        return status
+    
+    def update_config(self, new_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Update configuration"""
+        for category in ["model", "performance", "execution", "server"]:
+            if category in new_config:
+                if category not in self.config:
+                    self.config[category] = {}
+                filtered_category = {k: v for k, v in new_config[category].items() if v is not None}
+                self.config[category].update(filtered_category)
+        
+        # Save config
+        config_file = Path("/tmp/embedding_config.json")
+        with open(config_file, "w") as f:
+            json.dump(self.config, f, indent=2)
+        
+        return self.config
+
+
+# Initialize managers
 manager = LlamaCPPManager()
+embedding_manager = EmbeddingManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting LlamaCPP Management API")
-    
+
     # Load saved config if exists and merge with defaults
     config_file = Path("/tmp/llamacpp_config.json")
     if config_file.exists():
@@ -1770,13 +2237,53 @@ async def lifespan(app: FastAPI):
                     # Add missing category entirely
                     saved_config[category] = default_config[category]
             manager.config = saved_config
-    
+
+    # Initialize RAG system
+    if RAG_AVAILABLE:
+        try:
+            rag_db_path = os.getenv("RAG_DB_PATH", "data/rag")
+            os.makedirs(rag_db_path, exist_ok=True)
+            
+            # Initialize document manager
+            app.state.document_manager = DocumentManager(f"{rag_db_path}/documents.db")
+            await app.state.document_manager.initialize()
+            
+            # Initialize GraphRAG
+            app.state.graph_rag = GraphRAG(f"{rag_db_path}/graph.db")
+            await app.state.graph_rag.initialize()
+            
+            # Initialize Qdrant vector store
+            qdrant_host = os.getenv("QDRANT_HOST", "localhost")
+            qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
+            app.state.vector_store = QdrantStore(host=qdrant_host, port=qdrant_port)
+            if await app.state.vector_store.connect():
+                logger.info(f"Connected to Qdrant at {qdrant_host}:{qdrant_port}")
+            else:
+                logger.warning("Failed to connect to Qdrant")
+                app.state.vector_store = None
+            
+            # Initialize document discovery
+            app.state.document_discovery = DocumentDiscovery(f"{rag_db_path}/discovery.db")
+            await app.state.document_discovery.initialize()
+            
+            logger.info("RAG system initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize RAG system: {e}")
+            app.state.document_manager = None
+            app.state.graph_rag = None
+            app.state.vector_store = None
+            app.state.document_discovery = None
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down LlamaCPP Management API")
     if not manager.use_docker and manager.process and manager.process.poll() is None:
         await manager.stop()
+    
+    # Cleanup RAG
+    if RAG_AVAILABLE and hasattr(app.state, 'vector_store') and app.state.vector_store:
+        await app.state.vector_store.disconnect()
 
 # Create FastAPI app
 app = FastAPI(
@@ -1881,6 +2388,94 @@ async def get_service_status():
         status["llamacpp_health"] = health
     
     return status
+
+# Embedding Service Endpoints
+@app.post("/api/v1/embedding/start")
+async def start_embedding_service():
+    """Start the embedding service"""
+    try:
+        logger.log_operation_start("Embedding service start request", endpoint="/api/v1/embedding/start")
+        success = await embedding_manager.start()
+        status = embedding_manager.get_status()
+        logger.log_operation_success("Embedding service start request", success=success)
+        return {
+            "success": success,
+            "status": status,
+            "message": "Embedding service started successfully" if success else "Embedding service failed to start"
+        }
+    except Exception as e:
+        logger.log_operation_failure("Embedding service start request", f"Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to start embedding service: {str(e)}")
+
+@app.post("/api/v1/embedding/stop")
+async def stop_embedding_service():
+    """Stop the embedding service"""
+    try:
+        success = await embedding_manager.stop()
+        return {"success": success, "status": embedding_manager.get_status()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to stop embedding service: {str(e)}")
+
+@app.post("/api/v1/embedding/restart")
+async def restart_embedding_service():
+    """Restart the embedding service"""
+    try:
+        success = await embedding_manager.restart()
+        return {"success": success, "status": embedding_manager.get_status()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to restart embedding service: {str(e)}")
+
+@app.get("/api/v1/embedding/status")
+async def get_embedding_status():
+    """Get current embedding service status"""
+    return embedding_manager.get_status()
+
+@app.get("/api/v1/embedding/config")
+async def get_embedding_config():
+    """Get current embedding configuration"""
+    return {
+        "config": embedding_manager.config,
+        "command": " ".join(embedding_manager.build_command()),
+        "available_models": [
+            {
+                "name": "nomic-embed-text-v1.5",
+                "dimensions": 768,
+                "max_tokens": 8192,
+                "description": "Nomic AI's long context embedding model (recommended)"
+            },
+            {
+                "name": "e5-mistral-7b",
+                "dimensions": 4096,
+                "max_tokens": 32768,
+                "description": "E5 Mistral 7B instruct model for embeddings"
+            },
+            {
+                "name": "bge-m3",
+                "dimensions": 1024,
+                "max_tokens": 8192,
+                "description": "BAAI BGE-M3 multilingual embedding model"
+            },
+            {
+                "name": "gte-Qwen2-1.5B",
+                "dimensions": 1536,
+                "max_tokens": 32768,
+                "description": "Alibaba GTE Qwen2 1.5B instruct model"
+            }
+        ]
+    }
+
+@app.put("/api/v1/embedding/config")
+async def update_embedding_config(config: Dict[str, Any]):
+    """Update embedding configuration (requires restart to apply)"""
+    try:
+        updated_config = embedding_manager.update_config(config)
+        return {
+            "success": True,
+            "config": updated_config,
+            "message": "Configuration updated. Restart service to apply changes."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}")
 
 # Configuration endpoints
 @app.get("/api/v1/service/config")
@@ -2377,6 +2972,73 @@ async def get_resources():
     except Exception as e:
         logger.error(f"Error getting resources: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/system/gpus")
+async def list_gpus():
+    """List all available GPUs with detailed information"""
+    try:
+        # Check if nvidia-smi is available
+        which_result = subprocess.run(
+            ["which", "nvidia-smi"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        
+        if which_result.returncode != 0:
+            return {
+                "available": False,
+                "gpus": [],
+                "reason": "nvidia-smi not found"
+            }
+        
+        # Get detailed GPU information
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw,power.limit",
+             "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode != 0:
+            return {
+                "available": False,
+                "gpus": [],
+                "reason": f"nvidia-smi failed with code {result.returncode}"
+            }
+        
+        gpus = []
+        for line in result.stdout.strip().split('\n'):
+            if not line.strip():
+                continue
+            values = [v.strip() for v in line.split(',')]
+            if len(values) >= 7:
+                gpus.append({
+                    "index": int(values[0]),
+                    "name": values[1],
+                    "vram_total_mb": int(values[2]),
+                    "vram_used_mb": int(values[3]),
+                    "vram_free_mb": int(values[4]),
+                    "utilization_percent": float(values[5]) if values[5] != "N/A" else 0,
+                    "temperature_c": float(values[6]) if values[6] != "N/A" else 0,
+                    "power_draw_watts": float(values[7]) if len(values) > 7 and values[7] != "N/A" else None,
+                    "power_limit_watts": float(values[8]) if len(values) > 8 and values[8] != "N/A" else None,
+                })
+        
+        return {
+            "available": True,
+            "gpus": gpus,
+            "count": len(gpus)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing GPUs: {e}")
+        return {
+            "available": False,
+            "gpus": [],
+            "reason": str(e)
+        }
 
 # Model info endpoint
 @app.get("/api/v1/models/current")
@@ -4888,6 +5550,1469 @@ async def get_model_architectures():
         raise HTTPException(status_code=503, detail="VRAM estimator not available")
     
     return {"architectures": vram_estimator.get_model_architectures()}
+
+
+# =============================================================================
+# RAG System Endpoints
+# =============================================================================
+
+def get_rag_components(request: Request):
+    """Helper to get RAG components from app state."""
+    if not RAG_AVAILABLE:
+        raise HTTPException(status_code=503, detail="RAG system not available")
+    return {
+        'document_manager': getattr(request.app.state, 'document_manager', None),
+        'vector_store': getattr(request.app.state, 'vector_store', None),
+        'graph_rag': getattr(request.app.state, 'graph_rag', None),
+        'document_discovery': getattr(request.app.state, 'document_discovery', None),
+    }
+
+
+# Domain Management
+@app.get("/api/v1/rag/domains")
+async def list_rag_domains(request: Request):
+    """List all document domains."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    domains = await rag['document_manager'].list_domains()
+    return {"domains": [d.to_dict() for d in domains]}
+
+
+@app.post("/api/v1/rag/domains")
+async def create_rag_domain(request: Request):
+    """Create a new domain."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    data = await request.json()
+    from modules.rag.document_manager import Domain
+    
+    domain = Domain(
+        id=str(uuid.uuid4()),
+        name=data.get('name', 'New Domain'),
+        description=data.get('description', ''),
+        parent_id=data.get('parent_id'),
+        chunk_size=data.get('chunk_size', 512),
+        chunk_overlap=data.get('chunk_overlap', 50),
+        embedding_model=data.get('embedding_model', 'all-MiniLM-L6-v2')
+    )
+    
+    result = await rag['document_manager'].create_domain(domain)
+    return {"domain": result.to_dict()}
+
+
+@app.get("/api/v1/rag/domains/{domain_id}")
+async def get_rag_domain(request: Request, domain_id: str):
+    """Get domain details."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    domain = await rag['document_manager'].get_domain(domain_id)
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain not found")
+    return {"domain": domain.to_dict()}
+
+
+@app.delete("/api/v1/rag/domains/{domain_id}")
+async def delete_rag_domain(request: Request, domain_id: str, cascade: bool = False):
+    """Delete a domain."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    deleted = await rag['document_manager'].delete_domain(domain_id, cascade)
+    if not deleted:
+        raise HTTPException(status_code=400, detail="Cannot delete domain with documents")
+    return {"status": "deleted"}
+
+
+@app.get("/api/v1/rag/domains/tree")
+async def get_domain_tree(request: Request):
+    """Get hierarchical domain tree."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    tree = await rag['document_manager'].get_domain_tree()
+    return {"tree": tree}
+
+
+# Document Management
+@app.get("/api/v1/rag/documents")
+async def list_rag_documents(
+    request: Request,
+    domain_id: Optional[str] = None,
+    status: Optional[str] = None,
+    doc_type: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0
+):
+    """List documents with filtering."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    from modules.rag.document_manager import DocumentStatus, DocumentType
+    
+    status_enum = DocumentStatus(status) if status else None
+    type_enum = DocumentType(doc_type) if doc_type else None
+    
+    documents, total = await rag['document_manager'].list_documents(
+        domain_id=domain_id,
+        status=status_enum,
+        doc_type=type_enum,
+        search=search,
+        limit=limit,
+        offset=offset
+    )
+    
+    return {
+        "documents": [d.to_dict() for d in documents],
+        "total": total,
+        "limit": limit,
+        "offset": offset
+    }
+
+
+@app.post("/api/v1/rag/documents")
+async def create_rag_document(request: Request, background_tasks: BackgroundTasks):
+    """Create/upload a new document."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+
+    data = await request.json()
+    from modules.rag.document_manager import Document, DocumentType, DocumentStatus
+
+    # Check for duplicate
+    content = data.get('content', '')
+    if content:
+        existing = await rag['document_manager'].check_duplicate(content)
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Duplicate content, existing document: {existing}")
+
+    doc = Document(
+        id=str(uuid.uuid4()),
+        domain_id=data.get('domain_id'),
+        name=data.get('name', 'Untitled'),
+        doc_type=DocumentType(data.get('doc_type', 'txt')),
+        content=content,
+        source_url=data.get('source_url'),
+        metadata=data.get('metadata', {})
+    )
+
+    result = await rag['document_manager'].create_document(doc)
+    
+    # Auto-process if enabled (default: true)
+    auto_process = data.get('auto_process', True)
+    if auto_process and content:
+        # Add background task to process document
+        background_tasks.add_task(
+            process_document_background,
+            result.id,
+            data.get('chunking_strategy', 'semantic'),
+            data.get('chunk_size'),
+            data.get('chunk_overlap'),
+            data.get('embedding_model')
+        )
+        logger.info(f"Queued document {result.id} for background processing")
+    
+    return {"document": result.to_dict(), "auto_processing": auto_process}
+
+
+@app.get("/api/v1/rag/documents/{document_id}")
+async def get_rag_document(request: Request, document_id: str):
+    """Get document details."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    doc = await rag['document_manager'].get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"document": doc.to_dict()}
+
+
+@app.delete("/api/v1/rag/documents/{document_id}")
+async def delete_rag_document(request: Request, document_id: str):
+    """Delete a document."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    deleted = await rag['document_manager'].delete_document(document_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"status": "deleted"}
+
+
+@app.get("/api/v1/rag/documents/{document_id}/chunks")
+async def get_document_chunks(request: Request, document_id: str):
+    """Get document chunks."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    chunks = await rag['document_manager'].get_chunks(document_id)
+    return {"chunks": [c.to_dict() for c in chunks]}
+
+
+async def process_document_background(
+    document_id: str,
+    chunking_strategy: str = 'semantic',
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
+    embedding_model: Optional[str] = None
+):
+    """Background task to process a document."""
+    try:
+        # Get RAG components from app state
+        rag = {
+            'document_manager': app.state.document_manager,
+            'vector_store': app.state.vector_store,
+            'graph_rag': app.state.graph_rag,
+            'document_discovery': app.state.document_discovery
+        }
+        
+        from modules.rag.document_manager import DocumentStatus
+        
+        doc = await rag['document_manager'].get_document(document_id)
+        if not doc:
+            logger.error(f"Document {document_id} not found for processing")
+            return
+        
+        # Update status to processing
+        doc.status = DocumentStatus.PROCESSING
+        await rag['document_manager'].update_document(doc)
+        
+        # Get domain settings
+        domain = await rag['document_manager'].get_domain(doc.domain_id)
+        
+        # Select chunker
+        config = ChunkingConfig(
+            chunk_size=chunk_size or (domain.chunk_size if domain else 512),
+            chunk_overlap=chunk_overlap or (domain.chunk_overlap if domain else 50)
+        )
+        
+        if chunking_strategy == 'fixed':
+            chunker = FixedChunker(config)
+        elif chunking_strategy == 'recursive':
+            chunker = RecursiveChunker(config)
+        else:
+            chunker = SemanticChunker(config)
+        
+        # Chunk document
+        raw_chunks = chunker.chunk(doc.content)
+        
+        # Create embedder
+        model_name = embedding_model or (domain.embedding_model if domain else 'all-MiniLM-L6-v2')
+        embedder = create_embedder(model_name=model_name)
+        
+        # Embed chunks in batches to handle large documents
+        texts = [c.content for c in raw_chunks]
+        logger.info(f"Embedding {len(texts)} chunks for document {document_id}")
+        
+        # Process in smaller batches for large documents
+        # Start with very small batch size for deployed service
+        batch_size = 4 if USE_DEPLOYED_EMBEDDINGS else 32
+        embed_result = await embedder.embed(texts, batch_size=batch_size, show_progress=False)
+        
+        # Ensure collection exists
+        collection_name = f"domain_{doc.domain_id}"
+        if not await rag['vector_store'].collection_exists(collection_name):
+            from modules.rag.vector_stores.base import CollectionConfig
+            collection_config = CollectionConfig(
+                name=collection_name,
+                vector_size=embed_result.dimensions,
+                distance_metric='cosine'
+            )
+            await rag['vector_store'].create_collection(collection_config)
+        
+        # Store in vector store and create chunks
+        from modules.rag.document_manager import DocumentChunk
+        from modules.rag.vector_stores.base import VectorRecord
+        
+        chunks = []
+        records = []
+        
+        for i, (chunk, embedding) in enumerate(zip(raw_chunks, embed_result.embeddings)):
+            chunk_id = str(uuid.uuid4())
+            vector_id = f"{document_id}_{i}"
+            
+            doc_chunk = DocumentChunk(
+                id=chunk_id,
+                document_id=document_id,
+                content=chunk.content,
+                chunk_index=chunk.index,
+                total_chunks=len(raw_chunks),
+                start_char=chunk.start_char,
+                end_char=chunk.end_char,
+                vector_id=vector_id
+            )
+            chunks.append(doc_chunk)
+            
+            records.append(VectorRecord(
+                id=vector_id,
+                vector=embedding,
+                payload={
+                    'document_id': document_id,
+                    'domain_id': doc.domain_id,
+                    'content': chunk.content,
+                    'chunk_index': chunk.index,
+                    'chunk_id': chunk_id,
+                    'metadata': doc.metadata
+                }
+            ))
+        
+        # Save chunks to document manager
+        await rag['document_manager'].save_chunks(chunks)
+        
+        # Add to vector store
+        await rag['vector_store'].add_vectors(collection_name, records)
+        
+        # Update document status
+        doc.status = DocumentStatus.READY
+        doc.chunk_count = len(chunks)
+        doc.token_count = embed_result.token_count
+        doc.processed_at = datetime.utcnow().isoformat()
+        await rag['document_manager'].update_document(doc)
+        
+        logger.info(f"Successfully processed document {document_id}: {len(chunks)} chunks created")
+        
+    except Exception as e:
+        logger.error(f"Error processing document {document_id}: {e}")
+        # Update document status to error
+        try:
+            doc = await rag['document_manager'].get_document(document_id)
+            if doc:
+                doc.status = DocumentStatus.ERROR
+                doc.error_message = str(e)
+                await rag['document_manager'].update_document(doc)
+        except:
+            pass
+
+
+@app.post("/api/v1/rag/documents/{document_id}/process")
+async def process_document(request: Request, document_id: str, background_tasks: BackgroundTasks):
+    """Process document (chunk and embed). Can run synchronously or in background."""
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    data = await request.json()
+    
+    # Check if document exists
+    doc = await rag['document_manager'].get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Run in background or synchronously
+    run_async = data.get('async', True)
+    
+    if run_async:
+        # Queue for background processing
+        background_tasks.add_task(
+            process_document_background,
+            document_id,
+            data.get('chunking_strategy', 'semantic'),
+            data.get('chunk_size'),
+            data.get('chunk_overlap'),
+            data.get('embedding_model')
+        )
+        return {
+            "status": "queued",
+            "document_id": document_id,
+            "message": "Document queued for processing"
+        }
+    
+    # Otherwise, process synchronously (original code follows)
+    data = await request.json()
+    
+    doc = await rag['document_manager'].get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Get domain settings
+    domain = await rag['document_manager'].get_domain(doc.domain_id)
+    
+    # Select chunker
+    strategy = data.get('chunking_strategy', 'semantic')
+    config = ChunkingConfig(
+        chunk_size=data.get('chunk_size', domain.chunk_size if domain else 512),
+        chunk_overlap=data.get('chunk_overlap', domain.chunk_overlap if domain else 50)
+    )
+    
+    if strategy == 'fixed':
+        chunker = FixedChunker(config)
+    elif strategy == 'recursive':
+        chunker = RecursiveChunker(config)
+    else:
+        chunker = SemanticChunker(config)
+    
+    # Chunk document
+    raw_chunks = chunker.chunk(doc.content)
+    
+    # Create embedder
+    embedding_model = data.get('embedding_model', domain.embedding_model if domain else 'all-MiniLM-L6-v2')
+    embedder = create_embedder(model_name=embedding_model)
+    
+    # Embed chunks
+    texts = [c.content for c in raw_chunks]
+    embed_result = await embedder.embed(texts)
+    
+    # Ensure collection exists
+    collection_name = f"domain_{doc.domain_id}"
+    if not await rag['vector_store'].collection_exists(collection_name):
+        from modules.rag.vector_stores.base import CollectionConfig
+        await rag['vector_store'].create_collection(CollectionConfig(
+            name=collection_name,
+            vector_size=embed_result.dimensions
+        ))
+    
+    # Save to vector store
+    from modules.rag.vector_stores.base import VectorRecord
+    from modules.rag.document_manager import DocumentChunk
+    
+    saved_chunks = []
+    records = []
+    
+    for i, (chunk, embedding) in enumerate(zip(raw_chunks, embed_result.embeddings)):
+        chunk_id = str(uuid.uuid4())
+        vector_id = f"{document_id}_{i}"
+        
+        doc_chunk = DocumentChunk(
+            id=chunk_id,
+            document_id=document_id,
+            content=chunk.content,
+            chunk_index=chunk.index,
+            total_chunks=len(raw_chunks),
+            start_char=chunk.start_char,
+            end_char=chunk.end_char,
+            section_header=chunk.metadata.get('section_header'),
+            vector_id=vector_id
+        )
+        saved_chunks.append(doc_chunk)
+        
+        records.append(VectorRecord(
+            id=vector_id,
+            vector=embedding,
+            payload={
+                'document_id': document_id,
+                'domain_id': doc.domain_id,
+                'content': chunk.content,
+                'chunk_index': chunk.index,
+                'total_chunks': len(raw_chunks),
+                'document_name': doc.name
+            }
+        ))
+    
+    # Save chunks to database
+    await rag['document_manager'].save_chunks(saved_chunks)
+    
+    # Upsert vectors
+    upserted = await rag['vector_store'].upsert(collection_name, records)
+    
+    # Update document status
+    from modules.rag.document_manager import DocumentStatus
+    doc.status = DocumentStatus.READY
+    doc.chunk_count = len(saved_chunks)
+    await rag['document_manager'].update_document(doc)
+    
+    return {
+        "status": "processed",
+        "chunks_created": len(saved_chunks),
+        "vectors_upserted": upserted
+    }
+
+
+# Vector Store / Collections
+@app.get("/api/v1/rag/collections")
+async def list_collections(request: Request):
+    """List vector collections."""
+    rag = get_rag_components(request)
+    if not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="Vector store not initialized")
+    
+    collections = await rag['vector_store'].list_collections()
+    return {"collections": collections}
+
+
+@app.get("/api/v1/rag/collections/{name}")
+async def get_collection_info(request: Request, name: str):
+    """Get collection information."""
+    rag = get_rag_components(request)
+    if not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="Vector store not initialized")
+    
+    info = await rag['vector_store'].get_collection_info(name)
+    if not info:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    
+    return {
+        "name": info.name,
+        "vector_size": info.vector_size,
+        "distance": info.distance.value,
+        "vectors_count": info.vectors_count,
+        "points_count": info.points_count,
+        "status": info.status
+    }
+
+
+@app.delete("/api/v1/rag/collections/{name}")
+async def delete_collection(request: Request, name: str):
+    """Delete a collection."""
+    rag = get_rag_components(request)
+    if not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="Vector store not initialized")
+    
+    deleted = await rag['vector_store'].delete_collection(name)
+    return {"status": "deleted" if deleted else "failed"}
+
+
+# Retrieval
+@app.post("/api/v1/rag/retrieve")
+async def retrieve_documents(request: Request):
+    """Retrieve relevant documents for a query."""
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    data = await request.json()
+    query = data.get('query', '')
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="Query is required")
+    
+    # Setup retriever
+    embedding_model = data.get('embedding_model', 'all-MiniLM-L6-v2')
+    embedder = create_embedder(model_name=embedding_model)
+    
+    # Determine collection
+    domain_id = data.get('domain_id')
+    collection_name = f"domain_{domain_id}" if domain_id else "documents"
+    
+    retriever = VectorRetriever(
+        rag['vector_store'],
+        embedder,
+        rag['document_manager'],
+        collection_name
+    )
+    
+    config = RetrievalConfig(
+        top_k=data.get('top_k', 10),
+        score_threshold=data.get('score_threshold'),
+        domain_ids=[domain_id] if domain_id else None
+    )
+    
+    results = await retriever.retrieve(query, config)
+    
+    return {
+        "query": query,
+        "results": [r.to_dict() for r in results]
+    }
+
+
+@app.post("/api/v1/rag/retrieve/hybrid")
+async def hybrid_retrieve(request: Request):
+    """Hybrid retrieval combining dense and sparse search."""
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    data = await request.json()
+    query = data.get('query', '')
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="Query is required")
+    
+    embedding_model = data.get('embedding_model', 'all-MiniLM-L6-v2')
+    embedder = create_embedder(model_name=embedding_model)
+
+    domain_id = data.get('domain_id')
+    collection_name = f"domain_{domain_id}" if domain_id else "documents"
+
+    retriever = HybridRetriever(
+        rag['vector_store'],
+        embedder,
+        rag['document_manager'],
+        collection_name
+    )
+    
+    config = RetrievalConfig(
+        top_k=data.get('top_k', 10),
+        alpha=data.get('alpha', 0.5),  # Dense vs sparse weight
+        domain_ids=[domain_id] if domain_id else None
+    )
+    
+    results = await retriever.retrieve(query, config)
+    
+    return {
+        "query": query,
+        "retrieval_method": "hybrid",
+        "alpha": config.alpha,
+        "results": [r.to_dict() for r in results]
+    }
+
+
+# GraphRAG Endpoints
+@app.get("/api/v1/rag/graph/entities")
+async def list_entities(
+    request: Request,
+    entity_type: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """List knowledge graph entities."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    from modules.rag.graph_rag import EntityType
+    type_enum = EntityType(entity_type) if entity_type else None
+    
+    entities, total = await rag['graph_rag'].list_entities(
+        entity_type=type_enum,
+        search=search,
+        limit=limit,
+        offset=offset
+    )
+    
+    return {
+        "entities": [e.to_dict() for e in entities],
+        "total": total
+    }
+
+
+@app.post("/api/v1/rag/graph/entities")
+async def create_entity(request: Request):
+    """Create a new entity."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    data = await request.json()
+    from modules.rag.graph_rag import Entity, EntityType
+    
+    entity = Entity(
+        id=str(uuid.uuid4()),
+        name=data.get('name', ''),
+        entity_type=EntityType(data.get('entity_type', 'concept')),
+        description=data.get('description', ''),
+        aliases=data.get('aliases', []),
+        properties=data.get('properties', {})
+    )
+    
+    result = await rag['graph_rag'].create_entity(entity)
+    return {"entity": result.to_dict()}
+
+
+@app.put("/api/v1/rag/graph/entities/{entity_id}")
+async def update_entity(request: Request, entity_id: str):
+    """Update an entity."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    entity = await rag['graph_rag'].get_entity(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    
+    data = await request.json()
+    from modules.rag.graph_rag import EntityType
+    
+    entity.name = data.get('name', entity.name)
+    entity.description = data.get('description', entity.description)
+    entity.aliases = data.get('aliases', entity.aliases)
+    entity.properties = data.get('properties', entity.properties)
+    if 'entity_type' in data:
+        entity.entity_type = EntityType(data['entity_type'])
+    
+    result = await rag['graph_rag'].update_entity(entity)
+    return {"entity": result.to_dict()}
+
+
+@app.delete("/api/v1/rag/graph/entities/{entity_id}")
+async def delete_entity(request: Request, entity_id: str):
+    """Delete an entity."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    await rag['graph_rag'].delete_entity(entity_id)
+    return {"status": "deleted"}
+
+
+@app.post("/api/v1/rag/graph/entities/merge")
+async def merge_entities(request: Request):
+    """Merge multiple entities into one."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    data = await request.json()
+    entity_ids = data.get('entity_ids', [])
+    merged_name = data.get('merged_name', '')
+    
+    if len(entity_ids) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 entities to merge")
+    
+    result = await rag['graph_rag'].merge_entities(entity_ids, merged_name)
+    if not result:
+        raise HTTPException(status_code=400, detail="Merge failed")
+    
+    return {"entity": result.to_dict()}
+
+
+@app.get("/api/v1/rag/graph/relationships")
+async def get_entity_relationships(request: Request, entity_id: str, direction: str = "both"):
+    """Get relationships for an entity."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    relationships = await rag['graph_rag'].get_relationships(entity_id, direction)
+    return {"relationships": [r.to_dict() for r in relationships]}
+
+
+@app.post("/api/v1/rag/graph/relationships")
+async def create_relationship(request: Request):
+    """Create a new relationship."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    data = await request.json()
+    from modules.rag.graph_rag import Relationship, RelationshipType
+    
+    rel = Relationship(
+        id=str(uuid.uuid4()),
+        source_id=data.get('source_id'),
+        target_id=data.get('target_id'),
+        relationship_type=RelationshipType(data.get('relationship_type', 'related_to')),
+        description=data.get('description', ''),
+        bidirectional=data.get('bidirectional', False)
+    )
+    
+    result = await rag['graph_rag'].create_relationship(rel)
+    return {"relationship": result.to_dict()}
+
+
+@app.delete("/api/v1/rag/graph/relationships/{relationship_id}")
+async def delete_relationship(request: Request, relationship_id: str):
+    """Delete a relationship."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    await rag['graph_rag'].delete_relationship(relationship_id)
+    return {"status": "deleted"}
+
+
+@app.get("/api/v1/rag/graph/visualize")
+async def get_graph_visualization(request: Request, limit: int = 500):
+    """Get graph data for visualization."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    data = await rag['graph_rag'].get_visualization_data(limit)
+    return data
+
+
+@app.get("/api/v1/rag/graph/subgraph")
+async def get_subgraph(request: Request, entity_ids: str, depth: int = 2):
+    """Get subgraph around specified entities."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    ids = entity_ids.split(',')
+    nodes, edges = await rag['graph_rag'].get_subgraph(ids, depth)
+    
+    return {
+        "nodes": [{"id": n.id, "label": n.label, "type": n.type} for n in nodes],
+        "edges": [{"source": e.source, "target": e.target, "label": e.label} for e in edges]
+    }
+
+
+@app.post("/api/v1/rag/graph/extract")
+async def extract_entities_from_text(request: Request):
+    """Extract entities and relationships from text."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    data = await request.json()
+    text = data.get('text', '')
+    save = data.get('save', False)
+    
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+    
+    # Extract entities
+    entities = await rag['graph_rag'].extract_entities_from_text(text)
+    
+    # Extract relationships
+    relationships = await rag['graph_rag'].extract_relationships_from_text(text, entities)
+    
+    # Save if requested
+    if save:
+        for entity in entities:
+            existing = await rag['graph_rag'].find_entity_by_name(entity.name)
+            if not existing:
+                await rag['graph_rag'].create_entity(entity)
+        
+        for rel in relationships:
+            await rag['graph_rag'].create_relationship(rel)
+    
+    return {
+        "entities": [e.to_dict() for e in entities],
+        "relationships": [r.to_dict() for r in relationships],
+        "saved": save
+    }
+
+
+@app.get("/api/v1/rag/graph/statistics")
+async def get_graph_statistics(request: Request):
+    """Get graph statistics."""
+    rag = get_rag_components(request)
+    if not rag['graph_rag']:
+        raise HTTPException(status_code=503, detail="GraphRAG not initialized")
+    
+    stats = await rag['graph_rag'].get_statistics()
+    return stats
+
+
+# Document Discovery Endpoints
+@app.post("/api/v1/rag/discover/search")
+async def discover_documents(request: Request):
+    """Search web for documents."""
+    rag = get_rag_components(request)
+    if not rag['document_discovery']:
+        raise HTTPException(status_code=503, detail="Document discovery not initialized")
+    
+    data = await request.json()
+    query = data.get('query', '')
+    max_results = data.get('max_results', 10)
+    provider = data.get('provider', 'duckduckgo')
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="Query is required")
+    
+    results = await rag['document_discovery'].search_web(query, max_results, provider)
+    return {
+        "query": query,
+        "results": [r.to_dict() for r in results]
+    }
+
+
+@app.get("/api/v1/rag/discover/queue")
+async def get_discovery_queue(
+    request: Request,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0
+):
+    """Get document review queue."""
+    rag = get_rag_components(request)
+    if not rag['document_discovery']:
+        raise HTTPException(status_code=503, detail="Document discovery not initialized")
+    
+    from modules.rag.discovery import DiscoveryStatus
+    status_enum = DiscoveryStatus(status) if status else None
+    
+    docs, total = await rag['document_discovery'].get_review_queue(
+        status=status_enum,
+        limit=limit,
+        offset=offset
+    )
+    
+    return {
+        "documents": [d.to_dict() for d in docs],
+        "total": total
+    }
+
+
+@app.post("/api/v1/rag/discover/{doc_id}/extract")
+async def extract_discovered_content(request: Request, doc_id: str):
+    """Extract content from discovered document URL."""
+    rag = get_rag_components(request)
+    if not rag['document_discovery']:
+        raise HTTPException(status_code=503, detail="Document discovery not initialized")
+    
+    result = await rag['document_discovery'].extract_content(doc_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    return {"document": result.to_dict()}
+
+
+@app.post("/api/v1/rag/discover/{doc_id}/approve")
+async def approve_discovered_document(request: Request, doc_id: str):
+    """Approve a discovered document."""
+    rag = get_rag_components(request)
+    if not rag['document_discovery']:
+        raise HTTPException(status_code=503, detail="Document discovery not initialized")
+    
+    data = await request.json()
+    domain_id = data.get('domain_id')
+    
+    result = await rag['document_discovery'].approve_document(doc_id, domain_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    return {"document": result.to_dict()}
+
+
+@app.post("/api/v1/rag/discover/{doc_id}/reject")
+async def reject_discovered_document(request: Request, doc_id: str):
+    """Reject a discovered document."""
+    rag = get_rag_components(request)
+    if not rag['document_discovery']:
+        raise HTTPException(status_code=503, detail="Document discovery not initialized")
+    
+    result = await rag['document_discovery'].reject_document(doc_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    return {"document": result.to_dict()}
+
+
+@app.post("/api/v1/rag/discover/bulk-approve")
+async def bulk_approve_documents(request: Request):
+    """Bulk approve documents."""
+    rag = get_rag_components(request)
+    if not rag['document_discovery']:
+        raise HTTPException(status_code=503, detail="Document discovery not initialized")
+    
+    data = await request.json()
+    doc_ids = data.get('doc_ids', [])
+    domain_id = data.get('domain_id')
+    
+    count = await rag['document_discovery'].bulk_approve(doc_ids, domain_id)
+    return {"approved_count": count}
+
+
+@app.get("/api/v1/rag/discover/statistics")
+async def get_discovery_statistics(request: Request):
+    """Get discovery statistics."""
+    rag = get_rag_components(request)
+    if not rag['document_discovery']:
+        raise HTTPException(status_code=503, detail="Document discovery not initialized")
+    
+    stats = await rag['document_discovery'].get_statistics()
+    return stats
+
+
+# Batch Processing & Vector Store Management
+@app.post("/api/v1/rag/documents/batch-process")
+async def batch_process_documents(request: Request, background_tasks: BackgroundTasks):
+    """Process multiple documents in batch."""
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    data = await request.json()
+    document_ids = data.get('document_ids', [])
+    
+    if not document_ids:
+        raise HTTPException(status_code=400, detail="No document IDs provided")
+    
+    # Validate all documents exist
+    missing = []
+    for doc_id in document_ids:
+        doc = await rag['document_manager'].get_document(doc_id)
+        if not doc:
+            missing.append(doc_id)
+    
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Documents not found: {', '.join(missing)}")
+    
+    # Queue all documents for processing
+    for doc_id in document_ids:
+        background_tasks.add_task(
+            process_document_background,
+            doc_id,
+            data.get('chunking_strategy', 'semantic'),
+            data.get('chunk_size'),
+            data.get('chunk_overlap'),
+            data.get('embedding_model')
+        )
+    
+    return {
+        "status": "queued",
+        "document_count": len(document_ids),
+        "document_ids": document_ids,
+        "message": f"{len(document_ids)} documents queued for processing"
+    }
+
+
+@app.post("/api/v1/rag/documents/process-all-pending")
+async def process_all_pending(request: Request, background_tasks: BackgroundTasks):
+    """Process all pending documents in a domain or globally."""
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    data = await request.json()
+    domain_id = data.get('domain_id')
+    
+    from modules.rag.document_manager import DocumentStatus
+    
+    # Get all pending documents
+    docs, total = await rag['document_manager'].list_documents(
+        domain_id=domain_id,
+        status=DocumentStatus.PENDING,
+        limit=1000  # Process up to 1000 docs
+    )
+    
+    if not docs:
+        return {
+            "status": "complete",
+            "document_count": 0,
+            "message": "No pending documents found"
+        }
+    
+    # Queue all for processing
+    for doc in docs:
+        background_tasks.add_task(
+            process_document_background,
+            doc.id,
+            data.get('chunking_strategy', 'semantic'),
+            data.get('chunk_size'),
+            data.get('chunk_overlap'),
+            data.get('embedding_model')
+        )
+    
+    return {
+        "status": "queued",
+        "document_count": len(docs),
+        "message": f"{len(docs)} pending documents queued for processing"
+    }
+
+
+@app.post("/api/v1/rag/documents/{document_id}/reprocess")
+async def reprocess_document(request: Request, document_id: str, background_tasks: BackgroundTasks):
+    """Reprocess an existing document (delete old vectors and reprocess)."""
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    doc = await rag['document_manager'].get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    data = await request.json()
+    
+    # Delete existing vectors from vector store
+    collection_name = f"domain_{doc.domain_id}"
+    if await rag['vector_store'].collection_exists(collection_name):
+        # Find and delete all vectors for this document
+        chunks = await rag['document_manager'].get_chunks(document_id)
+        vector_ids = [chunk.vector_id for chunk in chunks if chunk.vector_id]
+        if vector_ids:
+            try:
+                await rag['vector_store'].delete_vectors(collection_name, vector_ids)
+                logger.info(f"Deleted {len(vector_ids)} vectors for document {document_id}")
+            except Exception as e:
+                logger.warning(f"Error deleting vectors: {e}")
+    
+    # Delete old chunks
+    await rag['document_manager'].delete_chunks(document_id)
+    
+    # Reset document status
+    from modules.rag.document_manager import DocumentStatus
+    doc.status = DocumentStatus.PENDING
+    doc.chunk_count = 0
+    doc.processed_at = None
+    doc.error_message = None
+    await rag['document_manager'].update_document(doc)
+    
+    # Queue for reprocessing
+    background_tasks.add_task(
+        process_document_background,
+        document_id,
+        data.get('chunking_strategy', 'semantic'),
+        data.get('chunk_size'),
+        data.get('chunk_overlap'),
+        data.get('embedding_model')
+    )
+    
+    return {
+        "status": "queued",
+        "document_id": document_id,
+        "message": "Document queued for reprocessing"
+    }
+
+
+@app.delete("/api/v1/rag/documents/{document_id}/vectors")
+async def remove_document_from_vector_store(request: Request, document_id: str):
+    """Remove a document's vectors from the vector store (but keep document and chunks in DB)."""
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    doc = await rag['document_manager'].get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Delete vectors from vector store
+    collection_name = f"domain_{doc.domain_id}"
+    chunks = await rag['document_manager'].get_chunks(document_id)
+    vector_ids = [chunk.vector_id for chunk in chunks if chunk.vector_id]
+    
+    deleted_count = 0
+    if vector_ids and await rag['vector_store'].collection_exists(collection_name):
+        try:
+            await rag['vector_store'].delete_vectors(collection_name, vector_ids)
+            deleted_count = len(vector_ids)
+            logger.info(f"Deleted {deleted_count} vectors for document {document_id}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error deleting vectors: {str(e)}")
+    
+    return {
+        "status": "deleted",
+        "document_id": document_id,
+        "vectors_deleted": deleted_count
+    }
+
+
+@app.post("/api/v1/rag/documents/{document_id}/add-to-vector-store")
+async def add_document_to_vector_store(request: Request, document_id: str):
+    """Add a document's chunks to vector store (if chunks exist but not in vector store)."""
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    doc = await rag['document_manager'].get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    chunks = await rag['document_manager'].get_chunks(document_id)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="Document has no chunks. Process document first.")
+    
+    # Re-embed and add to vector store
+    data = await request.json()
+    domain = await rag['document_manager'].get_domain(doc.domain_id)
+    
+    embedding_model = data.get('embedding_model', domain.embedding_model if domain else 'all-MiniLM-L6-v2')
+    embedder = create_embedder(model_name=embedding_model)
+    
+    # Embed all chunks
+    texts = [chunk.content for chunk in chunks]
+    embed_result = await embedder.embed(texts)
+    
+    # Ensure collection exists
+    collection_name = f"domain_{doc.domain_id}"
+    if not await rag['vector_store'].collection_exists(collection_name):
+        from modules.rag.vector_stores.base import CollectionConfig
+        collection_config = CollectionConfig(
+            name=collection_name,
+            dimension=embed_result.dimensions,
+            distance_metric='cosine'
+        )
+        await rag['vector_store'].create_collection(collection_config)
+    
+    # Create vector records
+    from modules.rag.vector_stores.base import VectorRecord
+    records = []
+    for chunk, embedding in zip(chunks, embed_result.embeddings):
+        records.append(VectorRecord(
+            id=chunk.vector_id or f"{document_id}_{chunk.chunk_index}",
+            vector=embedding,
+            payload={
+                'document_id': document_id,
+                'domain_id': doc.domain_id,
+                'content': chunk.content,
+                'chunk_index': chunk.chunk_index,
+                'chunk_id': chunk.id,
+                'metadata': doc.metadata
+            }
+        ))
+    
+    # Add to vector store
+    await rag['vector_store'].add_vectors(collection_name, records)
+    
+    return {
+        "status": "added",
+        "document_id": document_id,
+        "vectors_added": len(records),
+        "collection": collection_name
+    }
+
+
+@app.get("/api/v1/rag/vector-stores/collections")
+async def list_collections(request: Request):
+    """List all vector store collections."""
+    rag = get_rag_components(request)
+    if not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="Vector store not initialized")
+    
+    collections = await rag['vector_store'].list_collections()
+    return {"collections": collections}
+
+
+@app.get("/api/v1/rag/vector-stores/collections/{collection_name}/stats")
+async def get_collection_stats(request: Request, collection_name: str):
+    """Get statistics for a vector store collection."""
+    rag = get_rag_components(request)
+    if not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="Vector store not initialized")
+    
+    if not await rag['vector_store'].collection_exists(collection_name):
+        raise HTTPException(status_code=404, detail="Collection not found")
+    
+    stats = await rag['vector_store'].get_collection_stats(collection_name)
+    return {"collection": collection_name, "stats": stats}
+
+
+@app.delete("/api/v1/rag/vector-stores/collections/{collection_name}")
+async def delete_collection(request: Request, collection_name: str):
+    """Delete an entire vector store collection."""
+    rag = get_rag_components(request)
+    if not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="Vector store not initialized")
+    
+    if not await rag['vector_store'].collection_exists(collection_name):
+        raise HTTPException(status_code=404, detail="Collection not found")
+    
+    await rag['vector_store'].delete_collection(collection_name)
+    return {"status": "deleted", "collection": collection_name}
+
+
+@app.post("/api/v1/rag/domains/{domain_id}/reindex")
+async def reindex_domain(request: Request, domain_id: str, background_tasks: BackgroundTasks):
+    """Reindex all documents in a domain."""
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    domain = await rag['document_manager'].get_domain(domain_id)
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain not found")
+    
+    data = await request.json()
+    
+    # Get all documents in domain
+    from modules.rag.document_manager import DocumentStatus
+    docs, total = await rag['document_manager'].list_documents(
+        domain_id=domain_id,
+        limit=10000
+    )
+    
+    if not docs:
+        return {
+            "status": "complete",
+            "document_count": 0,
+            "message": "No documents found in domain"
+        }
+    
+    # Delete old collection if requested
+    if data.get('recreate_collection', False):
+        collection_name = f"domain_{domain_id}"
+        if await rag['vector_store'].collection_exists(collection_name):
+            await rag['vector_store'].delete_collection(collection_name)
+            logger.info(f"Deleted collection {collection_name} for reindexing")
+    
+    # Queue all documents for reprocessing
+    for doc in docs:
+        if doc.status != DocumentStatus.PENDING:  # Only reprocess already processed docs
+            background_tasks.add_task(
+                process_document_background,
+                doc.id,
+                data.get('chunking_strategy', 'semantic'),
+                data.get('chunk_size'),
+                data.get('chunk_overlap'),
+                data.get('embedding_model')
+            )
+    
+    return {
+        "status": "queued",
+        "domain_id": domain_id,
+        "document_count": len([d for d in docs if d.status != DocumentStatus.PENDING]),
+        "message": f"Domain reindex started for {len(docs)} documents"
+    }
+
+
+# Embedding Models
+@app.get("/api/v1/rag/embeddings/models")
+async def list_embedding_models():
+    """List available embedding models."""
+    if not RAG_AVAILABLE:
+        raise HTTPException(status_code=503, detail="RAG system not available")
+
+    local_models = LocalEmbedder.list_available_models()
+    api_models = APIEmbedder.list_available_models()
+
+    return {
+        "local_models": [{"name": m.name, "dimensions": m.dimensions, "description": m.description} for m in local_models],
+        "api_models": [{"name": m.name, "dimensions": m.dimensions, "provider": m.provider, "description": m.description} for m in api_models]
+    }
+
+@app.get("/api/v1/rag/embeddings/config")
+async def get_embedding_config():
+    """Get current embedding configuration for RAG."""
+    if not RAG_AVAILABLE:
+        raise HTTPException(status_code=503, detail="RAG system not available")
+    
+    return {
+        "use_deployed_service": USE_DEPLOYED_EMBEDDINGS,
+        "service_url": EMBEDDING_SERVICE_URL,
+        "default_model": DEFAULT_EMBEDDING_MODEL,
+        "service_running": embedding_manager.is_running(),
+        "service_status": embedding_manager.get_status() if embedding_manager.is_running() else None
+    }
+
+@app.put("/api/v1/rag/embeddings/config")
+async def update_embedding_rag_config(request: Request):
+    """Update embedding configuration for RAG."""
+    if not RAG_AVAILABLE:
+        raise HTTPException(status_code=503, detail="RAG system not available")
+    
+    data = await request.json()
+    
+    global USE_DEPLOYED_EMBEDDINGS, EMBEDDING_SERVICE_URL, DEFAULT_EMBEDDING_MODEL
+    
+    if 'use_deployed_service' in data:
+        USE_DEPLOYED_EMBEDDINGS = data['use_deployed_service']
+        logger.info(f"Updated USE_DEPLOYED_EMBEDDINGS to: {USE_DEPLOYED_EMBEDDINGS}")
+    
+    if 'service_url' in data:
+        EMBEDDING_SERVICE_URL = data['service_url']
+        logger.info(f"Updated EMBEDDING_SERVICE_URL to: {EMBEDDING_SERVICE_URL}")
+    
+    if 'default_model' in data:
+        DEFAULT_EMBEDDING_MODEL = data['default_model']
+        logger.info(f"Updated DEFAULT_EMBEDDING_MODEL to: {DEFAULT_EMBEDDING_MODEL}")
+    
+    return {
+        "success": True,
+        "config": {
+            "use_deployed_service": USE_DEPLOYED_EMBEDDINGS,
+            "service_url": EMBEDDING_SERVICE_URL,
+            "default_model": DEFAULT_EMBEDDING_MODEL,
+            "service_running": embedding_manager.is_running()
+        }
+    }
+
+
+@app.post("/api/v1/rag/embeddings/embed")
+async def embed_text(request: Request):
+    """Embed text using specified model."""
+    if not RAG_AVAILABLE:
+        raise HTTPException(status_code=503, detail="RAG system not available")
+    
+    data = await request.json()
+    texts = data.get('texts', [])
+    model = data.get('model', 'all-MiniLM-L6-v2')
+    
+    if not texts:
+        raise HTTPException(status_code=400, detail="Texts are required")
+
+    embedder = create_embedder(model_name=model)
+    result = await embedder.embed(texts)
+    
+    return {
+        "model": result.model,
+        "dimensions": result.dimensions,
+        "embeddings_count": len(result.embeddings),
+        "processing_time_ms": result.processing_time_ms
+    }
+
+
+# RAG Statistics
+@app.get("/api/v1/rag/processing/queue")
+async def get_processing_queue(request: Request):
+    """Get documents currently being processed or queued."""
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    from modules.rag.document_manager import DocumentStatus
+    
+    # Get processing and pending documents
+    processing_docs, proc_total = await rag['document_manager'].list_documents(
+        status=DocumentStatus.PROCESSING,
+        limit=100
+    )
+    
+    pending_docs, pend_total = await rag['document_manager'].list_documents(
+        status=DocumentStatus.PENDING,
+        limit=100
+    )
+    
+    error_docs, err_total = await rag['document_manager'].list_documents(
+        status=DocumentStatus.ERROR,
+        limit=100
+    )
+    
+    return {
+        "processing": {
+            "documents": [d.to_dict() for d in processing_docs],
+            "count": proc_total
+        },
+        "pending": {
+            "documents": [d.to_dict() for d in pending_docs],
+            "count": pend_total
+        },
+        "errors": {
+            "documents": [d.to_dict() for d in error_docs],
+            "count": err_total
+        }
+    }
+
+
+@app.get("/api/v1/rag/statistics")
+async def get_rag_statistics(request: Request):
+    """Get overall RAG system statistics."""
+    rag = get_rag_components(request)
+
+    stats = {"available": RAG_AVAILABLE}
+    
+    if rag['document_manager']:
+        stats['documents'] = await rag['document_manager'].get_statistics()
+    
+    if rag['vector_store']:
+        collections = await rag['vector_store'].list_collections()
+        collection_stats = []
+        for coll in collections:
+            try:
+                coll_stats = await rag['vector_store'].get_collection_stats(coll)
+                collection_stats.append({
+                    "name": coll,
+                    "stats": coll_stats
+                })
+            except:
+                pass
+        
+        stats['vector_store'] = {
+            "connected": True,
+            "collections": len(collections),
+            "collection_details": collection_stats
+        }
+    else:
+        stats['vector_store'] = {"connected": False}
+    
+    if rag['graph_rag']:
+        stats['graph'] = await rag['graph_rag'].get_statistics()
+    
+    if rag['document_discovery']:
+        stats['discovery'] = await rag['document_discovery'].get_statistics()
+    
+    # Add embedding service status
+    stats['embedding_service'] = {
+        "running": embedding_manager.is_running(),
+        "config": embedding_manager.config if embedding_manager.is_running() else None
+    }
+
+    return stats
 
 
 if __name__ == "__main__":

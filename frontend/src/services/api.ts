@@ -140,6 +140,27 @@ class ApiService {
     return new Error(message);
   }
 
+  // Generic HTTP methods for flexibility
+  async get(url: string, config?: any): Promise<any> {
+    return await this.backendClient.get(url, config);
+  }
+
+  async post(url: string, data?: any, config?: any): Promise<any> {
+    return await this.backendClient.post(url, data, config);
+  }
+
+  async put(url: string, data?: any, config?: any): Promise<any> {
+    return await this.backendClient.put(url, data, config);
+  }
+
+  async delete(url: string, config?: any): Promise<any> {
+    return await this.backendClient.delete(url, config);
+  }
+
+  async patch(url: string, data?: any, config?: any): Promise<any> {
+    return await this.backendClient.patch(url, data, config);
+  }
+
   // Normalize backend download record (snake_case) to frontend ModelDownload (camelCase)
   private normalizeModelDownload(raw: any): ModelDownload {
     if (!raw || (typeof raw !== 'object')) {
@@ -230,7 +251,10 @@ class ApiService {
           description: model.description,
           license: model.license,
           vramRequired: model.vramRequired,
-          lastModified: model.lastModified ? new Date(model.lastModified) : undefined
+          lastModified: model.lastModified ? new Date(model.lastModified) : undefined,
+          // Local file information
+          localPath: model.localPath,
+          filename: model.filename
         };
       });
     }

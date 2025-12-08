@@ -291,21 +291,509 @@ def estimate_vram(params_b, quant_bits, ctx_size, batch_size):
 - Deploy fine-tuned adapters
 - A/B test base vs fine-tuned
 
-### 4.4 RAG (Retrieval-Augmented Generation) Pipeline
+### 4.4 Comprehensive RAG System
 
-**Description**: Built-in document retrieval for context augmentation.
+**Description**: Enterprise-grade Retrieval-Augmented Generation system with GraphRAG, multiple vector stores, advanced document management, and intelligent retrieval mechanisms.
+
+---
+
+#### 4.4.1 Document Management System
 
 **New files**:
-- `backend/modules/rag_pipeline.py`
-- `backend/modules/vector_store.py`
-- `frontend/src/pages/KnowledgeBasePage.tsx`
+- `backend/modules/rag/document_manager.py`
+- `backend/modules/rag/document_processor.py`
+- `frontend/src/pages/DocumentsPage.tsx`
 
-**Components**:
-- Document upload and processing
-- Chunk and embed documents
-- Vector store (ChromaDB/Qdrant integration)
-- Retrieval strategies (semantic, hybrid, reranking)
-- Context injection into prompts
+**Features**:
+
+1. **Domain-Based Organization**
+   - Hierarchical domain structure (e.g., Engineering > Backend > APIs)
+   - Domain-specific settings (chunk size, overlap, embedding model)
+   - Cross-domain search with domain filtering
+   - Domain access permissions (future: multi-user)
+
+2. **Document CRUD Operations**
+   - Create: Upload files (PDF, DOCX, TXT, MD, HTML, CSV, JSON)
+   - Create: Ingest from URL with auto-extraction
+   - Create: Direct text/markdown input
+   - Read: Preview documents, view chunks, see embeddings
+   - Update: Re-process documents, edit metadata, change domain
+   - Delete: Soft delete with archive, hard delete with cascade
+
+3. **Automatic Document Discovery**
+   - Web search integration (search term -> gather documents)
+   - Document review queue for approval
+   - Duplicate detection using MinHash/SimHash
+   - Source credibility scoring
+   - Scheduled crawling for monitored URLs
+
+4. **Document Processing Pipeline**
+   ```
+   [Upload] -> [Extract Text] -> [Clean/Normalize] -> [Chunk] -> [Embed] -> [Index]
+                    |                   |                |           |
+                    v                   v                v           v
+              [OCR if needed]    [Language detect]  [Overlap]   [Store vectors]
+   ```
+
+**API Endpoints**:
+```
+POST   /api/v1/rag/documents              - Upload document
+GET    /api/v1/rag/documents              - List documents
+GET    /api/v1/rag/documents/{id}         - Get document details
+PUT    /api/v1/rag/documents/{id}         - Update document
+DELETE /api/v1/rag/documents/{id}         - Delete document
+POST   /api/v1/rag/documents/{id}/reprocess - Re-process document
+GET    /api/v1/rag/documents/{id}/chunks  - Get document chunks
+POST   /api/v1/rag/documents/discover     - Discover docs from search
+GET    /api/v1/rag/documents/review-queue - Get pending reviews
+POST   /api/v1/rag/documents/review/{id}  - Approve/reject document
+```
+
+---
+
+#### 4.4.2 GraphRAG Implementation
+
+**New files**:
+- `backend/modules/rag/graph_rag.py`
+- `backend/modules/rag/entity_extractor.py`
+- `backend/modules/rag/relationship_extractor.py`
+- `backend/modules/rag/graph_store.py`
+- `frontend/src/pages/KnowledgeGraphPage.tsx`
+- `frontend/src/components/rag/GraphVisualization.tsx`
+- `frontend/src/components/rag/EntityEditor.tsx`
+
+**Features**:
+
+1. **Entity Extraction**
+   - Named Entity Recognition (NER) using LLM
+   - Custom entity types (configurable per domain)
+   - Entity linking and disambiguation
+   - Coreference resolution
+   - Entity attributes extraction
+   
+   Entity types:
+   - Person, Organization, Location, Date, Event
+   - Product, Technology, Concept, Process
+   - Custom user-defined types
+
+2. **Relationship Extraction**
+   - LLM-based relationship identification
+   - Predefined relationship types with custom additions
+   - Bidirectional relationship handling
+   - Relationship confidence scoring
+   - Temporal relationships (when applicable)
+   
+   Relationship types:
+   - is_a, part_of, has_property, located_in
+   - works_for, created_by, depends_on, related_to
+   - causes, precedes, follows, contradicts
+
+3. **Knowledge Graph Storage**
+   - Neo4j integration for graph persistence
+   - In-memory graph for fast traversal
+   - Graph versioning and history
+   - Import/Export (GraphML, JSON-LD, RDF)
+
+4. **Graph Visualization & Editing**
+   - Interactive force-directed graph (D3.js/Cytoscape.js)
+   - Node clustering by entity type
+   - Relationship filtering and highlighting
+   - Zoom, pan, search within graph
+   - Manual entity/relationship CRUD
+   - Merge duplicate entities
+   - Split incorrectly merged entities
+
+5. **Graph-Enhanced Retrieval**
+   - Multi-hop traversal from query entities
+   - Community detection for context grouping
+   - Subgraph extraction for focused retrieval
+   - Path-based reasoning
+   - Graph + vector hybrid search
+
+**API Endpoints**:
+```
+GET    /api/v1/rag/graph/entities         - List entities
+POST   /api/v1/rag/graph/entities         - Create entity
+GET    /api/v1/rag/graph/entities/{id}    - Get entity
+PUT    /api/v1/rag/graph/entities/{id}    - Update entity
+DELETE /api/v1/rag/graph/entities/{id}    - Delete entity
+POST   /api/v1/rag/graph/entities/merge   - Merge entities
+
+GET    /api/v1/rag/graph/relationships    - List relationships
+POST   /api/v1/rag/graph/relationships    - Create relationship
+DELETE /api/v1/rag/graph/relationships/{id} - Delete relationship
+
+GET    /api/v1/rag/graph/visualize        - Get graph for visualization
+GET    /api/v1/rag/graph/subgraph         - Extract subgraph
+GET    /api/v1/rag/graph/paths            - Find paths between entities
+GET    /api/v1/rag/graph/communities      - Get entity communities
+POST   /api/v1/rag/graph/extract          - Extract entities from text
+```
+
+---
+
+#### 4.4.3 Qdrant Vector Store Integration
+
+**New files**:
+- `backend/modules/rag/vector_stores/qdrant_store.py`
+- `backend/modules/rag/vector_stores/base.py`
+- `docker-compose.yml` (add Qdrant service)
+
+**Features**:
+
+1. **Qdrant Integration**
+   - Collection management (create, delete, configure)
+   - Multiple collections per domain
+   - Sparse + Dense vector support (hybrid search)
+   - Payload filtering with Qdrant filter DSL
+   - Batch upsert for efficient indexing
+
+2. **Vector Store Abstraction**
+   - Base interface for multiple backends
+   - Support for: Qdrant, ChromaDB, Milvus, Pinecone
+   - Easy backend switching per collection
+   - Unified query interface
+
+3. **Collection Configuration**
+   - Vector dimensions (auto-detected from embedding model)
+   - Distance metrics (Cosine, Euclidean, Dot)
+   - HNSW index parameters (M, ef_construct)
+   - Quantization options (Scalar, Product)
+   - Shard and replica configuration
+
+**Docker Compose Addition**:
+```yaml
+qdrant:
+  image: qdrant/qdrant:latest
+  ports:
+    - "6333:6333"
+    - "6334:6334"
+  volumes:
+    - qdrant_data:/qdrant/storage
+  environment:
+    - QDRANT__SERVICE__GRPC_PORT=6334
+```
+
+**API Endpoints**:
+```
+GET    /api/v1/rag/collections            - List collections
+POST   /api/v1/rag/collections            - Create collection
+GET    /api/v1/rag/collections/{name}     - Get collection info
+DELETE /api/v1/rag/collections/{name}     - Delete collection
+POST   /api/v1/rag/collections/{name}/optimize - Optimize collection
+
+POST   /api/v1/rag/vectors/upsert         - Upsert vectors
+POST   /api/v1/rag/vectors/search         - Search vectors
+POST   /api/v1/rag/vectors/delete         - Delete vectors
+GET    /api/v1/rag/vectors/{id}           - Get vector by ID
+```
+
+---
+
+#### 4.4.4 Embedding Model Management
+
+**New files**:
+- `backend/modules/rag/embedding_manager.py`
+- `backend/modules/rag/embedders/base.py`
+- `backend/modules/rag/embedders/local_embedder.py`
+- `backend/modules/rag/embedders/api_embedder.py`
+- `frontend/src/pages/EmbeddingsPage.tsx`
+
+**Features**:
+
+1. **Local Embedding Models**
+   - sentence-transformers integration
+   - Support for: all-MiniLM-L6-v2, nomic-embed-text, bge-large-en
+   - ONNX runtime optimization
+   - Batch embedding with progress
+   - GPU acceleration when available
+
+2. **API-Based Embedders**
+   - OpenAI embeddings (text-embedding-3-small/large)
+   - Cohere embeddings
+   - Voyage AI embeddings
+   - Custom endpoint support
+
+3. **Model Management**
+   - Download and cache models locally
+   - Model comparison (speed, quality, dimensions)
+   - Default model per domain
+   - Automatic model selection based on text type
+   - Model versioning
+
+4. **Embedding Operations**
+   - Single text embedding
+   - Batch embedding with chunking
+   - Query vs document embedding modes
+   - Embedding visualization (UMAP/t-SNE projection)
+
+**API Endpoints**:
+```
+GET    /api/v1/rag/embeddings/models      - List available models
+POST   /api/v1/rag/embeddings/models/download - Download model
+DELETE /api/v1/rag/embeddings/models/{name} - Remove model
+GET    /api/v1/rag/embeddings/models/{name}/info - Model info
+
+POST   /api/v1/rag/embeddings/embed       - Embed text
+POST   /api/v1/rag/embeddings/embed/batch - Batch embed
+POST   /api/v1/rag/embeddings/similarity  - Compute similarity
+GET    /api/v1/rag/embeddings/visualize   - Get embedding projections
+```
+
+---
+
+#### 4.4.5 Chunking Strategies
+
+**New files**:
+- `backend/modules/rag/chunkers/base.py`
+- `backend/modules/rag/chunkers/fixed_chunker.py`
+- `backend/modules/rag/chunkers/semantic_chunker.py`
+- `backend/modules/rag/chunkers/recursive_chunker.py`
+- `backend/modules/rag/chunkers/document_chunker.py`
+
+**Chunking Methods**:
+
+1. **Fixed-Size Chunking**
+   - Character count with overlap
+   - Token count with overlap
+   - Configurable chunk size (256-4096 tokens)
+   - Configurable overlap (10-50%)
+
+2. **Semantic Chunking**
+   - Sentence boundary detection
+   - Paragraph-aware splitting
+   - Embedding-based boundary detection
+   - Topic shift detection
+
+3. **Recursive Character Chunking**
+   - Hierarchical splitting (headers > paragraphs > sentences)
+   - Markdown-aware chunking
+   - Code-aware chunking (preserve functions/classes)
+   - LaTeX-aware chunking
+
+4. **Document Structure Chunking**
+   - Section-based for structured docs
+   - Slide-based for presentations
+   - Row-based for tabular data
+   - Preserve tables and figures
+
+5. **Hybrid Chunking**
+   - Combine multiple strategies
+   - Parent-child relationships (small chunks, large context)
+   - Hierarchical chunking with summaries
+
+**Chunk Metadata**:
+- Source document ID
+- Position in document (start/end char)
+- Chunk index and total chunks
+- Parent chunk ID (for hierarchical)
+- Section headers
+- Page number (if applicable)
+
+---
+
+#### 4.4.6 Retrieval Mechanisms
+
+**New files**:
+- `backend/modules/rag/retrievers/base.py`
+- `backend/modules/rag/retrievers/vector_retriever.py`
+- `backend/modules/rag/retrievers/keyword_retriever.py`
+- `backend/modules/rag/retrievers/hybrid_retriever.py`
+- `backend/modules/rag/retrievers/graph_retriever.py`
+- `backend/modules/rag/retrievers/reranker.py`
+
+**Retrieval Strategies**:
+
+1. **Dense Vector Retrieval**
+   - Semantic similarity search
+   - Maximum Marginal Relevance (MMR)
+   - Multi-query retrieval
+   - Hypothetical Document Embeddings (HyDE)
+
+2. **Sparse Keyword Retrieval**
+   - BM25 scoring
+   - TF-IDF ranking
+   - Full-text search with Qdrant
+   - Boolean query support
+
+3. **Hybrid Retrieval**
+   - Reciprocal Rank Fusion (RRF)
+   - Weighted combination
+   - Ensemble retrieval
+   - Cross-encoder reranking
+
+4. **Graph-Enhanced Retrieval**
+   - Entity-based retrieval
+   - Relationship traversal
+   - Community-based context
+   - Path-based reasoning
+
+5. **Advanced Retrieval**
+   - Self-query (LLM generates filters)
+   - Contextual compression
+   - Long-context reordering
+   - Iterative retrieval
+
+**Reranking Options**:
+- Cross-encoder models (ms-marco-MiniLM)
+- Cohere Rerank API
+- LLM-based reranking
+- Reciprocal rank fusion
+
+**API Endpoints**:
+```
+POST   /api/v1/rag/retrieve               - Retrieve documents
+POST   /api/v1/rag/retrieve/hybrid        - Hybrid retrieval
+POST   /api/v1/rag/retrieve/graph         - Graph-enhanced retrieval
+POST   /api/v1/rag/retrieve/rerank        - Rerank results
+GET    /api/v1/rag/retrieve/strategies    - List available strategies
+```
+
+---
+
+#### 4.4.7 Search & Discovery
+
+**New files**:
+- `backend/modules/rag/discovery.py`
+- `backend/modules/rag/web_scraper.py`
+- `frontend/src/pages/DiscoveryPage.tsx`
+- `frontend/src/components/rag/DocumentReviewCard.tsx`
+
+**Features**:
+
+1. **Web Search Integration**
+   - Search term input
+   - Multiple search providers (DuckDuckGo, Serper, Google)
+   - Result aggregation and deduplication
+   - Automatic content extraction
+
+2. **Document Gathering**
+   - URL content extraction
+   - PDF download and processing
+   - HTML cleaning and extraction
+   - Metadata extraction (author, date, title)
+
+3. **Review Queue**
+   - Preview gathered documents
+   - Relevance scoring (LLM-based)
+   - Quality assessment
+   - Approve/reject workflow
+   - Bulk operations
+
+4. **Automatic Addition**
+   - Configurable auto-approve threshold
+   - Domain assignment suggestions
+   - Duplicate detection
+   - Source attribution
+
+**API Endpoints**:
+```
+POST   /api/v1/rag/discover/search        - Search web for documents
+GET    /api/v1/rag/discover/queue         - Get review queue
+POST   /api/v1/rag/discover/process       - Process URL
+POST   /api/v1/rag/discover/approve/{id}  - Approve document
+POST   /api/v1/rag/discover/reject/{id}   - Reject document
+POST   /api/v1/rag/discover/bulk-approve  - Bulk approve
+```
+
+---
+
+#### 4.4.8 RAG Pipeline & Chat Integration
+
+**New files**:
+- `backend/modules/rag/pipeline.py`
+- `backend/modules/rag/context_builder.py`
+- `frontend/src/components/chat/RAGContextPanel.tsx`
+
+**Features**:
+
+1. **Query Processing**
+   - Query expansion (synonyms, related terms)
+   - Query decomposition (multi-part queries)
+   - Intent classification
+   - Filter extraction
+
+2. **Context Assembly**
+   - Source ranking and selection
+   - Context window optimization
+   - Citation generation
+   - Deduplication
+
+3. **Chat Integration**
+   - RAG toggle in chat settings
+   - Collection/domain selection
+   - Retrieved sources display
+   - Source highlighting in response
+   - Follow-up with context
+
+**API Endpoints**:
+```
+POST   /api/v1/rag/query                  - RAG query (retrieve + generate)
+POST   /api/v1/rag/chat                   - RAG chat with history
+GET    /api/v1/rag/context/{query}        - Get context for query
+```
+
+---
+
+#### 4.4.9 Frontend Pages & Components
+
+**New Pages**:
+- `DocumentsPage.tsx` - Document management with domain hierarchy
+- `KnowledgeGraphPage.tsx` - Graph visualization and editing
+- `EmbeddingsPage.tsx` - Embedding model management
+- `DiscoveryPage.tsx` - Search and document discovery
+- `RAGSettingsPage.tsx` - RAG configuration
+
+**New Components**:
+- `GraphVisualization.tsx` - Interactive knowledge graph (D3/Cytoscape)
+- `EntityEditor.tsx` - Entity CRUD modal
+- `RelationshipEditor.tsx` - Relationship CRUD modal
+- `DocumentReviewCard.tsx` - Document preview for review queue
+- `ChunkViewer.tsx` - View document chunks with highlighting
+- `EmbeddingVisualizer.tsx` - 2D projection of embeddings
+- `RAGContextPanel.tsx` - Show retrieved sources in chat
+- `DomainTree.tsx` - Hierarchical domain navigator
+- `RetrievalConfig.tsx` - Configure retrieval strategy
+
+---
+
+#### 4.4.10 Implementation Phases
+
+**Phase 1: Core Infrastructure (Week 1-2)**
+- [ ] Qdrant Docker setup and integration
+- [ ] Base vector store abstraction
+- [ ] Document processor with basic chunking
+- [ ] Local embedding model support
+- [ ] Basic CRUD API endpoints
+
+**Phase 2: Document Management (Week 2-3)**
+- [ ] Domain hierarchy system
+- [ ] Document upload and processing
+- [ ] Multiple chunking strategies
+- [ ] Document preview and chunk viewer
+- [ ] Frontend Documents page
+
+**Phase 3: GraphRAG (Week 3-5)**
+- [ ] Entity extraction with LLM
+- [ ] Relationship extraction
+- [ ] Graph storage (in-memory + persistence)
+- [ ] Graph visualization component
+- [ ] Entity/relationship editing UI
+- [ ] Graph-enhanced retrieval
+
+**Phase 4: Advanced Retrieval (Week 5-6)**
+- [ ] Hybrid retrieval (dense + sparse)
+- [ ] Reranking integration
+- [ ] MMR and diversity
+- [ ] Self-query retrieval
+- [ ] RAG chat integration
+
+**Phase 5: Discovery & Polish (Week 6-7)**
+- [ ] Web search integration
+- [ ] Document discovery queue
+- [ ] Review and approval workflow
+- [ ] Embedding visualization
+- [ ] Performance optimization
 
 ### 4.5 Function Calling Playground
 

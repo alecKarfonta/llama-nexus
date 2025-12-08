@@ -30,6 +30,9 @@ import {
   Api as ApiIcon,
   AccountTree as WorkflowIcon,
   Storage as KnowledgeIcon,
+  Hub as GraphIcon,
+  Folder as DocumentsIcon,
+  TravelExplore as DiscoveryIcon,
 } from '@mui/icons-material'
 import type { NavigationSection } from '@/types'
 
@@ -54,15 +57,31 @@ const navigationSections: NavigationSection[] = [
     title: 'Development',
     items: [
       { id: 'chat', label: 'Chat', path: '/chat', icon: 'chat', color: '#06b6d4' },
-      { id: 'templates', label: 'Templates', path: '/templates', icon: 'templates', color: '#10b981' },
-      { id: 'prompts', label: 'Prompts', path: '/prompts', icon: 'prompts', color: '#14b8a6' },
-      { id: 'deploy', label: 'Deploy', path: '/deploy', icon: 'deploy', color: '#f59e0b' },
+      { id: 'prompts', label: 'Prompt Library', path: '/prompts', icon: 'prompts', color: '#14b8a6' },
+      { id: 'templates', label: 'Chat Templates', path: '/templates', icon: 'templates', color: '#10b981' },
+      { id: 'workflows', label: 'Workflows', path: '/workflows', icon: 'workflow', color: '#a855f7' },
       { id: 'testing', label: 'Testing', path: '/testing', icon: 'testing', color: '#f97316' },
       { id: 'benchmark', label: 'Benchmark', path: '/benchmark', icon: 'benchmark', color: '#ef4444' },
-      { id: 'batch', label: 'Batch', path: '/batch', icon: 'batch', color: '#ec4899' },
-      { id: 'compare', label: 'Compare', path: '/compare', icon: 'compare', color: '#f43f5e' },
-      { id: 'workflows', label: 'Workflows', path: '/workflows', icon: 'workflow', color: '#a855f7' },
-      { id: 'knowledge', label: 'Knowledge', path: '/knowledge', icon: 'knowledge', color: '#06b6d4' },
+      { id: 'batch', label: 'Batch Processing', path: '/batch', icon: 'batch', color: '#ec4899' },
+      { id: 'compare', label: 'Compare Models', path: '/compare', icon: 'compare', color: '#f43f5e' },
+    ],
+  },
+  {
+    id: 'deployment',
+    title: 'Deployment',
+    items: [
+      { id: 'deploy', label: 'Deploy LLM', path: '/deploy', icon: 'deploy', color: '#f59e0b' },
+    ],
+  },
+  {
+    id: 'knowledge',
+    title: 'Knowledge & RAG',
+    items: [
+      { id: 'embedding-deploy', label: 'Embeddings', path: '/embedding-deploy', icon: 'deploy', color: '#06b6d4' },
+      { id: 'documents', label: 'Documents', path: '/documents', icon: 'documents', color: '#10b981' },
+      { id: 'knowledge-graph', label: 'Knowledge Graph', path: '/knowledge-graph', icon: 'graph', color: '#6366f1' },
+      { id: 'discovery', label: 'Discovery', path: '/discovery', icon: 'discovery', color: '#8b5cf6' },
+      { id: 'knowledge', label: 'RAG Search', path: '/knowledge', icon: 'knowledge', color: '#14b8a6' },
     ],
   },
   {
@@ -104,6 +123,9 @@ const iconMap: Record<string, React.ElementType> = {
   api: ApiIcon,
   workflow: WorkflowIcon,
   knowledge: KnowledgeIcon,
+  graph: GraphIcon,
+  documents: DocumentsIcon,
+  discovery: DiscoveryIcon,
 }
 
 const getIcon = (iconName: string) => {

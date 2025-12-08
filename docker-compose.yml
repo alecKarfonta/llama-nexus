@@ -1,4 +1,24 @@
 services:
+  # Qdrant Vector Database for RAG
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: llama-nexus-qdrant
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/localhost/6333' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   # Redis for event-driven architecture and caching
   redis:
     image: redis:7-alpine
@@ -51,9 +71,13 @@ services:
       - TERM=xterm-256color
       # Redis for event bus and caching
       - REDIS_URL=redis://redis:6379/0
+      # Qdrant for RAG vector storage
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
       # Database paths for persistent storage
       - TOKEN_DB_PATH=/data/token_usage.db
       - CONVERSATION_DB_PATH=/data/conversations.db
+      - RAG_DB_PATH=/data/rag
     volumes:
       - backend_data:/data
       - gpt_oss_models:/home/llamacpp/models
@@ -74,6 +98,8 @@ services:
       llamacpp-builder:
         condition: service_completed_successfully
       redis:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     restart: unless-stopped
 
@@ -111,9 +137,9 @@ services:
     environment:
       - TEMPLATE_DIR=/home/llamacpp/templates
       - CHAT_TEMPLATE=builtin-gpt-oss
-      # CUDA optimizations
-      - CUDA_VISIBLE_DEVICES=0,1
-      - NVIDIA_VISIBLE_DEVICES=0,1
+      # CUDA optimizations - use 'all' for auto-detection or specify devices like '0' or '0,1'
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       # Model configuration - Qwen3-VL-4B-Thinking (Vision-Language with Reasoning)
       - MODEL_NAME=Qwen_Qwen3-VL-4B-Thinking
       - MODEL_VARIANT=Q4_K_M
@@ -189,9 +215,9 @@ services:
       - SERVED_MODEL_NAME=gpt-oss-20b
       # HuggingFace token for downloads
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
-      # CUDA optimizations
-      - CUDA_VISIBLE_DEVICES=0,1
-      - NVIDIA_VISIBLE_DEVICES=0,1
+      # CUDA optimizations - use 'all' for auto-detection or specify devices like '0' or '0,1'
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
     volumes:
       - vllm_models:/home/vllm/models
       - vllm_cache:/home/vllm/.cache
@@ -202,6 +228,49 @@ services:
       timeout: 10s
       retries: 3
       start_period: 600s  # vLLM takes longer to start due to model download
+
+  # Llama.cpp Embedding Server - Optional RAG Embedding Service
+  llamacpp-embed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llamacpp-embed
+    profiles:
+      - embed
+    hostname: llamacpp-embed
+    ports:
+      - "8602:8080"    # Embedding server port
+    runtime: nvidia
+    shm_size: '8gb'
+    volumes:
+      - gpt_oss_models:/home/llamacpp/models
+      - ./start-embed.sh:/start-embed.sh:ro
+    environment:
+      # Embedding model configuration - Nomic Embed v1.5
+      - MODEL_NAME=nomic-embed-text-v1.5
+      - MODEL_VARIANT=Q8_0
+      - CONTEXT_SIZE=8192
+      - GPU_LAYERS=999
+      - HOST=0.0.0.0
+      - PORT=8080
+      - API_KEY=llamacpp-embed
+      - THREADS=-1
+      - BATCH_SIZE=512
+      - UBATCH_SIZE=512
+      - POOLING_TYPE=mean
+      # HuggingFace token for downloads
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+      # CUDA optimizations - use 'all' for auto-detection or specify devices like '0' or '0,1'
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    entrypoint: ["/bin/bash", "/start-embed.sh"]
 
 volumes:
   gpt_oss_models:
@@ -217,4 +286,6 @@ volumes:
   redis_data:
     driver: local
   backend_data:
+    driver: local
+  qdrant_data:
     driver: local

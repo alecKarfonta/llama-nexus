@@ -85,6 +85,10 @@ interface Config {
     cache_type_k?: string;
     cache_type_v?: string;
   };
+  execution?: {
+    mode: 'gpu' | 'cpu';
+    cuda_devices: string;
+  };
   context_extension?: {
     yarn_ext_factor?: number;
     yarn_attn_factor?: number;
@@ -152,6 +156,10 @@ const DEFAULT_VALUES = {
     parallel_slots: 1,
     cache_type_k: 'q4_0',
     cache_type_v: 'q4_0',
+  },
+  execution: {
+    mode: 'gpu' as const,
+    cuda_devices: 'all',
   },
   context_extension: {
     yarn_ext_factor: 1.0,
@@ -434,6 +442,17 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
   );
 };
 
+// Logging utility for DeployPage debugging
+const deployLog = (context: string, message: string, data?: any) => {
+  const timestamp = new Date().toISOString().split('T')[1].slice(0, 12)
+  const prefix = `[Deploy ${timestamp}] [${context}]`
+  if (data !== undefined) {
+    console.log(prefix, message, data)
+  } else {
+    console.log(prefix, message)
+  }
+}
+
 export const DeployPage: React.FC = () => {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [config, setConfig] = useState<Config | null>(null)
@@ -465,6 +484,14 @@ export const DeployPage: React.FC = () => {
   // Parameter preset selection
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null)
   
+  // Log component mount
+  useEffect(() => {
+    deployLog('mount', 'DeployPage component mounted')
+    return () => {
+      deployLog('mount', 'DeployPage component unmounted')
+    }
+  }, [])
+  
   // VRAM estimation state
   const [vramEstimate, setVramEstimate] = useState<{
     model_weights_mb: number
@@ -480,9 +507,25 @@ export const DeployPage: React.FC = () => {
   } | null>(null)
   const [vramLoading, setVramLoading] = useState(false)
   
+  // GPU list state
+  const [gpuList, setGpuList] = useState<Array<{
+    index: number
+    name: string
+    vram_total_mb: number
+    vram_used_mb: number
+    vram_free_mb: number
+    utilization_percent: number
+    temperature_c: number
+  }>>([])
+  const [gpusAvailable, setGpusAvailable] = useState(false)
+  
   // Apply a parameter preset
   const applyPreset = (preset: ParameterPreset) => {
-    if (!config) return;
+    deployLog('preset', `Applying preset: ${preset.name}`, { sampling: preset.sampling })
+    if (!config) {
+      deployLog('preset', 'ABORT: config is null')
+      return;
+    }
     
     setConfig({
       ...config,
@@ -498,6 +541,7 @@ export const DeployPage: React.FC = () => {
       }),
     });
     setSelectedPreset(preset.name);
+    deployLog('preset', 'Preset applied successfully')
   }
   
   // Fetch VRAM estimation when config changes
@@ -510,15 +554,14 @@ export const DeployPage: React.FC = () => {
         ? `${config.model.name}-${config.model.variant}` 
         : config.model.name;
       
-      const response = await fetch('/backend/api/v1/vram/estimate', {
+      const response = await fetch('/api/v1/vram/estimate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model_name: modelName,
-          context_size: config.performance?.contextSize || 4096,
-          batch_size: config.performance?.batchSize || 1,
-          gpu_layers: config.performance?.gpuLayers ?? -1,
-          flash_attention: config.performance?.flashAttention ?? true,
+          context_size: config.model?.context_size || 4096,
+          batch_size: config.performance?.batch_size || 1,
+          gpu_layers: config.model?.gpu_layers ?? -1,
           available_vram_gb: 24, // Default, could be detected
         }),
       });
@@ -552,37 +595,73 @@ export const DeployPage: React.FC = () => {
 
   useEffect(() => {
     const init = async () => {
+      deployLog('init', 'Starting DeployPage initialization')
       try {
         setLoading(true)
         
         // Load persisted settings first
         const persistedSettings = loadDeploySettings()
+        deployLog('init', 'Loaded persisted settings:', persistedSettings)
         
         // Load available local models
+        deployLog('init', 'Fetching available models...')
         const list = await apiService.getModels()
+        deployLog('init', 'Loaded models:', { count: list.length, models: list.map(m => `${m.name}/${m.variant}`) })
         setModels(list)
         
+        // Load available GPUs
+        try {
+          deployLog('init', 'Fetching available GPUs...')
+          const gpuRes = await fetch('/api/v1/system/gpus')
+          const gpuData = await gpuRes.json()
+          deployLog('init', 'GPU data:', gpuData)
+          if (gpuData.available && gpuData.gpus) {
+            setGpuList(gpuData.gpus)
+            setGpusAvailable(true)
+          }
+        } catch (e) {
+          deployLog('init', 'Failed to fetch GPU list (non-fatal):', e)
+        }
+        
         // Load current service config + generated command
+        deployLog('init', 'Fetching service config...')
         const cfgRes = await fetch(`/api/v1/service/config`)
-        if (!cfgRes.ok) throw new Error('Failed to fetch configuration')
+        if (!cfgRes.ok) {
+          deployLog('init', 'Failed to fetch config:', { status: cfgRes.status, statusText: cfgRes.statusText })
+          throw new Error('Failed to fetch configuration')
+        }
         const cfgJson = await cfgRes.json()
+        deployLog('init', 'Loaded service config:', cfgJson)
         
         // Use persisted config if available, otherwise use server config
         const configToUse = persistedSettings.config || cfgJson.config
+        deployLog('init', 'Using config:', { source: persistedSettings.config ? 'persisted' : 'server', config: configToUse })
+        
+        // Ensure execution settings exist with defaults
+        if (!configToUse.execution) {
+          configToUse.execution = { mode: 'gpu', cuda_devices: 'all' }
+        }
+        
         setConfig(configToUse)
         setOriginalConfig(JSON.parse(JSON.stringify(cfgJson.config)))
         setCommandLine(cfgJson.command || '')
 
         // Load currently deployed model info (best-effort)
         try {
+          deployLog('init', 'Fetching current model...')
           const cm = await apiService.getCurrentModel()
+          deployLog('init', 'Current model:', cm)
           setCurrentModel(cm)
-        } catch {}
+        } catch (e) {
+          deployLog('init', 'Failed to get current model (non-fatal):', e)
+        }
 
         // Load templates
         try {
           setTemplatesLoading(true)
+          deployLog('init', 'Fetching templates...')
           const data = await apiService.listTemplates()
+          deployLog('init', 'Loaded templates:', data)
           setTemplates(data.files)
           setSelectedTemplate(data.selected)
           setTemplatesDir(data.directory)
@@ -595,8 +674,10 @@ export const DeployPage: React.FC = () => {
         const storedKeys = getStoredApiKeys()
         setAvailableApiKeys(storedKeys)
         setSelectedApiKey(persistedSettings.selectedApiKey || currentApiKey || '')
+        deployLog('init', 'Initialization complete')
         
       } catch (e) {
+        deployLog('init', 'Initialization error:', e)
         setError(e instanceof Error ? e.message : 'Failed to initialize deploy page')
       } finally {
         setLoading(false)
@@ -605,14 +686,21 @@ export const DeployPage: React.FC = () => {
     init()
   }, [])
 
-  const availableModelNames = useMemo(
-    () => Array.from(new Set(models.map((m) => m.name))).sort(),
-    [models]
-  )
+  const availableModelNames = useMemo(() => {
+    const names = Array.from(new Set(models.map((m) => m.name))).sort()
+    deployLog('models', 'Computed available model names:', { count: names.length, names })
+    return names
+  }, [models])
+  
   const availableVariantsForSelected = useMemo(() => {
-    if (!config) return [] as string[]
+    if (!config) {
+      deployLog('variants', 'No config, returning empty variants')
+      return [] as string[]
+    }
     const variants = models.filter((m) => m.name === config.model.name).map((m) => m.variant)
-    return Array.from(new Set(variants.filter(Boolean))).sort()
+    const uniqueVariants = Array.from(new Set(variants.filter(Boolean))).sort()
+    deployLog('variants', `Computed variants for ${config.model.name}:`, { count: uniqueVariants.length, variants: uniqueVariants })
+    return uniqueVariants
   }, [models, config])
 
   const hasChanges = useMemo(
@@ -622,6 +710,7 @@ export const DeployPage: React.FC = () => {
 
   // Function to update command line preview in real-time
   const updateCommandPreview = async (configToPreview: Config) => {
+    deployLog('commandPreview', 'Updating command preview', { modelName: configToPreview?.model?.name })
     try {
       // Convert undefined values to null so they get properly serialized and handled by backend
       const configForPreview = JSON.parse(JSON.stringify(configToPreview, (key, value) => {
@@ -629,34 +718,52 @@ export const DeployPage: React.FC = () => {
       }))
       
       // Send the config to backend to get command preview without saving
+      deployLog('commandPreview', 'Sending preview request to backend')
       const response = await fetch('/api/v1/service/config/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: configForPreview })
       })
+      deployLog('commandPreview', 'Preview response:', { ok: response.ok, status: response.status })
       if (response.ok) {
         const data = await response.json()
+        deployLog('commandPreview', 'Command preview updated:', { command: data.command?.substring(0, 100) + '...' })
         setCommandLine(data.command || '')
+      } else {
+        const errorText = await response.text()
+        deployLog('commandPreview', 'Preview request failed:', { status: response.status, error: errorText })
       }
     } catch (error) {
       // If preview fails, keep the old command line
-      console.warn('Failed to update command preview:', error)
+      deployLog('commandPreview', 'Preview request error:', error)
     }
   }
 
   const updateConfig = (path: string, value: any) => {
-    if (!config) return
+    console.log('🔄 updateConfig CALLED:', { path, value })
+    deployLog('updateConfig', `Updating config path: ${path}`, { value, currentConfig: config })
+    if (!config) {
+      console.error('❌ ABORT: config is null')
+      deployLog('updateConfig', 'ABORT: config is null')
+      return
+    }
     const next: Config = JSON.parse(JSON.stringify(config))
     const keys = path.split('.')
     let ref: any = next
     for (let i = 0; i < keys.length - 1; i++) ref = ref[keys[i]]
+    const oldValue = ref[keys[keys.length - 1]]
     ref[keys[keys.length - 1]] = value
+    console.log('✅ Config value changed:', { path, oldValue, newValue: value })
+    deployLog('updateConfig', `Config updated: ${path}`, { oldValue, newValue: value })
+    console.log('📝 Calling setConfig with new config:', next)
     setConfig(next)
-    
+
     // Save to localStorage for persistence
+    deployLog('updateConfig', 'Saving to localStorage')
     saveDeploySettings(next, selectedApiKey)
-    
+
     // Update command line preview in real-time
+    deployLog('updateConfig', 'Updating command preview')
     updateCommandPreview(next)
   }
 
@@ -713,7 +820,11 @@ export const DeployPage: React.FC = () => {
   }
 
   const handleValidate = async () => {
-    if (!config) return
+    deployLog('validate', 'Starting validation', { modelName: config?.model?.name })
+    if (!config) {
+      deployLog('validate', 'ABORT: config is null')
+      return
+    }
     try {
       setValidating(true)
       setValidateErrors(null)
@@ -724,11 +835,14 @@ export const DeployPage: React.FC = () => {
         return value === undefined ? null : value
       }))
       
+      deployLog('validate', 'Sending validation request')
       const data = await apiService.validateServiceConfig(configForValidation as any)
+      deployLog('validate', 'Validation result:', data)
       setValidateErrors(data.errors || null)
       setValidateWarnings(data.warnings || null)
       if (data.valid) setSuccess('Configuration is valid')
     } catch (e) {
+      deployLog('validate', 'Validation error:', e)
       setError(e instanceof Error ? e.message : 'Validation failed')
     } finally {
       setValidating(false)
@@ -736,7 +850,11 @@ export const DeployPage: React.FC = () => {
   }
 
   const handleSave = async () => {
-    if (!config) return
+    deployLog('save', 'Starting save', { modelName: config?.model?.name })
+    if (!config) {
+      deployLog('save', 'ABORT: config is null')
+      return
+    }
     try {
       setSaving(true)
       
@@ -745,17 +863,21 @@ export const DeployPage: React.FC = () => {
         return value === undefined ? null : value
       }))
       
+      deployLog('save', 'Sending save request', { model: configForSave.model })
       const data = await (async () => {
         const updated = await apiService.updateServiceConfig({ config: configForSave as any })
+        deployLog('save', 'Config saved, fetching updated command')
         // Re-query command line preview from backend since apiService doesn't return it
         const cfgRes = await fetch(`/api/v1/service/config`)
         const cfgJson = await cfgRes.json()
         return { command: cfgJson.command, updated }
       })()
+      deployLog('save', 'Save complete', { commandLength: data.command?.length })
       setOriginalConfig(JSON.parse(JSON.stringify(config)))
       setCommandLine(data.command || '')
       setSuccess('Configuration saved')
     } catch (e) {
+      deployLog('save', 'Save error:', e)
       setError(e instanceof Error ? e.message : 'Failed to save configuration')
     } finally {
       setSaving(false)
@@ -763,12 +885,17 @@ export const DeployPage: React.FC = () => {
   }
 
   const runAction = async (action: 'start' | 'stop' | 'restart') => {
-    if (!config && action !== 'stop') return
+    deployLog('action', `Running action: ${action}`, { hasConfig: !!config, modelName: config?.model?.name })
+    if (!config && action !== 'stop') {
+      deployLog('action', 'ABORT: config is null and action is not stop')
+      return
+    }
     try {
       setActionLoading(action)
       
       // Clear logs when restarting
       if (action === 'restart' && logViewerRef.current) {
+        deployLog('action', 'Clearing logs for restart')
         logViewerRef.current.clearLogs()
       }
       
@@ -777,24 +904,34 @@ export const DeployPage: React.FC = () => {
         return value === undefined ? null : value
       })) : null
       
+      deployLog('action', 'Sending action to backend', { action, config: configForAction?.model })
       await apiService.performServiceAction(action === 'stop' ? { action } : { action, config: configForAction as any })
+      deployLog('action', 'Action completed successfully')
+      
       // Refresh current model info after action
       try {
+        deployLog('action', 'Refreshing current model info')
         const res = await fetch(`/api/v1/models/current`)
         if (res.ok) {
           const current = await res.json()
+          deployLog('action', 'Current model updated:', current)
           setCurrentModel(current)
         }
-      } catch {}
+      } catch (e) {
+        deployLog('action', 'Failed to refresh current model (non-fatal):', e)
+      }
       setSuccess(`Service ${action}ed successfully`)
     } catch (e) {
+      deployLog('action', 'Action failed:', e)
       setError(e instanceof Error ? e.message : `Failed to ${action}`)
     } finally {
       setActionLoading(null)
     }
   }
 
+
   if (loading) {
+    deployLog('render', 'Rendering loading state')
     return (
       <Box 
         sx={{
@@ -811,6 +948,7 @@ export const DeployPage: React.FC = () => {
   }
 
   if (!config) {
+    deployLog('render', 'Rendering error state: config is null')
     return (
       <Box sx={{ p: { xs: 2, sm: 3, md: 4 } }}>
         <Alert 
@@ -826,6 +964,12 @@ export const DeployPage: React.FC = () => {
       </Box>
     )
   }
+  
+  deployLog('render', 'Rendering main content', { 
+    modelName: config.model?.name, 
+    modelCount: models.length, 
+    hasCurrentModel: !!currentModel 
+  })
 
   return (
     <Box sx={{ 
@@ -863,7 +1007,11 @@ export const DeployPage: React.FC = () => {
             variant="outlined"
             startIcon={<ResetIcon />}
             onClick={() => {
-              if (!config) return;
+              deployLog('reset', 'Clear All button clicked')
+              if (!config) {
+                deployLog('reset', 'ABORT: config is null')
+                return;
+              }
               const sections = ['model', 'sampling', 'performance', 'context_extension', 'server'];
               const resetConfig = JSON.parse(JSON.stringify(config));
               
@@ -877,6 +1025,7 @@ export const DeployPage: React.FC = () => {
                 }
               });
               
+              deployLog('reset', 'Config reset to defaults', { modelName: resetConfig.model?.name })
               setConfig(resetConfig);
               saveDeploySettings(resetConfig, selectedApiKey);
               
@@ -1057,44 +1206,52 @@ export const DeployPage: React.FC = () => {
           <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Model</Typography>
           <Grid container spacing={2}>
             <Grid item xs={12} md={6}>
+              <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Name</Typography>
               <Select
                 fullWidth
                 value={config.model.name}
-                sx={{ 
-                  fontSize: '0.875rem',
-                  '& .MuiOutlinedInput-root': {
-                    borderRadius: 1
-                  }
-                }}
                 onChange={(e) => {
+                  console.log('==== MODEL ONCHANGE FIRED ====')
+                  console.log('New value:', e.target.value)
                   const newName = e.target.value as string
                   updateConfig('model.name', newName)
-                  // If current variant not available for new name, reset
+                  // Auto-update variant if current one doesn't exist for new model
                   if (!availableVariantsForSelected.includes(config.model.variant)) {
                     const nextVariant = models.find((m) => m.name === newName)?.variant || 'Q4_K_M'
                     updateConfig('model.variant', nextVariant)
                   }
                 }}
+                sx={{ 
+                  fontSize: '0.875rem',
+                  '& .MuiOutlinedInput-root': {
+                    borderRadius: 1,
+                    backgroundColor: 'background.default',
+                  }
+                }}
               >
-                {availableModelNames.length === 0 && (
-                  <MenuItem value="" disabled>
-                    No local models found. Use Download to fetch one.
-                  </MenuItem>
-                )}
                 {availableModelNames.map((name) => (
                   <MenuItem key={name} value={name}>{name}</MenuItem>
                 ))}
               </Select>
             </Grid>
             <Grid item xs={12} md={6}>
+              <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Variant</Typography>
               <Select
                 fullWidth
                 value={config.model.variant}
-                onChange={(e) => updateConfig('model.variant', e.target.value)}
+                onChange={(e) => {
+                  deployLog('variantSelect', 'Variant selection changed', { 
+                    newVariant: e.target.value, 
+                    previousVariant: config.model.variant,
+                    modelName: config.model.name
+                  })
+                  updateConfig('model.variant', e.target.value)
+                }}
                 sx={{ 
                   fontSize: '0.875rem',
                   '& .MuiOutlinedInput-root': {
-                    borderRadius: 1
+                    borderRadius: 1,
+                    backgroundColor: 'background.default',
                   }
                 }}
               >
@@ -1114,17 +1271,24 @@ export const DeployPage: React.FC = () => {
                 disabled={templatesLoading}
                 onChange={async (e) => {
                   const filename = e.target.value as string
+                  deployLog('templateSelect', 'Template selection changed', { 
+                    newTemplate: filename, 
+                    previousTemplate: selectedTemplate 
+                  })
                   setSelectedTemplate(filename)
                   try {
+                    deployLog('templateSelect', 'Sending template selection to backend')
                     await apiService.selectTemplate(filename)
                     // Refresh config and command preview to reflect new template selection
                     const cfgRes = await fetch(`/api/v1/service/config`)
                     if (cfgRes.ok) {
                       const cfgJson = await cfgRes.json()
+                      deployLog('templateSelect', 'Template applied, config refreshed')
                       setConfig(cfgJson.config)
                       setCommandLine(cfgJson.command || '')
                     }
                   } catch (err) {
+                    deployLog('templateSelect', 'Template selection failed:', err)
                     // revert on error
                     setSelectedTemplate((prev) => prev)
                     setError(err instanceof Error ? err.message : 'Failed to select template')
@@ -1363,6 +1527,144 @@ export const DeployPage: React.FC = () => {
                   onReset={resetToDefault}
                 />
               </Grid>
+              
+              <Grid item xs={12}>
+                <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600, mt: 2 }}>Execution Settings</Typography>
+              </Grid>
+              
+              <Grid item xs={12} md={6}>
+                <Box sx={{ mb: 1 }}>
+                  <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Execution Mode</Typography>
+                  <Select
+                    fullWidth
+                    value={config.execution?.mode || 'gpu'}
+                    onChange={(e) => updateConfig('execution.mode', e.target.value)}
+                    sx={{ 
+                      fontSize: '0.875rem',
+                      '& .MuiOutlinedInput-root': {
+                        borderRadius: 1,
+                        backgroundColor: 'background.default',
+                      }
+                    }}
+                  >
+                    <MenuItem value="gpu">GPU Acceleration</MenuItem>
+                    <MenuItem value="cpu">CPU Only</MenuItem>
+                  </Select>
+                  <FormHelperText sx={{ mt: 0.5, fontSize: '0.75rem', color: 'text.secondary' }}>
+                    Choose whether to use GPU acceleration or run on CPU only. CPU mode will override GPU layers to 0.
+                  </FormHelperText>
+                </Box>
+              </Grid>
+              
+              <Grid item xs={12} md={6}>
+                <Box sx={{ mb: 1 }}>
+                  <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>CUDA Devices</Typography>
+                  {['all', 'custom', ...gpuList.map(g => g.index.toString())].includes(config.execution?.cuda_devices || 'all') ? (
+                    <Select
+                      fullWidth
+                      value={config.execution?.cuda_devices || 'all'}
+                      onChange={(e) => {
+                        if (e.target.value === 'custom') {
+                          updateConfig('execution.cuda_devices', '0,1')
+                        } else {
+                          updateConfig('execution.cuda_devices', e.target.value)
+                        }
+                      }}
+                      disabled={config.execution?.mode === 'cpu'}
+                      sx={{ 
+                        fontSize: '0.875rem',
+                        '& .MuiOutlinedInput-root': {
+                          borderRadius: 1,
+                          backgroundColor: config.execution?.mode === 'cpu' ? 'rgba(255,255,255,0.05)' : 'background.default',
+                        }
+                      }}
+                    >
+                      <MenuItem value="all">All GPUs</MenuItem>
+                      {gpuList.map((gpu) => (
+                        <MenuItem key={gpu.index} value={gpu.index.toString()}>
+                          GPU {gpu.index}: {gpu.name} ({(gpu.vram_total_mb / 1024).toFixed(1)} GB)
+                        </MenuItem>
+                      ))}
+                      {gpuList.length > 1 && (
+                        <MenuItem value="custom">Custom (e.g., 0,1 or 0,2)</MenuItem>
+                      )}
+                    </Select>
+                  ) : (
+                    <TextField
+                      fullWidth
+                      value={config.execution?.cuda_devices || 'all'}
+                      onChange={(e) => updateConfig('execution.cuda_devices', e.target.value)}
+                      disabled={config.execution?.mode === 'cpu'}
+                      placeholder="e.g., 0,1 or 0,2"
+                      InputProps={{
+                        endAdornment: (
+                          <Tooltip title="Switch back to dropdown">
+                            <IconButton
+                              size="small"
+                              onClick={() => updateConfig('execution.cuda_devices', 'all')}
+                            >
+                              <ResetIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        ),
+                      }}
+                      sx={{ 
+                        '& .MuiOutlinedInput-root': {
+                          fontSize: '0.875rem',
+                          borderRadius: 1,
+                          backgroundColor: config.execution?.mode === 'cpu' ? 'rgba(255,255,255,0.05)' : 'background.default',
+                        }
+                      }}
+                    />
+                  )}
+                  <FormHelperText sx={{ mt: 0.5, fontSize: '0.75rem', color: 'text.secondary' }}>
+                    {config.execution?.mode === 'cpu' 
+                      ? 'GPU selection is disabled in CPU mode'
+                      : gpusAvailable 
+                        ? `Select which GPU(s) to use. Separate multiple GPUs with commas (e.g., 0,1). Found ${gpuList.length} GPU(s).`
+                        : 'No GPUs detected. Using CPU mode.'}
+                  </FormHelperText>
+                </Box>
+              </Grid>
+              
+              {gpusAvailable && gpuList.length > 0 && config.execution?.mode === 'gpu' && (
+                <Grid item xs={12}>
+                  <Box sx={{ 
+                    p: 2, 
+                    bgcolor: 'rgba(255,255,255,0.02)', 
+                    borderRadius: 1,
+                    border: '1px solid rgba(255,255,255,0.1)'
+                  }}>
+                    <Typography variant="subtitle2" gutterBottom sx={{ fontSize: '0.8125rem', fontWeight: 600 }}>
+                      Available GPUs
+                    </Typography>
+                    <Grid container spacing={1}>
+                      {gpuList.map((gpu) => (
+                        <Grid item xs={12} md={6} key={gpu.index}>
+                          <Box sx={{ 
+                            p: 1.5, 
+                            bgcolor: 'rgba(255,255,255,0.03)', 
+                            borderRadius: 1,
+                            border: '1px solid rgba(255,255,255,0.05)'
+                          }}>
+                            <Typography variant="body2" sx={{ fontWeight: 500, mb: 0.5 }}>
+                              GPU {gpu.index}: {gpu.name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                              VRAM: {(gpu.vram_used_mb / 1024).toFixed(1)} GB / {(gpu.vram_total_mb / 1024).toFixed(1)} GB 
+                              ({((gpu.vram_used_mb / gpu.vram_total_mb) * 100).toFixed(0)}% used)
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                              Utilization: {gpu.utilization_percent.toFixed(0)}% | Temp: {gpu.temperature_c.toFixed(0)}°C
+                            </Typography>
+                          </Box>
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </Box>
+                </Grid>
+              )}
+              
               <Grid item xs={12} md={6}>
                 <ParameterField
                   label="LoRA Adapter"
@@ -2558,20 +2860,20 @@ export const DeployPage: React.FC = () => {
       )}
 
       {tab === 6 && (
-        <Card sx={{ 
-          borderRadius: 1, 
+        <Card sx={{
+          borderRadius: 1,
           boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
           border: '1px solid rgba(255, 255, 255, 0.1)',
           bgcolor: 'background.paper'
         }}>
           <CardContent>
             <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Generated Command</Typography>
-            <Paper sx={{ 
-              p: 2, 
-              backgroundColor: '#1e1e1e', 
-              color: '#d4d4d4', 
-              fontFamily: 'monospace', 
-              fontSize: '0.9rem', 
+            <Paper sx={{
+              p: 2,
+              backgroundColor: '#1e1e1e',
+              color: '#d4d4d4',
+              fontFamily: 'monospace',
+              fontSize: '0.9rem',
               overflowX: 'auto',
               borderRadius: 1,
               border: '1px solid rgba(255, 255, 255, 0.05)'

@@ -25,6 +25,9 @@ export interface ModelInfo {
   latency?: string;
   memory?: string;
   path?: string;
+  // Local file information
+  localPath?: string; // Relative path to the local file
+  filename?: string; // Actual filename on disk
 }
 
 export interface ModelDownload {
@@ -192,7 +195,7 @@ export interface ServiceActionRequest {
 // Chat Completion Types (OpenAI-compatible)
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  content: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;

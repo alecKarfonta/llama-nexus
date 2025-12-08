@@ -197,13 +197,14 @@ def calculate_kv_cache_vram(
     context_size: int,
     hidden_size: int,
     num_layers: int,
+    num_heads: int,
     kv_heads: int,
     batch_size: int = 1,
     kv_cache_type: str = 'f16',
 ) -> float:
     """Calculate KV cache VRAM in MB."""
-    # Head dimension
-    head_dim = hidden_size // (kv_heads * 4) if kv_heads else hidden_size // 32
+    # Head dimension is based on total attention heads, not KV heads
+    head_dim = hidden_size // num_heads if num_heads > 0 else 128
     if head_dim <= 0:
         head_dim = 128  # Default
     
@@ -230,8 +231,9 @@ def calculate_compute_buffer(
 ) -> float:
     """Calculate compute buffer VRAM in MB."""
     # Compute buffer is roughly proportional to context * hidden * batch
-    # This is a rough estimate
-    buffer_elements = context_size * hidden_size * batch_size * 4  # Factor for intermediate computations
+    # This includes activation memory and intermediate buffers for attention
+    # Factor of 2 for intermediate computations (conservative estimate)
+    buffer_elements = context_size * hidden_size * batch_size * 2
     buffer_mb = buffer_elements * 2 / 1024 / 1024  # 2 bytes per element (fp16)
     
     # Add some minimum buffer for small contexts
@@ -275,18 +277,21 @@ def estimate_vram(
             params_b = arch['params_b']
             num_layers = arch['layers']
             hidden_size = arch['hidden']
+            num_heads = arch['heads']
             kv_heads = arch.get('kv_heads', arch['heads'])
         else:
             # Default fallback - assume 7B model
             params_b = 7
             num_layers = 32
             hidden_size = 4096
+            num_heads = 32
             kv_heads = 8
             warnings.append(f"Could not detect model architecture from '{model_name}', using 7B defaults")
     else:
         arch = estimate_architecture_from_params(params_b)
         num_layers = arch['layers']
         hidden_size = arch['hidden']
+        num_heads = arch['heads']
         kv_heads = arch.get('kv_heads', arch['heads'])
     
     # Detect quantization if model_name provided
@@ -311,6 +316,7 @@ def estimate_vram(
         context_size=context_size,
         hidden_size=hidden_size,
         num_layers=num_layers,
+        num_heads=num_heads,
         kv_heads=kv_heads,
         batch_size=batch_size,
         kv_cache_type=kv_cache_type,

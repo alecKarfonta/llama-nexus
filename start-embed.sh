@@ -105,5 +105,5 @@ exec llama-server \
     --pooling "$POOLING_TYPE" \
     --verbose \
     --metrics \
-    --flash-attn \
+    --flash-attn auto \
     --cont-batching

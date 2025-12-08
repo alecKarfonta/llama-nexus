@@ -130,7 +130,7 @@ export default function MonitoringPage() {
   // Fetch Prometheus metrics from llama.cpp
   const fetchPrometheusMetrics = useCallback(async () => {
     try {
-      const response = await fetch('/llamacpp/metrics')
+      const response = await fetch('/metrics')
       if (!response.ok) {
         // LlamaCPP not running, return empty metrics
         setPrometheusMetrics({})
