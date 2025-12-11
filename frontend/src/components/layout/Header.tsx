@@ -8,15 +8,14 @@ import {
   Chip,
   Tooltip,
   alpha,
-  useTheme,
 } from '@mui/material'
 import { 
   Menu as MenuIcon,
-  Circle as CircleIcon,
   AutoAwesome as AutoAwesomeIcon,
   Search as SearchIcon,
 } from '@mui/icons-material'
 import { useLocation } from 'react-router-dom'
+import { ServiceStatusBar } from '@/components/common/ServiceStatusBar'
 
 interface HeaderProps {
   onMenuClick: () => void
@@ -248,27 +247,9 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onCommandPalette })
           </Box>
         </Tooltip>
 
-        {/* Status Indicators */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-          <Tooltip title="System Online">
-            <Chip
-              icon={<CircleIcon sx={{ fontSize: '8px !important', color: '#10b981 !important' }} />}
-              label="Online"
-              size="small"
-              sx={{
-                height: 28,
-                bgcolor: 'rgba(16, 185, 129, 0.1)',
-                border: '1px solid rgba(16, 185, 129, 0.2)',
-                color: '#34d399',
-                fontWeight: 500,
-                fontSize: '0.75rem',
-                '& .MuiChip-icon': {
-                  ml: 1,
-                },
-                display: { xs: 'none', sm: 'flex' },
-              }}
-            />
-          </Tooltip>
+        {/* Service Status */}
+        <Box sx={{ display: { xs: 'none', md: 'block' } }}>
+          <ServiceStatusBar compact />
         </Box>
       </Toolbar>
     </AppBar>

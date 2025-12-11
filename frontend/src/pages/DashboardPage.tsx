@@ -16,7 +16,14 @@ import {
   Refresh as RefreshIcon,
   TrendingUp as TrendingUpIcon,
   Schedule as ScheduleIcon,
+  Chat as ChatIcon,
+  RocketLaunch as DeployIcon,
+  Folder as DocumentsIcon,
+  Insights as MonitoringIcon,
+  AccountTree as WorkflowIcon,
+  Hub as GraphIcon,
 } from '@mui/icons-material'
+import { useNavigate } from 'react-router-dom'
 import { RealTimeMetricsDisplay } from '@/components/monitoring'
 import { ServiceStatusDisplay } from '@/components/monitoring/ServiceStatusDisplay'
 import { LogViewer } from '@/components/monitoring/LogViewer'
@@ -127,7 +134,29 @@ const SectionCard: React.FC<SectionCardProps> = ({
   </Card>
 )
 
+// Quick action item type
+interface QuickAction {
+  id: string
+  label: string
+  description: string
+  icon: React.ReactNode
+  path: string
+  color: string
+  shortcut?: string
+}
+
+const quickActions: QuickAction[] = [
+  { id: 'chat', label: 'Chat', description: 'Start conversation', icon: <ChatIcon />, path: '/chat', color: '#06b6d4', shortcut: 'C' },
+  { id: 'deploy', label: 'Deploy', description: 'Launch model', icon: <DeployIcon />, path: '/deploy', color: '#f59e0b', shortcut: 'D' },
+  { id: 'documents', label: 'Documents', description: 'Upload files', icon: <DocumentsIcon />, path: '/documents', color: '#10b981', shortcut: 'U' },
+  { id: 'workflows', label: 'Workflows', description: 'Build pipeline', icon: <WorkflowIcon />, path: '/workflows', color: '#a855f7', shortcut: 'W' },
+  { id: 'graph', label: 'Knowledge', description: 'View graph', icon: <GraphIcon />, path: '/knowledge-graph', color: '#6366f1', shortcut: 'G' },
+  { id: 'monitoring', label: 'Monitor', description: 'System health', icon: <MonitoringIcon />, path: '/monitoring', color: '#0ea5e9', shortcut: 'M' },
+]
+
 export const DashboardPage: React.FC = () => {
+  const navigate = useNavigate()
+  
   // Stats for dashboard (would come from API in production)
   const stats = {
     totalModels: 12,
@@ -266,6 +295,106 @@ export const DashboardPage: React.FC = () => {
           </CardContent>
         </Card>
       </Collapse>
+
+      {/* Quick Actions */}
+      <Box sx={{ mb: 4 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
+          <Typography 
+            variant="overline" 
+            sx={{ 
+              color: 'text.secondary',
+              fontSize: '0.6875rem',
+              fontWeight: 600,
+              letterSpacing: '0.08em',
+            }}
+          >
+            Quick Actions
+          </Typography>
+        </Box>
+        <Box sx={{ 
+          display: 'grid', 
+          gridTemplateColumns: { 
+            xs: 'repeat(2, 1fr)', 
+            sm: 'repeat(3, 1fr)', 
+            md: 'repeat(6, 1fr)' 
+          }, 
+          gap: 1.5 
+        }}>
+          {quickActions.map((action) => (
+            <Box
+              key={action.id}
+              onClick={() => navigate(action.path)}
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 1,
+                p: 2,
+                borderRadius: 2,
+                bgcolor: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease-in-out',
+                '&:hover': {
+                  bgcolor: alpha(action.color, 0.08),
+                  borderColor: alpha(action.color, 0.3),
+                  transform: 'translateY(-2px)',
+                  '& .action-icon': {
+                    bgcolor: alpha(action.color, 0.2),
+                    color: action.color,
+                  },
+                  '& .action-label': {
+                    color: 'text.primary',
+                  },
+                },
+              }}
+            >
+              <Box
+                className="action-icon"
+                sx={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  bgcolor: 'rgba(255, 255, 255, 0.05)',
+                  color: 'text.secondary',
+                  transition: 'all 0.2s ease-in-out',
+                  '& .MuiSvgIcon-root': { fontSize: 20 },
+                }}
+              >
+                {action.icon}
+              </Box>
+              <Box sx={{ textAlign: 'center' }}>
+                <Typography
+                  className="action-label"
+                  variant="body2"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.8125rem',
+                    color: 'text.secondary',
+                    transition: 'color 0.2s ease-in-out',
+                    lineHeight: 1.2,
+                  }}
+                >
+                  {action.label}
+                </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: alpha('#fff', 0.4),
+                    fontSize: '0.6875rem',
+                    display: { xs: 'none', sm: 'block' },
+                  }}
+                >
+                  {action.description}
+                </Typography>
+              </Box>
+            </Box>
+          ))}
+        </Box>
+      </Box>
       
       {/* Stats Cards */}
       <Box sx={{ mb: 4 }}>

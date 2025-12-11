@@ -17,7 +17,7 @@ A focused development plan for UI refinements and new features.
 
 ### Dashboard
 - [ ] Customizable widget layout (drag-and-drop)
-- [ ] Quick actions bar (one-click model switch, service restart)
+- [x] Quick actions bar (one-click navigation to key features)
 - [ ] Recent conversations widget
 - [ ] Resource usage sparklines
 
@@ -101,9 +101,9 @@ A focused development plan for UI refinements and new features.
 
 ### Design System
 - [ ] Consistent card patterns
-- [ ] Unified loading states
-- [ ] Empty state illustrations
-- [ ] Toast notifications system
+- [x] Unified loading states (PageSkeleton)
+- [x] Empty state components
+- [x] Toast notifications system
 
 ### Accessibility
 - [ ] Keyboard navigation for all controls
