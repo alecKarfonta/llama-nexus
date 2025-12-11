@@ -357,6 +357,7 @@ const DocumentsPage: React.FC = () => {
   // Drag and drop
   const [dragOverDomain, setDragOverDomain] = useState<string | null>(null);
   const [uploadingFiles, setUploadingFiles] = useState(false);
+  const [globalDragOver, setGlobalDragOver] = useState(false);
   
   // Processing queue
   const [processingQueue, setProcessingQueue] = useState<any>(null);
@@ -933,6 +934,87 @@ const DocumentsPage: React.FC = () => {
           Uploading files... Please wait.
         </Alert>
       )}
+
+      {/* Global Drop Zone */}
+      <Box
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!selectedDomain) return;
+          setGlobalDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setGlobalDragOver(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setGlobalDragOver(false);
+          if (!selectedDomain) return;
+          const files = Array.from(e.dataTransfer.files);
+          if (files.length > 0) {
+            handleFileDrop(files, selectedDomain);
+          }
+        }}
+        sx={{
+          mb: 2,
+          p: 3,
+          borderRadius: 2,
+          border: '2px dashed',
+          borderColor: globalDragOver 
+            ? '#10B981' 
+            : selectedDomain 
+              ? alpha('#10B981', 0.3) 
+              : alpha('#fff', 0.1),
+          bgcolor: globalDragOver 
+            ? alpha('#10B981', 0.08) 
+            : 'transparent',
+          transition: 'all 0.2s ease',
+          cursor: selectedDomain ? 'pointer' : 'default',
+          opacity: selectedDomain ? 1 : 0.5,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 1,
+        }}
+        onClick={() => {
+          if (selectedDomain) {
+            setDocumentDialogOpen(true);
+          }
+        }}
+      >
+        <CloudUploadIcon sx={{ 
+          fontSize: 40, 
+          color: globalDragOver ? '#10B981' : selectedDomain ? alpha('#10B981', 0.6) : 'text.disabled' 
+        }} />
+        <Typography 
+          variant="body1" 
+          sx={{ 
+            fontWeight: 600, 
+            color: globalDragOver ? '#10B981' : selectedDomain ? 'text.primary' : 'text.disabled' 
+          }}
+        >
+          {globalDragOver 
+            ? `Drop files to upload to "${selectedDomain.name}"` 
+            : selectedDomain 
+              ? `Drag files here to upload to "${selectedDomain.name}"`
+              : 'Select a domain to upload documents'}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          Supports TXT, PDF, DOCX, MD, HTML, JSON, CSV
+        </Typography>
+        {selectedDomain && !globalDragOver && (
+          <Button 
+            size="small" 
+            startIcon={<UploadIcon />}
+            sx={{ mt: 1, textTransform: 'none' }}
+          >
+            Or click to browse files
+          </Button>
+        )}
+      </Box>
 
       <Grid container spacing={3}>
         {/* Domain Tree Sidebar */}

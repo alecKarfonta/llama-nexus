@@ -10,7 +10,7 @@ A focused development plan for UI refinements and new features.
 
 ### Chat Interface
 - [ ] Conversation branching (fork from any message)
-- [ ] Message editing with re-generation
+- [x] Message editing with re-generation
 - [x] Keyboard shortcuts (Cmd+L, Cmd+N, Cmd+S, etc.)
 - [ ] Collapsible thinking/reasoning blocks
 - [ ] Syntax highlighting themes selection
@@ -25,7 +25,7 @@ A focused development plan for UI refinements and new features.
 - [x] Collapsible sidebar sections
 - [ ] Favorites/pinned pages
 - [x] Command palette (Cmd+K) for quick navigation
-- [ ] Breadcrumb trail for deep pages
+- [x] Breadcrumb trail for deep pages
 
 ---
 
@@ -52,7 +52,7 @@ A focused development plan for UI refinements and new features.
 **Goal:** Streamline document ingestion and RAG workflows.
 
 ### Documents Page
-- [ ] Drag-and-drop upload zone
+- [x] Drag-and-drop upload zone
 - [ ] Batch upload with progress queue
 - [ ] Document preview panel
 - [ ] Processing status indicators (chunked, embedded, extracted)

@@ -36,6 +36,8 @@ import {
   Settings as SettingsIcon,
   Clear as ClearIcon,
   ContentCopy as CopyIcon,
+  Edit as EditIcon,
+  Check as CheckIcon,
   Build as ToolIcon,
   CheckBox as CheckBoxIcon,
   CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon,
@@ -210,6 +212,10 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const [voicePanelExpanded, setVoicePanelExpanded] = useState(false)
   const [ttsStarting, setTtsStarting] = useState(false)
   const [ttsStopping, setTtsStopping] = useState(false)
+
+  // Message editing state
+  const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
+  const [editingContent, setEditingContent] = useState<string>('')
   
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -1008,6 +1014,76 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         .join('\n');
     }
     navigator.clipboard.writeText(text);
+  }
+
+  // Start editing a message
+  const startEditingMessage = (index: number) => {
+    const message = messages[index]
+    if (typeof message.content === 'string') {
+      setEditingContent(message.content)
+    } else if (Array.isArray(message.content)) {
+      // Extract text from multi-modal content
+      const textParts = message.content
+        .filter((part: any) => part.type === 'text' && part.text)
+        .map((part: any) => part.text)
+      setEditingContent(textParts.join('\n'))
+    }
+    setEditingMessageIndex(index)
+  }
+
+  // Cancel editing
+  const cancelEditingMessage = () => {
+    setEditingMessageIndex(null)
+    setEditingContent('')
+  }
+
+  // Save edited message and regenerate response
+  const saveEditedMessage = async (index: number) => {
+    if (!editingContent.trim()) return
+    
+    // Update the message at the given index
+    const updatedMessages = messages.slice(0, index + 1)
+    updatedMessages[index] = {
+      ...updatedMessages[index],
+      content: editingContent.trim()
+    }
+    
+    // Remove all messages after the edited one (will regenerate)
+    setMessages(updatedMessages)
+    setEditingMessageIndex(null)
+    setEditingContent('')
+    setHasUnsavedChanges(true)
+    
+    // Regenerate the response
+    setIsLoading(true)
+    setError(null)
+    
+    try {
+      const selectedToolsForRequest = settings.enableTools 
+        ? availableTools.filter((tool: Tool) => settings.selectedTools.includes(tool.function.name))
+        : []
+
+      const request: ChatCompletionRequest = {
+        messages: updatedMessages,
+        temperature: settings.temperature,
+        top_p: settings.topP,
+        top_k: settings.topK,
+        max_tokens: settings.maxTokens,
+        stream: settings.streamResponse,
+        tools: selectedToolsForRequest.length > 0 ? selectedToolsForRequest : undefined,
+        tool_choice: selectedToolsForRequest.length > 0 ? 'auto' : undefined,
+      }
+
+      if (settings.streamResponse) {
+        await handleStreamingResponse(request)
+      } else {
+        await handleNonStreamingResponse(request)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to regenerate response')
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   const formatRole = (role: string) => {
@@ -2067,6 +2143,19 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     />
                   )}
                   <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5 }}>
+                    {/* Edit button for user messages */}
+                    {message.role === 'user' && editingMessageIndex !== index && (
+                      <Tooltip title="Edit message">
+                        <IconButton
+                          size="small"
+                          onClick={() => startEditingMessage(index)}
+                          disabled={isLoading}
+                          sx={{ color: 'text.secondary' }}
+                        >
+                          <EditIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    )}
                     {/* TTS Play Button for assistant messages */}
                     {message.role === 'assistant' && ttsServiceAvailable && typeof message.content === 'string' && message.content.trim() && (
                       <Tooltip title={tts.isPlaying && tts.currentText === message.content ? "Stop speaking" : "Read aloud"}>
@@ -2097,69 +2186,110 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     </Tooltip>
                   </Box>
                 </Box>
-                {/* Check if message contains multi-modal content (array format) */}
-                {(() => {
-                  // Check if content is an array (multi-modal format)
-                  if (Array.isArray(message.content)) {
-                    const textParts: string[] = []
-                    const imageParts: any[] = []
-                    
-                    // Separate text and images
-                    message.content.forEach((part: any) => {
-                      if (part.type === 'text') {
-                        textParts.push(part.text)
-                      } else if (part.type === 'image_url') {
-                        imageParts.push(part.image_url.url)
-                      }
-                    })
-                    
-                    return (
-                      <Box>
-                        {/* Render images */}
-                        {imageParts.length > 0 && (
-                          <Box sx={{ mb: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                            {imageParts.map((imageUrl: string, idx: number) => (
-                              <Box
-                                key={idx}
-                                sx={{
-                                  maxWidth: 200,
-                                  borderRadius: 1,
-                                  overflow: 'hidden',
-                                  border: '1px solid rgba(255, 255, 255, 0.2)',
-                                }}
-                              >
-                                <img
-                                  src={imageUrl}
-                                  alt={`Attachment ${idx + 1}`}
-                                  style={{
-                                    width: '100%',
-                                    height: 'auto',
-                                    display: 'block',
-                                  }}
-                                />
-                              </Box>
-                            ))}
-                          </Box>
-                        )}
-                        {/* Render text */}
-                        {textParts.length > 0 && (
-                          <MarkdownRenderer 
-                            content={textParts.join('\n')} 
-                            reasoning_content={message.reasoning_content}
-                          />
-                        )}
-                      </Box>
-                    )
-                  }
-                  
-                  // String content - render normally
-                  return (
-                    <MarkdownRenderer 
-                      content={message.content} 
-                      reasoning_content={message.reasoning_content}
+                {/* Edit mode for user messages */}
+                {editingMessageIndex === index ? (
+                  <Box sx={{ width: '100%' }}>
+                    <TextField
+                      fullWidth
+                      multiline
+                      minRows={2}
+                      maxRows={8}
+                      value={editingContent}
+                      onChange={(e) => setEditingContent(e.target.value)}
+                      autoFocus
+                      sx={{
+                        mb: 1,
+                        '& .MuiOutlinedInput-root': {
+                          fontSize: '0.875rem',
+                          bgcolor: 'rgba(0, 0, 0, 0.2)',
+                        }
+                      }}
                     />
-                  )
-                })()}
+                    <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
+                      <Button
+                        size="small"
+                        onClick={cancelEditingMessage}
+                        sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        onClick={() => saveEditedMessage(index)}
+                        disabled={!editingContent.trim() || isLoading}
+                        startIcon={isLoading ? <CircularProgress size={12} /> : <CheckIcon />}
+                        sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+                      >
+                        {isLoading ? 'Regenerating...' : 'Save & Regenerate'}
+                      </Button>
+                    </Box>
+                  </Box>
+                ) : (
+                  /* Normal message content */
+                  (() => {
+                    // Check if content is an array (multi-modal format)
+                    if (Array.isArray(message.content)) {
+                      const textParts: string[] = []
+                      const imageParts: any[] = []
+                      
+                      // Separate text and images
+                      message.content.forEach((part: any) => {
+                        if (part.type === 'text') {
+                          textParts.push(part.text)
+                        } else if (part.type === 'image_url') {
+                          imageParts.push(part.image_url.url)
+                        }
+                      })
+                      
+                      return (
+                        <Box>
+                          {/* Render images */}
+                          {imageParts.length > 0 && (
+                            <Box sx={{ mb: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                              {imageParts.map((imageUrl: string, idx: number) => (
+                                <Box
+                                  key={idx}
+                                  sx={{
+                                    maxWidth: 200,
+                                    borderRadius: 1,
+                                    overflow: 'hidden',
+                                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                                  }}
+                                >
+                                  <img
+                                    src={imageUrl}
+                                    alt={`Attachment ${idx + 1}`}
+                                    style={{
+                                      width: '100%',
+                                      height: 'auto',
+                                      display: 'block',
+                                    }}
+                                  />
+                                </Box>
+                              ))}
+                            </Box>
+                          )}
+                          {/* Render text */}
+                          {textParts.length > 0 && (
+                            <MarkdownRenderer 
+                              content={textParts.join('\n')} 
+                              reasoning_content={message.reasoning_content}
+                            />
+                          )}
+                        </Box>
+                      )
+                    }
+                    
+                    // String content - render normally
+                    return (
+                      <MarkdownRenderer 
+                        content={message.content} 
+                        reasoning_content={message.reasoning_content}
+                      />
+                    )
+                  })()
+                )}
               </Paper>
             </Box>
           ))}
