@@ -1,5 +1,6 @@
 export { MarkdownRenderer } from './MarkdownRenderer'
 export { ConversationSidebar } from './ConversationSidebar'
 export { ThinkingVisualizer } from './ThinkingVisualizer'
+export { ExternalQueryDisplay } from './ExternalQueryDisplay'
 export { ConstraintEditor } from './ConstraintEditor'
 export { SemanticDiff } from './SemanticDiff'

@@ -12,7 +12,8 @@ A focused development plan for UI refinements and new features.
 - [ ] Conversation branching (fork from any message)
 - [x] Message editing with re-generation
 - [x] Keyboard shortcuts (Cmd+L, Cmd+N, Cmd+S, etc.)
-- [ ] Collapsible thinking/reasoning blocks
+- [x] Chain-of-thought reasoning display (DeepSeek R1, QwQ, o1, Claude)
+- [x] External query/tool call visualization
 - [ ] Syntax highlighting themes selection
 
 ### Dashboard
