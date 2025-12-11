@@ -146,7 +146,7 @@ try:
         conversations_router, registry_router, prompts_router,
         benchmark_router, batch_router, models_router,
         templates_router, tokens_router, service_router,
-        stt_router, tts_router
+        stt_router, tts_router, tools_router
     )
     from routes.rag import init_rag_config
     ROUTES_AVAILABLE = True
@@ -2870,7 +2870,8 @@ if ROUTES_AVAILABLE:
     app.include_router(service_router)
     app.include_router(stt_router)
     app.include_router(tts_router)
-    logger.info("Route modules included: rag, graphrag, workflows, conversations, registry, prompts, benchmark, batch, models, templates, tokens, service, stt, tts")
+    app.include_router(tools_router)
+    logger.info("Route modules included: rag, graphrag, workflows, conversations, registry, prompts, benchmark, batch, models, templates, tokens, service, stt, tts, tools")
 
 # Health check endpoint
 @app.get("/health")

@@ -1,14 +1,133 @@
 /**
  * Tools Service for Function Calling
  * Handles execution of built-in tools and function definitions
+ * Supports research agents with web search, RAG, and data gathering
  */
 
 import type { Tool, ToolCall, WeatherQuery, CalculatorQuery, CodeExecutionQuery } from '@/types/api';
+import { apiService } from './api';
+
+// Web search result type
+interface WebSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+  source?: string;
+}
+
+// RAG search result type
+interface RAGSearchResult {
+  content: string;
+  source: string;
+  score: number;
+  metadata?: Record<string, any>;
+}
 
 export class ToolsService {
   // Built-in tool definitions for testing
   static getAvailableTools(): Tool[] {
     return [
+      // === RESEARCH TOOLS ===
+      {
+        type: 'function',
+        function: {
+          name: 'web_search',
+          description: 'Search the web for current information on any topic. Use this to find recent news, facts, documentation, or any information not in your training data.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description: 'The search query - be specific and include relevant keywords'
+              },
+              num_results: {
+                type: 'number',
+                description: 'Number of results to return (default: 5, max: 10)'
+              }
+            },
+            required: ['query']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'knowledge_search',
+          description: 'Search the local knowledge base and documents. Use this to find information from uploaded documents, research papers, and indexed content.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description: 'The semantic search query'
+              },
+              domain: {
+                type: 'string',
+                description: 'Optional: specific knowledge domain to search in'
+              },
+              top_k: {
+                type: 'number',
+                description: 'Number of results to return (default: 5)'
+              }
+            },
+            required: ['query']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'fetch_url',
+          description: 'Fetch and extract content from a specific URL. Use this to read articles, documentation, or web pages.',
+          parameters: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'The URL to fetch content from'
+              },
+              extract_type: {
+                type: 'string',
+                enum: ['text', 'markdown', 'summary'],
+                description: 'How to extract content: text (raw), markdown (formatted), or summary (brief)'
+              }
+            },
+            required: ['url']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'save_research_note',
+          description: 'Save a research note or finding for later reference. Use this to build up research during a session.',
+          parameters: {
+            type: 'object',
+            properties: {
+              title: {
+                type: 'string',
+                description: 'Title or topic of the note'
+              },
+              content: {
+                type: 'string',
+                description: 'The research note content'
+              },
+              sources: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'List of sources for this information'
+              },
+              tags: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Tags to categorize this note'
+              }
+            },
+            required: ['title', 'content']
+          }
+        }
+      },
+      // === UTILITY TOOLS ===
       {
         type: 'function',
         function: {
@@ -105,8 +224,57 @@ export class ToolsService {
             required: []
           }
         }
+      },
+      // === DATE/TIME TOOLS ===
+      {
+        type: 'function',
+        function: {
+          name: 'get_current_time',
+          description: 'Get the current date and time in various formats and timezones',
+          parameters: {
+            type: 'object',
+            properties: {
+              timezone: {
+                type: 'string',
+                description: 'Timezone (e.g., "America/New_York", "Europe/London", "UTC")'
+              },
+              format: {
+                type: 'string',
+                enum: ['iso', 'human', 'unix'],
+                description: 'Output format'
+              }
+            },
+            required: []
+          }
+        }
       }
     ];
+  }
+
+  // Get only research-focused tools
+  static getResearchTools(): Tool[] {
+    const researchToolNames = ['web_search', 'knowledge_search', 'fetch_url', 'save_research_note', 'calculate'];
+    return this.getAvailableTools().filter(t => researchToolNames.includes(t.function.name));
+  }
+
+  // Research notes storage (in-memory for session)
+  private static researchNotes: Array<{
+    id: string;
+    title: string;
+    content: string;
+    sources: string[];
+    tags: string[];
+    timestamp: string;
+  }> = [];
+
+  // Get all research notes from current session
+  static getResearchNotes() {
+    return this.researchNotes;
+  }
+
+  // Clear research notes (new session)
+  static clearResearchNotes() {
+    this.researchNotes = [];
   }
 
   // Execute a tool call and return the result
@@ -117,6 +285,20 @@ export class ToolsService {
       const parsedArgs = JSON.parse(args);
       
       switch (name) {
+        // Research tools
+        case 'web_search':
+          return await this.executeWebSearchTool(parsedArgs);
+        
+        case 'knowledge_search':
+          return await this.executeKnowledgeSearchTool(parsedArgs);
+        
+        case 'fetch_url':
+          return await this.executeFetchUrlTool(parsedArgs);
+        
+        case 'save_research_note':
+          return this.executeSaveNoteTool(parsedArgs);
+        
+        // Utility tools
         case 'get_weather':
           return this.executeWeatherTool(parsedArgs as WeatherQuery);
         
@@ -132,12 +314,207 @@ export class ToolsService {
         case 'generate_uuid':
           return this.executeUUIDTool(parsedArgs);
         
+        case 'get_current_time':
+          return this.executeTimeTool(parsedArgs);
+        
         default:
           return `Error: Unknown tool "${name}"`;
       }
     } catch (error) {
       return `Error executing tool ${name}: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
+  }
+
+  // === RESEARCH TOOL IMPLEMENTATIONS ===
+
+  private static async executeWebSearchTool(query: { query: string; num_results?: number }): Promise<string> {
+    const { query: searchQuery, num_results = 5 } = query;
+    
+    try {
+      // Try to use backend web search endpoint if available
+      const response = await apiService.post('/api/v1/tools/web-search', {
+        query: searchQuery,
+        num_results: Math.min(num_results, 10)
+      });
+      
+      if (response.data?.results) {
+        return JSON.stringify({
+          query: searchQuery,
+          results: response.data.results,
+          source: 'live_search',
+          timestamp: new Date().toISOString()
+        }, null, 2);
+      }
+    } catch {
+      // Fallback to simulated results if backend unavailable
+    }
+
+    // Simulated web search results for demo
+    const simulatedResults: WebSearchResult[] = [
+      {
+        title: `${searchQuery} - Latest Information`,
+        url: `https://example.com/search?q=${encodeURIComponent(searchQuery)}`,
+        snippet: `Comprehensive information about ${searchQuery}. This simulated result would contain relevant content from web search.`,
+        source: 'example.com'
+      },
+      {
+        title: `Understanding ${searchQuery} - A Guide`,
+        url: `https://docs.example.com/${searchQuery.toLowerCase().replace(/\s+/g, '-')}`,
+        snippet: `An in-depth guide covering ${searchQuery}. Learn about key concepts, best practices, and recent developments.`,
+        source: 'docs.example.com'
+      },
+      {
+        title: `${searchQuery} News and Updates`,
+        url: `https://news.example.com/topic/${searchQuery.toLowerCase().replace(/\s+/g, '-')}`,
+        snippet: `Latest news and updates about ${searchQuery}. Stay informed with recent developments and announcements.`,
+        source: 'news.example.com'
+      }
+    ];
+
+    return JSON.stringify({
+      query: searchQuery,
+      results: simulatedResults.slice(0, num_results),
+      source: 'simulated',
+      note: 'Configure SEARCH_API_KEY for live results',
+      timestamp: new Date().toISOString()
+    }, null, 2);
+  }
+
+  private static async executeKnowledgeSearchTool(query: { query: string; domain?: string; top_k?: number }): Promise<string> {
+    const { query: searchQuery, domain, top_k = 5 } = query;
+    
+    try {
+      // Use RAG search endpoint
+      const response = await apiService.post('/api/v1/rag/search', {
+        query: searchQuery,
+        domain_id: domain,
+        top_k
+      });
+      
+      if (response.data?.results) {
+        return JSON.stringify({
+          query: searchQuery,
+          domain: domain || 'all',
+          results: response.data.results.map((r: any) => ({
+            content: r.content,
+            source: r.metadata?.source || r.document_name || 'Unknown',
+            score: r.score,
+            metadata: r.metadata
+          })),
+          source: 'knowledge_base',
+          timestamp: new Date().toISOString()
+        }, null, 2);
+      }
+    } catch {
+      // Fallback
+    }
+
+    return JSON.stringify({
+      query: searchQuery,
+      domain: domain || 'all',
+      results: [],
+      message: 'No documents found. Upload documents to the knowledge base first.',
+      source: 'knowledge_base',
+      timestamp: new Date().toISOString()
+    }, null, 2);
+  }
+
+  private static async executeFetchUrlTool(query: { url: string; extract_type?: string }): Promise<string> {
+    const { url, extract_type = 'text' } = query;
+    
+    try {
+      // Try backend URL fetch endpoint
+      const response = await apiService.post('/api/v1/tools/fetch-url', {
+        url,
+        extract_type
+      });
+      
+      if (response.data?.content) {
+        return JSON.stringify({
+          url,
+          content: response.data.content,
+          title: response.data.title,
+          extract_type,
+          timestamp: new Date().toISOString()
+        }, null, 2);
+      }
+    } catch {
+      // Fallback
+    }
+
+    // Simulated fetch for demo
+    return JSON.stringify({
+      url,
+      content: `[Simulated content from ${url}]\n\nThis is a placeholder for fetched content. Configure the backend URL fetcher for live content extraction.`,
+      extract_type,
+      simulated: true,
+      timestamp: new Date().toISOString()
+    }, null, 2);
+  }
+
+  private static executeSaveNoteTool(query: { title: string; content: string; sources?: string[]; tags?: string[] }): string {
+    const { title, content, sources = [], tags = [] } = query;
+    
+    const note = {
+      id: crypto.randomUUID(),
+      title,
+      content,
+      sources,
+      tags,
+      timestamp: new Date().toISOString()
+    };
+    
+    this.researchNotes.push(note);
+    
+    return JSON.stringify({
+      status: 'saved',
+      note_id: note.id,
+      title,
+      total_notes: this.researchNotes.length,
+      message: `Research note "${title}" saved. You now have ${this.researchNotes.length} notes in this session.`,
+      timestamp: note.timestamp
+    }, null, 2);
+  }
+
+  private static executeTimeTool(query: { timezone?: string; format?: string }): string {
+    const { timezone = 'UTC', format = 'human' } = query;
+    
+    const now = new Date();
+    let timeString: string;
+    
+    try {
+      switch (format) {
+        case 'iso':
+          timeString = now.toISOString();
+          break;
+        case 'unix':
+          timeString = Math.floor(now.getTime() / 1000).toString();
+          break;
+        case 'human':
+        default:
+          timeString = now.toLocaleString('en-US', { 
+            timeZone: timezone,
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            timeZoneName: 'short'
+          });
+      }
+    } catch {
+      timeString = now.toISOString();
+    }
+    
+    return JSON.stringify({
+      timezone,
+      format,
+      time: timeString,
+      utc_offset: now.getTimezoneOffset(),
+      timestamp: now.toISOString()
+    }, null, 2);
   }
 
   private static executeWeatherTool(query: WeatherQuery): string {

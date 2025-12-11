@@ -17,6 +17,7 @@ from .tokens import router as tokens_router
 from .service import router as service_router
 from .stt import router as stt_router
 from .tts import router as tts_router
+from .tools import router as tools_router
 
 __all__ = [
     'workflows_router',
@@ -33,4 +34,5 @@ __all__ = [
     'service_router',
     'stt_router',
     'tts_router',
+    'tools_router',
 ]
