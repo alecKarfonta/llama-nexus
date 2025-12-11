@@ -10,6 +10,7 @@ import {
   Collapse,
   alpha,
   Chip,
+  Button,
 } from '@mui/material'
 import {
   Settings as SettingsIcon,
@@ -22,13 +23,14 @@ import {
   Insights as MonitoringIcon,
   AccountTree as WorkflowIcon,
   Hub as GraphIcon,
+  Add as AddIcon,
 } from '@mui/icons-material'
 import { useNavigate } from 'react-router-dom'
 import { RealTimeMetricsDisplay } from '@/components/monitoring'
 import { ServiceStatusDisplay } from '@/components/monitoring/ServiceStatusDisplay'
 import { LogViewer } from '@/components/monitoring/LogViewer'
 import { TokenUsageTracker } from '@/components/monitoring/TokenUsageTracker'
-import { StatCard } from '@/components/dashboard/StatCard'
+import { StatCard, RecentConversations } from '@/components/dashboard'
 
 // Section wrapper component for consistent styling
 interface SectionCardProps {
@@ -396,6 +398,34 @@ export const DashboardPage: React.FC = () => {
         </Box>
       </Box>
       
+      {/* Recent Conversations */}
+      <Box sx={{ mb: 4 }}>
+        <SectionCard
+          title="Recent Conversations"
+          subtitle="Your research and chat history"
+          accentColor="#8b5cf6"
+          icon={<ChatIcon />}
+          action={
+            <Button
+              size="small"
+              startIcon={<AddIcon />}
+              onClick={() => navigate('/chat')}
+              sx={{ 
+                textTransform: 'none', 
+                fontSize: '0.75rem',
+                bgcolor: alpha('#8b5cf6', 0.1),
+                color: '#8b5cf6',
+                '&:hover': { bgcolor: alpha('#8b5cf6', 0.2) },
+              }}
+            >
+              New Chat
+            </Button>
+          }
+        >
+          <RecentConversations limit={5} showStats showSearch />
+        </SectionCard>
+      </Box>
+
       {/* Stats Cards */}
       <Box sx={{ mb: 4 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>

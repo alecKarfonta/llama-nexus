@@ -396,7 +396,13 @@ class ConversationStore:
         archived_count = 0
         total_messages = 0
         models_used: Dict[str, int] = {}
+        tags_used: Dict[str, int] = {}
         first_conversation = None
+        recent_activity = 0
+        
+        # Calculate week ago timestamp
+        from datetime import timedelta
+        week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
         
         for conv in conversations:
             if conv.get('is_archived', False):
@@ -410,18 +416,29 @@ class ConversationStore:
             if model:
                 models_used[model] = models_used.get(model, 0) + 1
             
+            # Track tags
+            for tag in conv.get('tags', []):
+                tags_used[tag] = tags_used.get(tag, 0) + 1
+            
             # Track oldest conversation
             created = conv.get('created_at')
             if created:
                 if first_conversation is None or created < first_conversation:
                     first_conversation = created
+            
+            # Track recent activity (updated in last week)
+            updated = conv.get('updated_at')
+            if updated and updated >= week_ago:
+                recent_activity += 1
         
         return {
             'active_conversations': active_count,
             'archived_conversations': archived_count,
             'total_conversations': len(conversations),
             'total_messages': total_messages,
+            'recent_activity': recent_activity,
             'models_used': [{'model': m, 'count': c} for m, c in sorted(models_used.items(), key=lambda x: -x[1])],
+            'tags_used': [tag for tag, _ in sorted(tags_used.items(), key=lambda x: -x[1])],
             'first_conversation': first_conversation,
         }
 

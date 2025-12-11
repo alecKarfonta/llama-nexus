@@ -18,7 +18,7 @@ A focused development plan for UI refinements and new features.
 ### Dashboard
 - [ ] Customizable widget layout (drag-and-drop)
 - [x] Quick actions bar (one-click navigation to key features)
-- [ ] Recent conversations widget
+- [x] Recent conversations widget with research tracking
 - [ ] Resource usage sparklines
 
 ### Navigation
