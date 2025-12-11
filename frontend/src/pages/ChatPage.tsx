@@ -208,6 +208,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const [ttsServiceAvailable, setTtsServiceAvailable] = useState(false)
   const [lastAssistantMessage, setLastAssistantMessage] = useState<string | null>(null)
   const [voicePanelExpanded, setVoicePanelExpanded] = useState(false)
+  const [ttsStarting, setTtsStarting] = useState(false)
+  const [ttsStopping, setTtsStopping] = useState(false)
   
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -263,6 +265,40 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     const interval = setInterval(checkServices, 30000)
     return () => clearInterval(interval)
   }, [])
+
+  // Start TTS service
+  const handleStartTTS = async () => {
+    setTtsStarting(true)
+    setError(null)
+    try {
+      const result = await apiService.startTTSService({
+        voice: settings.ttsVoice,
+      })
+      if (result.success) {
+        setTtsServiceAvailable(true)
+      } else {
+        setError(result.message || 'Failed to start TTS service')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start TTS service')
+    } finally {
+      setTtsStarting(false)
+    }
+  }
+
+  // Stop TTS service
+  const handleStopTTS = async () => {
+    setTtsStopping(true)
+    try {
+      await apiService.stopTTSService()
+      setTtsServiceAvailable(false)
+      tts.stop() // Stop any playing audio
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to stop TTS service')
+    } finally {
+      setTtsStopping(false)
+    }
+  }
 
   // Auto-send when voice input transcription is complete and VAD detects end of speech
   useEffect(() => {
@@ -911,6 +947,45 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     }
   }
 
+  // Global keyboard shortcuts for chat
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
+      // Cmd/Ctrl + L: Clear chat
+      if ((e.metaKey || e.ctrlKey) && e.key === 'l') {
+        e.preventDefault()
+        clearChat()
+      }
+      // Cmd/Ctrl + /: Toggle settings
+      if ((e.metaKey || e.ctrlKey) && e.key === '/') {
+        e.preventDefault()
+        setShowSettings(prev => !prev)
+      }
+      // Cmd/Ctrl + N: New conversation
+      if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
+        e.preventDefault()
+        handleNewConversation()
+      }
+      // Cmd/Ctrl + S: Save conversation
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault()
+        if (hasUnsavedChanges) {
+          saveConversation()
+        }
+      }
+      // Escape: Stop TTS / Close settings
+      if (e.key === 'Escape') {
+        if (tts.isPlaying) {
+          tts.stop()
+        } else if (showSettings) {
+          setShowSettings(false)
+        }
+      }
+    }
+
+    document.addEventListener('keydown', handleGlobalKeyDown)
+    return () => document.removeEventListener('keydown', handleGlobalKeyDown)
+  }, [hasUnsavedChanges, showSettings, tts.isPlaying])
+
   const clearChat = () => {
     setMessages([
       {
@@ -1169,6 +1244,31 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           </Box>
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          {/* TTS Quick Launch Button - shown when TTS is not available */}
+          {!ttsServiceAvailable && (
+            <Tooltip title="Start Text-to-Speech Service">
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={handleStartTTS}
+                  disabled={ttsStarting}
+                  startIcon={ttsStarting ? <CircularProgress size={14} /> : <VolumeUpIcon />}
+                  sx={{ 
+                    fontSize: '0.7rem', 
+                    textTransform: 'none', 
+                    py: 0.25,
+                    px: 1,
+                    minWidth: 'auto',
+                    borderColor: 'rgba(255,255,255,0.3)',
+                    '&:hover': { borderColor: 'primary.main' }
+                  }}
+                >
+                  {ttsStarting ? 'Starting...' : 'Start TTS'}
+                </Button>
+              </span>
+            </Tooltip>
+          )}
           {/* Voice Mode Toggle */}
           <Tooltip title={
             !sttServiceAvailable 
@@ -1677,24 +1777,51 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             </Typography>
             
             {/* Service Status */}
-            <Box sx={{ mb: 3, display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+            <Box sx={{ mb: 3, display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
               <Chip
                 label={sttServiceAvailable ? "STT Service Running" : "STT Service Not Available"}
                 color={sttServiceAvailable ? "success" : "default"}
                 size="small"
                 icon={<MicIcon />}
               />
-              <Chip
-                label={ttsServiceAvailable ? "TTS Service Running" : "TTS Service Not Available"}
-                color={ttsServiceAvailable ? "success" : "default"}
-                size="small"
-                icon={<VolumeUpIcon />}
-              />
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Chip
+                  label={ttsServiceAvailable ? "TTS Service Running" : "TTS Service Not Available"}
+                  color={ttsServiceAvailable ? "success" : "default"}
+                  size="small"
+                  icon={<VolumeUpIcon />}
+                />
+                {!ttsServiceAvailable ? (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    color="primary"
+                    onClick={handleStartTTS}
+                    disabled={ttsStarting}
+                    startIcon={ttsStarting ? <CircularProgress size={14} /> : <PlayIcon />}
+                    sx={{ fontSize: '0.75rem', textTransform: 'none', py: 0.5 }}
+                  >
+                    {ttsStarting ? 'Starting...' : 'Start TTS'}
+                  </Button>
+                ) : (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    onClick={handleStopTTS}
+                    disabled={ttsStopping}
+                    startIcon={ttsStopping ? <CircularProgress size={14} /> : <StopIcon />}
+                    sx={{ fontSize: '0.75rem', textTransform: 'none', py: 0.5 }}
+                  >
+                    {ttsStopping ? 'Stopping...' : 'Stop TTS'}
+                  </Button>
+                )}
+              </Box>
             </Box>
 
             {!sttServiceAvailable && (
               <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Deploy STT and TTS services from the Deploy pages to enable voice features.
+                Deploy STT service from the Deploy page. TTS can be started directly from here.
               </Typography>
             )}
 
@@ -1830,6 +1957,40 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 </Typography>
               </Grid>
             </Grid>
+
+            <Divider sx={{ my: 3 }} />
+
+            {/* Keyboard Shortcuts */}
+            <Typography variant="h6" gutterBottom>
+              Keyboard Shortcuts
+            </Typography>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+              {[
+                { keys: 'Enter', action: 'Send message' },
+                { keys: navigator.platform.includes('Mac') ? 'Cmd+L' : 'Ctrl+L', action: 'Clear chat' },
+                { keys: navigator.platform.includes('Mac') ? 'Cmd+/' : 'Ctrl+/', action: 'Toggle settings' },
+                { keys: navigator.platform.includes('Mac') ? 'Cmd+N' : 'Ctrl+N', action: 'New conversation' },
+                { keys: navigator.platform.includes('Mac') ? 'Cmd+S' : 'Ctrl+S', action: 'Save conversation' },
+                { keys: navigator.platform.includes('Mac') ? 'Cmd+K' : 'Ctrl+K', action: 'Command palette' },
+                { keys: 'Esc', action: 'Stop TTS / Close' },
+              ].map(({ keys, action }) => (
+                <Box key={keys} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Chip
+                    label={keys}
+                    size="small"
+                    sx={{
+                      height: 24,
+                      fontSize: '0.75rem',
+                      fontFamily: 'monospace',
+                      bgcolor: 'rgba(255,255,255,0.05)',
+                    }}
+                  />
+                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
+                    {action}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
           </CardContent>
         </Card>
       </Collapse>
@@ -1905,15 +2066,36 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                       sx={{ ml: 1, fontSize: '0.7rem', height: 20 }}
                     />
                   )}
-                  <Tooltip title="Copy to clipboard">
-                    <IconButton
-                      size="small"
-                      sx={{ ml: 'auto' }}
-                      onClick={() => copyToClipboard(message.content)}
-                    >
-                      <CopyIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
+                  <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5 }}>
+                    {/* TTS Play Button for assistant messages */}
+                    {message.role === 'assistant' && ttsServiceAvailable && typeof message.content === 'string' && message.content.trim() && (
+                      <Tooltip title={tts.isPlaying && tts.currentText === message.content ? "Stop speaking" : "Read aloud"}>
+                        <IconButton
+                          size="small"
+                          onClick={() => {
+                            if (tts.isPlaying && tts.currentText === message.content) {
+                              tts.stop()
+                            } else {
+                              tts.speakNow(message.content as string)
+                            }
+                          }}
+                          sx={{
+                            color: tts.isPlaying && tts.currentText === message.content ? 'primary.main' : 'text.secondary',
+                          }}
+                        >
+                          {tts.isPlaying && tts.currentText === message.content ? <StopIcon fontSize="small" /> : <VolumeUpIcon fontSize="small" />}
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                    <Tooltip title="Copy to clipboard">
+                      <IconButton
+                        size="small"
+                        onClick={() => copyToClipboard(message.content)}
+                      >
+                        <CopyIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
                 </Box>
                 {/* Check if message contains multi-modal content (array format) */}
                 {(() => {

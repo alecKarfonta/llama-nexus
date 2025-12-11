@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Drawer,
@@ -10,8 +10,8 @@ import {
   Toolbar,
   Typography,
   Box,
-  styled,
   alpha,
+  Collapse,
 } from '@mui/material'
 import {
   Dashboard as DashboardIcon,
@@ -36,6 +36,7 @@ import {
   Mic as MicIcon,
   RecordVoiceOver as TTSIcon,
   TextFields as EmbeddingIcon,
+  ChevronRight as ChevronRightIcon,
 } from '@mui/icons-material'
 import type { NavigationSection } from '@/types'
 
@@ -100,17 +101,6 @@ const navigationSections: NavigationSection[] = [
   },
 ]
 
-const SectionTitle = styled(Typography)(({ theme }) => ({
-  fontSize: '0.6875rem',
-  textTransform: 'uppercase',
-  color: alpha(theme.palette.text.secondary, 0.6),
-  marginBottom: theme.spacing(0.75),
-  marginTop: theme.spacing(2),
-  marginLeft: theme.spacing(2),
-  letterSpacing: '0.08em',
-  fontWeight: 600,
-}))
-
 const iconMap: Record<string, React.ElementType> = {
   dashboard: DashboardIcon,
   chat: ChatIcon,
@@ -141,24 +131,36 @@ const getIcon = (iconName: string) => {
   return <Icon />
 }
 
+// Load collapsed sections from localStorage
+const loadCollapsedSections = (): Record<string, boolean> => {
+  try {
+    const saved = localStorage.getItem('sidebar-collapsed-sections')
+    return saved ? JSON.parse(saved) : {}
+  } catch {
+    return {}
+  }
+}
+
 export const Sidebar: React.FC<SidebarProps> = ({ open, onToggle }) => {
   const location = useLocation()
   const navigate = useNavigate()
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(loadCollapsedSections())
+
+  // Save collapsed state to localStorage
+  useEffect(() => {
+    localStorage.setItem('sidebar-collapsed-sections', JSON.stringify(collapsedSections))
+  }, [collapsedSections])
+
+  const toggleSection = (sectionId: string) => {
+    setCollapsedSections(prev => ({
+      ...prev,
+      [sectionId]: !prev[sectionId]
+    }))
+  }
 
   const handleNavigation = (path: string) => {
     navigate(path)
   }
-
-  // Find current item's color
-  const getCurrentColor = () => {
-    for (const section of navigationSections) {
-      const item = section.items.find(item => item.path === location.pathname)
-      if (item?.color) return item.color
-    }
-    return '#6366f1'
-  }
-
-  const currentColor = getCurrentColor()
 
   return (
     <Drawer
@@ -194,9 +196,56 @@ export const Sidebar: React.FC<SidebarProps> = ({ open, onToggle }) => {
           borderRadius: 2,
         },
       }}>
-        {navigationSections.map((section) => (
+        {navigationSections.map((section) => {
+          const isCollapsed = collapsedSections[section.id] ?? false
+          const hasActiveItem = section.items.some(item => item.path === location.pathname)
+          
+          return (
           <React.Fragment key={section.id}>
-            <SectionTitle>{section.title}</SectionTitle>
+            <Box
+              onClick={() => toggleSection(section.id)}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                cursor: 'pointer',
+                mx: 1,
+                mt: 2,
+                mb: 0.75,
+                px: 1,
+                py: 0.25,
+                borderRadius: 1,
+                transition: 'all 0.15s ease',
+                '&:hover': {
+                  bgcolor: 'rgba(255, 255, 255, 0.03)',
+                },
+              }}
+            >
+              <Typography
+                sx={{
+                  fontSize: '0.6875rem',
+                  textTransform: 'uppercase',
+                  color: hasActiveItem ? alpha('#fff', 0.8) : alpha('#fff', 0.4),
+                  letterSpacing: '0.08em',
+                  fontWeight: 600,
+                  transition: 'color 0.15s ease',
+                }}
+              >
+                {section.title}
+              </Typography>
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  color: alpha('#fff', 0.3),
+                  transition: 'transform 0.2s ease',
+                  transform: isCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+                }}
+              >
+                <ChevronRightIcon sx={{ fontSize: 14 }} />
+              </Box>
+            </Box>
+            <Collapse in={!isCollapsed} timeout={200}>
             <List sx={{ py: 0, px: 1 }}>
               {section.items.map((item) => {
                 const isSelected = location.pathname === item.path
@@ -312,8 +361,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ open, onToggle }) => {
                 )
               })}
             </List>
+            </Collapse>
           </React.Fragment>
-        ))}
+        )})}
+      
       </Box>
       
       {/* Footer */}

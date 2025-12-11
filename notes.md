@@ -3623,3 +3623,31 @@ Updated TTS to stream sentences as they complete during response generation, rat
 - User starts hearing the response within 1-2 sentences (~2-5 seconds) instead of waiting for full response
 - Natural pauses between sentences while TTS catches up
 - Works well with the existing TTS queue system
+
+### TTS Service Management from ChatPage (2025-12-11)
+
+Added ability to start/stop the TTS service directly from the ChatPage without needing to go to a separate deploy page.
+
+**Changes Made:**
+
+1. **API Service** (`frontend/src/services/api.ts`)
+   - `startTTSService(config?)` - Start the TTS service with optional config
+   - `stopTTSService()` - Stop the running TTS service  
+   - `getTTSConfig()` - Get available TTS configuration options
+
+2. **ChatPage UI Updates** (`frontend/src/pages/ChatPage.tsx`)
+   - "Start TTS" button in header when TTS is not running (quick launch)
+   - Start/Stop buttons in Voice Settings panel next to TTS status chip
+   - Play button on assistant messages to read aloud (when TTS is available)
+   - Loading states for start/stop operations
+
+**Usage:**
+- When TTS is not available, a "Start TTS" button appears in the header
+- Click to start the TTS service directly from the chat interface
+- TTS can also be stopped from the Voice Settings panel
+- Individual messages can be played with the speaker icon
+
+**Backend Endpoints Used:**
+- `POST /api/v1/tts/start` - Start TTS service
+- `POST /api/v1/tts/stop` - Stop TTS service
+- `GET /api/v1/tts/config` - Get TTS config and available voices

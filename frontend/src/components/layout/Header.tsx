@@ -14,11 +14,13 @@ import {
   Menu as MenuIcon,
   Circle as CircleIcon,
   AutoAwesome as AutoAwesomeIcon,
+  Search as SearchIcon,
 } from '@mui/icons-material'
 import { useLocation } from 'react-router-dom'
 
 interface HeaderProps {
   onMenuClick: () => void
+  onCommandPalette?: () => void
 }
 
 // Page title configuration with icons and descriptions
@@ -44,7 +46,7 @@ const pageConfig: Record<string, { title: string; description: string; color: st
   '/configuration': { title: 'Settings', description: 'Application settings', color: '#64748b' },
 }
 
-export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
+export const Header: React.FC<HeaderProps> = ({ onMenuClick, onCommandPalette }) => {
   const theme = useTheme()
   const location = useLocation()
 
@@ -198,6 +200,53 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
             {config.title}
           </Typography>
         </Box>
+
+        {/* Search / Command Palette */}
+        <Tooltip title="Search (Cmd+K)">
+          <Box
+            onClick={onCommandPalette}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1,
+              px: 1.5,
+              py: 0.75,
+              borderRadius: 2,
+              bgcolor: 'rgba(255, 255, 255, 0.03)',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease-in-out',
+              '&:hover': {
+                bgcolor: 'rgba(255, 255, 255, 0.06)',
+                borderColor: 'rgba(255, 255, 255, 0.12)',
+              },
+              mr: 2,
+            }}
+          >
+            <SearchIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
+            <Typography
+              variant="body2"
+              sx={{
+                color: 'text.secondary',
+                fontSize: '0.8125rem',
+                display: { xs: 'none', md: 'block' },
+              }}
+            >
+              Search...
+            </Typography>
+            <Chip
+              label={navigator.platform.includes('Mac') ? 'Cmd+K' : 'Ctrl+K'}
+              size="small"
+              sx={{
+                height: 20,
+                fontSize: '0.625rem',
+                bgcolor: 'rgba(255,255,255,0.06)',
+                color: 'text.secondary',
+                display: { xs: 'none', sm: 'flex' },
+              }}
+            />
+          </Box>
+        </Tooltip>
 
         {/* Status Indicators */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>

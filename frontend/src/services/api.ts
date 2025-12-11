@@ -1875,6 +1875,64 @@ class ApiService {
   }
 
   /**
+   * Start the TTS service
+   */
+  async startTTSService(config?: {
+    model?: string;
+    voice?: string;
+    port?: number;
+  }): Promise<{
+    success: boolean;
+    status: {
+      running: boolean;
+      uptime: number;
+      endpoint: string;
+    };
+    message: string;
+  }> {
+    const response = await this.backendClient.post('/api/v1/tts/start', config ? { config } : undefined, {
+      timeout: 120000, // TTS service can take a while to start
+    });
+    return response.data;
+  }
+
+  /**
+   * Stop the TTS service
+   */
+  async stopTTSService(): Promise<{
+    success: boolean;
+    status: {
+      running: boolean;
+    };
+  }> {
+    const response = await this.backendClient.post('/api/v1/tts/stop');
+    return response.data;
+  }
+
+  /**
+   * Get TTS service configuration
+   */
+  async getTTSConfig(): Promise<{
+    config: {
+      model: { name: string; voice: string };
+      audio: { format: string; speed: number };
+      server: { port: number };
+    };
+    available_models: Array<{
+      name: string;
+      provider: string;
+      description: string;
+      quality: string;
+      speed: string;
+    }>;
+    available_voices: string[];
+    audio_formats: string[];
+  }> {
+    const response = await this.backendClient.get('/api/v1/tts/config');
+    return response.data;
+  }
+
+  /**
    * Synthesize speech from text using local TTS service
    * Returns audio as ArrayBuffer
    */

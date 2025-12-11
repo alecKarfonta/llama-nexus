@@ -1,8 +1,10 @@
-import React from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { Box } from '@mui/material'
 import { Header } from '@/components/layout/Header'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { CommandPalette } from '@/components/common/CommandPalette'
+import { ToastProvider } from '@/contexts/ToastContext'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { ModelsPage } from '@/pages/ModelsPage'
 import { ConfigurationPage } from '@/pages/ConfigurationPage'
@@ -28,20 +30,35 @@ import DocumentsPage from '@/pages/DocumentsPage'
 import DiscoveryPage from '@/pages/DiscoveryPage'
 
 function App() {
-  const [sidebarOpen, setSidebarOpen] = React.useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
 
   const handleSidebarToggle = () => {
     setSidebarOpen(!sidebarOpen)
   }
 
+  // Global keyboard shortcut for Command Palette (Cmd+K / Ctrl+K)
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault()
+      setCommandPaletteOpen((prev: boolean) => !prev)
+    }
+  }, [])
+
+  useEffect(() => {
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [handleKeyDown])
+
   return (
     <ErrorBoundary>
+    <ToastProvider>
       <Box sx={{ 
         display: 'flex', 
         minHeight: '100vh',
         bgcolor: 'background.default',
       }}>
-        <Header onMenuClick={handleSidebarToggle} />
+        <Header onMenuClick={handleSidebarToggle} onCommandPalette={() => setCommandPaletteOpen(true)} />
         <Sidebar open={sidebarOpen} onToggle={handleSidebarToggle} />
         
         <Box
@@ -110,6 +127,13 @@ function App() {
           </Box>
         </Box>
       </Box>
+      
+      {/* Command Palette */}
+      <CommandPalette 
+        open={commandPaletteOpen} 
+        onClose={() => setCommandPaletteOpen(false)} 
+      />
+    </ToastProvider>
     </ErrorBoundary>
   )
 }
