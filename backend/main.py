@@ -1981,7 +1981,7 @@ class EmbeddingManager:
             "--embeddings",
             "--metrics",
             "--verbose",
-            "--flash-attn",
+            "--flash-attn", "auto",
             "--cont-batching",
         ]
         
