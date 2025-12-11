@@ -149,9 +149,10 @@ class APIEmbedder(Embedder):
     
     async def _embed_openai(
         self,
-        texts: List[str]
+        texts: List[str],
+        max_retries: int = 3
     ) -> List[List[float]]:
-        """Embed using OpenAI API"""
+        """Embed using OpenAI API with retry logic"""
         url = f"{self.base_url}/embeddings"
         
         payload = {
@@ -159,26 +160,36 @@ class APIEmbedder(Embedder):
             "input": texts
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                headers=self._get_headers(),
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=self.timeout)
-            ) as response:
-                if response.status != 200:
-                    error = await response.text()
-                    raise Exception(f"OpenAI API error: {error}")
-                
-                result = await response.json()
-                
-                # Sort by index to ensure correct order
-                embeddings_data = sorted(
-                    result["data"],
-                    key=lambda x: x["index"]
-                )
-                
-                return [item["embedding"] for item in embeddings_data]
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url,
+                        headers=self._get_headers(),
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout)
+                    ) as response:
+                        if response.status != 200:
+                            error = await response.text()
+                            raise Exception(f"OpenAI API error: {error}")
+                        
+                        result = await response.json()
+                        
+                        # Sort by index to ensure correct order
+                        embeddings_data = sorted(
+                            result["data"],
+                            key=lambda x: x["index"]
+                        )
+                        
+                        return [item["embedding"] for item in embeddings_data]
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                    logger.warning(f"Retry {attempt + 1}/{max_retries} after error: {e}")
+        
+        raise last_error or Exception("Failed to embed after retries")
     
     async def _embed_cohere(
         self,
@@ -269,8 +280,13 @@ class APIEmbedder(Embedder):
             ]
             
             # Call appropriate API
-            if self._provider == "openai" or self._provider == "llamacpp":
-                # Both OpenAI and llama.cpp use the same API format
+            if self._provider == "llamacpp":
+                # llama.cpp embedding server works best with one text at a time
+                embeddings = []
+                for text in processed:
+                    result = await self._embed_openai([text])
+                    embeddings.extend(result)
+            elif self._provider == "openai":
                 embeddings = await self._embed_openai(processed)
             elif self._provider == "cohere":
                 embeddings = await self._embed_cohere(processed)

@@ -1,5 +1,5 @@
 # Multi-stage build for llama.cpp with CUDA support
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.9.0-devel-ubuntu22.04 AS builder
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -29,13 +29,14 @@ RUN git clone https://github.com/ggml-org/llama.cpp.git && \
         -DBUILD_SHARED_LIBS=OFF \
         -DGGML_CUDA=ON \
         -DLLAMA_CURL=ON \
-        -DLLAMA_SERVER_VERBOSE=ON && \
+        -DLLAMA_SERVER_VERBOSE=ON \
+        -DCMAKE_CUDA_ARCHITECTURES="50;61;70;75;80;86;89;90;100;120" && \
     cmake --build build --config Release -j$(nproc) --clean-first \
         --target llama-server llama-cli llama-gguf-split && \
     echo "Built llama.cpp version: $(./build/bin/llama-cli --version | head -1)"
 
 # Runtime stage
-FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.9.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 

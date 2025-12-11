@@ -8,6 +8,8 @@ import { ModelsPage } from '@/pages/ModelsPage'
 import { ConfigurationPage } from '@/pages/ConfigurationPage'
 import { DeployPage } from '@/pages/DeployPage'
 import { EmbeddingDeployPage } from '@/pages/EmbeddingDeployPage'
+import STTDeployPage from '@/pages/STTDeployPage'
+import TTSDeployPage from '@/pages/TTSDeployPage'
 import { ChatPage } from '@/pages/ChatPage'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { TemplatesPage } from '@/pages/TemplatesPage'
@@ -47,12 +49,12 @@ function App() {
           sx={{
             flexGrow: 1,
             pt: '64px', // Account for new header height
-            ml: sidebarOpen ? '240px' : 0, // Account for sidebar width
+            ml: sidebarOpen ? '0px' : 0,
             transition: 'margin-left 0.3s ease-in-out',
             display: 'flex',
             flexDirection: 'column',
             minHeight: '100vh',
-            width: sidebarOpen ? 'calc(100% - 240px)' : '100%',
+            width: sidebarOpen ? 'calc(100% - 200px)' : '100%',
             position: 'relative',
             overflow: 'hidden',
             // Subtle background pattern
@@ -86,6 +88,8 @@ function App() {
               <Route path="/models" element={<ModelsPage />} />
               <Route path="/deploy" element={<DeployPage />} />
               <Route path="/embedding-deploy" element={<EmbeddingDeployPage />} />
+              <Route path="/stt-deploy" element={<STTDeployPage />} />
+              <Route path="/tts-deploy" element={<TTSDeployPage />} />
               <Route path="/templates" element={<TemplatesPage />} />
               <Route path="/prompts" element={<PromptLibraryPage />} />
               <Route path="/registry" element={<ModelRegistryPage />} />

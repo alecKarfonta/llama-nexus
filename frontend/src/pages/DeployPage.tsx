@@ -1284,7 +1284,8 @@ export const DeployPage: React.FC = () => {
                     if (cfgRes.ok) {
                       const cfgJson = await cfgRes.json()
                       deployLog('templateSelect', 'Template applied, config refreshed')
-                      setConfig(cfgJson.config)
+                      // Preserve current model name and variant - only update command preview
+                      // Don't overwrite user's model selection with server config
                       setCommandLine(cfgJson.command || '')
                     }
                   } catch (err) {

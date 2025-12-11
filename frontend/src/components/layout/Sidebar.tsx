@@ -33,6 +33,9 @@ import {
   Hub as GraphIcon,
   Folder as DocumentsIcon,
   TravelExplore as DiscoveryIcon,
+  Mic as MicIcon,
+  RecordVoiceOver as TTSIcon,
+  TextFields as EmbeddingIcon,
 } from '@mui/icons-material'
 import type { NavigationSection } from '@/types'
 
@@ -53,6 +56,16 @@ const navigationSections: NavigationSection[] = [
     ],
   },
   {
+    id: 'deployment',
+    title: 'Deployment',
+    items: [
+      { id: 'deploy', label: 'LLM', path: '/deploy', icon: 'deploy', color: '#f59e0b' },
+      { id: 'embedding-deploy', label: 'Embedding', path: '/embedding-deploy', icon: 'embedding', color: '#06b6d4' },
+      { id: 'stt-deploy', label: 'STT', path: '/stt-deploy', icon: 'stt', color: '#10b981' },
+      { id: 'tts-deploy', label: 'TTS', path: '/tts-deploy', icon: 'tts', color: '#8b5cf6' },
+    ],
+  },
+  {
     id: 'development',
     title: 'Development',
     items: [
@@ -67,17 +80,9 @@ const navigationSections: NavigationSection[] = [
     ],
   },
   {
-    id: 'deployment',
-    title: 'Deployment',
-    items: [
-      { id: 'deploy', label: 'Deploy LLM', path: '/deploy', icon: 'deploy', color: '#f59e0b' },
-    ],
-  },
-  {
     id: 'knowledge',
     title: 'Knowledge & RAG',
     items: [
-      { id: 'embedding-deploy', label: 'Embeddings', path: '/embedding-deploy', icon: 'deploy', color: '#06b6d4' },
       { id: 'documents', label: 'Documents', path: '/documents', icon: 'documents', color: '#10b981' },
       { id: 'knowledge-graph', label: 'Knowledge Graph', path: '/knowledge-graph', icon: 'graph', color: '#6366f1' },
       { id: 'discovery', label: 'Discovery', path: '/discovery', icon: 'discovery', color: '#8b5cf6' },
@@ -126,6 +131,9 @@ const iconMap: Record<string, React.ElementType> = {
   graph: GraphIcon,
   documents: DocumentsIcon,
   discovery: DiscoveryIcon,
+  stt: MicIcon,
+  tts: TTSIcon,
+  embedding: EmbeddingIcon,
 }
 
 const getIcon = (iconName: string) => {
@@ -133,7 +141,7 @@ const getIcon = (iconName: string) => {
   return <Icon />
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ open }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ open, onToggle }) => {
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -158,10 +166,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ open }) => {
       anchor="left"
       open={open}
       sx={{
-        width: open ? 240 : 0,
+        width: open ? 200 : 0,
         flexShrink: 0,
         '& .MuiDrawer-paper': {
-          width: 240,
+          width: 200,
           boxSizing: 'border-box',
           background: 'linear-gradient(180deg, rgba(26, 26, 46, 0.98) 0%, rgba(15, 15, 35, 0.98) 100%)',
           backdropFilter: 'blur(20px)',

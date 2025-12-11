@@ -85,6 +85,7 @@ import {
   Deselect as DeselectIcon,
   CheckBox as CheckBoxIcon,
   CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon,
+  AccountTree as KnowledgeGraphIcon,
 } from '@mui/icons-material';
 import { apiService as api } from '../services/api';
 
@@ -148,20 +149,45 @@ const STATUS_CONFIG: Record<string, { color: string; icon: React.ReactNode; labe
   archived: { color: '#6B7280', icon: <StorageIcon />, label: 'Archived' },
 };
 
-// Domain Tree Component
+// Domain Tree Component with Drag & Drop Support
 const DomainTree: React.FC<{
   domains: Domain[];
   selectedDomain: string | null;
   expandedDomains: Set<string>;
+  dragOverDomain: string | null;
   onSelect: (domain: Domain) => void;
   onToggle: (domainId: string) => void;
   onEdit: (domain: Domain) => void;
   onDelete: (domain: Domain) => void;
-}> = ({ domains, selectedDomain, expandedDomains, onSelect, onToggle, onEdit, onDelete }) => {
+  onDragOver: (domainId: string | null) => void;
+  onFileDrop: (domain: Domain, files: FileList) => void;
+}> = ({ domains, selectedDomain, expandedDomains, dragOverDomain, onSelect, onToggle, onEdit, onDelete, onDragOver, onFileDrop }) => {
+  const handleDragOver = (e: React.DragEvent, domainId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onDragOver(domainId);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onDragOver(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, domain: Domain) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onDragOver(null);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      onFileDrop(domain, e.dataTransfer.files);
+    }
+  };
+
   const renderDomain = (domain: Domain, level: number = 0) => {
     const isExpanded = expandedDomains.has(domain.id);
     const isSelected = selectedDomain === domain.id;
     const hasChildren = domain.children && domain.children.length > 0;
+    const isDragOver = dragOverDomain === domain.id;
 
     return (
       <Box key={domain.id}>
@@ -169,11 +195,20 @@ const DomainTree: React.FC<{
           button
           selected={isSelected}
           onClick={() => onSelect(domain)}
+          onDragOver={(e) => handleDragOver(e, domain.id)}
+          onDragLeave={handleDragLeave}
+          onDrop={(e) => handleDrop(e, domain)}
           sx={{
             pl: 2 + level * 2,
             borderRadius: 1,
             mb: 0.5,
-            bgcolor: isSelected ? alpha('#6366F1', 0.15) : 'transparent',
+            bgcolor: isDragOver 
+              ? alpha('#10B981', 0.3) 
+              : isSelected 
+                ? alpha('#6366F1', 0.15) 
+                : 'transparent',
+            border: isDragOver ? '2px dashed #10B981' : '2px solid transparent',
+            transition: 'all 0.2s ease',
             '&:hover': { bgcolor: alpha('#6366F1', 0.1) },
           }}
         >
@@ -190,21 +225,32 @@ const DomainTree: React.FC<{
             </IconButton>
           )}
           <ListItemIcon sx={{ minWidth: 36 }}>
-            {isExpanded ? <FolderOpenIcon sx={{ color: '#F59E0B' }} /> : <FolderIcon sx={{ color: '#F59E0B' }} />}
+            {isDragOver ? (
+              <CloudUploadIcon sx={{ color: '#10B981' }} />
+            ) : isExpanded ? (
+              <FolderOpenIcon sx={{ color: '#F59E0B' }} />
+            ) : (
+              <FolderIcon sx={{ color: '#F59E0B' }} />
+            )}
           </ListItemIcon>
           <ListItemText
-            primary={domain.name}
-            secondary={`${domain.document_count} docs`}
-          />
-          <Chip
-            label={domain.document_count}
-            size="small"
-            sx={{ 
-              height: 20, 
-              bgcolor: alpha('#6366F1', 0.2),
-              '& .MuiChip-label': { px: 1, fontSize: 11 },
+            primary={isDragOver ? `Drop files in ${domain.name}` : domain.name}
+            secondary={isDragOver ? 'Release to upload' : `${domain.document_count} docs`}
+            primaryTypographyProps={{
+              sx: { color: isDragOver ? '#10B981' : 'inherit', fontWeight: isDragOver ? 600 : 400 }
             }}
           />
+          {!isDragOver && (
+            <Chip
+              label={domain.document_count}
+              size="small"
+              sx={{ 
+                height: 20, 
+                bgcolor: alpha('#6366F1', 0.2),
+                '& .MuiChip-label': { px: 1, fontSize: 11 },
+              }}
+            />
+          )}
         </ListItem>
         {hasChildren && isExpanded && (
           <Box>
@@ -307,6 +353,10 @@ const DocumentsPage: React.FC = () => {
   // Batch operations
   const [selectedDocuments, setSelectedDocuments] = useState<Set<string>>(new Set());
   const [batchProcessing, setBatchProcessing] = useState(false);
+  
+  // Drag and drop
+  const [dragOverDomain, setDragOverDomain] = useState<string | null>(null);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
   
   // Processing queue
   const [processingQueue, setProcessingQueue] = useState<any>(null);
@@ -470,9 +520,22 @@ const DocumentsPage: React.FC = () => {
     else if (ext === 'json') docType = 'json';
     else if (ext === 'csv') docType = 'csv';
     
-    // Read file content
+    // Read file content - use base64 for binary files (PDF, DOCX)
     try {
-      const content = await file.text();
+      let content: string;
+      if (docType === 'pdf' || docType === 'docx') {
+        // Read binary files as base64
+        const arrayBuffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        content = btoa(binary);
+      } else {
+        // Read text files as text
+        content = await file.text();
+      }
       setDocumentForm(prev => ({
         ...prev,
         name: prev.name || file.name,
@@ -482,6 +545,76 @@ const DocumentsPage: React.FC = () => {
     } catch (err) {
       setError('Failed to read file');
     }
+  };
+
+  // Handle drag and drop files onto a domain
+  const handleFileDrop = async (domain: Domain, files: FileList) => {
+    if (files.length === 0) return;
+    
+    setUploadingFiles(true);
+    setSuccess(`Uploading ${files.length} file(s) to "${domain.name}"...`);
+    
+    let successCount = 0;
+    let errorCount = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      
+      try {
+        // Auto-detect document type from file extension
+        const ext = file.name.split('.').pop()?.toLowerCase();
+        let docType = 'txt';
+        if (ext === 'pdf') docType = 'pdf';
+        else if (ext === 'docx' || ext === 'doc') docType = 'docx';
+        else if (ext === 'md') docType = 'md';
+        else if (ext === 'html' || ext === 'htm') docType = 'html';
+        else if (ext === 'json') docType = 'json';
+        else if (ext === 'csv') docType = 'csv';
+        
+        // Read file content
+        let content: string;
+        if (docType === 'pdf' || docType === 'docx') {
+          // Read binary files as base64
+          const arrayBuffer = await file.arrayBuffer();
+          const bytes = new Uint8Array(arrayBuffer);
+          let binary = '';
+          for (let j = 0; j < bytes.byteLength; j++) {
+            binary += String.fromCharCode(bytes[j]);
+          }
+          content = btoa(binary);
+        } else {
+          // Read text files as text
+          content = await file.text();
+        }
+        
+        // Upload document
+        await api.post('/api/v1/rag/documents', {
+          name: file.name,
+          doc_type: docType,
+          content: content,
+          domain_id: domain.id,
+        });
+        
+        successCount++;
+      } catch (err) {
+        console.error(`Failed to upload ${file.name}:`, err);
+        errorCount++;
+      }
+    }
+    
+    setUploadingFiles(false);
+    
+    if (errorCount === 0) {
+      setSuccess(`Successfully uploaded ${successCount} file(s) to "${domain.name}"`);
+    } else {
+      setError(`Uploaded ${successCount} file(s), ${errorCount} failed`);
+    }
+    
+    setTimeout(() => setSuccess(null), 3000);
+    
+    // Refresh data
+    loadDocuments();
+    loadDomains();
   };
 
   const handleCreateDocument = async () => {
@@ -665,6 +798,36 @@ const DocumentsPage: React.FC = () => {
     }
   };
   
+  // Knowledge Graph extraction handlers
+  const handleExtractKnowledge = async (docId: string) => {
+    try {
+      setLoading(true);
+      const result = await api.extractDocumentKnowledge(docId);
+      setSuccess(`Extracted ${result.entity_count} entities and ${result.relationship_count} relationships from "${result.document_name}"`);
+      setTimeout(() => setSuccess(null), 5000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to extract knowledge from document');
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  const handleBatchExtractKnowledge = async () => {
+    if (selectedDocuments.size === 0) return;
+    
+    try {
+      setBatchProcessing(true);
+      const result = await api.batchExtractDocumentKnowledge(Array.from(selectedDocuments));
+      setSuccess(`Queued ${result.documents_queued} documents for knowledge extraction`);
+      setTimeout(() => setSuccess(null), 5000);
+      clearSelection();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to batch extract knowledge');
+    } finally {
+      setBatchProcessing(false);
+    }
+  };
+  
   // Load processing queue
   const loadProcessingQueue = useCallback(async () => {
     try {
@@ -760,6 +923,16 @@ const DocumentsPage: React.FC = () => {
           {success}
         </Alert>
       )}
+      
+      {uploadingFiles && (
+        <Alert 
+          severity="info" 
+          sx={{ mb: 2 }}
+          icon={<CircularProgress size={20} />}
+        >
+          Uploading files... Please wait.
+        </Alert>
+      )}
 
       <Grid container spacing={3}>
         {/* Domain Tree Sidebar */}
@@ -793,6 +966,12 @@ const DocumentsPage: React.FC = () => {
             >
               All Documents
             </Button>
+            
+            {domains.length > 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1, textAlign: 'center' }}>
+                Drag & drop files onto a domain to upload
+              </Typography>
+            )}
 
             {domains.length === 0 ? (
               <Box sx={{ textAlign: 'center', py: 4 }}>
@@ -814,6 +993,7 @@ const DocumentsPage: React.FC = () => {
                 domains={domains}
                 selectedDomain={selectedDomain?.id || null}
                 expandedDomains={expandedDomains}
+                dragOverDomain={dragOverDomain}
                 onSelect={(domain) => {
                   setSelectedDomain(domain);
                   setPage(0);
@@ -821,6 +1001,8 @@ const DocumentsPage: React.FC = () => {
                 onToggle={toggleDomain}
                 onEdit={() => {}}
                 onDelete={handleDeleteDomain}
+                onDragOver={setDragOverDomain}
+                onFileDrop={handleFileDrop}
               />
             )}
           </Paper>
@@ -876,7 +1058,7 @@ const DocumentsPage: React.FC = () => {
             {/* Batch Actions Bar */}
             {selectedDocuments.size > 0 && (
               <Paper sx={{ p: 2, mb: 2, bgcolor: 'primary.dark', color: 'white' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
                   <Typography variant="body2" sx={{ fontWeight: 600 }}>
                     {selectedDocuments.size} document(s) selected
                   </Typography>
@@ -889,6 +1071,16 @@ const DocumentsPage: React.FC = () => {
                     sx={{ bgcolor: 'white', color: 'primary.main', '&:hover': { bgcolor: 'grey.100' } }}
                   >
                     Process Selected
+                  </Button>
+                  <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={<KnowledgeGraphIcon />}
+                    onClick={handleBatchExtractKnowledge}
+                    disabled={batchProcessing}
+                    sx={{ bgcolor: '#6366F1', color: 'white', '&:hover': { bgcolor: '#4F46E5' } }}
+                  >
+                    Extract to Knowledge Graph
                   </Button>
                   <Button
                     variant="outlined"
@@ -1054,6 +1246,18 @@ const DocumentsPage: React.FC = () => {
                               )}
                               {doc.status === 'ready' && (
                                 <>
+                                  <Tooltip title="Extract to Knowledge Graph">
+                                    <IconButton
+                                      size="small"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleExtractKnowledge(doc.id);
+                                      }}
+                                      sx={{ color: '#6366F1' }}
+                                    >
+                                      <KnowledgeGraphIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
                                   <Tooltip title="Reprocess">
                                     <IconButton
                                       size="small"

@@ -1453,6 +1453,449 @@ class ApiService {
     });
     return response.data;
   }
+
+  // ============================================================================
+  // GraphRAG External Service API (Knowledge Graph with Neo4j + GLiNER)
+  // ============================================================================
+
+  /**
+   * Check if GraphRAG service is available
+   */
+  async getGraphRAGHealth(): Promise<{
+    status: string;
+    timestamp?: string;
+    message?: string;
+    error?: string;
+    url?: string;
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/health');
+    return response.data;
+  }
+
+  /**
+   * Get knowledge graph statistics from GraphRAG service
+   */
+  async getGraphRAGStats(): Promise<{
+    nodes: number;
+    edges: number;
+    communities: number;
+    domain: string | null;
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/stats');
+    return response.data;
+  }
+
+  /**
+   * Get available domains from GraphRAG service
+   */
+  async getGraphRAGDomains(): Promise<{
+    domains: string[];
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/domains');
+    return response.data;
+  }
+
+  /**
+   * Get filtered knowledge graph data from GraphRAG service
+   */
+  async getGraphRAGGraph(params?: {
+    domain?: string;
+    max_entities?: number;
+    max_relationships?: number;
+    min_occurrence?: number;
+    min_confidence?: number;
+    entity_types?: string[];
+    relationship_types?: string[];
+    sort_by?: string;
+    sort_order?: string;
+  }): Promise<{
+    nodes: Array<{
+      id: string;
+      label: string;
+      type: string;
+      occurrence?: number;
+      properties?: Record<string, unknown>;
+    }>;
+    edges: Array<{
+      id: string;
+      source: string;
+      target: string;
+      label: string;
+      type: string;
+      weight?: number;
+    }>;
+    stats?: {
+      nodes: number;
+      edges: number;
+    };
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/graph', params || {});
+    return response.data;
+  }
+
+  /**
+   * Get top entities by occurrence from GraphRAG service
+   */
+  async getGraphRAGTopEntities(params?: {
+    domain?: string;
+    limit?: number;
+    min_occurrence?: number;
+  }): Promise<{
+    entities: Array<{
+      name: string;
+      type: string;
+      occurrence: number;
+      confidence: number;
+      domain: string;
+      description?: string;
+    }>;
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/top-entities', { params });
+    return response.data;
+  }
+
+  /**
+   * Get top relationships by weight from GraphRAG service
+   */
+  async getGraphRAGTopRelationships(params?: {
+    domain?: string;
+    limit?: number;
+    min_weight?: number;
+  }): Promise<{
+    relationships: Array<{
+      source: string;
+      target: string;
+      type: string;
+      weight: number;
+      domain: string;
+      context?: string;
+    }>;
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/top-relationships', { params });
+    return response.data;
+  }
+
+  /**
+   * Extract entities and relationships from text using GraphRAG GLiNER
+   */
+  async extractGraphRAGEntities(params: {
+    text: string;
+    domain?: string;
+  }): Promise<{
+    text: string;
+    domain: string;
+    entities: Array<{
+      name: string;
+      type: string;
+      description: string;
+      confidence: number;
+      metadata?: Record<string, unknown>;
+    }>;
+    relationships: Array<{
+      source: string;
+      target: string;
+      relation: string;
+      context?: string;
+      confidence: number;
+      metadata?: Record<string, unknown>;
+    }>;
+    entity_count: number;
+    relationship_count: number;
+    extraction_method: string;
+    timestamp: string;
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/extract', params);
+    return response.data;
+  }
+
+  /**
+   * Hybrid search using GraphRAG service (vector + graph + keyword)
+   */
+  async searchGraphRAG(params: {
+    query: string;
+    top_k?: number;
+    threshold?: number;
+  }): Promise<{
+    query: string;
+    results: Array<{
+      content: string;
+      source: string;
+      score: number;
+      result_type: string;
+      metadata?: Record<string, unknown>;
+    }>;
+    total_results: number;
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/search', params);
+    return response.data;
+  }
+
+  /**
+   * Advanced search with type selection using GraphRAG service
+   */
+  async advancedSearchGraphRAG(params: {
+    query: string;
+    search_type?: 'vector' | 'graph' | 'keyword' | 'hybrid';
+    top_k?: number;
+    domain?: string;
+    filters?: Record<string, unknown>;
+  }): Promise<{
+    query: string;
+    search_type: string;
+    results: Array<{
+      content: string;
+      source: string;
+      score: number;
+      result_type: string;
+      metadata?: Record<string, unknown>;
+    }>;
+    total_results: number;
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/search/advanced', params);
+    return response.data;
+  }
+
+  /**
+   * List documents in GraphRAG service
+   */
+  async listGraphRAGDocuments(): Promise<{
+    documents: Array<{
+      name: string;
+      chunks?: number;
+      entities?: number;
+      relationships?: number;
+    }>;
+    total_documents: number;
+    vector_store_documents: number;
+    knowledge_graph_documents: number;
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/documents');
+    return response.data;
+  }
+
+  /**
+   * Delete a document from GraphRAG service
+   */
+  async deleteGraphRAGDocument(documentName: string): Promise<{
+    status: string;
+    message: string;
+  }> {
+    const response = await this.backendClient.delete(`/api/v1/graphrag/documents/${encodeURIComponent(documentName)}`);
+    return response.data;
+  }
+
+  /**
+   * Get NER service status from GraphRAG
+   */
+  async getGraphRAGNERStatus(): Promise<{
+    ner_available: boolean;
+    model_info: {
+      model_name: string;
+      model_type: string;
+      framework: string;
+      device: string;
+      cuda_available: boolean;
+      gpu_name?: string;
+      capabilities: string[];
+      default_entity_labels: string[];
+      default_relation_types: Array<{
+        relation: string;
+        pairs_filter: string[][];
+      }>;
+    };
+    extraction_method: string;
+    timestamp: string;
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/ner/status');
+    return response.data;
+  }
+
+  /**
+   * Perform multi-hop reasoning using GraphRAG service
+   */
+  async multiHopReasoningGraphRAG(params: {
+    query: string;
+    max_hops?: number;
+  }): Promise<{
+    query: string;
+    reasoning_path: Array<{
+      hop: number;
+      entity: string;
+      relation: string;
+      confidence: number;
+    }>;
+    answer?: string;
+    sources: Array<{
+      content: string;
+      source: string;
+      score: number;
+    }>;
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/reasoning/multi-hop', params);
+    return response.data;
+  }
+
+  /**
+   * Get community/domain statistics from GraphRAG service
+   */
+  async getGraphRAGCommunities(domain?: string): Promise<{
+    communities: Array<{
+      id: string;
+      name: string;
+      entity_count: number;
+      central_entities: string[];
+    }>;
+    stats: Record<string, unknown>;
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/communities', {
+      params: domain ? { domain } : undefined
+    });
+    return response.data;
+  }
+
+  /**
+   * Extract knowledge (entities/relationships) from a document to the knowledge graph
+   */
+  async extractDocumentKnowledge(documentId: string, domain?: string): Promise<{
+    status: string;
+    document_id: string;
+    document_name: string;
+    entity_count: number;
+    relationship_count: number;
+    extraction_method: string;
+    entities: Array<{
+      name: string;
+      type: string;
+      description: string;
+      confidence: number;
+    }>;
+    relationships: Array<{
+      source: string;
+      target: string;
+      relation: string;
+      confidence: number;
+    }>;
+  }> {
+    const response = await this.backendClient.post(`/api/v1/rag/documents/${documentId}/extract-knowledge`, {
+      domain: domain || 'general'
+    });
+    return response.data;
+  }
+
+  /**
+   * Batch extract knowledge from multiple documents
+   */
+  async batchExtractDocumentKnowledge(documentIds: string[], domain?: string): Promise<{
+    status: string;
+    documents_queued: number;
+    document_ids: string[];
+    domain: string;
+  }> {
+    const response = await this.backendClient.post('/api/v1/rag/documents/batch-extract-knowledge', {
+      document_ids: documentIds,
+      domain: domain || 'general'
+    });
+    return response.data;
+  }
+
+  // ============================================================================
+  // STT (Speech-to-Text) API
+  // ============================================================================
+
+  /**
+   * Get STT service status
+   */
+  async getSTTStatus(): Promise<{
+    running: boolean;
+    uptime: number;
+    endpoint: string;
+    model?: {
+      name: string;
+      size: string;
+    };
+  }> {
+    const response = await this.backendClient.get('/api/v1/stt/status');
+    return response.data;
+  }
+
+  /**
+   * Transcribe audio file using local STT service
+   */
+  async transcribeAudio(audioBlob: Blob, options?: {
+    model?: string;
+    language?: string;
+    response_format?: string;
+  }): Promise<{
+    text: string;
+    language?: string;
+    duration?: number;
+    segments?: Array<{
+      id: number;
+      start: number;
+      end: number;
+      text: string;
+      no_speech_prob?: number;  // Probability that segment contains no speech (0-1)
+      avg_logprob?: number;     // Average log probability of tokens
+    }>;
+  }> {
+    const formData = new FormData();
+    formData.append('file', audioBlob, 'audio.webm');
+    if (options?.model) formData.append('model', options.model);
+    if (options?.language) formData.append('language', options.language);
+    // Use verbose_json to get segment probabilities
+    formData.append('response_format', options?.response_format || 'verbose_json');
+
+    const response = await this.backendClient.post('/api/v1/stt/transcribe', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000, // 2 minutes for transcription
+    });
+    return response.data;
+  }
+
+  // ============================================================================
+  // TTS (Text-to-Speech) API
+  // ============================================================================
+
+  /**
+   * Get TTS service status
+   */
+  async getTTSStatus(): Promise<{
+    running: boolean;
+    uptime: number;
+    endpoint: string;
+    model?: {
+      name: string;
+      voice: string;
+    };
+  }> {
+    const response = await this.backendClient.get('/api/v1/tts/status');
+    return response.data;
+  }
+
+  /**
+   * Synthesize speech from text using local TTS service
+   * Returns audio as ArrayBuffer
+   */
+  async synthesizeSpeech(text: string, options?: {
+    voice?: string;
+    model?: string;
+    speed?: number;
+    response_format?: 'mp3' | 'wav' | 'opus' | 'flac';
+  }): Promise<ArrayBuffer> {
+    const response = await this.backendClient.post('/api/v1/tts/synthesize', {
+      input: text,
+      voice: options?.voice || 'alloy',
+      model: options?.model || 'tts-1',
+      speed: options?.speed || 1.0,
+      response_format: options?.response_format || 'mp3',
+    }, {
+      responseType: 'arraybuffer',
+      timeout: 120000, // 2 minutes for synthesis
+    });
+    return response.data;
+  }
 }
 
 // Create singleton instance

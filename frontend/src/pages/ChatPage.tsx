@@ -24,6 +24,10 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Switch,
+  FormControlLabel,
+  Select,
+  MenuItem,
 } from '@mui/material'
 import {
   Send as SendIcon,
@@ -45,7 +49,18 @@ import {
   Close as CloseIcon,
   Mic as MicIcon,
   Stop as StopIcon,
+  VolumeUp as VolumeUpIcon,
+  VolumeOff as VolumeOffIcon,
+  GraphicEq as GraphicEqIcon,
+  PlayArrow as PlayIcon,
+  Pause as PauseIcon,
+  RecordVoiceOver as RecordVoiceOverIcon,
+  ExpandMore as ExpandMoreIcon,
+  ExpandLess as ExpandLessIcon,
+  Tune as TuneIcon,
 } from '@mui/icons-material'
+import { useVoiceInput } from '@/hooks/useVoiceInput'
+import { useTTS } from '@/hooks/useTTS'
 import { apiService } from '@/services/api'
 import { ToolsService } from '@/services/tools'
 import { MarkdownRenderer } from '@/components/chat'
@@ -59,7 +74,7 @@ interface ChatSettings {
   baseUrl: string
   endpoint: string
   apiKey: string
-  openaiApiKey: string // For audio transcription
+  openaiApiKey: string // For audio transcription (legacy, now uses local STT)
   // Model parameters
   temperature: number
   topP: number
@@ -70,6 +85,17 @@ interface ChatSettings {
   selectedTools: string[]
   // Display settings
   showPerformanceMetrics: boolean
+  // Voice settings
+  voiceModeEnabled: boolean
+  ttsEnabled: boolean
+  ttsAutoPlay: boolean
+  ttsVoice: string
+  ttsSpeed: number
+  sttModel: string
+  sttLanguage: string
+  vadSilenceThreshold: number
+  vadSilenceDuration: number
+  noSpeechThreshold: number  // Max no_speech_prob to accept (0-1)
 }
 
 interface PerformanceMetrics {
@@ -87,7 +113,7 @@ const defaultSettings: ChatSettings = {
   baseUrl: '', // Empty means use current domain
   endpoint: '/v1/chat/completions',
   apiKey: '',
-  openaiApiKey: '', // For audio transcription
+  openaiApiKey: '', // For audio transcription (legacy)
   // Model parameters
   temperature: 0.7,
   topP: 0.8,
@@ -98,6 +124,17 @@ const defaultSettings: ChatSettings = {
   selectedTools: [],
   // Display settings
   showPerformanceMetrics: false,
+  // Voice settings
+  voiceModeEnabled: false,
+  ttsEnabled: true,
+  ttsAutoPlay: true,
+  ttsVoice: 'alloy',
+  ttsSpeed: 1.0,
+  sttModel: 'base',
+  sttLanguage: 'auto',
+  vadSilenceThreshold: 0.04,   // 4% - increase if it triggers too easily
+  vadSilenceDuration: 1500,    // 1.5 seconds
+  noSpeechThreshold: 0.6,      // Reject if no_speech_prob > 60%
 }
 
 const initialPerformanceMetrics: PerformanceMetrics = {
@@ -158,16 +195,87 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const [uploadedImages, setUploadedImages] = useState<Array<{ file: File; preview: string; base64: string }>>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   
-  // Audio recording state
+  // Audio recording state (legacy manual recording)
   const [isRecording, setIsRecording] = useState(false)
   const [isTranscribing, setIsTranscribing] = useState(false)
   const [audioError, setAudioError] = useState<string | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const [showAudioDialog, setShowAudioDialog] = useState(false)
+
+  // Voice mode state
+  const [sttServiceAvailable, setSttServiceAvailable] = useState(false)
+  const [ttsServiceAvailable, setTtsServiceAvailable] = useState(false)
+  const [lastAssistantMessage, setLastAssistantMessage] = useState<string | null>(null)
+  const [voicePanelExpanded, setVoicePanelExpanded] = useState(false)
   
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
+
+  // Voice input hook with VAD
+  const handleVoiceTranscription = useCallback((text: string) => {
+    if (text.trim()) {
+      setInput(prev => prev ? `${prev} ${text}` : text)
+    }
+  }, [])
+
+  const voiceInput = useVoiceInput({
+    silenceThreshold: settings.vadSilenceThreshold,
+    silenceDuration: settings.vadSilenceDuration,
+    minRecordingTime: 500,
+    maxRecordingTime: 60000,
+    sttModel: settings.sttModel,
+    sttLanguage: settings.sttLanguage,
+    noSpeechThreshold: settings.noSpeechThreshold,
+    onTranscription: handleVoiceTranscription,
+    onError: (error) => setAudioError(error),
+  })
+
+  // TTS hook
+  const tts = useTTS({
+    voice: settings.ttsVoice,
+    model: 'tts-1',
+    speed: settings.ttsSpeed,
+    autoPlay: settings.ttsAutoPlay,
+    onError: (error) => console.warn('TTS error:', error),
+  })
+
+  // Check STT/TTS service availability
+  useEffect(() => {
+    const checkServices = async () => {
+      try {
+        const sttStatus = await apiService.getSTTStatus()
+        setSttServiceAvailable(sttStatus.running)
+      } catch {
+        setSttServiceAvailable(false)
+      }
+      
+      try {
+        const ttsStatus = await apiService.getTTSStatus()
+        setTtsServiceAvailable(ttsStatus.running)
+      } catch {
+        setTtsServiceAvailable(false)
+      }
+    }
+    
+    checkServices()
+    // Check periodically
+    const interval = setInterval(checkServices, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // Auto-send when voice input transcription is complete and VAD detects end of speech
+  useEffect(() => {
+    if (settings.voiceModeEnabled && !voiceInput.isRecording && !voiceInput.isTranscribing && input.trim() && voiceInput.isListening) {
+      // Small delay to allow for multi-utterance input
+      const timer = setTimeout(() => {
+        if (input.trim()) {
+          handleSendMessage()
+        }
+      }, 500)
+      return () => clearTimeout(timer)
+    }
+  }, [voiceInput.isRecording, voiceInput.isTranscribing, input, settings.voiceModeEnabled, voiceInput.isListening])
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -548,6 +656,42 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         let tokenCount = 0
         let firstTokenReceived = false
         
+        let fullResponseText = ''
+        
+        // TTS sentence chunking - send sentences as they complete for lower latency
+        let ttsSentenceBuffer = ''
+        const shouldStreamTTS = settings.voiceModeEnabled && settings.ttsEnabled && ttsServiceAvailable
+        
+        // Function to extract and speak complete sentences
+        const processTTSBuffer = (forceFlush: boolean = false) => {
+          if (!shouldStreamTTS || !ttsSentenceBuffer.trim()) return
+          
+          // Look for sentence boundaries: . ! ? followed by space or end
+          // Also split on newlines for code/list responses
+          const sentenceBreakRegex = /([.!?])\s+|(\n\n)/g
+          
+          let lastIndex = 0
+          let match
+          
+          while ((match = sentenceBreakRegex.exec(ttsSentenceBuffer)) !== null) {
+            // Extract the complete sentence including the punctuation
+            const sentence = ttsSentenceBuffer.slice(lastIndex, match.index + 1).trim()
+            if (sentence.length > 0) {
+              tts.speak(sentence)
+            }
+            lastIndex = match.index + match[0].length
+          }
+          
+          // Keep the remainder (incomplete sentence) in the buffer
+          ttsSentenceBuffer = ttsSentenceBuffer.slice(lastIndex)
+          
+          // If forcing flush (end of stream), speak any remaining content
+          if (forceFlush && ttsSentenceBuffer.trim().length > 0) {
+            tts.speak(ttsSentenceBuffer.trim())
+            ttsSentenceBuffer = ''
+          }
+        }
+        
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
@@ -561,10 +705,14 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               tokensPerSecond: tokenCount > 0 ? tokenCount / totalTime : null,
             }
             setPerformanceMetrics({ ...performanceRef.current })
+            
+            // Flush any remaining TTS content
+            processTTSBuffer(true)
             break
           }
 
           console.log('Received stream chunk:', value)
+          console.log('Delta object:', value.choices?.[0]?.delta)
 
           // Check for content in multiple locations
           // content: actual response content
@@ -572,6 +720,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           const contentDelta = value.choices?.[0]?.delta?.content || 
                               value.__verbose?.content ||
                               ''
+          
+          // Debug: log if we're getting reasoning_content
+          if (value.choices?.[0]?.delta?.reasoning_content) {
+            console.log('Reasoning content received:', value.choices[0].delta.reasoning_content)
+          }
           
           if (contentDelta) {
             // Track first token time
@@ -589,6 +742,15 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             // Count tokens (rough estimate: split by whitespace and punctuation)
             const newTokens = contentDelta.split(/[\s\n]+/).filter((t: string) => t.length > 0).length
             tokenCount += Math.max(1, newTokens) // At least 1 token per chunk
+            
+            // Accumulate for full response tracking
+            fullResponseText += contentDelta
+            
+            // Feed TTS buffer and process any complete sentences
+            if (shouldStreamTTS) {
+              ttsSentenceBuffer += contentDelta
+              processTTSBuffer(false)
+            }
             
             // Update metrics periodically
             const currentTime = performance.now()
@@ -676,6 +838,12 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     }
 
     setMessages((prev: ChatMessage[]) => [...prev, assistantMessage])
+
+    // Trigger TTS for the response
+    const responseText = typeof assistantMessage.content === 'string' ? assistantMessage.content : ''
+    if (responseText.trim() && settings.voiceModeEnabled && settings.ttsEnabled && ttsServiceAvailable) {
+      tts.speak(responseText.trim())
+    }
 
     // Handle tool calls if present
     if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
@@ -1001,6 +1169,45 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           </Box>
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          {/* Voice Mode Toggle */}
+          <Tooltip title={
+            !sttServiceAvailable 
+              ? "STT service not running - deploy from STT page first" 
+              : settings.voiceModeEnabled 
+                ? "Voice Mode Active - Click to disable" 
+                : "Enable Voice Mode"
+          }>
+            <span>
+              <IconButton
+                onClick={() => {
+                  if (sttServiceAvailable) {
+                    const newVoiceMode = !settings.voiceModeEnabled
+                    saveSettings({ ...settings, voiceModeEnabled: newVoiceMode })
+                    if (newVoiceMode) {
+                      voiceInput.startListening()
+                    } else {
+                      voiceInput.stopListening()
+                      tts.stop()
+                    }
+                  }
+                }}
+                disabled={!sttServiceAvailable}
+                size="small"
+                sx={{
+                  bgcolor: settings.voiceModeEnabled ? 'success.dark' : 'transparent',
+                  color: settings.voiceModeEnabled ? 'success.contrastText' : 'text.secondary',
+                  '&:hover': { bgcolor: settings.voiceModeEnabled ? 'success.main' : 'action.hover' },
+                  animation: voiceInput.isListening ? 'pulse 2s ease-in-out infinite' : 'none',
+                  '@keyframes pulse': {
+                    '0%, 100%': { boxShadow: '0 0 0 0 rgba(76, 175, 80, 0.4)' },
+                    '50%': { boxShadow: '0 0 0 8px rgba(76, 175, 80, 0)' },
+                  },
+                }}
+              >
+                <RecordVoiceOverIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
           {/* Context window progress bar */}
           <Tooltip title={`Context: ${tokenCount.prompt.toLocaleString()} / ${maxContextTokens.toLocaleString()} tokens (${((tokenCount.prompt / maxContextTokens) * 100).toFixed(1)}%)`}>
             <Box sx={{ width: 100, mr: 1 }}>
@@ -1461,6 +1668,168 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 </Grid>
               </Grid>
             )}
+
+            <Divider sx={{ my: 3 }} />
+
+            {/* Voice Settings Section */}
+            <Typography variant="h6" gutterBottom>
+              Voice Settings (STT/TTS)
+            </Typography>
+            
+            {/* Service Status */}
+            <Box sx={{ mb: 3, display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+              <Chip
+                label={sttServiceAvailable ? "STT Service Running" : "STT Service Not Available"}
+                color={sttServiceAvailable ? "success" : "default"}
+                size="small"
+                icon={<MicIcon />}
+              />
+              <Chip
+                label={ttsServiceAvailable ? "TTS Service Running" : "TTS Service Not Available"}
+                color={ttsServiceAvailable ? "success" : "default"}
+                size="small"
+                icon={<VolumeUpIcon />}
+              />
+            </Box>
+
+            {!sttServiceAvailable && (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Deploy STT and TTS services from the Deploy pages to enable voice features.
+              </Typography>
+            )}
+
+            <Grid container spacing={3}>
+              {/* TTS Settings */}
+              <Grid item xs={12} sm={6} md={4}>
+                <Typography gutterBottom>TTS Voice</Typography>
+                <Select
+                  fullWidth
+                  size="small"
+                  value={settings.ttsVoice}
+                  onChange={(e) => saveSettings({ ...settings, ttsVoice: e.target.value })}
+                  disabled={!ttsServiceAvailable}
+                >
+                  <MenuItem value="alloy">Alloy</MenuItem>
+                  <MenuItem value="echo">Echo</MenuItem>
+                  <MenuItem value="fable">Fable</MenuItem>
+                  <MenuItem value="onyx">Onyx</MenuItem>
+                  <MenuItem value="nova">Nova</MenuItem>
+                  <MenuItem value="shimmer">Shimmer</MenuItem>
+                </Select>
+              </Grid>
+              
+              <Grid item xs={12} sm={6} md={4}>
+                <Typography gutterBottom>TTS Speed: {settings.ttsSpeed}x</Typography>
+                <Slider
+                  value={settings.ttsSpeed}
+                  onChange={(_: Event, value: number | number[]) => saveSettings({ ...settings, ttsSpeed: value as number })}
+                  min={0.5}
+                  max={2.0}
+                  step={0.1}
+                  marks={[
+                    { value: 0.5, label: '0.5x' },
+                    { value: 1.0, label: '1x' },
+                    { value: 2.0, label: '2x' },
+                  ]}
+                  disabled={!ttsServiceAvailable}
+                />
+              </Grid>
+              
+              <Grid item xs={12} sm={6} md={4}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={settings.ttsAutoPlay}
+                      onChange={(e) => saveSettings({ ...settings, ttsAutoPlay: e.target.checked })}
+                      disabled={!ttsServiceAvailable}
+                    />
+                  }
+                  label="Auto-play TTS for responses"
+                />
+              </Grid>
+              
+              {/* STT Settings */}
+              <Grid item xs={12} sm={6} md={4}>
+                <Typography gutterBottom>STT Model</Typography>
+                <Select
+                  fullWidth
+                  size="small"
+                  value={settings.sttModel}
+                  onChange={(e) => saveSettings({ ...settings, sttModel: e.target.value })}
+                  disabled={!sttServiceAvailable}
+                >
+                  <MenuItem value="tiny">Tiny (fastest)</MenuItem>
+                  <MenuItem value="base">Base (balanced)</MenuItem>
+                  <MenuItem value="small">Small (better)</MenuItem>
+                  <MenuItem value="medium">Medium (great)</MenuItem>
+                  <MenuItem value="large-v3">Large-v3 (best)</MenuItem>
+                </Select>
+              </Grid>
+              
+              <Grid item xs={12} sm={6} md={4}>
+                <Typography gutterBottom>STT Language</Typography>
+                <Select
+                  fullWidth
+                  size="small"
+                  value={settings.sttLanguage}
+                  onChange={(e) => saveSettings({ ...settings, sttLanguage: e.target.value })}
+                  disabled={!sttServiceAvailable}
+                >
+                  <MenuItem value="auto">Auto-detect</MenuItem>
+                  <MenuItem value="en">English</MenuItem>
+                  <MenuItem value="es">Spanish</MenuItem>
+                  <MenuItem value="fr">French</MenuItem>
+                  <MenuItem value="de">German</MenuItem>
+                  <MenuItem value="it">Italian</MenuItem>
+                  <MenuItem value="pt">Portuguese</MenuItem>
+                  <MenuItem value="ru">Russian</MenuItem>
+                  <MenuItem value="ja">Japanese</MenuItem>
+                  <MenuItem value="ko">Korean</MenuItem>
+                  <MenuItem value="zh">Chinese</MenuItem>
+                </Select>
+              </Grid>
+              
+              {/* VAD Settings */}
+              <Grid item xs={12} sm={6} md={4}>
+                <Typography gutterBottom>Silence Duration: {settings.vadSilenceDuration}ms</Typography>
+                <Slider
+                  value={settings.vadSilenceDuration}
+                  onChange={(_: Event, value: number | number[]) => saveSettings({ ...settings, vadSilenceDuration: value as number })}
+                  min={500}
+                  max={3000}
+                  step={100}
+                  marks={[
+                    { value: 500, label: '0.5s' },
+                    { value: 1500, label: '1.5s' },
+                    { value: 3000, label: '3s' },
+                  ]}
+                  disabled={!sttServiceAvailable}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  How long to wait after you stop speaking before sending
+                </Typography>
+              </Grid>
+              
+              <Grid item xs={12} sm={6} md={4}>
+                <Typography gutterBottom>Silence Threshold: {(settings.vadSilenceThreshold * 100).toFixed(0)}%</Typography>
+                <Slider
+                  value={settings.vadSilenceThreshold}
+                  onChange={(_: Event, value: number | number[]) => saveSettings({ ...settings, vadSilenceThreshold: value as number })}
+                  min={0.01}
+                  max={0.1}
+                  step={0.01}
+                  marks={[
+                    { value: 0.01, label: '1%' },
+                    { value: 0.05, label: '5%' },
+                    { value: 0.1, label: '10%' },
+                  ]}
+                  disabled={!sttServiceAvailable}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  Volume level below which is considered silence
+                </Typography>
+              </Grid>
+            </Grid>
           </CardContent>
         </Card>
       </Collapse>
@@ -1632,6 +2001,354 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           <div ref={messagesEndRef} />
         </Stack>
       </Box>
+
+      {/* Voice Mode Compact Badge */}
+      {settings.voiceModeEnabled && (
+        <Box sx={{ mb: 2 }}>
+          {/* Compact Badge - Always Visible */}
+          <Paper 
+            onClick={() => setVoicePanelExpanded(!voicePanelExpanded)}
+            sx={{ 
+              p: 1,
+              px: 1.5,
+              borderRadius: 2,
+              bgcolor: 'background.paper',
+              border: '1px solid',
+              borderColor: voiceInput.isRecording ? 'error.main' : voiceInput.isListening ? 'success.main' : 'rgba(255, 255, 255, 0.1)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.5,
+              height: 48, // Fixed height to prevent bounce
+              transition: 'border-color 0.2s ease',
+              '&:hover': {
+                borderColor: voiceInput.isRecording ? 'error.light' : voiceInput.isListening ? 'success.light' : 'rgba(255, 255, 255, 0.2)',
+              },
+            }}
+          >
+            {/* Left: Animated mic icon */}
+            <Box sx={{ 
+              position: 'relative',
+              width: 32,
+              height: 32,
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
+              {/* Pulse animation ring */}
+              <Box sx={{
+                position: 'absolute',
+                width: '100%',
+                height: '100%',
+                borderRadius: '50%',
+                bgcolor: voiceInput.isRecording ? 'error.main' : voiceInput.isListening ? 'success.main' : 'grey.700',
+                opacity: 0.3,
+                transform: `scale(${1 + voiceInput.volume * 1.5})`,
+                transition: 'transform 0.05s ease',
+              }} />
+              <MicIcon sx={{ 
+                fontSize: 18, 
+                color: voiceInput.isRecording ? 'error.main' : voiceInput.isListening ? 'success.main' : 'grey.500',
+                zIndex: 1,
+              }} />
+            </Box>
+            
+            {/* Status text - fixed width */}
+            <Typography 
+              variant="body2" 
+              sx={{ 
+                fontWeight: 600, 
+                fontSize: '0.8rem', 
+                width: 100, // Fixed width
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {voiceInput.isTranscribing 
+                ? 'Processing...' 
+                : voiceInput.isRecording 
+                  ? `Rec ${(voiceInput.recordingTime / 1000).toFixed(1)}s`
+                  : voiceInput.isListening 
+                    ? 'Listening' 
+                    : 'Paused'}
+            </Typography>
+            
+            {/* Volume display */}
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                fontFamily: 'monospace',
+                fontSize: '0.7rem',
+                color: voiceInput.volume > settings.vadSilenceThreshold ? 'success.main' : 'text.secondary',
+                width: 32,
+                flexShrink: 0,
+                textAlign: 'right',
+              }}
+            >
+              {(voiceInput.volume * 100).toFixed(0)}%
+            </Typography>
+            
+            {/* Center: Volume bar - always visible, opacity changes */}
+            <Box sx={{ 
+              flex: 1, 
+              height: 8, 
+              bgcolor: 'rgba(0,0,0,0.3)', 
+              borderRadius: 1, 
+              overflow: 'hidden',
+              position: 'relative',
+              opacity: voiceInput.isListening ? 1 : 0.3,
+            }}>
+              {/* Volume bar */}
+              <Box sx={{
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: `${Math.min(voiceInput.volume * 200, 100)}%`,
+                bgcolor: voiceInput.volume > settings.vadSilenceThreshold 
+                  ? voiceInput.isRecording ? 'error.main' : 'success.main'
+                  : 'grey.600',
+                borderRadius: 1,
+              }} />
+              {/* Threshold marker */}
+              <Box sx={{
+                position: 'absolute',
+                left: `${settings.vadSilenceThreshold * 200}%`,
+                top: 0,
+                bottom: 0,
+                width: 2,
+                bgcolor: 'warning.main',
+              }} />
+            </Box>
+            
+            {/* Countdown indicator - single element, only color changes */}
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                width: 36,
+                flexShrink: 0,
+                textAlign: 'right',
+                fontFamily: 'monospace',
+                fontSize: '0.7rem',
+                fontWeight: 600,
+                color: voiceInput.isRecording && voiceInput.silenceTime > 0 ? 'warning.main' : 'text.secondary',
+              }}
+            >
+              {(voiceInput.isRecording && voiceInput.silenceTime > 0 
+                ? (settings.vadSilenceDuration - voiceInput.silenceTime) / 1000
+                : settings.vadSilenceDuration / 1000
+              ).toFixed(1)}s
+            </Typography>
+            
+            {/* Right: Controls */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+              {/* TTS toggle */}
+              {ttsServiceAvailable && (
+                <Tooltip title={settings.ttsEnabled ? "TTS on" : "TTS off"}>
+                  <IconButton
+                    onClick={() => saveSettings({ ...settings, ttsEnabled: !settings.ttsEnabled })}
+                    size="small"
+                    sx={{ 
+                      p: 0.5,
+                      color: settings.ttsEnabled ? 'success.main' : 'grey.500' 
+                    }}
+                  >
+                    {settings.ttsEnabled ? <VolumeUpIcon fontSize="small" /> : <VolumeOffIcon fontSize="small" />}
+                  </IconButton>
+                </Tooltip>
+              )}
+              
+              {/* Listen toggle */}
+              <Tooltip title={voiceInput.isListening ? "Stop" : "Start"}>
+                <IconButton
+                  onClick={() => voiceInput.toggleListening()}
+                  size="small"
+                  sx={{
+                    p: 0.5,
+                    bgcolor: voiceInput.isListening ? 'error.main' : 'success.main',
+                    color: 'white',
+                    '&:hover': {
+                      bgcolor: voiceInput.isListening ? 'error.dark' : 'success.dark',
+                    }
+                  }}
+                >
+                  {voiceInput.isListening ? <StopIcon fontSize="small" /> : <MicIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
+              
+              {/* Expand button */}
+              <IconButton 
+                size="small" 
+                sx={{ p: 0.5, ml: 0.5 }}
+                onClick={() => setVoicePanelExpanded(!voicePanelExpanded)}
+              >
+                {voicePanelExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+              </IconButton>
+            </Box>
+          </Paper>
+          
+          {/* Expanded Panel */}
+          <Collapse in={voicePanelExpanded}>
+            <Paper sx={{ 
+              mt: 0.5,
+              p: 1.5,
+              borderRadius: 1,
+              bgcolor: 'background.paper',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+            }}>
+              {/* Full Audio Level Visualization */}
+              <Box sx={{ position: 'relative', height: 32, bgcolor: 'rgba(0,0,0,0.3)', borderRadius: 1, overflow: 'hidden', mb: 1.5 }}>
+                {/* Current volume bar */}
+                <Box sx={{
+                  position: 'absolute',
+                  left: 0,
+                  top: 4,
+                  bottom: 4,
+                  width: `${Math.min(voiceInput.volume * 200, 100)}%`,
+                  bgcolor: voiceInput.volume > settings.vadSilenceThreshold 
+                    ? voiceInput.isRecording ? 'error.main' : 'success.main'
+                    : 'grey.600',
+                  borderRadius: 1,
+                  transition: 'width 0.05s ease-out',
+                }} />
+                
+                {/* Threshold line */}
+                <Box sx={{
+                  position: 'absolute',
+                  left: `${settings.vadSilenceThreshold * 200}%`,
+                  top: 0,
+                  bottom: 0,
+                  width: 2,
+                  bgcolor: 'warning.main',
+                  zIndex: 2,
+                }} />
+                
+                {/* Volume % and status */}
+                <Box sx={{ 
+                  position: 'absolute', 
+                  inset: 0, 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  px: 1,
+                  zIndex: 3,
+                }}>
+                  <Typography variant="caption" sx={{ color: 'white', fontSize: '0.7rem' }}>
+                    {voiceInput.volume > settings.vadSilenceThreshold 
+                      ? voiceInput.isRecording ? 'SPEAKING' : 'VOICE'
+                      : 'SILENCE'}
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: 'white', fontSize: '0.7rem', fontWeight: 600 }}>
+                    {(voiceInput.volume * 100).toFixed(0)}%
+                  </Typography>
+                </Box>
+              </Box>
+              
+              {/* Settings Grid */}
+              <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                {/* Voice Threshold */}
+                <Box sx={{ minWidth: 140, flex: 1 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
+                      Threshold
+                    </Typography>
+                    <Typography variant="caption" sx={{ fontWeight: 600, color: 'primary.main', fontSize: '0.7rem' }}>
+                      {(settings.vadSilenceThreshold * 100).toFixed(0)}%
+                    </Typography>
+                  </Box>
+                  <Slider
+                    size="small"
+                    value={settings.vadSilenceThreshold}
+                    onChange={(_: Event, value: number | number[]) => saveSettings({ ...settings, vadSilenceThreshold: value as number })}
+                    min={0.01}
+                    max={0.30}
+                    step={0.01}
+                    sx={{ py: 0.5 }}
+                  />
+                </Box>
+                
+                {/* Silence Duration */}
+                <Box sx={{ minWidth: 140, flex: 1 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
+                      Silence Wait
+                    </Typography>
+                    <Typography variant="caption" sx={{ fontWeight: 600, color: 'primary.main', fontSize: '0.7rem' }}>
+                      {(settings.vadSilenceDuration / 1000).toFixed(1)}s
+                    </Typography>
+                  </Box>
+                  <Slider
+                    size="small"
+                    value={settings.vadSilenceDuration}
+                    onChange={(_: Event, value: number | number[]) => saveSettings({ ...settings, vadSilenceDuration: value as number })}
+                    min={500}
+                    max={5000}
+                    step={100}
+                    sx={{ py: 0.5 }}
+                  />
+                </Box>
+                
+                {/* Speech Filter */}
+                <Box sx={{ minWidth: 140, flex: 1 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
+                      Speech Filter
+                    </Typography>
+                    <Typography variant="caption" sx={{ fontWeight: 600, color: 'primary.main', fontSize: '0.7rem' }}>
+                      {(settings.noSpeechThreshold * 100).toFixed(0)}%
+                      {voiceInput.lastNoSpeechProb !== null && (
+                        <span style={{ color: voiceInput.lastNoSpeechProb > settings.noSpeechThreshold ? '#f44336' : '#4caf50' }}>
+                          {' '}({(voiceInput.lastNoSpeechProb * 100).toFixed(0)}%)
+                        </span>
+                      )}
+                    </Typography>
+                  </Box>
+                  <Slider
+                    size="small"
+                    value={settings.noSpeechThreshold}
+                    onChange={(_: Event, value: number | number[]) => saveSettings({ ...settings, noSpeechThreshold: value as number })}
+                    min={0.1}
+                    max={0.95}
+                    step={0.05}
+                    sx={{ py: 0.5 }}
+                  />
+                </Box>
+                
+                {/* STT Model */}
+                <Box sx={{ minWidth: 100 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontSize: '0.7rem' }}>
+                    STT Model
+                  </Typography>
+                  <Select
+                    size="small"
+                    value={settings.sttModel}
+                    onChange={(e) => saveSettings({ ...settings, sttModel: e.target.value })}
+                    sx={{ 
+                      fontSize: '0.7rem',
+                      height: 26,
+                      '& .MuiSelect-select': { py: 0.3, px: 1 }
+                    }}
+                  >
+                    <MenuItem value="tiny">Tiny</MenuItem>
+                    <MenuItem value="base">Base</MenuItem>
+                    <MenuItem value="small">Small</MenuItem>
+                    <MenuItem value="medium">Medium</MenuItem>
+                    <MenuItem value="large-v3">Large</MenuItem>
+                  </Select>
+                </Box>
+              </Box>
+              
+              {/* Error display */}
+              {voiceInput.error && (
+                <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+                  {voiceInput.error}
+                </Typography>
+              )}
+            </Paper>
+          </Collapse>
+        </Box>
+      )}
 
       {/* Input */}
       <Paper sx={{ 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Box,
   Paper,
@@ -12,14 +12,12 @@ import {
   DialogContent,
   DialogActions,
   FormControl,
-  InputLabel,
   Select,
   MenuItem,
   Chip,
   List,
   ListItem,
   ListItemText,
-  ListItemSecondaryAction,
   Tooltip,
   Alert,
   CircularProgress,
@@ -28,47 +26,33 @@ import {
   CardContent,
   Tabs,
   Tab,
-  Autocomplete,
-  Slider,
   Switch,
   FormControlLabel,
-  Fade,
-  Zoom as MuiZoom,
   Collapse,
-  Badge,
   alpha,
   useTheme,
 } from '@mui/material';
 import {
   Add as AddIcon,
-  Delete as DeleteIcon,
-  Edit as EditIcon,
   Search as SearchIcon,
   Refresh as RefreshIcon,
   ZoomIn as ZoomInIcon,
   ZoomOut as ZoomOutIcon,
-  FitScreen as FitScreenIcon,
   AccountTree as GraphIcon,
   Hub as HubIcon,
   Link as LinkIcon,
-  MergeType as MergeIcon,
   Upload as UploadIcon,
-  Download as DownloadIcon,
   Fullscreen as FullscreenIcon,
   FullscreenExit as FullscreenExitIcon,
-  FilterList as FilterIcon,
-  Visibility as VisibilityIcon,
-  VisibilityOff as VisibilityOffIcon,
   CenterFocusStrong as CenterIcon,
   Explore as ExploreIcon,
-  Timeline as TimelineIcon,
   Layers as LayersIcon,
   Settings as SettingsIcon,
   PlayArrow as PlayIcon,
   Pause as PauseIcon,
   Info as InfoIcon,
-  Close as CloseIcon,
 } from '@mui/icons-material';
+import ForceGraph2D, { ForceGraphMethods } from 'react-force-graph-2d';
 import { apiService as api } from '../services/api';
 
 // Types
@@ -97,13 +81,7 @@ interface GraphNode {
   type: string;
   description?: string;
   confidence?: number;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  fx?: number | null;
-  fy?: number | null;
-  connections: number;
+  val?: number; // Node size for react-force-graph
 }
 
 interface GraphEdge {
@@ -140,544 +118,224 @@ const TYPE_COLORS: Record<string, { main: string; light: string; glow: string }>
   custom: { main: '#6B7280', light: '#9CA3AF', glow: 'rgba(107, 114, 128, 0.6)' },
 };
 
-// World-class Force-Directed Graph Visualization
-const ForceGraphVisualization: React.FC<{
+// Force-Directed Graph Visualization using react-force-graph-2d
+interface ForceGraphProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
   selectedNode: string | null;
-  hoveredNode: string | null;
   searchTerm: string;
   showLabels: boolean;
   showEdgeLabels: boolean;
   particleFlow: boolean;
   onNodeClick: (node: GraphNode) => void;
   onNodeHover: (node: GraphNode | null) => void;
-  onNodeDragStart: (node: GraphNode) => void;
-  onNodeDrag: (node: GraphNode, x: number, y: number) => void;
-  onNodeDragEnd: (node: GraphNode) => void;
   isFullscreen: boolean;
   physicsEnabled: boolean;
-}> = ({
+}
+
+const ForceGraphVisualization: React.FC<ForceGraphProps> = ({
   nodes,
   edges,
   selectedNode,
-  hoveredNode,
   searchTerm,
   showLabels,
   showEdgeLabels,
   particleFlow,
   onNodeClick,
   onNodeHover,
-  onNodeDragStart,
-  onNodeDrag,
-  onNodeDragEnd,
   isFullscreen,
   physicsEnabled,
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animationRef = useRef<number>();
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
-  const [draggingNode, setDraggingNode] = useState<string | null>(null);
-  const [particles, setParticles] = useState<Array<{ edge: string; progress: number; speed: number }>>([]);
-  const nodesRef = useRef<Map<string, GraphNode>>(new Map());
-  const theme = useTheme();
+  const fgRef = useRef<ForceGraphMethods>();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
 
-  // Initialize node positions
+  // Update dimensions on resize
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const width = canvas.width;
-    const height = canvas.height;
-    const centerX = width / 2;
-    const centerY = height / 2;
-
-    // Count connections for each node
-    const connectionCount = new Map<string, number>();
-    edges.forEach(edge => {
-      connectionCount.set(edge.source, (connectionCount.get(edge.source) || 0) + 1);
-      connectionCount.set(edge.target, (connectionCount.get(edge.target) || 0) + 1);
-    });
-
-    nodes.forEach((node, i) => {
-      if (!nodesRef.current.has(node.id)) {
-        const angle = (2 * Math.PI * i) / Math.max(nodes.length, 1);
-        const radius = Math.min(width, height) * 0.35;
-        nodesRef.current.set(node.id, {
-          ...node,
-          x: centerX + radius * Math.cos(angle) + (Math.random() - 0.5) * 50,
-          y: centerY + radius * Math.sin(angle) + (Math.random() - 0.5) * 50,
-          vx: 0,
-          vy: 0,
-          connections: connectionCount.get(node.id) || 0,
-        });
-      } else {
-        const existing = nodesRef.current.get(node.id)!;
-        existing.label = node.label;
-        existing.type = node.type;
-        existing.connections = connectionCount.get(node.id) || 0;
-      }
-    });
-
-    // Remove nodes that no longer exist
-    nodesRef.current.forEach((_, id) => {
-      if (!nodes.find(n => n.id === id)) {
-        nodesRef.current.delete(id);
-      }
-    });
-  }, [nodes, edges]);
-
-  // Initialize particles for edge flow
-  useEffect(() => {
-    if (particleFlow && edges.length > 0) {
-      const newParticles = edges.flatMap(edge => 
-        Array.from({ length: 3 }, () => ({
-          edge: edge.id,
-          progress: Math.random(),
-          speed: 0.002 + Math.random() * 0.003,
-        }))
-      );
-      setParticles(newParticles);
-    } else {
-      setParticles([]);
-    }
-  }, [particleFlow, edges.length]);
-
-  // Physics simulation and rendering
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const width = canvas.width;
-    const height = canvas.height;
-
-    const render = () => {
-      // Clear canvas with gradient background
-      const gradient = ctx.createRadialGradient(
-        width / 2, height / 2, 0,
-        width / 2, height / 2, Math.max(width, height)
-      );
-      gradient.addColorStop(0, '#1a1a2e');
-      gradient.addColorStop(0.5, '#16162a');
-      gradient.addColorStop(1, '#0f0f1a');
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, width, height);
-
-      // Draw grid pattern
-      ctx.save();
-      ctx.translate(pan.x, pan.y);
-      ctx.scale(zoom, zoom);
-
-      // Subtle grid
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
-      ctx.lineWidth = 1;
-      const gridSize = 50;
-      const startX = Math.floor(-pan.x / zoom / gridSize) * gridSize - gridSize;
-      const startY = Math.floor(-pan.y / zoom / gridSize) * gridSize - gridSize;
-      const endX = startX + width / zoom + gridSize * 2;
-      const endY = startY + height / zoom + gridSize * 2;
-
-      for (let x = startX; x < endX; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, startY);
-        ctx.lineTo(x, endY);
-        ctx.stroke();
-      }
-      for (let y = startY; y < endY; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(startX, y);
-        ctx.lineTo(endX, y);
-        ctx.stroke();
-      }
-
-      // Physics simulation
-      if (physicsEnabled) {
-        const nodeArray = Array.from(nodesRef.current.values());
-        
-        nodeArray.forEach(node => {
-          if (node.fx !== null && node.fx !== undefined) return;
-
-          let fx = 0, fy = 0;
-
-          // Repulsion from other nodes
-          nodeArray.forEach(other => {
-            if (other.id === node.id) return;
-            const dx = node.x - other.x;
-            const dy = node.y - other.y;
-            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-            const force = 8000 / (dist * dist);
-            fx += (dx / dist) * force;
-            fy += (dy / dist) * force;
-          });
-
-          // Attraction along edges
-          edges.forEach(edge => {
-            if (edge.source !== node.id && edge.target !== node.id) return;
-            const otherId = edge.source === node.id ? edge.target : edge.source;
-            const other = nodesRef.current.get(otherId);
-            if (!other) return;
-            const dx = other.x - node.x;
-            const dy = other.y - node.y;
-            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-            const force = dist * 0.03;
-            fx += (dx / dist) * force;
-            fy += (dy / dist) * force;
-          });
-
-          // Center gravity
-          fx += (width / 2 - node.x) * 0.0005;
-          fy += (height / 2 - node.y) * 0.0005;
-
-          // Damping
-          node.vx = (node.vx + fx) * 0.85;
-          node.vy = (node.vy + fy) * 0.85;
-
-          // Update position
-          node.x += node.vx;
-          node.y += node.vy;
-
-          // Boundaries
-          node.x = Math.max(50, Math.min(width - 50, node.x));
-          node.y = Math.max(50, Math.min(height - 50, node.y));
+    const updateDimensions = () => {
+      if (containerRef.current) {
+        setDimensions({
+          width: containerRef.current.clientWidth,
+          height: isFullscreen ? window.innerHeight - 100 : 550,
         });
       }
-
-      // Draw edges
-      edges.forEach(edge => {
-        const source = nodesRef.current.get(edge.source);
-        const target = nodesRef.current.get(edge.target);
-        if (!source || !target) return;
-
-        const isHighlighted = selectedNode === edge.source || selectedNode === edge.target ||
-                            hoveredNode === edge.source || hoveredNode === edge.target;
-
-        // Edge glow for highlighted
-        if (isHighlighted) {
-          ctx.shadowColor = 'rgba(99, 102, 241, 0.8)';
-          ctx.shadowBlur = 15;
-        }
-
-        // Draw curved edge
-        const midX = (source.x + target.x) / 2;
-        const midY = (source.y + target.y) / 2;
-        const dx = target.x - source.x;
-        const dy = target.y - source.y;
-        const offset = Math.sqrt(dx * dx + dy * dy) * 0.1;
-        const ctrlX = midX - dy * 0.2;
-        const ctrlY = midY + dx * 0.2;
-
-        ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
-        ctx.quadraticCurveTo(ctrlX, ctrlY, target.x, target.y);
-        
-        // Gradient edge
-        const edgeGradient = ctx.createLinearGradient(source.x, source.y, target.x, target.y);
-        const sourceColor = TYPE_COLORS[source.type]?.main || TYPE_COLORS.custom.main;
-        const targetColor = TYPE_COLORS[target.type]?.main || TYPE_COLORS.custom.main;
-        edgeGradient.addColorStop(0, alpha(sourceColor, isHighlighted ? 0.8 : 0.4));
-        edgeGradient.addColorStop(1, alpha(targetColor, isHighlighted ? 0.8 : 0.4));
-        
-        ctx.strokeStyle = edgeGradient;
-        ctx.lineWidth = isHighlighted ? 3 : 1.5;
-        ctx.stroke();
-
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
-
-        // Draw arrow
-        const angle = Math.atan2(target.y - ctrlY, target.x - ctrlX);
-        const arrowSize = isHighlighted ? 12 : 8;
-        const arrowX = target.x - Math.cos(angle) * 25;
-        const arrowY = target.y - Math.sin(angle) * 25;
-
-        ctx.beginPath();
-        ctx.moveTo(arrowX, arrowY);
-        ctx.lineTo(
-          arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
-          arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
-        );
-        ctx.lineTo(
-          arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
-          arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
-        );
-        ctx.closePath();
-        ctx.fillStyle = alpha(targetColor, isHighlighted ? 0.9 : 0.6);
-        ctx.fill();
-
-        // Edge label
-        if (showEdgeLabels && isHighlighted) {
-          ctx.font = '10px Inter, sans-serif';
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-          ctx.textAlign = 'center';
-          ctx.fillText(edge.label, ctrlX, ctrlY - 5);
-        }
-      });
-
-      // Draw particles
-      if (particleFlow) {
-        particles.forEach((particle, i) => {
-          const edge = edges.find(e => e.id === particle.edge);
-          if (!edge) return;
-          
-          const source = nodesRef.current.get(edge.source);
-          const target = nodesRef.current.get(edge.target);
-          if (!source || !target) return;
-
-          const t = particle.progress;
-          const midX = (source.x + target.x) / 2;
-          const midY = (source.y + target.y) / 2;
-          const dx = target.x - source.x;
-          const dy = target.y - source.y;
-          const ctrlX = midX - dy * 0.2;
-          const ctrlY = midY + dx * 0.2;
-
-          // Quadratic bezier point
-          const px = (1-t)*(1-t)*source.x + 2*(1-t)*t*ctrlX + t*t*target.x;
-          const py = (1-t)*(1-t)*source.y + 2*(1-t)*t*ctrlY + t*t*target.y;
-
-          const sourceColor = TYPE_COLORS[source.type]?.light || TYPE_COLORS.custom.light;
-          
-          ctx.beginPath();
-          ctx.arc(px, py, 3, 0, Math.PI * 2);
-          ctx.fillStyle = sourceColor;
-          ctx.shadowColor = sourceColor;
-          ctx.shadowBlur = 10;
-          ctx.fill();
-          ctx.shadowBlur = 0;
-
-          // Update particle
-          particles[i].progress += particle.speed;
-          if (particles[i].progress > 1) {
-            particles[i].progress = 0;
-          }
-        });
-      }
-
-      // Draw nodes
-      Array.from(nodesRef.current.values()).forEach(node => {
-        const colors = TYPE_COLORS[node.type] || TYPE_COLORS.custom;
-        const isSelected = selectedNode === node.id;
-        const isHovered = hoveredNode === node.id;
-        const isSearchMatch = searchTerm && node.label.toLowerCase().includes(searchTerm.toLowerCase());
-        const isHighlighted = isSelected || isHovered || isSearchMatch;
-        
-        // Node size based on connections
-        const baseSize = 20 + Math.min(node.connections * 3, 15);
-        const size = isHighlighted ? baseSize * 1.2 : baseSize;
-
-        // Outer glow
-        if (isHighlighted) {
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, size + 15, 0, Math.PI * 2);
-          const glowGradient = ctx.createRadialGradient(
-            node.x, node.y, size,
-            node.x, node.y, size + 15
-          );
-          glowGradient.addColorStop(0, colors.glow);
-          glowGradient.addColorStop(1, 'transparent');
-          ctx.fillStyle = glowGradient;
-          ctx.fill();
-        }
-
-        // Node shadow
-        ctx.shadowColor = colors.glow;
-        ctx.shadowBlur = isHighlighted ? 25 : 15;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-
-        // Node gradient fill
-        const nodeGradient = ctx.createRadialGradient(
-          node.x - size * 0.3, node.y - size * 0.3, 0,
-          node.x, node.y, size
-        );
-        nodeGradient.addColorStop(0, colors.light);
-        nodeGradient.addColorStop(0.7, colors.main);
-        nodeGradient.addColorStop(1, alpha(colors.main, 0.8));
-
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, size, 0, Math.PI * 2);
-        ctx.fillStyle = nodeGradient;
-        ctx.fill();
-
-        // Node border
-        ctx.shadowBlur = 0;
-        ctx.strokeStyle = isHighlighted ? '#fff' : alpha('#fff', 0.3);
-        ctx.lineWidth = isHighlighted ? 3 : 1;
-        ctx.stroke();
-
-        // Inner highlight
-        ctx.beginPath();
-        ctx.arc(node.x - size * 0.25, node.y - size * 0.25, size * 0.3, 0, Math.PI * 2);
-        ctx.fillStyle = alpha('#fff', 0.3);
-        ctx.fill();
-
-        // Labels
-        if (showLabels || isHighlighted) {
-          ctx.font = `${isHighlighted ? 'bold ' : ''}${isHighlighted ? 13 : 11}px Inter, sans-serif`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          
-          // Text shadow for readability
-          ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
-          ctx.shadowBlur = 4;
-          ctx.fillStyle = '#fff';
-          
-          const label = node.label.length > 15 ? node.label.slice(0, 15) + '...' : node.label;
-          ctx.fillText(label, node.x, node.y + size + 15);
-          
-          // Type badge
-          ctx.font = '9px Inter, sans-serif';
-          ctx.fillStyle = alpha('#fff', 0.7);
-          ctx.fillText(node.type, node.x, node.y + size + 28);
-          
-          ctx.shadowBlur = 0;
-        }
-      });
-
-      ctx.restore();
-
-      animationRef.current = requestAnimationFrame(render);
     };
+    updateDimensions();
+    window.addEventListener('resize', updateDimensions);
+    return () => window.removeEventListener('resize', updateDimensions);
+  }, [isFullscreen]);
 
-    render();
+  // Prepare graph data for react-force-graph
+  const graphData = React.useMemo(() => ({
+    nodes: nodes.map(n => ({
+      ...n,
+      val: Math.max(3, Math.min(15, (n.confidence || 1) * 5)), // Node size based on confidence
+    })),
+    links: edges.map(e => ({
+      source: e.source,
+      target: e.target,
+      label: e.label,
+      weight: e.weight,
+    })),
+  }), [nodes, edges]);
 
-    return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
-    };
-  }, [nodes, edges, selectedNode, hoveredNode, searchTerm, showLabels, showEdgeLabels, 
-      particleFlow, particles, zoom, pan, physicsEnabled, theme]);
-
-  // Mouse handlers
-  const getMousePos = useCallback((e: React.MouseEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: (e.clientX - rect.left - pan.x) / zoom,
-      y: (e.clientY - rect.top - pan.y) / zoom,
-    };
-  }, [zoom, pan]);
-
-  const findNodeAtPos = useCallback((x: number, y: number): GraphNode | null => {
-    for (const node of nodesRef.current.values()) {
-      const size = 20 + Math.min(node.connections * 3, 15);
-      const dx = x - node.x;
-      const dy = y - node.y;
-      if (dx * dx + dy * dy < size * size) {
-        return node;
-      }
-    }
-    return null;
+  // Handle zoom controls
+  const handleZoomIn = useCallback(() => {
+    fgRef.current?.zoom(fgRef.current.zoom() * 1.3, 400);
   }, []);
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    const pos = getMousePos(e);
-    const node = findNodeAtPos(pos.x, pos.y);
-    
-    if (node) {
-      setDraggingNode(node.id);
-      node.fx = node.x;
-      node.fy = node.y;
-      onNodeDragStart(node);
-    } else {
-      setIsPanning(true);
-      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
-    }
-  };
+  const handleZoomOut = useCallback(() => {
+    fgRef.current?.zoom(fgRef.current.zoom() / 1.3, 400);
+  }, []);
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    const pos = getMousePos(e);
-    
-    if (draggingNode) {
-      const node = nodesRef.current.get(draggingNode);
-      if (node) {
-        node.x = pos.x;
-        node.y = pos.y;
-        node.fx = pos.x;
-        node.fy = pos.y;
-        onNodeDrag(node, pos.x, pos.y);
+  const handleCenterGraph = useCallback(() => {
+    fgRef.current?.zoomToFit(400, 50);
+  }, []);
+
+  // Pause/resume physics
+  useEffect(() => {
+    if (fgRef.current) {
+      if (physicsEnabled) {
+        fgRef.current.resumeAnimation();
+      } else {
+        fgRef.current.pauseAnimation();
       }
-    } else if (isPanning) {
-      setPan({
-        x: e.clientX - panStart.x,
-        y: e.clientY - panStart.y,
-      });
-    } else {
-      const node = findNodeAtPos(pos.x, pos.y);
-      onNodeHover(node);
     }
-  };
+  }, [physicsEnabled]);
 
-  const handleMouseUp = () => {
-    if (draggingNode) {
-      const node = nodesRef.current.get(draggingNode);
-      if (node) {
-        node.fx = null;
-        node.fy = null;
-        onNodeDragEnd(node);
-      }
-      setDraggingNode(null);
-    }
-    setIsPanning(false);
-  };
-
-  const handleClick = (e: React.MouseEvent) => {
-    const pos = getMousePos(e);
-    const node = findNodeAtPos(pos.x, pos.y);
-    if (node) {
-      onNodeClick(node);
-    }
-  };
-
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    const newZoom = Math.max(0.1, Math.min(3, zoom * delta));
+  // Custom node rendering
+  const paintNode = useCallback((node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+    const colors = TYPE_COLORS[node.type] || TYPE_COLORS.custom;
+    const isSelected = selectedNode === node.id;
+    const isSearchMatch = searchTerm && node.label?.toLowerCase().includes(searchTerm.toLowerCase());
+    const isHighlighted = isSelected || isSearchMatch;
     
-    // Zoom towards mouse position
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (rect) {
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-      const newPanX = mouseX - (mouseX - pan.x) * (newZoom / zoom);
-      const newPanY = mouseY - (mouseY - pan.y) * (newZoom / zoom);
-      setPan({ x: newPanX, y: newPanY });
-    }
-    
-    setZoom(newZoom);
-  };
+    const nodeSize = node.val || 5;
+    const size = isHighlighted ? nodeSize * 1.4 : nodeSize;
 
-  const resetView = () => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  };
+    // Glow effect for highlighted nodes
+    if (isHighlighted) {
+      ctx.shadowColor = colors.glow;
+      ctx.shadowBlur = 15;
+    }
+
+    // Draw node circle
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, size, 0, 2 * Math.PI);
+    ctx.fillStyle = colors.main;
+    ctx.fill();
+    
+    // Border
+    ctx.strokeStyle = isHighlighted ? '#fff' : alpha(colors.light, 0.5);
+    ctx.lineWidth = isHighlighted ? 2 : 1;
+    ctx.stroke();
+    
+    ctx.shadowBlur = 0;
+
+    // Draw label if enabled or highlighted
+    if (showLabels || isHighlighted) {
+      const label = node.label || node.id;
+      const fontSize = Math.max(10, 12 / globalScale);
+      ctx.font = `${isHighlighted ? 'bold ' : ''}${fontSize}px Inter, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      
+      // Text background for readability
+      const textWidth = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(node.x - textWidth / 2 - 2, node.y + size + 2, textWidth + 4, fontSize + 4);
+      
+      ctx.fillStyle = isHighlighted ? '#fff' : 'rgba(255, 255, 255, 0.8)';
+      ctx.fillText(label.length > 20 ? label.slice(0, 20) + '...' : label, node.x, node.y + size + 4);
+    }
+  }, [selectedNode, searchTerm, showLabels]);
+
+  // Custom link rendering
+  const paintLink = useCallback((link: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+    const sourceNode = link.source;
+    const targetNode = link.target;
+    
+    if (!sourceNode.x || !targetNode.x) return;
+
+    const sourceColors = TYPE_COLORS[sourceNode.type] || TYPE_COLORS.custom;
+    const targetColors = TYPE_COLORS[targetNode.type] || TYPE_COLORS.custom;
+    
+    // Create gradient
+    const gradient = ctx.createLinearGradient(sourceNode.x, sourceNode.y, targetNode.x, targetNode.y);
+    gradient.addColorStop(0, alpha(sourceColors.main, 0.6));
+    gradient.addColorStop(1, alpha(targetColors.main, 0.6));
+    
+    ctx.strokeStyle = gradient;
+    ctx.lineWidth = Math.max(0.5, Math.min(3, (link.weight || 1) / 50));
+    
+    ctx.beginPath();
+    ctx.moveTo(sourceNode.x, sourceNode.y);
+    ctx.lineTo(targetNode.x, targetNode.y);
+    ctx.stroke();
+
+    // Draw arrow
+    const angle = Math.atan2(targetNode.y - sourceNode.y, targetNode.x - sourceNode.x);
+    const arrowLength = 6;
+    const targetSize = targetNode.val || 5;
+    const arrowX = targetNode.x - Math.cos(angle) * (targetSize + 3);
+    const arrowY = targetNode.y - Math.sin(angle) * (targetSize + 3);
+    
+    ctx.fillStyle = targetColors.main;
+    ctx.beginPath();
+    ctx.moveTo(arrowX, arrowY);
+    ctx.lineTo(arrowX - arrowLength * Math.cos(angle - Math.PI / 6), arrowY - arrowLength * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(arrowX - arrowLength * Math.cos(angle + Math.PI / 6), arrowY - arrowLength * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fill();
+
+    // Draw edge label if enabled
+    if (showEdgeLabels && link.label) {
+      const midX = (sourceNode.x + targetNode.x) / 2;
+      const midY = (sourceNode.y + targetNode.y) / 2;
+      const fontSize = Math.max(8, 10 / globalScale);
+      ctx.font = `${fontSize}px Inter, sans-serif`;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.textAlign = 'center';
+      ctx.fillText(link.label, midX, midY);
+    }
+  }, [showEdgeLabels]);
 
   return (
-    <Box sx={{ position: 'relative', width: '100%', height: isFullscreen ? '100vh' : 600 }}>
-      <canvas
-        ref={canvasRef}
-        width={1200}
-        height={isFullscreen ? 900 : 600}
-        style={{
-          width: '100%',
-          height: '100%',
-          cursor: draggingNode ? 'grabbing' : isPanning ? 'grabbing' : 'grab',
-          borderRadius: 8,
+    <Box 
+      ref={containerRef} 
+      sx={{ 
+        position: 'relative', 
+        width: '100%', 
+        height: isFullscreen ? 'calc(100vh - 100px)' : 550,
+        background: 'linear-gradient(135deg, #1a1a2e 0%, #0f0f1a 100%)',
+        borderRadius: 2,
+        overflow: 'hidden',
+      }}
+    >
+      <ForceGraph2D
+        ref={fgRef}
+        graphData={graphData}
+        width={dimensions.width}
+        height={dimensions.height}
+        backgroundColor="rgba(0,0,0,0)"
+        nodeCanvasObject={paintNode}
+        linkCanvasObject={paintLink}
+        onNodeClick={(node: any) => onNodeClick(node as GraphNode)}
+        onNodeHover={(node: any) => onNodeHover(node as GraphNode | null)}
+        enableNodeDrag={true}
+        enableZoomInteraction={true}
+        enablePanInteraction={true}
+        linkDirectionalParticles={particleFlow ? 2 : 0}
+        linkDirectionalParticleSpeed={0.005}
+        linkDirectionalParticleWidth={3}
+        linkDirectionalParticleColor={(link: any) => {
+          const sourceColors = TYPE_COLORS[link.source?.type] || TYPE_COLORS.custom;
+          return sourceColors.light;
         }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onClick={handleClick}
-        onWheel={handleWheel}
+        d3AlphaDecay={0.02}
+        d3VelocityDecay={0.3}
+        warmupTicks={100}
+        cooldownTicks={200}
       />
       
       {/* Controls overlay */}
@@ -695,38 +353,20 @@ const ForceGraphVisualization: React.FC<{
         }}
       >
         <Tooltip title="Zoom In">
-          <IconButton size="small" onClick={() => setZoom(z => Math.min(3, z * 1.2))} sx={{ color: '#fff' }}>
+          <IconButton size="small" onClick={handleZoomIn} sx={{ color: '#fff' }}>
             <ZoomInIcon />
           </IconButton>
         </Tooltip>
         <Tooltip title="Zoom Out">
-          <IconButton size="small" onClick={() => setZoom(z => Math.max(0.1, z * 0.8))} sx={{ color: '#fff' }}>
+          <IconButton size="small" onClick={handleZoomOut} sx={{ color: '#fff' }}>
             <ZoomOutIcon />
           </IconButton>
         </Tooltip>
-        <Tooltip title="Reset View">
-          <IconButton size="small" onClick={resetView} sx={{ color: '#fff' }}>
+        <Tooltip title="Fit to View">
+          <IconButton size="small" onClick={handleCenterGraph} sx={{ color: '#fff' }}>
             <CenterIcon />
           </IconButton>
         </Tooltip>
-      </Box>
-
-      {/* Zoom indicator */}
-      <Box
-        sx={{
-          position: 'absolute',
-          bottom: 16,
-          left: 16,
-          background: alpha('#000', 0.6),
-          backdropFilter: 'blur(10px)',
-          borderRadius: 1,
-          px: 2,
-          py: 0.5,
-        }}
-      >
-        <Typography variant="caption" sx={{ color: '#fff' }}>
-          {Math.round(zoom * 100)}%
-        </Typography>
       </Box>
     </Box>
   );
@@ -747,6 +387,17 @@ const KnowledgeGraphPage: React.FC = () => {
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
 
+  // GraphRAG service state
+  const [graphRAGStatus, setGraphRAGStatus] = useState<{
+    available: boolean;
+    status: string;
+    nerModel?: string;
+    device?: string;
+    gpuName?: string;
+  }>({ available: false, status: 'checking' });
+  const [graphRAGDomains, setGraphRAGDomains] = useState<string[]>([]);
+  const [selectedDomain, setSelectedDomain] = useState<string>('');
+
   // View settings
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
@@ -757,147 +408,172 @@ const KnowledgeGraphPage: React.FC = () => {
   const [tabValue, setTabValue] = useState(0);
 
   // Dialogs
-  const [entityDialogOpen, setEntityDialogOpen] = useState(false);
-  const [relationshipDialogOpen, setRelationshipDialogOpen] = useState(false);
   const [extractDialogOpen, setExtractDialogOpen] = useState(false);
-  const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
 
   // Form state
-  const [entityForm, setEntityForm] = useState({
-    name: '',
-    entity_type: 'concept',
-    description: '',
-    aliases: '',
-  });
-  const [relationshipForm, setRelationshipForm] = useState({
-    source_id: '',
-    target_id: '',
-    relationship_type: 'related_to',
-    description: '',
-  });
   const [extractText, setExtractText] = useState('');
-  const [mergeIds, setMergeIds] = useState<string[]>([]);
-  const [mergeName, setMergeName] = useState('');
 
-  // Load data
+  // Check GraphRAG service status
+  const checkGraphRAGStatus = useCallback(async () => {
+    try {
+      const healthRes = await api.getGraphRAGHealth();
+      if (healthRes.status === 'healthy') {
+        setGraphRAGStatus({
+          available: true,
+          status: 'healthy',
+        });
+        // Get NER status for more details
+        try {
+          const nerRes = await api.getGraphRAGNERStatus();
+          setGraphRAGStatus(prev => ({
+            ...prev,
+            nerModel: nerRes.model_info?.model_name,
+            device: nerRes.model_info?.device,
+            gpuName: nerRes.model_info?.gpu_name,
+          }));
+        } catch {
+          // NER status is optional
+        }
+        // Get available domains
+        try {
+          const domainsRes = await api.getGraphRAGDomains();
+          setGraphRAGDomains(domainsRes.domains || []);
+        } catch {
+          // Domains are optional
+        }
+      } else {
+        setGraphRAGStatus({
+          available: false,
+          status: healthRes.status || 'unavailable',
+        });
+      }
+    } catch {
+      setGraphRAGStatus({
+        available: false,
+        status: 'unavailable',
+      });
+    }
+  }, []);
+
+  // Load data from GraphRAG service
   const loadData = useCallback(async () => {
+    if (!graphRAGStatus.available) {
+      return;
+    }
+    
     setLoading(true);
     setError(null);
     try {
-      const entitiesRes = await api.get('/api/v1/rag/graph/entities', {
-        params: { limit: 500, search: searchTerm || undefined }
-      });
-      setEntities(entitiesRes.data.entities || []);
-
-      const graphRes = await api.get('/api/v1/rag/graph/visualize', {
-        params: { limit: 500 }
+      // Load from GraphRAG service
+      const graphRes = await api.getGraphRAGGraph({
+        domain: selectedDomain || undefined,
+        max_entities: 500,
+        max_relationships: 500,
       });
       
-      // Transform nodes with initial positions
-      const nodes = (graphRes.data.nodes || []).map((n: Record<string, unknown>, i: number) => ({
-        ...n,
-        x: 600 + Math.cos(2 * Math.PI * i / Math.max(graphRes.data.nodes.length, 1)) * 300,
-        y: 300 + Math.sin(2 * Math.PI * i / Math.max(graphRes.data.nodes.length, 1)) * 200,
-        vx: 0,
-        vy: 0,
-        connections: 0,
+      // Transform nodes for visualization
+      const nodes = (graphRes.nodes || []).map((n: any) => ({
+        id: n.id,
+        label: n.label,
+        type: n.type,
+        description: n.properties?.description,
+        confidence: n.properties?.confidence || n.occurrence || 1,
+      }));
+      
+      // Transform edges
+      const edges = (graphRes.edges || []).map((e: any) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        label: e.label || e.type,
+        weight: e.weight || 1,
       }));
       
       setGraphNodes(nodes);
-      setGraphEdges(graphRes.data.edges || []);
-
-      const statsRes = await api.get('/api/v1/rag/graph/statistics');
-      setStats(statsRes.data);
+      setGraphEdges(edges);
+      
+      // Transform to entities for sidebar
+      const entitiesList = nodes.map((n: any) => ({
+        id: n.id,
+        name: n.label,
+        entity_type: n.type,
+        description: n.description || '',
+        aliases: [],
+        properties: {},
+        confidence: n.confidence,
+      }));
+      setEntities(entitiesList);
+      
+      // Get stats
+      const statsRes = await api.getGraphRAGStats();
+      setStats({
+        entity_count: statsRes.nodes,
+        relationship_count: statsRes.edges,
+        community_count: statsRes.communities || 0,
+        entities_by_type: {},
+        relationships_by_type: {},
+      });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load graph data';
       setError(message);
     } finally {
       setLoading(false);
     }
-  }, [searchTerm]);
+  }, [graphRAGStatus.available, selectedDomain]);
 
+  // Check GraphRAG status on mount
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    checkGraphRAGStatus();
+  }, [checkGraphRAGStatus]);
 
-  // Load relationships for selected entity
+  // Load data when GraphRAG becomes available or domain changes
   useEffect(() => {
-    if (selectedNodeId) {
-      api.get('/api/v1/rag/graph/relationships', {
-        params: { entity_id: selectedNodeId }
-      }).then(res => {
-        setRelationships(res.data.relationships || []);
-      }).catch(() => {});
-    }
-  }, [selectedNodeId]);
-
-  // Handlers
-  const handleCreateEntity = async () => {
-    try {
-      await api.post('/api/v1/rag/graph/entities', {
-        name: entityForm.name,
-        entity_type: entityForm.entity_type,
-        description: entityForm.description,
-        aliases: entityForm.aliases.split(',').map(a => a.trim()).filter(Boolean),
-      });
-      setEntityDialogOpen(false);
-      setEntityForm({ name: '', entity_type: 'concept', description: '', aliases: '' });
+    if (graphRAGStatus.available) {
       loadData();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create entity');
     }
-  };
+  }, [loadData, graphRAGStatus.available]);
 
-  const handleDeleteEntity = async (id: string) => {
-    if (!confirm('Delete this entity and all its relationships?')) return;
-    try {
-      await api.delete(`/api/v1/rag/graph/entities/${id}`);
-      setSelectedNodeId(null);
-      setSelectedEntity(null);
-      loadData();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to delete entity');
+  // Load relationships for selected entity from graph edges
+  useEffect(() => {
+    if (selectedNodeId && graphRAGStatus.available) {
+      // Filter edges that involve this node
+      const nodeRels = graphEdges
+        .filter(e => e.source === selectedNodeId || e.target === selectedNodeId)
+        .map(e => ({
+          id: e.id,
+          source_id: e.source,
+          target_id: e.target,
+          relationship_type: e.label,
+          description: '',
+          weight: e.weight,
+        }));
+      setRelationships(nodeRels);
     }
-  };
+  }, [selectedNodeId, graphRAGStatus.available, graphEdges]);
 
-  const handleCreateRelationship = async () => {
-    try {
-      await api.post('/api/v1/rag/graph/relationships', relationshipForm);
-      setRelationshipDialogOpen(false);
-      setRelationshipForm({ source_id: '', target_id: '', relationship_type: 'related_to', description: '' });
-      loadData();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create relationship');
-    }
-  };
-
+  // Extract entities using GraphRAG GLiNER
   const handleExtract = async () => {
+    if (!graphRAGStatus.available) {
+      setError('GraphRAG service is not available');
+      return;
+    }
+    
     try {
       setLoading(true);
-      await api.post('/api/v1/rag/graph/extract', { text: extractText, save: true });
+      const result = await api.extractGraphRAGEntities({
+        text: extractText,
+        domain: selectedDomain || 'general',
+      });
+      // Log extraction results
+      console.log(`Extracted ${result.entity_count} entities and ${result.relationship_count} relationships using ${result.extraction_method}`, result);
       setExtractDialogOpen(false);
       setExtractText('');
+      // Reload graph data
       loadData();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to extract entities');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleMerge = async () => {
-    if (mergeIds.length < 2) {
-      setError('Select at least 2 entities to merge');
-      return;
-    }
-    try {
-      await api.post('/api/v1/rag/graph/entities/merge', { entity_ids: mergeIds, merged_name: mergeName });
-      setMergeDialogOpen(false);
-      setMergeIds([]);
-      setMergeName('');
-      loadData();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to merge entities');
     }
   };
 
@@ -927,37 +603,57 @@ const KnowledgeGraphPage: React.FC = () => {
             }}>
               Knowledge Graph
             </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Interactive visualization of entities and relationships
-            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="body2" color="text.secondary">
+                Powered by GraphRAG with Neo4j + GLiNER
+              </Typography>
+              <Tooltip title={
+                graphRAGStatus.available 
+                  ? `${graphRAGStatus.nerModel || 'GLiNER'} on ${graphRAGStatus.gpuName || graphRAGStatus.device || 'GPU'}`
+                  : graphRAGStatus.status === 'checking' ? 'Checking service...' : 'GraphRAG service unavailable'
+              }>
+                <Box sx={{ 
+                  width: 10, 
+                  height: 10, 
+                  borderRadius: '50%', 
+                  bgcolor: graphRAGStatus.available ? '#10B981' : graphRAGStatus.status === 'checking' ? '#F59E0B' : '#EF4444',
+                }} />
+              </Tooltip>
+            </Box>
           </Box>
-          <Box sx={{ display: 'flex', gap: 1 }}>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            {/* Domain selector */}
+            {graphRAGStatus.available && graphRAGDomains.length > 0 && (
+              <FormControl size="small" sx={{ minWidth: 120 }}>
+                <Select
+                  value={selectedDomain}
+                  onChange={(e) => setSelectedDomain(e.target.value)}
+                  displayEmpty
+                  sx={{ height: 36 }}
+                >
+                  <MenuItem value="">All Domains</MenuItem>
+                  {graphRAGDomains.map(d => (
+                    <MenuItem key={d} value={d}>{d}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
             <Button
               startIcon={<UploadIcon />}
               onClick={() => setExtractDialogOpen(true)}
               variant="outlined"
+              disabled={!graphRAGStatus.available}
               sx={{ borderColor: alpha('#6366F1', 0.5) }}
             >
               Extract from Text
             </Button>
             <Button
-              startIcon={<MergeIcon />}
-              onClick={() => setMergeDialogOpen(true)}
+              startIcon={<RefreshIcon />}
+              onClick={loadData}
               variant="outlined"
-              sx={{ borderColor: alpha('#EC4899', 0.5) }}
+              disabled={!graphRAGStatus.available || loading}
             >
-              Merge
-            </Button>
-            <Button
-              startIcon={<AddIcon />}
-              onClick={() => setEntityDialogOpen(true)}
-              variant="contained"
-              sx={{ 
-                background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%)',
-                '&:hover': { background: 'linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%)' }
-              }}
-            >
-              Add Entity
+              Refresh
             </Button>
           </Box>
         </Box>
@@ -966,6 +662,32 @@ const KnowledgeGraphPage: React.FC = () => {
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
+        </Alert>
+      )}
+
+      {/* GraphRAG Unavailable Warning */}
+      {!graphRAGStatus.available && graphRAGStatus.status !== 'checking' && !isFullscreen && (
+        <Alert 
+          severity="warning" 
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={checkGraphRAGStatus}>
+              Retry
+            </Button>
+          }
+        >
+          GraphRAG service is not available. Make sure the graphrag containers are running (docker compose up in the graphrag directory).
+        </Alert>
+      )}
+
+      {/* Loading indicator while checking status */}
+      {graphRAGStatus.status === 'checking' && !isFullscreen && (
+        <Alert 
+          severity="info" 
+          sx={{ mb: 2 }}
+          icon={<CircularProgress size={20} />}
+        >
+          Checking GraphRAG service status...
         </Alert>
       )}
 
@@ -1134,16 +856,12 @@ const KnowledgeGraphPage: React.FC = () => {
                 nodes={graphNodes}
                 edges={graphEdges}
                 selectedNode={selectedNodeId}
-                hoveredNode={hoveredNodeId}
                 searchTerm={searchTerm}
                 showLabels={showLabels}
                 showEdgeLabels={showEdgeLabels}
                 particleFlow={particleFlow}
                 onNodeClick={handleNodeClick}
                 onNodeHover={(node) => setHoveredNodeId(node?.id || null)}
-                onNodeDragStart={() => {}}
-                onNodeDrag={() => {}}
-                onNodeDragEnd={() => {}}
                 isFullscreen={isFullscreen}
                 physicsEnabled={physicsEnabled}
               />
@@ -1251,18 +969,6 @@ const KnowledgeGraphPage: React.FC = () => {
                               />
                             }
                           />
-                          <ListItemSecondaryAction>
-                            <IconButton
-                              size="small"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteEntity(entity.id);
-                              }}
-                              sx={{ '&:hover': { color: '#EF4444' } }}
-                            >
-                              <DeleteIcon fontSize="small" />
-                            </IconButton>
-                          </ListItemSecondaryAction>
                         </ListItem>
                       );
                     })}
@@ -1317,21 +1023,9 @@ const KnowledgeGraphPage: React.FC = () => {
 
                   <Divider sx={{ my: 2 }} />
 
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                    <Typography variant="subtitle2" color="text.secondary">
-                      Relationships ({relationships.length})
-                    </Typography>
-                    <Button
-                      size="small"
-                      startIcon={<LinkIcon />}
-                      onClick={() => {
-                        setRelationshipForm(prev => ({ ...prev, source_id: selectedEntity.id }));
-                        setRelationshipDialogOpen(true);
-                      }}
-                    >
-                      Add
-                    </Button>
-                  </Box>
+                  <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+                    Relationships ({relationships.length})
+                  </Typography>
 
                   <List dense>
                     {relationships.map(rel => {
@@ -1341,10 +1035,19 @@ const KnowledgeGraphPage: React.FC = () => {
                       return (
                         <ListItem 
                           key={rel.id}
+                          button
+                          onClick={() => {
+                            // Select the other entity
+                            if (otherEntity) {
+                              setSelectedEntity(otherEntity);
+                              setSelectedNodeId(otherEntity.id);
+                            }
+                          }}
                           sx={{ 
                             borderRadius: 1, 
                             bgcolor: alpha('#fff', 0.02),
                             mb: 0.5,
+                            '&:hover': { bgcolor: alpha('#6366F1', 0.1) },
                           }}
                         >
                           <ListItemText
@@ -1356,7 +1059,7 @@ const KnowledgeGraphPage: React.FC = () => {
                                   sx={{ height: 20, fontSize: 10 }}
                                 />
                                 <Typography variant="body2">
-                                  {isSource ? 'to' : 'from'} <strong>{otherEntity?.name || 'Unknown'}</strong>
+                                  {isSource ? 'to' : 'from'} <strong>{otherEntity?.name || otherId}</strong>
                                 </Typography>
                               </Box>
                             }
@@ -1366,27 +1069,6 @@ const KnowledgeGraphPage: React.FC = () => {
                       );
                     })}
                   </List>
-
-                  <Box sx={{ mt: 2, display: 'flex', gap: 1 }}>
-                    <Button
-                      fullWidth
-                      variant="outlined"
-                      startIcon={<EditIcon />}
-                      size="small"
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      fullWidth
-                      variant="outlined"
-                      color="error"
-                      startIcon={<DeleteIcon />}
-                      size="small"
-                      onClick={() => handleDeleteEntity(selectedEntity.id)}
-                    >
-                      Delete
-                    </Button>
-                  </Box>
                 </Box>
               )}
 
@@ -1403,133 +1085,6 @@ const KnowledgeGraphPage: React.FC = () => {
         )}
       </Grid>
 
-      {/* Create Entity Dialog */}
-      <Dialog open={entityDialogOpen} onClose={() => setEntityDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <AddIcon sx={{ color: '#6366F1' }} />
-            Add New Entity
-          </Box>
-        </DialogTitle>
-        <DialogContent sx={{ pt: 3 }}>
-          <TextField
-            fullWidth
-            label="Entity Name"
-            value={entityForm.name}
-            onChange={(e) => setEntityForm(prev => ({ ...prev, name: e.target.value }))}
-            sx={{ mb: 2 }}
-          />
-          <FormControl fullWidth sx={{ mb: 2 }}>
-            <InputLabel>Entity Type</InputLabel>
-            <Select
-              value={entityForm.entity_type}
-              label="Entity Type"
-              onChange={(e) => setEntityForm(prev => ({ ...prev, entity_type: e.target.value }))}
-            >
-              {ENTITY_TYPES.map(type => (
-                <MenuItem key={type} value={type}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Box sx={{ 
-                      width: 12, 
-                      height: 12, 
-                      borderRadius: '50%', 
-                      bgcolor: TYPE_COLORS[type]?.main || TYPE_COLORS.custom.main 
-                    }} />
-                    <span style={{ textTransform: 'capitalize' }}>{type}</span>
-                  </Box>
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          <TextField
-            fullWidth
-            label="Description"
-            value={entityForm.description}
-            onChange={(e) => setEntityForm(prev => ({ ...prev, description: e.target.value }))}
-            multiline
-            rows={3}
-            sx={{ mb: 2 }}
-          />
-          <TextField
-            fullWidth
-            label="Aliases (comma-separated)"
-            value={entityForm.aliases}
-            onChange={(e) => setEntityForm(prev => ({ ...prev, aliases: e.target.value }))}
-            placeholder="alias1, alias2, alias3"
-          />
-        </DialogContent>
-        <DialogActions sx={{ p: 2, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-          <Button onClick={() => setEntityDialogOpen(false)}>Cancel</Button>
-          <Button 
-            onClick={handleCreateEntity} 
-            variant="contained"
-            disabled={!entityForm.name}
-            sx={{ background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%)' }}
-          >
-            Create Entity
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Create Relationship Dialog */}
-      <Dialog open={relationshipDialogOpen} onClose={() => setRelationshipDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <LinkIcon sx={{ color: '#EC4899' }} />
-            Add Relationship
-          </Box>
-        </DialogTitle>
-        <DialogContent sx={{ pt: 3 }}>
-          <Autocomplete
-            options={entities}
-            getOptionLabel={(option) => option.name}
-            value={entities.find(e => e.id === relationshipForm.source_id) || null}
-            onChange={(_, value) => setRelationshipForm(prev => ({ ...prev, source_id: value?.id || '' }))}
-            renderInput={(params) => <TextField {...params} label="Source Entity" />}
-            sx={{ mb: 2 }}
-          />
-          <FormControl fullWidth sx={{ mb: 2 }}>
-            <InputLabel>Relationship Type</InputLabel>
-            <Select
-              value={relationshipForm.relationship_type}
-              label="Relationship Type"
-              onChange={(e) => setRelationshipForm(prev => ({ ...prev, relationship_type: e.target.value }))}
-            >
-              {RELATIONSHIP_TYPES.map(type => (
-                <MenuItem key={type} value={type}>
-                  <span style={{ textTransform: 'capitalize' }}>{type.replace('_', ' ')}</span>
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          <Autocomplete
-            options={entities}
-            getOptionLabel={(option) => option.name}
-            value={entities.find(e => e.id === relationshipForm.target_id) || null}
-            onChange={(_, value) => setRelationshipForm(prev => ({ ...prev, target_id: value?.id || '' }))}
-            renderInput={(params) => <TextField {...params} label="Target Entity" />}
-            sx={{ mb: 2 }}
-          />
-          <TextField
-            fullWidth
-            label="Description (optional)"
-            value={relationshipForm.description}
-            onChange={(e) => setRelationshipForm(prev => ({ ...prev, description: e.target.value }))}
-          />
-        </DialogContent>
-        <DialogActions sx={{ p: 2, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-          <Button onClick={() => setRelationshipDialogOpen(false)}>Cancel</Button>
-          <Button 
-            onClick={handleCreateRelationship} 
-            variant="contained"
-            disabled={!relationshipForm.source_id || !relationshipForm.target_id}
-            sx={{ background: 'linear-gradient(135deg, #EC4899 0%, #8B5CF6 100%)' }}
-          >
-            Create Relationship
-          </Button>
-        </DialogActions>
-      </Dialog>
-
       {/* Extract from Text Dialog */}
       <Dialog open={extractDialogOpen} onClose={() => setExtractDialogOpen(false)} maxWidth="md" fullWidth>
         <DialogTitle sx={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
@@ -1540,9 +1095,14 @@ const KnowledgeGraphPage: React.FC = () => {
         </DialogTitle>
         <DialogContent sx={{ pt: 3 }}>
           <Alert severity="info" sx={{ mb: 2 }}>
-            Paste text below to automatically extract entities and relationships using AI.
-            The extracted information will be added to your knowledge graph.
+            Paste text below to automatically extract entities and relationships using GLiNER NER model.
+            Extracted entities will be added to the Neo4j knowledge graph.
           </Alert>
+          {selectedDomain && (
+            <Alert severity="success" sx={{ mb: 2 }} icon={false}>
+              Extracting to domain: <strong>{selectedDomain}</strong>
+            </Alert>
+          )}
           <TextField
             fullWidth
             multiline
@@ -1562,52 +1122,10 @@ const KnowledgeGraphPage: React.FC = () => {
           <Button 
             onClick={handleExtract} 
             variant="contained" 
-            disabled={loading || !extractText.trim()}
+            disabled={loading || !extractText.trim() || !graphRAGStatus.available}
             sx={{ background: 'linear-gradient(135deg, #10B981 0%, #06B6D4 100%)' }}
           >
-            {loading ? <CircularProgress size={20} /> : 'Extract & Save'}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Merge Entities Dialog */}
-      <Dialog open={mergeDialogOpen} onClose={() => setMergeDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <MergeIcon sx={{ color: '#F59E0B' }} />
-            Merge Entities
-          </Box>
-        </DialogTitle>
-        <DialogContent sx={{ pt: 3 }}>
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            Merging will combine the selected entities into one. All relationships will be transferred to the merged entity.
-          </Alert>
-          <Autocomplete
-            multiple
-            options={entities}
-            getOptionLabel={(option) => option.name}
-            value={entities.filter(e => mergeIds.includes(e.id))}
-            onChange={(_, values) => setMergeIds(values.map(v => v.id))}
-            renderInput={(params) => <TextField {...params} label="Select Entities to Merge" />}
-            sx={{ mb: 2 }}
-          />
-          <TextField
-            fullWidth
-            label="Name for Merged Entity"
-            value={mergeName}
-            onChange={(e) => setMergeName(e.target.value)}
-            placeholder="Enter the name for the resulting entity"
-          />
-        </DialogContent>
-        <DialogActions sx={{ p: 2, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-          <Button onClick={() => setMergeDialogOpen(false)}>Cancel</Button>
-          <Button 
-            onClick={handleMerge} 
-            variant="contained" 
-            disabled={mergeIds.length < 2 || !mergeName.trim()}
-            sx={{ background: 'linear-gradient(135deg, #F59E0B 0%, #EF4444 100%)' }}
-          >
-            Merge Entities
+            {loading ? <CircularProgress size={20} /> : 'Extract Entities'}
           </Button>
         </DialogActions>
       </Dialog>

@@ -1,564 +1,411 @@
-import React, { useState, useCallback } from 'react'
+/**
+ * WorkflowBuilderPage - Visual workflow editor with drag-and-drop canvas
+ */
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   Box,
   Typography,
-  Card,
-  CardContent,
   Button,
   IconButton,
   TextField,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
-  Chip,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
   Alert,
+  Chip,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Divider,
   Tooltip,
   alpha,
-  Divider,
-  Grid,
-  Paper,
   CircularProgress,
-} from '@mui/material'
+} from '@mui/material';
 import {
   Add as AddIcon,
-  Delete as DeleteIcon,
-  PlayArrow as PlayIcon,
   Save as SaveIcon,
-  ContentCopy as CopyIcon,
-  Edit as EditIcon,
-  ArrowForward as ArrowIcon,
+  FolderOpen as OpenIcon,
+  PlayArrow as PlayIcon,
+  Stop as StopIcon,
+  Settings as SettingsIcon,
+  MoreVert as MoreIcon,
+  Delete as DeleteIcon,
+  ContentCopy as DuplicateIcon,
+  Download as ExportIcon,
+  Upload as ImportIcon,
+  Undo as UndoIcon,
+  Redo as RedoIcon,
+  ZoomIn as ZoomInIcon,
   AccountTree as WorkflowIcon,
-  Psychology as LlmIcon,
-  Code as CodeIcon,
-  FilterAlt as FilterIcon,
-  Loop as LoopIcon,
-  CallSplit as BranchIcon,
-  Input as InputIcon,
-  Output as OutputIcon,
-} from '@mui/icons-material'
+} from '@mui/icons-material';
+import { ReactFlowProvider } from 'reactflow';
+import 'reactflow/dist/style.css';
 
-// Workflow node types
-type NodeType = 'input' | 'llm' | 'code' | 'condition' | 'output' | 'loop'
+import { WorkflowCanvas, NodePalette, PropertyPanel, ExecutionPanel } from '@/components/workflow';
+import {
+  Workflow,
+  WorkflowNode,
+  WorkflowConnection,
+  WorkflowExecution,
+  NodeExecution,
+  getNodeTypeDefinition,
+} from '@/types/workflow';
+import { workflowApi } from '@/services/workflowApi';
 
-interface WorkflowNode {
-  id: string
-  type: NodeType
-  name: string
-  config: Record<string, any>
-  position: { x: number; y: number }
-  connections: string[] // IDs of connected nodes
-}
+// Initial empty workflow
+const createEmptyWorkflow = (): Workflow => ({
+  id: `wf-${Date.now()}`,
+  name: 'New Workflow',
+  description: '',
+  nodes: [],
+  connections: [],
+  variables: {},
+  settings: {},
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+  version: 1,
+  isActive: true,
+});
 
-interface Workflow {
-  id: string
-  name: string
-  description: string
-  nodes: WorkflowNode[]
-  createdAt: string
-  updatedAt: string
-}
-
-// Node type configurations
-const nodeTypeConfig: Record<NodeType, { label: string; color: string; icon: React.ReactNode; fields: string[] }> = {
-  input: {
-    label: 'Input',
-    color: '#10b981',
-    icon: <InputIcon />,
-    fields: ['variableName', 'defaultValue', 'description'],
-  },
-  llm: {
-    label: 'LLM Call',
-    color: '#6366f1',
-    icon: <LlmIcon />,
-    fields: ['prompt', 'systemPrompt', 'temperature', 'maxTokens', 'model'],
-  },
-  code: {
-    label: 'Code',
-    color: '#f59e0b',
-    icon: <CodeIcon />,
-    fields: ['code', 'language'],
-  },
-  condition: {
-    label: 'Condition',
-    color: '#8b5cf6',
-    icon: <BranchIcon />,
-    fields: ['condition', 'trueBranch', 'falseBranch'],
-  },
-  output: {
-    label: 'Output',
-    color: '#ef4444',
-    icon: <OutputIcon />,
-    fields: ['outputVariable', 'format'],
-  },
-  loop: {
-    label: 'Loop',
-    color: '#06b6d4',
-    icon: <LoopIcon />,
-    fields: ['iterations', 'breakCondition'],
-  },
-}
-
-// Node component
-interface NodeCardProps {
-  node: WorkflowNode
-  onEdit: (node: WorkflowNode) => void
-  onDelete: (id: string) => void
-  onConnect: (fromId: string) => void
-  isConnecting: boolean
-  connectingFrom: string | null
-}
-
-const NodeCard: React.FC<NodeCardProps> = ({ node, onEdit, onDelete, onConnect, isConnecting, connectingFrom }) => {
-  const config = nodeTypeConfig[node.type]
-
-  return (
-    <Card
-      sx={{
-        width: 220,
-        background: 'linear-gradient(145deg, rgba(30, 30, 63, 0.8) 0%, rgba(26, 26, 46, 0.9) 100%)',
-        backdropFilter: 'blur(12px)',
-        border: `2px solid ${connectingFrom === node.id ? config.color : 'rgba(255, 255, 255, 0.06)'}`,
-        borderRadius: 2,
-        transition: 'all 0.2s ease-in-out',
-        cursor: 'pointer',
-        '&:hover': {
-          borderColor: alpha(config.color, 0.5),
-          transform: 'translateY(-2px)',
-          boxShadow: `0 8px 24px ${alpha(config.color, 0.2)}`,
-        },
-      }}
-    >
-      {/* Header */}
-      <Box
-        sx={{
-          p: 1.5,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 1,
-          borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
-          background: alpha(config.color, 0.1),
-        }}
-      >
-        <Box sx={{ color: config.color, display: 'flex' }}>{config.icon}</Box>
-        <Typography variant="subtitle2" sx={{ flex: 1, fontWeight: 600, color: 'text.primary' }}>
-          {node.name}
-        </Typography>
-        <Chip
-          label={config.label}
-          size="small"
-          sx={{
-            height: 20,
-            fontSize: '0.625rem',
-            bgcolor: alpha(config.color, 0.15),
-            color: config.color,
-            fontWeight: 600,
-          }}
-        />
-      </Box>
-
-      {/* Content Preview */}
-      <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-            fontSize: '0.6875rem',
-          }}
-        >
-          {node.type === 'llm' && node.config.prompt
-            ? node.config.prompt.substring(0, 80) + '...'
-            : `${config.label} node`}
-        </Typography>
-
-        {/* Actions */}
-        <Box sx={{ display: 'flex', gap: 0.5, mt: 1, justifyContent: 'flex-end' }}>
-          <Tooltip title="Connect">
-            <IconButton
-              size="small"
-              onClick={(e) => {
-                e.stopPropagation()
-                onConnect(node.id)
-              }}
-              sx={{
-                bgcolor: isConnecting && connectingFrom !== node.id ? alpha('#10b981', 0.2) : 'transparent',
-                '&:hover': { bgcolor: alpha(config.color, 0.2) },
-              }}
-            >
-              <ArrowIcon sx={{ fontSize: 16 }} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Edit">
-            <IconButton
-              size="small"
-              onClick={(e) => {
-                e.stopPropagation()
-                onEdit(node)
-              }}
-            >
-              <EditIcon sx={{ fontSize: 16 }} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Delete">
-            <IconButton
-              size="small"
-              onClick={(e) => {
-                e.stopPropagation()
-                onDelete(node.id)
-              }}
-              sx={{ '&:hover': { color: '#ef4444' } }}
-            >
-              <DeleteIcon sx={{ fontSize: 16 }} />
-            </IconButton>
-          </Tooltip>
-        </Box>
-
-        {/* Connections indicator */}
-        {node.connections.length > 0 && (
-          <Box sx={{ mt: 1, pt: 1, borderTop: '1px solid rgba(255, 255, 255, 0.06)' }}>
-            <Typography variant="caption" color="text.secondary">
-              Connects to: {node.connections.length} node(s)
-            </Typography>
-          </Box>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-// Node Editor Dialog
-interface NodeEditorProps {
-  open: boolean
-  node: WorkflowNode | null
-  onClose: () => void
-  onSave: (node: WorkflowNode) => void
-}
-
-const NodeEditor: React.FC<NodeEditorProps> = ({ open, node, onClose, onSave }) => {
-  const [editedNode, setEditedNode] = useState<WorkflowNode | null>(null)
-
-  React.useEffect(() => {
-    setEditedNode(node)
-  }, [node])
-
-  if (!editedNode) return null
-
-  const config = nodeTypeConfig[editedNode.type]
-
-  const handleConfigChange = (field: string, value: any) => {
-    setEditedNode({
-      ...editedNode,
-      config: { ...editedNode.config, [field]: value },
-    })
-  }
-
-  return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-        <Box sx={{ color: config.color, display: 'flex' }}>{config.icon}</Box>
-        Edit {config.label} Node
-      </DialogTitle>
-      <DialogContent>
-        <Box sx={{ pt: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <TextField
-            label="Node Name"
-            value={editedNode.name}
-            onChange={(e) => setEditedNode({ ...editedNode, name: e.target.value })}
-            fullWidth
-            size="small"
-          />
-
-          {/* Type-specific fields */}
-          {editedNode.type === 'llm' && (
-            <>
-              <TextField
-                label="System Prompt"
-                value={editedNode.config.systemPrompt || ''}
-                onChange={(e) => handleConfigChange('systemPrompt', e.target.value)}
-                fullWidth
-                multiline
-                rows={2}
-                size="small"
-              />
-              <TextField
-                label="Prompt Template"
-                value={editedNode.config.prompt || ''}
-                onChange={(e) => handleConfigChange('prompt', e.target.value)}
-                fullWidth
-                multiline
-                rows={4}
-                size="small"
-                placeholder="Use {{variable}} for template variables"
-              />
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
-                  <TextField
-                    label="Temperature"
-                    type="number"
-                    value={editedNode.config.temperature || 0.7}
-                    onChange={(e) => handleConfigChange('temperature', parseFloat(e.target.value))}
-                    fullWidth
-                    size="small"
-                    inputProps={{ min: 0, max: 2, step: 0.1 }}
-                  />
-                </Grid>
-                <Grid item xs={6}>
-                  <TextField
-                    label="Max Tokens"
-                    type="number"
-                    value={editedNode.config.maxTokens || 1024}
-                    onChange={(e) => handleConfigChange('maxTokens', parseInt(e.target.value))}
-                    fullWidth
-                    size="small"
-                  />
-                </Grid>
-              </Grid>
-            </>
-          )}
-
-          {editedNode.type === 'input' && (
-            <>
-              <TextField
-                label="Variable Name"
-                value={editedNode.config.variableName || ''}
-                onChange={(e) => handleConfigChange('variableName', e.target.value)}
-                fullWidth
-                size="small"
-              />
-              <TextField
-                label="Default Value"
-                value={editedNode.config.defaultValue || ''}
-                onChange={(e) => handleConfigChange('defaultValue', e.target.value)}
-                fullWidth
-                size="small"
-              />
-              <TextField
-                label="Description"
-                value={editedNode.config.description || ''}
-                onChange={(e) => handleConfigChange('description', e.target.value)}
-                fullWidth
-                multiline
-                rows={2}
-                size="small"
-              />
-            </>
-          )}
-
-          {editedNode.type === 'code' && (
-            <>
-              <FormControl fullWidth size="small">
-                <InputLabel>Language</InputLabel>
-                <Select
-                  value={editedNode.config.language || 'javascript'}
-                  label="Language"
-                  onChange={(e) => handleConfigChange('language', e.target.value)}
-                >
-                  <MenuItem value="javascript">JavaScript</MenuItem>
-                  <MenuItem value="python">Python</MenuItem>
-                </Select>
-              </FormControl>
-              <TextField
-                label="Code"
-                value={editedNode.config.code || ''}
-                onChange={(e) => handleConfigChange('code', e.target.value)}
-                fullWidth
-                multiline
-                rows={6}
-                size="small"
-                sx={{ fontFamily: 'monospace' }}
-              />
-            </>
-          )}
-
-          {editedNode.type === 'condition' && (
-            <>
-              <TextField
-                label="Condition Expression"
-                value={editedNode.config.condition || ''}
-                onChange={(e) => handleConfigChange('condition', e.target.value)}
-                fullWidth
-                size="small"
-                placeholder="e.g., {{response}}.includes('yes')"
-              />
-              <Alert severity="info" sx={{ fontSize: '0.75rem' }}>
-                Use JavaScript expressions. Variables are available as {'{{'} variableName {'}}'}
-              </Alert>
-            </>
-          )}
-
-          {editedNode.type === 'output' && (
-            <>
-              <TextField
-                label="Output Variable"
-                value={editedNode.config.outputVariable || ''}
-                onChange={(e) => handleConfigChange('outputVariable', e.target.value)}
-                fullWidth
-                size="small"
-              />
-              <FormControl fullWidth size="small">
-                <InputLabel>Format</InputLabel>
-                <Select
-                  value={editedNode.config.format || 'text'}
-                  label="Format"
-                  onChange={(e) => handleConfigChange('format', e.target.value)}
-                >
-                  <MenuItem value="text">Plain Text</MenuItem>
-                  <MenuItem value="json">JSON</MenuItem>
-                  <MenuItem value="markdown">Markdown</MenuItem>
-                </Select>
-              </FormControl>
-            </>
-          )}
-
-          {editedNode.type === 'loop' && (
-            <>
-              <TextField
-                label="Max Iterations"
-                type="number"
-                value={editedNode.config.iterations || 5}
-                onChange={(e) => handleConfigChange('iterations', parseInt(e.target.value))}
-                fullWidth
-                size="small"
-              />
-              <TextField
-                label="Break Condition"
-                value={editedNode.config.breakCondition || ''}
-                onChange={(e) => handleConfigChange('breakCondition', e.target.value)}
-                fullWidth
-                size="small"
-                placeholder="e.g., {{result}} === 'done'"
-              />
-            </>
-          )}
-        </Box>
-      </DialogContent>
-      <DialogActions sx={{ p: 2 }}>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={() => onSave(editedNode)}>
-          Save
-        </Button>
-      </DialogActions>
-    </Dialog>
-  )
-}
-
-// Main Workflow Builder Page
 const WorkflowBuilderPage: React.FC = () => {
-  const [workflows, setWorkflows] = useState<Workflow[]>([])
-  const [currentWorkflow, setCurrentWorkflow] = useState<Workflow | null>(null)
-  const [editingNode, setEditingNode] = useState<WorkflowNode | null>(null)
-  const [isConnecting, setIsConnecting] = useState(false)
-  const [connectingFrom, setConnectingFrom] = useState<string | null>(null)
-  const [running, setRunning] = useState(false)
-  const [runResult, setRunResult] = useState<string | null>(null)
+  // Workflow state
+  const [workflow, setWorkflow] = useState<Workflow | null>(null);
+  const [savedWorkflows, setSavedWorkflows] = useState<Workflow[]>([]);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Selection state
+  const [selectedNode, setSelectedNode] = useState<WorkflowNode | null>(null);
+
+  // Execution state
+  const [execution, setExecution] = useState<WorkflowExecution | null>(null);
+  const [nodeExecutions, setNodeExecutions] = useState<Record<string, NodeExecution>>({});
+  const [isRunning, setIsRunning] = useState(false);
+  const [executionId, setExecutionId] = useState<string | null>(null);
+
+  // Dialog state
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [openDialogOpen, setOpenDialogOpen] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+
+  // Menu state
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+
+  // Load saved workflows from API
+  useEffect(() => {
+    loadWorkflows();
+  }, []);
+
+  const loadWorkflows = async () => {
+    try {
+      setLoading(true);
+      const response = await workflowApi.listWorkflows({ limit: 100 });
+      setSavedWorkflows(response.workflows);
+    } catch (e) {
+      console.error('Failed to load workflows:', e);
+      // Fallback to localStorage if API fails
+      const stored = localStorage.getItem('llama-nexus-workflows');
+      if (stored) {
+        try {
+          setSavedWorkflows(JSON.parse(stored));
+        } catch (parseError) {
+          console.error('Failed to parse stored workflows:', parseError);
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Create new workflow
-  const createWorkflow = () => {
-    const newWorkflow: Workflow = {
-      id: `wf-${Date.now()}`,
-      name: 'New Workflow',
-      description: '',
-      nodes: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+  const handleNewWorkflow = () => {
+    if (hasUnsavedChanges) {
+      if (!confirm('You have unsaved changes. Create new workflow anyway?')) {
+        return;
+      }
     }
-    setCurrentWorkflow(newWorkflow)
-    setWorkflows([...workflows, newWorkflow])
-  }
+    setWorkflow(createEmptyWorkflow());
+    setSelectedNode(null);
+    setHasUnsavedChanges(false);
+    setError(null);
+  };
 
-  // Add node
-  const addNode = (type: NodeType) => {
-    if (!currentWorkflow) return
+  // Save workflow
+  const handleSaveWorkflow = async () => {
+    if (!workflow) return;
 
-    const newNode: WorkflowNode = {
-      id: `node-${Date.now()}`,
-      type,
-      name: `${nodeTypeConfig[type].label} ${currentWorkflow.nodes.filter((n) => n.type === type).length + 1}`,
-      config: {},
-      position: { x: 100, y: 100 + currentWorkflow.nodes.length * 150 },
-      connections: [],
+    try {
+      setLoading(true);
+      setError(null);
+
+      let savedWorkflow: Workflow;
+      
+      // Check if workflow already exists in saved list
+      const existingIndex = savedWorkflows.findIndex((w) => w.id === workflow.id);
+      
+      if (existingIndex >= 0) {
+        // Update existing workflow
+        savedWorkflow = await workflowApi.updateWorkflow(workflow.id, {
+          name: workflow.name,
+          description: workflow.description,
+          nodes: workflow.nodes,
+          connections: workflow.connections,
+          variables: workflow.variables,
+          settings: workflow.settings,
+        });
+      } else {
+        // Create new workflow
+        savedWorkflow = await workflowApi.createWorkflow({
+          name: workflow.name,
+          description: workflow.description,
+          nodes: workflow.nodes,
+          connections: workflow.connections,
+          variables: workflow.variables,
+          settings: workflow.settings,
+        });
+      }
+
+      setWorkflow(savedWorkflow);
+      setHasUnsavedChanges(false);
+      setSaveDialogOpen(false);
+      
+      // Refresh workflow list
+      await loadWorkflows();
+    } catch (e: any) {
+      console.error('Failed to save workflow:', e);
+      setError(e.message || 'Failed to save workflow');
+    } finally {
+      setLoading(false);
     }
+  };
 
-    setCurrentWorkflow({
-      ...currentWorkflow,
-      nodes: [...currentWorkflow.nodes, newNode],
-      updatedAt: new Date().toISOString(),
-    })
-  }
+  // Open workflow
+  const handleOpenWorkflow = async (workflowToOpen: Workflow) => {
+    if (hasUnsavedChanges) {
+      if (!confirm('You have unsaved changes. Open another workflow anyway?')) {
+        return;
+      }
+    }
+    
+    try {
+      setLoading(true);
+      // Fetch fresh copy from API
+      const freshWorkflow = await workflowApi.getWorkflow(workflowToOpen.id);
+      setWorkflow(freshWorkflow);
+      setSelectedNode(null);
+      setHasUnsavedChanges(false);
+      setOpenDialogOpen(false);
+      setError(null);
+    } catch (e: any) {
+      console.error('Failed to open workflow:', e);
+      // Fallback to passed workflow
+      setWorkflow(workflowToOpen);
+      setSelectedNode(null);
+      setHasUnsavedChanges(false);
+      setOpenDialogOpen(false);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  // Delete node
-  const deleteNode = (id: string) => {
-    if (!currentWorkflow) return
+  // Delete workflow
+  const handleDeleteWorkflow = async (workflowId: string) => {
+    try {
+      setLoading(true);
+      await workflowApi.deleteWorkflow(workflowId);
+      
+      if (workflow?.id === workflowId) {
+        setWorkflow(null);
+        setSelectedNode(null);
+      }
+      
+      await loadWorkflows();
+    } catch (e: any) {
+      console.error('Failed to delete workflow:', e);
+      setError(e.message || 'Failed to delete workflow');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    setCurrentWorkflow({
-      ...currentWorkflow,
-      nodes: currentWorkflow.nodes
-        .filter((n) => n.id !== id)
-        .map((n) => ({
-          ...n,
-          connections: n.connections.filter((c) => c !== id),
-        })),
-      updatedAt: new Date().toISOString(),
-    })
-  }
+  // Handle nodes change
+  const handleNodesChange = useCallback((nodes: WorkflowNode[]) => {
+    setWorkflow((prev) => prev ? { ...prev, nodes } : prev);
+    setHasUnsavedChanges(true);
+  }, []);
 
-  // Handle connection
-  const handleConnect = (nodeId: string) => {
-    if (!currentWorkflow) return
+  // Handle connections change
+  const handleConnectionsChange = useCallback((connections: WorkflowConnection[]) => {
+    setWorkflow((prev) => prev ? { ...prev, connections } : prev);
+    setHasUnsavedChanges(true);
+  }, []);
 
-    if (!isConnecting) {
-      setIsConnecting(true)
-      setConnectingFrom(nodeId)
-    } else if (connectingFrom && connectingFrom !== nodeId) {
-      // Create connection
-      setCurrentWorkflow({
-        ...currentWorkflow,
-        nodes: currentWorkflow.nodes.map((n) =>
-          n.id === connectingFrom ? { ...n, connections: [...n.connections, nodeId] } : n
+  // Handle node selection
+  const handleNodeSelect = useCallback((node: WorkflowNode | null) => {
+    setSelectedNode(node);
+  }, []);
+
+  // Handle node update from property panel
+  const handleNodeUpdate = useCallback((updatedNode: WorkflowNode) => {
+    setWorkflow((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        nodes: prev.nodes.map((n) => (n.id === updatedNode.id ? updatedNode : n)),
+      };
+    });
+    setSelectedNode(updatedNode);
+    setHasUnsavedChanges(true);
+  }, []);
+
+  // Handle node delete
+  const handleNodeDelete = useCallback((nodeId: string) => {
+    setWorkflow((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        nodes: prev.nodes.filter((n) => n.id !== nodeId),
+        connections: prev.connections.filter(
+          (c) => c.source !== nodeId && c.target !== nodeId
         ),
-        updatedAt: new Date().toISOString(),
-      })
-      setIsConnecting(false)
-      setConnectingFrom(null)
-    } else {
-      setIsConnecting(false)
-      setConnectingFrom(null)
+      };
+    });
+    if (selectedNode?.id === nodeId) {
+      setSelectedNode(null);
     }
-  }
+    setHasUnsavedChanges(true);
+  }, [selectedNode]);
 
-  // Save node
-  const saveNode = (node: WorkflowNode) => {
-    if (!currentWorkflow) return
+  // Handle node duplicate
+  const handleNodeDuplicate = useCallback((nodeId: string) => {
+    setWorkflow((prev) => {
+      if (!prev) return prev;
+      const nodeToDuplicate = prev.nodes.find((n) => n.id === nodeId);
+      if (!nodeToDuplicate) return prev;
 
-    setCurrentWorkflow({
-      ...currentWorkflow,
-      nodes: currentWorkflow.nodes.map((n) => (n.id === node.id ? node : n)),
-      updatedAt: new Date().toISOString(),
-    })
-    setEditingNode(null)
-  }
+      const newNode: WorkflowNode = {
+        ...nodeToDuplicate,
+        id: `node-${Date.now()}`,
+        position: {
+          x: nodeToDuplicate.position.x + 50,
+          y: nodeToDuplicate.position.y + 50,
+        },
+        data: {
+          ...nodeToDuplicate.data,
+          label: `${nodeToDuplicate.data.label} (copy)`,
+        },
+      };
 
-  // Run workflow (simulation)
-  const runWorkflow = async () => {
-    if (!currentWorkflow || currentWorkflow.nodes.length === 0) return
+      return {
+        ...prev,
+        nodes: [...prev.nodes, newNode],
+      };
+    });
+    setHasUnsavedChanges(true);
+  }, []);
 
-    setRunning(true)
-    setRunResult(null)
+  // Run workflow via API
+  const handleRunWorkflow = async () => {
+    if (!workflow || workflow.nodes.length === 0) return;
 
-    // Simulate workflow execution
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+    // Save workflow first if there are unsaved changes
+    if (hasUnsavedChanges) {
+      await handleSaveWorkflow();
+    }
 
-    setRunResult('Workflow executed successfully!\n\nOutput:\n{\n  "result": "Sample output from workflow",\n  "steps_executed": ' + currentWorkflow.nodes.length + '\n}')
-    setRunning(false)
-  }
+    try {
+      setIsRunning(true);
+      setNodeExecutions({});
+      setError(null);
+
+      // Start execution via API
+      const response = await workflowApi.executeWorkflow(workflow.id, {});
+      setExecutionId(response.execution_id);
+
+      // Poll for execution status
+      await workflowApi.pollExecution(
+        response.execution_id,
+        (exec) => {
+          // Update node executions from the API response
+          if (exec.nodeExecutions) {
+            const nodeExecs: Record<string, NodeExecution> = {};
+            for (const [nodeId, nodeExec] of Object.entries(exec.nodeExecutions)) {
+              nodeExecs[nodeId] = nodeExec as NodeExecution;
+            }
+            setNodeExecutions(nodeExecs);
+          }
+          setExecution(exec);
+        },
+        1000, // Poll every second
+        300   // Max 5 minutes
+      );
+
+      setIsRunning(false);
+    } catch (e: any) {
+      console.error('Workflow execution failed:', e);
+      setError(e.message || 'Workflow execution failed');
+      setIsRunning(false);
+    }
+  };
+
+  // Stop workflow execution
+  const handleStopWorkflow = async () => {
+    if (!executionId) {
+      setIsRunning(false);
+      return;
+    }
+
+    try {
+      await workflowApi.cancelExecution(executionId);
+      setIsRunning(false);
+      setExecutionId(null);
+    } catch (e: any) {
+      console.error('Failed to stop workflow:', e);
+      setError(e.message || 'Failed to stop workflow');
+    }
+  };
+
+  // Export workflow
+  const handleExportWorkflow = () => {
+    if (!workflow) return;
+
+    const dataStr = JSON.stringify(workflow, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${workflow.name.replace(/\s+/g, '-').toLowerCase()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setMenuAnchor(null);
+  };
+
+  // Import workflow
+  const handleImportWorkflow = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const imported = JSON.parse(text) as Workflow;
+        imported.id = `wf-${Date.now()}`; // Generate new ID
+        setWorkflow(imported);
+        setHasUnsavedChanges(true);
+      } catch (err) {
+        console.error('Failed to import workflow:', err);
+        alert('Failed to import workflow. Please check the file format.');
+      }
+    };
+    input.click();
+    setMenuAnchor(null);
+  };
 
   return (
     <Box
@@ -573,205 +420,337 @@ const WorkflowBuilderPage: React.FC = () => {
       {/* Header */}
       <Box
         sx={{
-          p: 2,
-          borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+          px: 2,
+          py: 1.5,
+          borderBottom: '1px solid',
+          borderColor: 'divider',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
           gap: 2,
+          bgcolor: 'background.paper',
         }}
       >
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        {/* Left: Title and workflow info */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
           <WorkflowIcon sx={{ color: '#6366f1' }} />
-          <Typography variant="h6" sx={{ fontWeight: 600 }}>
+          <Typography variant="h6" fontWeight={600}>
             Workflow Builder
           </Typography>
-          {currentWorkflow && (
-            <Chip
-              label={currentWorkflow.name}
-              size="small"
-              sx={{
-                bgcolor: alpha('#6366f1', 0.1),
-                border: `1px solid ${alpha('#6366f1', 0.2)}`,
-                color: '#818cf8',
-              }}
-            />
+          {workflow && (
+            <>
+              <Chip
+                label={workflow.name}
+                size="small"
+                sx={{
+                  bgcolor: alpha('#6366f1', 0.1),
+                  color: '#818cf8',
+                  fontWeight: 500,
+                }}
+              />
+              {hasUnsavedChanges && (
+                <Chip
+                  label="Unsaved"
+                  size="small"
+                  sx={{
+                    bgcolor: alpha('#f59e0b', 0.1),
+                    color: '#f59e0b',
+                    fontSize: '0.7rem',
+                  }}
+                />
+              )}
+            </>
           )}
         </Box>
 
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          {!currentWorkflow ? (
-            <Button variant="contained" startIcon={<AddIcon />} onClick={createWorkflow}>
+        {/* Center: Workflow actions */}
+        <Box sx={{ flex: 1, display: 'flex', justifyContent: 'center', gap: 1 }}>
+          {!workflow ? (
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={handleNewWorkflow}
+            >
               New Workflow
             </Button>
           ) : (
             <>
-              <Button
-                variant="outlined"
-                startIcon={<SaveIcon />}
-                onClick={() => {
-                  // Save to localStorage or API
-                  localStorage.setItem(`workflow-${currentWorkflow.id}`, JSON.stringify(currentWorkflow))
-                }}
-              >
-                Save
-              </Button>
+              <Tooltip title="Save">
+                <IconButton onClick={() => setSaveDialogOpen(true)} disabled={loading}>
+                  {loading ? <CircularProgress size={20} /> : <SaveIcon />}
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Open">
+                <IconButton onClick={() => setOpenDialogOpen(true)}>
+                  <OpenIcon />
+                </IconButton>
+              </Tooltip>
+              <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
               <Button
                 variant="contained"
-                startIcon={running ? <CircularProgress size={16} /> : <PlayIcon />}
-                onClick={runWorkflow}
-                disabled={running || currentWorkflow.nodes.length === 0}
-                sx={{ bgcolor: '#10b981', '&:hover': { bgcolor: '#059669' } }}
+                startIcon={isRunning ? <CircularProgress size={16} color="inherit" /> : <PlayIcon />}
+                onClick={isRunning ? handleStopWorkflow : handleRunWorkflow}
+                disabled={workflow.nodes.length === 0}
+                color={isRunning ? 'error' : 'success'}
+                sx={{ minWidth: 100 }}
               >
-                {running ? 'Running...' : 'Run'}
+                {isRunning ? 'Stop' : 'Run'}
               </Button>
+            </>
+          )}
+        </Box>
+
+        {/* Right: More actions */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          {workflow && (
+            <>
+              <Tooltip title="Settings">
+                <IconButton onClick={() => setSettingsDialogOpen(true)}>
+                  <SettingsIcon />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="More actions">
+                <IconButton onClick={(e) => setMenuAnchor(e.currentTarget)}>
+                  <MoreIcon />
+                </IconButton>
+              </Tooltip>
             </>
           )}
         </Box>
       </Box>
 
-      {/* Main Content */}
+      {/* Error display */}
+      {error && (
+        <Alert 
+          severity="error" 
+          onClose={() => setError(null)}
+          sx={{ mx: 2, mt: 1 }}
+        >
+          {error}
+        </Alert>
+      )}
+
+      {/* Main content */}
       <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Node Palette */}
-        <Box
-          sx={{
-            width: 200,
-            p: 2,
-            borderRight: '1px solid rgba(255, 255, 255, 0.06)',
-            overflowY: 'auto',
-          }}
-        >
-          <Typography variant="overline" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
-            Add Nodes
-          </Typography>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {(Object.keys(nodeTypeConfig) as NodeType[]).map((type) => {
-              const config = nodeTypeConfig[type]
-              return (
-                <Button
-                  key={type}
-                  variant="outlined"
-                  startIcon={config.icon}
-                  onClick={() => addNode(type)}
-                  disabled={!currentWorkflow}
-                  sx={{
-                    justifyContent: 'flex-start',
-                    borderColor: alpha(config.color, 0.3),
-                    color: config.color,
-                    '&:hover': {
-                      borderColor: config.color,
-                      bgcolor: alpha(config.color, 0.1),
-                    },
-                  }}
-                >
-                  {config.label}
-                </Button>
-              )
-            })}
-          </Box>
-
-          {isConnecting && (
-            <Alert severity="info" sx={{ mt: 2, fontSize: '0.75rem' }}>
-              Click another node to connect, or click the same node to cancel.
-            </Alert>
-          )}
-        </Box>
+        <NodePalette disabled={!workflow || loading} />
 
         {/* Canvas */}
-        <Box
-          sx={{
-            flex: 1,
-            p: 3,
-            overflowY: 'auto',
-            bgcolor: 'rgba(0, 0, 0, 0.2)',
-            backgroundImage: `
-              linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-              linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px)
-            `,
-            backgroundSize: '20px 20px',
-          }}
-        >
-          {!currentWorkflow ? (
-            <Box
-              sx={{
-                height: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexDirection: 'column',
-                gap: 2,
-              }}
-            >
-              <WorkflowIcon sx={{ fontSize: 64, color: 'text.secondary', opacity: 0.3 }} />
-              <Typography color="text.secondary">Create a new workflow to get started</Typography>
-              <Button variant="contained" startIcon={<AddIcon />} onClick={createWorkflow}>
-                New Workflow
-              </Button>
-            </Box>
-          ) : currentWorkflow.nodes.length === 0 ? (
-            <Box
-              sx={{
-                height: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexDirection: 'column',
-                gap: 2,
-              }}
-            >
-              <Typography color="text.secondary">Add nodes from the left panel to build your workflow</Typography>
-            </Box>
+        <Box sx={{ flex: 1, position: 'relative' }}>
+          {workflow ? (
+            <ReactFlowProvider>
+              <WorkflowCanvas
+                nodes={workflow.nodes}
+                connections={workflow.connections}
+                nodeExecutions={nodeExecutions}
+                onNodesChange={handleNodesChange}
+                onConnectionsChange={handleConnectionsChange}
+                onNodeSelect={handleNodeSelect}
+                selectedNodeId={selectedNode?.id}
+              />
+            </ReactFlowProvider>
           ) : (
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
-              {currentWorkflow.nodes.map((node) => (
-                <NodeCard
-                  key={node.id}
-                  node={node}
-                  onEdit={setEditingNode}
-                  onDelete={deleteNode}
-                  onConnect={handleConnect}
-                  isConnecting={isConnecting}
-                  connectingFrom={connectingFrom}
-                />
-              ))}
+            <Box
+              sx={{
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 2,
+                bgcolor: 'background.default',
+              }}
+            >
+              <WorkflowIcon sx={{ fontSize: 80, color: 'text.disabled', opacity: 0.3 }} />
+              <Typography variant="h6" color="text.secondary">
+                Create or open a workflow to get started
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 2 }}>
+                <Button variant="contained" startIcon={<AddIcon />} onClick={handleNewWorkflow}>
+                  New Workflow
+                </Button>
+                <Button
+                  variant="outlined"
+                  startIcon={<OpenIcon />}
+                  onClick={() => setOpenDialogOpen(true)}
+                  disabled={savedWorkflows.length === 0}
+                >
+                  Open Workflow
+                </Button>
+              </Box>
             </Box>
           )}
         </Box>
 
-        {/* Run Result Panel */}
-        {runResult && (
-          <Box
-            sx={{
-              width: 300,
-              p: 2,
-              borderLeft: '1px solid rgba(255, 255, 255, 0.06)',
-              overflowY: 'auto',
-            }}
-          >
-            <Typography variant="overline" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
-              Run Result
-            </Typography>
-            <Box
-              sx={{
-                bgcolor: 'rgba(0, 0, 0, 0.3)',
-                borderRadius: 1,
-                p: 1.5,
-                fontFamily: 'monospace',
-                fontSize: '0.75rem',
-                whiteSpace: 'pre-wrap',
-              }}
-            >
-              {runResult}
-            </Box>
-          </Box>
+        {/* Right Side Panel: Property or Execution */}
+        {workflow && (
+          selectedNode ? (
+            <PropertyPanel
+              node={selectedNode}
+              onNodeUpdate={handleNodeUpdate}
+              onNodeDelete={handleNodeDelete}
+              onNodeDuplicate={handleNodeDuplicate}
+              onClose={() => setSelectedNode(null)}
+            />
+          ) : (
+            <ExecutionPanel
+              workflowId={workflow.id}
+              currentExecution={execution}
+              nodeExecutions={nodeExecutions}
+              isRunning={isRunning}
+            />
+          )
         )}
       </Box>
 
-      {/* Node Editor Dialog */}
-      <NodeEditor open={!!editingNode} node={editingNode} onClose={() => setEditingNode(null)} onSave={saveNode} />
-    </Box>
-  )
-}
+      {/* More actions menu */}
+      <Menu
+        anchorEl={menuAnchor}
+        open={Boolean(menuAnchor)}
+        onClose={() => setMenuAnchor(null)}
+      >
+        <MenuItem onClick={handleNewWorkflow}>
+          <ListItemIcon><AddIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>New Workflow</ListItemText>
+        </MenuItem>
+        <Divider />
+        <MenuItem onClick={handleExportWorkflow}>
+          <ListItemIcon><ExportIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Export Workflow</ListItemText>
+        </MenuItem>
+        <MenuItem onClick={handleImportWorkflow}>
+          <ListItemIcon><ImportIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Import Workflow</ListItemText>
+        </MenuItem>
+        <Divider />
+        <MenuItem
+          onClick={() => {
+            if (workflow && confirm('Delete this workflow?')) {
+              handleDeleteWorkflow(workflow.id);
+            }
+            setMenuAnchor(null);
+          }}
+          sx={{ color: 'error.main' }}
+        >
+          <ListItemIcon><DeleteIcon fontSize="small" color="error" /></ListItemIcon>
+          <ListItemText>Delete Workflow</ListItemText>
+        </MenuItem>
+      </Menu>
 
-export default WorkflowBuilderPage
+      {/* Save Dialog */}
+      <Dialog open={saveDialogOpen} onClose={() => setSaveDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Save Workflow</DialogTitle>
+        <DialogContent>
+          <TextField
+            label="Workflow Name"
+            value={workflow?.name || ''}
+            onChange={(e) => setWorkflow((prev) => prev ? { ...prev, name: e.target.value } : prev)}
+            fullWidth
+            margin="normal"
+            autoFocus
+          />
+          <TextField
+            label="Description (optional)"
+            value={workflow?.description || ''}
+            onChange={(e) => setWorkflow((prev) => prev ? { ...prev, description: e.target.value } : prev)}
+            fullWidth
+            margin="normal"
+            multiline
+            rows={3}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSaveDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleSaveWorkflow}>
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Open Dialog */}
+      <Dialog open={openDialogOpen} onClose={() => setOpenDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Open Workflow</DialogTitle>
+        <DialogContent>
+          {savedWorkflows.length === 0 ? (
+            <Alert severity="info" sx={{ mt: 1 }}>
+              No saved workflows found. Create a new workflow to get started.
+            </Alert>
+          ) : (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mt: 1 }}>
+              {savedWorkflows.map((wf) => (
+                <Box
+                  key={wf.id}
+                  sx={{
+                    p: 2,
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: 1,
+                    cursor: 'pointer',
+                    '&:hover': { bgcolor: 'action.hover' },
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 2,
+                  }}
+                  onClick={() => handleOpenWorkflow(wf)}
+                >
+                  <WorkflowIcon sx={{ color: '#6366f1' }} />
+                  <Box sx={{ flex: 1 }}>
+                    <Typography variant="subtitle2">{wf.name}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {wf.nodes.length} nodes | Updated {new Date(wf.updatedAt).toLocaleDateString()}
+                    </Typography>
+                  </Box>
+                  <IconButton
+                    size="small"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm(`Delete "${wf.name}"?`)) {
+                        handleDeleteWorkflow(wf.id);
+                      }
+                    }}
+                  >
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+              ))}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenDialogOpen(false)}>Cancel</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Settings Dialog */}
+      <Dialog open={settingsDialogOpen} onClose={() => setSettingsDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Workflow Settings</DialogTitle>
+        <DialogContent>
+          <TextField
+            label="Timeout (seconds)"
+            type="number"
+            value={workflow?.settings.timeout || 300}
+            onChange={(e) => setWorkflow((prev) => 
+              prev ? { ...prev, settings: { ...prev.settings, timeout: parseInt(e.target.value) } } : prev
+            )}
+            fullWidth
+            margin="normal"
+          />
+          <TextField
+            label="Max Retries"
+            type="number"
+            value={workflow?.settings.maxRetries || 3}
+            onChange={(e) => setWorkflow((prev) => 
+              prev ? { ...prev, settings: { ...prev.settings, maxRetries: parseInt(e.target.value) } } : prev
+            )}
+            fullWidth
+            margin="normal"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSettingsDialogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  );
+};
+
+export default WorkflowBuilderPage;

@@ -43,6 +43,13 @@ services:
     container_name: llamacpp-backend
     ports:
       - "8700:8700"    # Management API port
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
     environment:
       # Default LlamaCPP configuration - Qwen3-VL-4B-Thinking
       - MODEL_NAME=Qwen_Qwen3-VL-4B-Thinking
@@ -63,6 +70,7 @@ services:
       - TEMPLATE_PATH=/home/llamacpp/chat-template.jinja
       # Enable Docker mode and set container name
       - USE_DOCKER=true
+      - RUNNING_IN_DOCKER=true
       - LLAMACPP_CONTAINER_NAME=llamacpp-api
       # Pass through HuggingFace token from host environment
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
@@ -74,6 +82,9 @@ services:
       # Qdrant for RAG vector storage
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      # GraphRAG external service (Neo4j + GLiNER)
+      - GRAPHRAG_URL=http://graphrag-api-1:8000
+      - GRAPHRAG_ENABLED=true
       # Database paths for persistent storage
       - TOKEN_DB_PATH=/data/token_usage.db
       - CONVERSATION_DB_PATH=/data/conversations.db
@@ -91,9 +102,11 @@ services:
       # Mount Dockerfile separately as read-write for version management
       - ./Dockerfile:/home/alec/git/llama-nexus/Dockerfile
       # Conversation storage
-      - conversation_data:/data/conversations
-    runtime: nvidia
+      -       conversation_data:/data/conversations
     shm_size: '16gb'
+    networks:
+      - default
+      - graphrag-network
     depends_on:
       llamacpp-builder:
         condition: service_completed_successfully
@@ -129,17 +142,23 @@ services:
     hostname: llamacpp
     ports:
       - "8600:8080"    # API server port
-    runtime: nvidia
     shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
     volumes:
       - gpt_oss_models:/home/llamacpp/models
       - ./chat-templates:/home/llamacpp/templates:ro
     environment:
       - TEMPLATE_DIR=/home/llamacpp/templates
       - CHAT_TEMPLATE=builtin-gpt-oss
-      # CUDA optimizations - use 'all' for auto-detection or specify devices like '0' or '0,1'
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      # CUDA optimizations - use '0' for single GPU or '0,1' for multiple
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
       # Model configuration - Qwen3-VL-4B-Thinking (Vision-Language with Reasoning)
       - MODEL_NAME=Qwen_Qwen3-VL-4B-Thinking
       - MODEL_VARIANT=Q4_K_M
@@ -197,8 +216,14 @@ services:
     hostname: vllm
     ports:
       - "8601:8080"    # vLLM API server port (different from llamacpp)
-    runtime: nvidia
     shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
     environment:
       - MODEL_NAME=openai/gpt-oss-20b
       - HOST=0.0.0.0
@@ -215,9 +240,9 @@ services:
       - SERVED_MODEL_NAME=gpt-oss-20b
       # HuggingFace token for downloads
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
-      # CUDA optimizations - use 'all' for auto-detection or specify devices like '0' or '0,1'
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      # CUDA optimizations - use '0' for single GPU or '0,1' for multiple
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
     volumes:
       - vllm_models:/home/vllm/models
       - vllm_cache:/home/vllm/.cache
@@ -240,8 +265,14 @@ services:
     hostname: llamacpp-embed
     ports:
       - "8602:8080"    # Embedding server port
-    runtime: nvidia
     shm_size: '8gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
     volumes:
       - gpt_oss_models:/home/llamacpp/models
       - ./start-embed.sh:/start-embed.sh:ro
@@ -249,20 +280,19 @@ services:
       # Embedding model configuration - Nomic Embed v1.5
       - MODEL_NAME=nomic-embed-text-v1.5
       - MODEL_VARIANT=Q8_0
-      - CONTEXT_SIZE=8192
-      - GPU_LAYERS=999
+      - CONTEXT_SIZE=2048
+      - GPU_LAYERS=0
       - HOST=0.0.0.0
       - PORT=8080
       - API_KEY=llamacpp-embed
-      - THREADS=-1
+      - THREADS=8
       - BATCH_SIZE=512
       - UBATCH_SIZE=512
       - POOLING_TYPE=mean
       # HuggingFace token for downloads
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
-      # CUDA optimizations - use 'all' for auto-detection or specify devices like '0' or '0,1'
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      # CUDA device - keep low GPU layers to avoid memory conflicts
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -289,3 +319,9 @@ volumes:
     driver: local
   qdrant_data:
     driver: local
+
+networks:
+  # External graphrag network for knowledge graph integration
+  graphrag-network:
+    name: graphrag_graphrag-network
+    external: true

@@ -163,9 +163,36 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   reasoning_content,
 }) => {
   // Check for thinking tags in content and extract them
-  const thinkingMatch = content.match(/<think>([\s\S]*?)<\/think>/i)
-  const thinking = reasoning_content || (thinkingMatch ? thinkingMatch[1].trim() : '')
-  const displayContent = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+  // Support multiple tag formats: <think>, <thinking>, <thought>
+  // Use greedy matching to capture everything between tags
+  const thinkingRegex = /<(think|thinking|thought)>([\s\S]*?)<\/\1>/gi
+  let thinking = ''
+  let displayContent = content
+  
+  // Extract all thinking blocks
+  let match
+  const thinkingParts: string[] = []
+  while ((match = thinkingRegex.exec(content)) !== null) {
+    thinkingParts.push(match[2].trim())
+  }
+  
+  if (thinkingParts.length > 0) {
+    thinking = thinkingParts.join('\n\n')
+    displayContent = content.replace(/<(think|thinking|thought)>[\s\S]*?<\/\1>/gi, '').trim()
+  }
+  
+  // Handle unclosed thinking tags - if content starts with <think> but no closing tag,
+  // treat everything as thinking (the response is still being generated)
+  const unclosedThinkMatch = content.match(/^<(think|thinking|thought)>([\s\S]*)$/i)
+  if (unclosedThinkMatch && !thinking) {
+    thinking = unclosedThinkMatch[2].trim()
+    displayContent = '' // Response hasn't started yet
+  }
+  
+  // Use reasoning_content from API if available (takes priority)
+  if (reasoning_content) {
+    thinking = reasoning_content
+  }
 
   return (
     <Box sx={{ width: '100%' }}>

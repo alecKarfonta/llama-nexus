@@ -1,5 +1,483 @@
 # Llama Nexus Deployment Notes
 
+## Docker GPU Fix for API-launched Containers (2025-12-08)
+
+### Problem
+When launching containers through the backend API (LlamaCPPManager, EmbeddingManager), CUDA initialization failed with "no CUDA-capable device is detected" even though `nvidia-smi` worked inside the container.
+
+### Root Cause
+Using `--gpus all` with Docker CLI doesn't properly configure CUDA capabilities for all use cases. The NVIDIA Container Toolkit's `--gpus` flag can have issues with newer driver versions (575.x).
+
+### Solution
+Changed from `--gpus all` to `--runtime nvidia` with explicit environment variables:
+```bash
+--runtime nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility
+```
+
+### Files Modified
+- `backend/main.py` - Updated `LlamaCPPManager.start_docker_cli()` and `EmbeddingManager` CLI container launch
+
+### Additional Fixes
+- Changed default `embedding` config from `True` to `False` - the `--embeddings` flag causes assertion errors with some models (Qwen3-VL-4B-Thinking)
+
+---
+
+## Benchmark Page Overhaul (2025-12-08)
+
+### Goal
+Complete overhaul of the benchmark system to make it highly usable for evaluating LLM inference speed.
+
+### New Features
+1. **Quick Speed Test** - Type a prompt, see real-time streaming TPS and TTFT
+2. **Model Comparison** - Side-by-side comparison table with charts
+3. **Context Scaling** - Test how speed degrades with longer context
+4. **Latency Profiling** - P50/P90/P99 percentiles with histogram visualization
+5. **Throughput Testing** - Concurrent request stress testing
+6. **Persistent Results** - SQLite storage, CSV/JSON export
+
+### API Design
+- `POST /api/v1/benchmark/speed-test` - Quick single prompt test with SSE streaming
+- `POST /api/v1/benchmark/compare` - Compare multiple endpoints
+- `POST /api/v1/benchmark/context-scaling` - Test across context lengths
+- `POST /api/v1/benchmark/throughput` - Concurrent stress testing
+- `GET /api/v1/benchmark/results` - Get stored results
+- `GET /api/v1/benchmark/results/{id}` - Get specific result
+- `DELETE /api/v1/benchmark/results/{id}` - Delete result
+- `GET /api/v1/benchmark/export/{id}` - Export as CSV/JSON
+
+### Files Modified
+- `backend/routes/benchmark.py` - Complete rewrite (~750 lines)
+- `frontend/src/pages/BenchmarkPage.tsx` - Complete rewrite (~900 lines)
+
+### Backend Changes
+- SQLite storage for persistent benchmark results
+- SSE streaming for real-time speed test progress
+- New endpoints:
+  - `POST /speed-test` - Quick test with streaming metrics
+  - `POST /speed-test/sync` - Synchronous version
+  - `POST /compare` - Compare multiple endpoints
+  - `POST /context-scaling` - Test context length impact
+  - `POST /throughput` - Concurrent stress testing
+  - `GET /results` - List stored results
+  - `GET /results/{id}` - Get specific result
+  - `DELETE /results/{id}` - Delete result
+  - `DELETE /results` - Clear all results
+  - `GET /export/{id}` - Export as JSON/CSV
+  - `GET /stats` - Aggregate statistics
+
+### Frontend Changes
+- Tab-based UI: Speed Test, Compare, Context Scaling, Throughput, History
+- Real-time metrics display with progress indicators
+- Comparison bar charts
+- Context scaling visualization
+- Throughput analysis
+- Result export (JSON/CSV)
+- Stats overview cards
+
+---
+
+## Route Refactoring (2025-12-08)
+
+### Summary
+Refactored `backend/main.py` to reduce its size by breaking out route sections into separate modules.
+
+### Changes Made
+- Created `backend/routes/` directory with route modules
+- Extracted RAG routes to `routes/rag.py` (~1000 lines)
+- Extracted GraphRAG proxy routes to `routes/graphrag.py` (~300 lines)  
+- Extracted Workflow routes to `routes/workflows.py` (~300 lines)
+- Updated main.py to import and include routers via `app.include_router()`
+- Added app.state configuration for route modules (rag_available, workflow_available, create_embedder, etc.)
+
+### Results
+- `main.py` reduced from 7947 lines to 3386 lines (~57% reduction)
+- 21 routes remaining (health, logs, resources, system, config presets, llamacpp management, vram)
+- Kept `process_document_background` function in main.py (uses app.state directly)
+
+### Files Created
+- `backend/routes/__init__.py` - exports routers
+- `backend/routes/rag.py` - RAG system endpoints (~1500 lines)
+- `backend/routes/graphrag.py` - GraphRAG proxy endpoints (~300 lines)
+- `backend/routes/workflows.py` - Workflow management endpoints (~320 lines)
+- `backend/routes/conversations.py` - Conversation storage endpoints (~160 lines)
+- `backend/routes/registry.py` - Model registry endpoints (~200 lines)
+- `backend/routes/prompts.py` - Prompt library endpoints (~190 lines)
+- `backend/routes/benchmark.py` - Benchmark endpoints including BFCL (~500 lines)
+- `backend/routes/batch.py` - Batch processing endpoints (~170 lines)
+- `backend/routes/models.py` - Model management endpoints (~310 lines)
+- `backend/routes/templates.py` - Chat template endpoints (~140 lines)
+- `backend/routes/tokens.py` - Token usage tracking endpoints (~100 lines)
+- `backend/routes/service.py` - Service/embedding management endpoints (~310 lines)
+
+### Important: Dockerfile Update
+Added `COPY routes/ routes/` to `backend/Dockerfile` to include routes directory in container.
+
+### GraphRAG API Fix
+The correct GraphRAG extraction endpoint is `/extract-entities-relations`, not `/extract`.
+
+---
+
+## Workflow Builder Overhaul (2025-12-08)
+
+### Goal
+Complete overhaul of the workflow creation system with visual drag-and-drop canvas that can connect:
+- Services, Models, Tools
+- Document loaders, Database connections
+- External APIs, OpenAI API spec
+- MCP servers
+
+### Progress
+
+**Phase 1: Foundation - COMPLETED**
+
+1. Added React Flow dependency to package.json
+2. Created workflow type definitions (`src/types/workflow.ts`):
+   - Port types (string, number, boolean, object, array, any)
+   - Node categories (trigger, llm, rag, tools, data, control, api, mcp, database, output)
+   - 35+ built-in node type definitions
+   - Workflow, WorkflowNode, WorkflowConnection, WorkflowExecution types
+
+3. Created workflow components (`src/components/workflow/`):
+   - `WorkflowCanvas.tsx` - React Flow canvas with drag-drop support
+   - `BaseNode.tsx` - Custom node component with status indicators
+   - `AnimatedEdge.tsx` - Animated connection edges
+   - `NodePalette.tsx` - Searchable, categorized node list with drag
+   - `PropertyPanel.tsx` - Node configuration panel with dynamic form fields
+
+4. Updated `WorkflowBuilderPage.tsx`:
+   - Full React Flow integration
+   - Save/Load workflows to localStorage
+   - Import/Export workflows as JSON
+   - Simulated workflow execution
+   - Workflow settings dialog
+
+### Phase 2: Backend - COMPLETED
+
+1. Created workflow module structure (`backend/modules/workflow/`)
+2. Implemented workflow database storage (SQLite)
+3. Created workflow execution engine
+4. Implemented node executors for all node types:
+   - Triggers: ManualTrigger, HttpWebhook
+   - LLM: LLMChat, OpenAIChat, Embedding
+   - RAG: DocumentLoader, Chunker, Retriever, VectorStore
+   - Data: Template, JsonParse, JsonStringify, Mapper, Filter
+   - Control: Condition, Switch, Loop, Merge, Delay
+   - API: HttpRequest, GraphQL
+   - Output: Output, Log, WebhookResponse
+5. Added API endpoints to main.py
+6. Created frontend workflowApi service
+7. Updated WorkflowBuilderPage to use real API
+
+### Files Created/Modified
+- `frontend/package.json` - Added reactflow dependency
+- `frontend/src/types/workflow.ts` - NEW
+- `frontend/src/components/workflow/WorkflowCanvas.tsx` - NEW
+- `frontend/src/components/workflow/BaseNode.tsx` - NEW
+- `frontend/src/components/workflow/AnimatedEdge.tsx` - NEW
+- `frontend/src/components/workflow/NodePalette.tsx` - NEW
+- `frontend/src/components/workflow/PropertyPanel.tsx` - NEW
+- `frontend/src/components/workflow/index.ts` - NEW
+- `frontend/src/pages/WorkflowBuilderPage.tsx` - REWRITTEN
+- `frontend/src/services/workflowApi.ts` - NEW
+- `backend/modules/workflow/__init__.py` - NEW
+- `backend/modules/workflow/models.py` - NEW
+- `backend/modules/workflow/storage.py` - NEW
+- `backend/modules/workflow/engine.py` - NEW
+- `backend/modules/workflow/executors/__init__.py` - NEW
+- `backend/modules/workflow/executors/base.py` - NEW
+- `backend/modules/workflow/executors/trigger_executors.py` - NEW
+- `backend/modules/workflow/executors/llm_executors.py` - NEW
+- `backend/modules/workflow/executors/rag_executors.py` - NEW
+- `backend/modules/workflow/executors/data_executors.py` - NEW
+- `backend/modules/workflow/executors/control_executors.py` - NEW
+- `backend/modules/workflow/executors/api_executors.py` - NEW
+- `backend/modules/workflow/executors/output_executors.py` - NEW
+- `backend/main.py` - Added workflow imports and API endpoints
+- `WORKFLOW_BUILDER_PLAN.md` - NEW (detailed implementation plan)
+
+### Next Steps (Phase 3: Polish)
+
+1. Add WebSocket for real-time execution updates
+2. Add workflow templates
+3. Implement MCP and database node executors
+4. Add workflow version history UI
+5. Add execution history panel
+
+---
+
+## Knowledge Graph Integration Plan (2025-12-08)
+
+### Current State Analysis
+
+**llama-nexus Knowledge Graph (Incomplete):**
+- SQLite-based storage (`backend/modules/rag/graph_rag.py`)
+- Basic Entity/Relationship data models
+- LLM-based entity extraction (slow, expensive)
+- Simple graph traversal
+- Nice frontend visualization (force-directed graph in `KnowledgeGraphPage.tsx`)
+- GraphRetriever combines vector + graph scores
+
+**What's Missing:**
+- No dedicated graph database (Neo4j)
+- No proper NER models (relies on LLM)
+- No community detection algorithms
+- No hybrid retrieval (vector + graph + keyword)
+- No domain filtering
+- No advanced reasoning
+
+---
+
+### graphrag Repo Capabilities (`/home/alec/git/graphrag`)
+
+**Entity Extraction:**
+- GLiNER model for high-quality NER (fast, local, no API costs)
+- Extracts: person, organization, location, component, system, symptom, etc.
+- Relationship extraction via GLiNER with predefined relation types
+- Domain-specific entity/relation types (automotive, medical, legal, technical)
+
+**Knowledge Graph Builder:**
+- Neo4j integration for persistent graph storage
+- NetworkX in-memory graph for fast analysis
+- Community detection (Leiden/Louvain algorithms)
+- Graph statistics and domain filtering
+- Entity occurrence tracking
+- Relationship weight tracking
+
+**Hybrid Retrieval:**
+- Vector search (Qdrant + sentence-transformers)
+- Graph search (Neo4j traversal from entities)
+- Keyword search
+- Query analysis (intent detection, entity extraction)
+- Multi-hop reasoning for complex queries
+
+**Document Processing:**
+- Semantic chunking
+- PDF/DOCX support
+- Enhanced document processor
+
+**Infrastructure (docker-compose.yml):**
+- Neo4j 5.11 with APOC plugins
+- Qdrant vector database
+- Redis caching
+- Relationship extraction API service (GPU-enabled)
+
+---
+
+### Integration Options
+
+#### Option 1: Microservice Wrapper (Recommended)
+
+Make llama-nexus frontend call graphrag API for knowledge graph features while keeping LLM inference in llama-nexus.
+
+**Architecture:**
+```
+llama-nexus (UI + LLM)  <-->  graphrag (Knowledge Graph Service)
+     |                              |
+     v                              v
+  vLLM/llama.cpp               Neo4j + Qdrant
+  Chat, Deploy, etc.           Entity extraction
+                               Graph building
+                               Hybrid retrieval
+```
+
+**Pros:**
+- Minimal code changes to llama-nexus
+- Keep graphrag as independent service
+- Can use graphrag's full feature set
+- Clear separation of concerns
+
+**Cons:**
+- Two separate docker-compose setups
+- Network latency between services
+
+**Implementation Steps:**
+1. Add graphrag service to llama-nexus docker-compose (or run separately)
+2. Create proxy endpoints in llama-nexus backend to forward to graphrag
+3. Update KnowledgeGraphPage.tsx to use graphrag API endpoints
+4. Configure shared Qdrant instance or use separate collections
+
+#### Option 2: Port Components to llama-nexus
+
+Copy key components from graphrag into llama-nexus codebase.
+
+**Components to Port:**
+- `entity_extractor.py` (GLiNER-based)
+- `rel_extractor.py` (relationship extraction)
+- `knowledge_graph_builder.py` (Neo4j + NetworkX)
+- `hybrid_retriever.py` (vector + graph + keyword)
+- `semantic_chunker.py`
+
+**Pros:**
+- Single codebase
+- No inter-service communication
+- Full control over integration
+
+**Cons:**
+- Significant code changes
+- Must maintain two codebases if graphrag evolves
+- More complex deployment
+
+#### Option 3: Hybrid Approach
+
+Use graphrag for entity extraction and graph building, but integrate at the RAG retrieval level.
+
+**Implementation:**
+1. Add Neo4j to llama-nexus docker-compose
+2. Replace SQLite graph storage with Neo4j
+3. Use graphrag's GLiNER for entity extraction
+4. Keep llama-nexus RAG system but enhance with graph queries
+
+---
+
+### Recommended Implementation: Option 1 (Microservice)
+
+**Phase 1: Add graphrag as Service**
+
+1. Create combined docker-compose or network bridge:
+```yaml
+# Add to llama-nexus docker-compose.yml
+services:
+  graphrag-api:
+    build:
+      context: /home/alec/git/graphrag
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8100:8000"
+    environment:
+      - NEO4J_URI=bolt://graphrag-neo4j:7687
+      - QDRANT_URL=http://qdrant:6333  # Share with llama-nexus
+    networks:
+      - llama-nexus-network
+
+  graphrag-neo4j:
+    image: neo4j:5.11
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_PLUGINS=["apoc"]
+```
+
+2. Add proxy endpoints in llama-nexus `main.py`:
+```python
+GRAPHRAG_URL = os.getenv("GRAPHRAG_URL", "http://graphrag-api:8000")
+
+@app.post("/api/v1/graphrag/ingest")
+async def graphrag_ingest(file: UploadFile):
+    async with aiohttp.ClientSession() as session:
+        # Forward to graphrag
+        ...
+
+@app.get("/api/v1/graphrag/graph")
+async def graphrag_get_graph(domain: str = None):
+    # Forward to graphrag /graph endpoint
+    ...
+```
+
+**Phase 2: Update Frontend**
+
+1. Add graphrag toggle/tab to KnowledgeGraphPage
+2. Create new service methods for graphrag API
+3. Option to use either local SQLite graph or graphrag Neo4j
+
+**Phase 3: Integrate Retrieval**
+
+1. Add graphrag hybrid retrieval as RAG option
+2. Combine llama-nexus embeddings with graphrag graph search
+3. Use graphrag for complex multi-hop queries
+
+---
+
+### graphrag API Endpoints to Use
+
+From `/home/alec/git/graphrag/backend/main.py`:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/process-document` | POST | Process and chunk document |
+| `/ingest-document` | POST | Full pipeline: chunk + embed + extract + graph |
+| `/search` | POST | Hybrid search (vector + graph + keyword) |
+| `/graph` | GET | Get knowledge graph data |
+| `/graph/stats` | GET | Graph statistics |
+| `/graph/filtered` | POST | Filtered graph with domain/type filters |
+| `/extract-entities` | POST | Extract entities from text |
+| `/communities` | GET | Get detected communities |
+| `/advanced-search` | POST | Search with type selection |
+| `/multi-hop-query` | POST | Multi-hop reasoning |
+
+---
+
+### Environment Variables Needed
+
+```bash
+# Add to .env
+GRAPHRAG_URL=http://localhost:8100
+GRAPHRAG_NEO4J_URI=bolt://localhost:7687
+GRAPHRAG_NEO4J_USER=neo4j
+GRAPHRAG_NEO4J_PASSWORD=password
+```
+
+---
+
+### Integration Completed (2025-12-08)
+
+**Backend Changes:**
+- Added `GRAPHRAG_URL` and `GRAPHRAG_ENABLED` env vars to `main.py`
+- Created proxy endpoints in `main.py`:
+  - `/api/v1/graphrag/health` - Service health check
+  - `/api/v1/graphrag/stats` - Graph statistics
+  - `/api/v1/graphrag/domains` - Available domains
+  - `/api/v1/graphrag/graph` - Filtered graph data (POST)
+  - `/api/v1/graphrag/top-entities` - Top entities by occurrence
+  - `/api/v1/graphrag/top-relationships` - Top relationships by weight
+  - `/api/v1/graphrag/extract` - Entity extraction using GLiNER
+  - `/api/v1/graphrag/search` - Hybrid search
+  - `/api/v1/graphrag/search/advanced` - Advanced search with type selection
+  - `/api/v1/graphrag/documents` - List documents
+  - `/api/v1/graphrag/ner/status` - NER model status
+  - `/api/v1/graphrag/reasoning/multi-hop` - Multi-hop reasoning
+
+**Frontend Changes:**
+- Added graphrag service methods to `api.ts`
+- Rewrote `KnowledgeGraphPage.tsx` to use graphrag-only (removed local SQLite support)
+- Simplified UI - removed local entity/relationship CRUD operations
+- Added status indicator showing GLiNER model and GPU info
+
+**Docker Changes:**
+- Added `graphrag-network` external network to `docker-compose.yml`
+- Backend container joins graphrag network for service communication
+- Default `GRAPHRAG_URL=http://graphrag-api-1:8000`
+
+**Verified Working:**
+- Health check: `healthy`
+- Stats: nodes/edges/communities
+- NER Status: GLiNER `knowledgator/gliner-multitask-large-v0.5` on CUDA (RTX 5090)
+- Entity extraction: Working (5 entities, 1 relationship from test text)
+
+### Document Management Integration (2025-12-08)
+
+Added ability to trigger knowledge graph extraction from Documents page.
+
+**New Backend Endpoints:**
+- `POST /api/v1/rag/documents/{document_id}/extract-knowledge` - Extract entities from single document
+- `POST /api/v1/rag/documents/batch-extract-knowledge` - Batch extract from multiple documents
+
+**Frontend Changes:**
+- Added `extractDocumentKnowledge()` and `batchExtractDocumentKnowledge()` to api.ts
+- DocumentsPage.tsx: Added KnowledgeGraphIcon import
+- DocumentsPage.tsx: Added `handleExtractKnowledge` and `handleBatchExtractKnowledge` handlers
+- DocumentsPage.tsx: Added batch action button "Extract to Knowledge Graph" when documents selected
+- DocumentsPage.tsx: Added individual document action button (tree icon) for "ready" status documents
+
+**Usage:**
+1. Upload/process documents normally
+2. For ready documents, click the tree icon to extract to knowledge graph
+3. Or select multiple documents and use "Extract to Knowledge Graph" batch action
+4. View extracted entities in Knowledge Graph page
+
+---
+
 ## Feature: Multi-Modal Chat Inputs (Images & Voice) - COMPLETED
 
 **Date**: 2025-12-08
@@ -2778,3 +3256,370 @@ pytest test_new_features.py -v
 - `test_deployment.py` - Integration tests for deployment endpoints
 - `test_token_tracking.py` - Integration tests for token tracking API
 - `test_rag_system.py` - RAG system tests
+
+---
+
+## RAG Document Processing Troubleshooting (2025-12-08)
+
+### Issues Found and Fixed
+
+1. **Vector ID Format Error**
+   - Error: `Unable to parse UUID: {document_id}_{index}`
+   - Fix: Changed vector_id from `f"{document_id}_{i}"` to `str(uuid.uuid4())` for Qdrant compatibility
+
+2. **Embedding Batch Size Too Small**
+   - Error: `input is too large to process. increase the physical batch size`
+   - Fix: Increased `BATCH_SIZE` and `UBATCH_SIZE` from 512 to 2048 in docker-compose.yml for llamacpp-embed service
+
+3. **Embedding Model Selection Logic**
+   - Issue: Using `nomic-embed-text` (invalid) instead of `nomic-embed-text-v1.5`
+   - Fix: Documents must specify the exact model name that matches the deployed service model
+
+4. **PDF Text Extraction Missing**
+   - Error: Raw PDF binary stored instead of extracted text
+   - Fix: Added PyPDF2 to requirements.txt and `extract_pdf_text()` function to main.py
+   - Reprocess endpoint now auto-extracts text from PDF documents
+
+5. **Llamacpp Embedding Server Batching**
+   - Issue: APIEmbedder sent multiple texts in batch but llamacpp server preferred one at a time
+   - Fix: Modified `api_embedder.py` to send texts one-by-one for llamacpp provider
+
+6. **Missing Vector Store Alias Methods**
+   - Error: `'QdrantStore' object has no attribute 'add_vectors'`
+   - Fix: Added `add_vectors` and `delete_vectors` alias methods to QdrantStore
+
+### Current Configuration
+
+- **Embedding Service**: llamacpp-embed running on port 8602
+- **Model**: nomic-embed-text-v1.5.Q8_0.gguf (768 dimensions, 2048 context)
+- **Batch Size**: 2048 (increased from 512)
+- **Vector Store**: Qdrant on port 6333
+
+### Recommended Settings for RAG
+
+```yaml
+# docker-compose.yml llamacpp-embed settings
+- BATCH_SIZE=2048
+- UBATCH_SIZE=2048
+- CONTEXT_SIZE=8192
+```
+
+### Important Notes
+
+- PDF documents must be re-uploaded for proper text extraction (existing PDFs stored as binary won't extract properly)
+- Use `USE_DEPLOYED_EMBEDDINGS=true` environment variable or API config for deployed embedding service
+- Domain embedding model must match a valid model name: `nomic-embed-text-v1.5`, `all-MiniLM-L6-v2`, etc.
+
+---
+
+## Model Deployed to CPU Instead of GPU (2025-12-08)
+
+### Issue
+When deploying a model through the Deploy page, the model loaded on CPU instead of GPU with error:
+```
+ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected
+warning: no usable GPU found, --gpu-layers option will be ignored
+```
+
+### Root Cause
+The backend was using `--runtime nvidia` when starting the llamacpp-api container via Docker CLI, but this flag alone doesn't expose GPU devices. The modern NVIDIA Container Toolkit requires `--gpus all` to actually request GPU access.
+
+### Fix
+Changed `backend/main.py` to use `--gpus all` instead of `--runtime nvidia`:
+
+```python
+# Before (broken)
+docker_cmd.extend(['--runtime', 'nvidia'])
+
+# After (working)
+docker_cmd.extend(['--gpus', 'all'])
+```
+
+Also fixed Docker SDK approach to use `device_requests` instead of `runtime`:
+```python
+container_config["device_requests"] = [
+    docker.types.DeviceRequest(count=-1, capabilities=[['gpu']])
+]
+```
+
+### Resolution
+Rebuilt backend-api container and redeployed the model from the Deploy page.
+
+---
+
+## GraphRAG Knowledge Graph Page Issues (2025-12-08)
+
+### Problem
+Knowledge Graph page shows stats (520 entities, 550 relationships) but graph explorer shows 0 nodes, 0 edges.
+
+### Root Cause
+Two issues identified:
+
+1. **Response Structure Mismatch**: The GraphRAG service `/knowledge-graph/filtered` endpoint returns data nested under `filtered_data`:
+   ```json
+   {
+     "filtered_data": {
+       "nodes": [...],
+       "edges": [...],
+       "stats": {...}
+     }
+   }
+   ```
+   But the frontend expects:
+   ```json
+   {
+     "nodes": [...],
+     "edges": [...]
+   }
+   ```
+
+2. **Empty Edges Array**: Even with `max_relationships` set, the filtered endpoint returns empty edges array despite having 550 relationships in the database.
+
+### Investigation
+- GraphRAG health endpoint works: `{"status":"healthy"}`
+- Stats endpoint returns: `{"nodes":520,"edges":550,...}`
+- Top-entities and top-relationships endpoints return real data
+- The `/knowledge-graph/filtered` POST endpoint returns `filtered_data.edges: []`
+
+### Fix Applied
+Updated `backend/routes/graphrag.py` to:
+1. Unwrap the `filtered_data` wrapper to return `nodes` and `edges` directly
+2. Transform entity types from uppercase GraphRAG format (COMPONENT, MAINTENANCE) to lowercase frontend format (technology, process)
+3. Fetch relationships from `/top-relationships` endpoint when filtered endpoint returns empty edges
+4. Build edges array by matching relationship source/target to node IDs
+
+### Verification
+```bash
+curl -s -X POST http://localhost:8700/api/v1/graphrag/graph -H "Content-Type: application/json" -d '{"max_entities": 100, "max_relationships": 200}'
+# Result: Nodes: 100, Edges: 44
+```
+
+### Files Modified
+- `backend/routes/graphrag.py` - Added `_normalize_entity_type()`, `_transform_nodes()`, and updated `/graph` endpoint
+
+---
+
+## Knowledge Graph Visualization Improvements (2025-12-08)
+
+### Problem
+Custom canvas-based force-directed graph was causing nodes to bounce erratically and appear fixed to a grid.
+
+### Solution
+Replaced custom implementation with `react-force-graph-2d` library which:
+- Uses proper D3.js force simulation under the hood
+- Handles physics, collision detection, and layout automatically
+- Provides smooth animations and drag interactions
+- Supports directional particles on edges
+- Has proper zoom and pan interactions
+
+### Changes Made
+1. Added `react-force-graph-2d` to `frontend/package.json`
+2. Rewrote `ForceGraphVisualization` component in `KnowledgeGraphPage.tsx`:
+   - Uses `ForceGraph2D` component from the library
+   - Custom node rendering with type-based colors
+   - Custom link rendering with gradients and arrows
+   - Particle flow on edges for visual appeal
+   - Proper zoom/pan controls
+
+### Key Features
+- Nodes are colored by entity type (technology=purple, process=teal, etc.)
+- Node size based on confidence/occurrence
+- Directional arrows on edges
+- Optional particle flow animation
+- Labels shown on hover or always (configurable)
+- Smooth force simulation with proper physics
+
+## STT and TTS Backend API Implementation (Dec 10, 2025)
+
+### Current Goal
+Implement backend APIs for STT (Speech-to-Text) and TTS (Text-to-Speech) services to support the frontend deployment pages.
+
+### Implementation Complete
+
+#### Backend Routes Created
+- `/home/alec/git/llama-nexus/backend/routes/stt.py` - STT service management routes
+- `/home/alec/git/llama-nexus/backend/routes/tts.py` - TTS service management routes
+
+#### Manager Classes Added to main.py
+- `STTManager` - Manages STT service lifecycle (Docker-based faster-whisper)
+- `TTSManager` - Manages TTS service lifecycle (Docker-based openedai-speech)
+
+#### API Endpoints
+
+**STT (`/api/v1/stt/*`)**
+- `GET /api/v1/stt/status` - Service status
+- `GET /api/v1/stt/config` - Configuration and available models
+- `PUT /api/v1/stt/config` - Update configuration
+- `POST /api/v1/stt/start` - Start service
+- `POST /api/v1/stt/stop` - Stop service
+- `POST /api/v1/stt/restart` - Restart service
+- `POST /api/v1/stt/transcribe` - Proxy transcription requests
+
+**TTS (`/api/v1/tts/*`)**
+- `GET /api/v1/tts/status` - Service status
+- `GET /api/v1/tts/config` - Configuration, models, voices
+- `PUT /api/v1/tts/config` - Update configuration
+- `POST /api/v1/tts/start` - Start service
+- `POST /api/v1/tts/stop` - Stop service
+- `POST /api/v1/tts/restart` - Restart service
+- `POST /api/v1/tts/synthesize` - Proxy speech synthesis requests
+
+#### Docker Images Used
+- STT: `fedirz/faster-whisper-server:latest-cuda` (port 8603)
+- TTS: `ghcr.io/matatonic/openedai-speech:latest` (port 8604)
+
+#### Default Configurations
+
+**STT:**
+- Model: whisper-base
+- Language: auto-detect
+- Compute type: float16
+- Execution mode: GPU
+
+**TTS:**
+- Model: piper-en-us-lessac-medium
+- Voice: alloy
+- Audio format: mp3
+- Speed: 1.0
+- Execution mode: CPU
+
+### Files Modified
+- `backend/routes/__init__.py` - Added stt_router and tts_router exports
+- `backend/main.py` - Added STTManager, TTSManager classes, initialized managers, registered routes
+
+### Verification
+- APIs tested and working via curl
+- Frontend rebuilt with --no-cache to include STT/TTS pages
+- Services accessible at localhost:8700/api/v1/stt/* and localhost:8700/api/v1/tts/*
+
+---
+
+## Deploy Page Bugs Fixed (2025-12-10)
+
+### Issue 1: Chat Template Selection Changes Model Name
+When selecting a chat template in the Deploy page, the model name and variant selections were being overwritten.
+
+**Root Cause:**
+In the template selection onChange handler, after selecting a template the code fetched fresh config from the server and replaced the entire local config:
+```javascript
+setConfig(cfgJson.config) // This overwrote user's model selection
+```
+
+**Fix:**
+Removed the `setConfig(cfgJson.config)` call - now only updates the command line preview without touching the config state.
+
+### Issue 2: Model Selection Not Applied When Deploying
+Users could select a different model name/variant but clicking Start/Restart would deploy the previously configured model.
+
+**Root Cause:**
+The backend's `service_action` endpoint received the config from the frontend but completely ignored it. It just called `manager.start()` without applying the new config first.
+
+**Fix:**
+Updated `backend/routes/service.py` to apply the config before starting/restarting:
+```python
+# Apply config before start/restart if provided
+if config and action in ("start", "restart"):
+    merge_config = get_merge_config_func(request)
+    if merge_config:
+        merge_config(config)
+    else:
+        manager.config = {**manager.config, **config}
+```
+
+---
+
+## Chat Page Thinking Token Display (2025-12-10)
+
+### Issue
+With some models (like gpt-oss-20b), only thinking tokens were visible in the chat, with no actual response content displayed.
+
+### Investigation
+The MarkdownRenderer was only handling `<think>...</think>` tags but:
+1. Some models use different tags like `<thinking>` or `<thought>`
+2. If the closing tag never arrived (model still thinking), the regex wouldn't match
+3. The non-greedy regex `*?` could behave unexpectedly
+
+### Fix
+Updated `MarkdownRenderer.tsx` to:
+1. Support multiple thinking tag formats: `<think>`, `<thinking>`, `<thought>`
+2. Handle unclosed thinking tags - if content starts with thinking tag but no closing tag, show as thinking (response still being generated)
+3. Properly extract and display all thinking blocks
+
+Added debug logging to ChatPage.tsx streaming handler to help diagnose similar issues.
+
+
+---
+
+## Voice Mode for Chat Page (2025-12-10)
+
+### Feature
+Added voice input with Voice Activity Detection (VAD) and TTS output for the ChatPage, enabling hands-free conversational interaction with the LLM.
+
+### Components Added
+
+1. **useVoiceInput Hook** (`frontend/src/hooks/useVoiceInput.ts`)
+   - Web Audio API for real-time audio analysis
+   - Voice Activity Detection (VAD) to detect when user stops speaking
+   - Automatic silence detection with configurable threshold and duration
+   - Integration with local STT service for transcription
+   - Continuous listening mode - auto-records when speech detected
+
+2. **useTTS Hook** (`frontend/src/hooks/useTTS.ts`)
+   - Text-to-speech playback using local TTS service
+   - Queue-based playback for handling multiple responses
+   - Play/pause/stop controls
+   - Configurable voice, speed, and auto-play settings
+
+3. **API Service Extensions** (`frontend/src/services/api.ts`)
+   - `getSTTStatus()` - Check if STT service is running
+   - `getTTSStatus()` - Check if TTS service is running
+   - `transcribeAudio()` - Send audio to local STT for transcription
+   - `synthesizeSpeech()` - Generate speech from text using local TTS
+
+### ChatPage Updates
+
+- Voice mode toggle button in header (requires STT service to be deployed)
+- Voice status panel showing listening/recording/transcribing state
+- Visual volume indicator with threshold line
+- TTS playback controls (play/pause/stop)
+- Auto-send when silence detected after speech
+- Auto-play TTS for assistant responses (configurable)
+
+### Voice Settings (in Chat Settings panel)
+- TTS voice selection (alloy, echo, fable, onyx, nova, shimmer)
+- TTS speed (0.5x to 2x)
+- Auto-play toggle
+- STT model selection (tiny, base, small, medium, large-v3)
+- STT language (auto-detect or specific)
+- VAD silence duration (500ms to 3000ms)
+- VAD silence threshold (1% to 10%)
+
+### Usage Flow
+1. Deploy STT service from STT Deploy page
+2. Deploy TTS service from TTS Deploy page (optional, for voice output)
+3. Enable voice mode from chat page header
+4. Start speaking - system auto-detects speech and starts recording
+5. Pause speaking - after silence duration, audio is sent for transcription
+6. Transcribed text appears in input and auto-sends
+7. Assistant response is spoken via TTS (if enabled)
+8. Continue speaking for next turn
+
+### Requirements
+- STT service must be deployed and running for voice input
+- TTS service must be deployed and running for voice output
+- Microphone permissions required in browser
+
+### TTS Streaming Enhancement (2025-12-10)
+
+Updated TTS to stream sentences as they complete during response generation, rather than waiting for the entire response. This significantly reduces perceived latency.
+
+**Implementation:**
+- Added sentence buffer in streaming handler
+- Detects sentence boundaries: `.`, `!`, `?` followed by whitespace, or double newlines
+- Sends completed sentences to TTS queue immediately
+- Flushes remaining content when stream ends
+
+**Benefits:**
+- User starts hearing the response within 1-2 sentences (~2-5 seconds) instead of waiting for full response
+- Natural pauses between sentences while TTS catches up
+- Works well with the existing TTS queue system

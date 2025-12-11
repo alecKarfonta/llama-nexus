@@ -510,6 +510,26 @@ class QdrantStore(VectorStore):
     
     # Additional Qdrant-specific methods
     
+    # Alias methods for compatibility
+    async def add_vectors(
+        self,
+        collection: str,
+        records: List[VectorRecord],
+        wait: bool = True,
+        batch_size: int = 100
+    ) -> int:
+        """Alias for upsert for compatibility"""
+        return await self.upsert(collection, records, wait, batch_size)
+    
+    async def delete_vectors(
+        self,
+        collection: str,
+        ids: List[str],
+        wait: bool = True
+    ) -> int:
+        """Alias for delete for compatibility"""
+        return await self.delete(collection, ids, wait)
+    
     async def create_payload_index(
         self,
         collection: str,
