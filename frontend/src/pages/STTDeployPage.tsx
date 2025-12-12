@@ -64,6 +64,7 @@ const WHISPER_MODELS = [
   { name: 'small', size: 'small', params: '244M', vram: '~2GB', speed: 'Medium', quality: 'Better' },
   { name: 'medium', size: 'medium', params: '769M', vram: '~5GB', speed: 'Slower', quality: 'Great' },
   { name: 'large-v3', size: 'large-v3', params: '1.5B', vram: '~10GB', speed: 'Slowest', quality: 'Best' },
+  { name: 'distil-large-v3.5-ct2', size: 'distil-large-v3.5-ct2', params: '580M', vram: '~8GB', speed: 'Faster', quality: 'High' },
 ]
 
 const LANGUAGES = [
@@ -193,15 +194,18 @@ export const STTDeployPage: React.FC = () => {
   }
 
   const updateConfig = (path: string, value: any) => {
-    const keys = path.split('.')
-    const newConfig = JSON.parse(JSON.stringify(config))
-    let current: any = newConfig
-    for (let i = 0; i < keys.length - 1; i++) {
-      if (!current[keys[i]]) current[keys[i]] = {}
-      current = current[keys[i]]
-    }
-    current[keys[keys.length - 1]] = value
-    setConfig(newConfig)
+    setConfig((prev: STTConfig | null) => {
+      if (!prev) return prev
+      const next = JSON.parse(JSON.stringify(prev))
+      const keys = path.split('.')
+      let current: any = next
+      for (let i = 0; i < keys.length - 1; i++) {
+        if (!current[keys[i]]) current[keys[i]] = {}
+        current = current[keys[i]]
+      }
+      current[keys[keys.length - 1]] = value
+      return next
+    })
   }
 
   const saveConfig = async () => {
@@ -442,9 +446,15 @@ export const STTDeployPage: React.FC = () => {
                 fullWidth
                 value={config.model.name}
                 onChange={(e) => {
-                  const model = WHISPER_MODELS.find(m => m.name === e.target.value)
-                  updateConfig('model.name', e.target.value)
-                  if (model) updateConfig('model.size', model.size)
+                  const newName = e.target.value as string
+                  const selectedModel = WHISPER_MODELS.find(m => m.name === newName)
+                  setConfig((prev: STTConfig | null) => {
+                    if (!prev) return prev
+                    const next = JSON.parse(JSON.stringify(prev))
+                    next.model.name = newName
+                    if (selectedModel) next.model.size = selectedModel.size
+                    return next
+                  })
                 }}
               >
                 {WHISPER_MODELS.map((model) => (
@@ -809,4 +819,6 @@ export const STTDeployPage: React.FC = () => {
 }
 
 export default STTDeployPage
+
+
 

@@ -124,6 +124,13 @@ async def get_stt_config(request: Request):
                 "params": "1.5B",
                 "vram": "~10GB",
                 "description": "Best accuracy, slowest"
+            },
+            {
+                "name": "distil-large-v3.5-ct2",
+                "size": "distil-large-v3.5-ct2",
+                "params": "580M",
+                "vram": "~8GB",
+                "description": "Distilled large-v3.5 (CTranslate2) for faster inference"
             }
         ],
         "available_languages": [
@@ -195,14 +202,23 @@ async def transcribe_audio(
         if not content:
             raise HTTPException(status_code=400, detail="Empty audio file")
         
+        # Map model names to HuggingFace repositories for models not in faster-whisper's default list
+        model_mappings = {
+            "distil-large-v3.5-ct2": "distil-whisper/distil-large-v3.5-ct2",
+            # Add more mappings here as needed for other custom models
+        }
+        
+        # Use HuggingFace repo path if model needs mapping, otherwise use the model name directly
+        mapped_model = model_mappings.get(model, model)
+        
         async with httpx.AsyncClient(timeout=300.0) as client:
             # Build the files dict for multipart upload
             files = {"file": (file.filename or "audio.wav", content, file.content_type or "audio/wav")}
             
             # Build form data - only include non-empty values
             data = {}
-            if model:
-                data["model"] = model
+            if mapped_model:
+                data["model"] = mapped_model
             if language and language != "auto":
                 data["language"] = language
             if response_format:
@@ -228,4 +244,6 @@ async def transcribe_audio(
     except Exception as e:
         logger.error(f"Transcription error: {e}")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+
+
 

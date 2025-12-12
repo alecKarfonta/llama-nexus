@@ -2335,13 +2335,23 @@ class STTManager:
             execution_mode = self.config.get("execution", {}).get("mode", "gpu")
             cuda_devices = self.config.get("execution", {}).get("cuda_devices", "0")
             
+            # Map model names to HuggingFace repositories for models not in faster-whisper's default list
+            model_size = self.config['model']['size']
+            model_mappings = {
+                "distil-large-v3.5-ct2": "distil-whisper/distil-large-v3.5-ct2",
+                # Add more mappings here as needed for other custom models
+            }
+            
+            # Use HuggingFace repo path if model needs mapping, otherwise use the model name directly
+            whisper_model = model_mappings.get(model_size, model_size)
+            
             docker_cmd = [
                 "docker", "run",
                 "-d",
                 "--name", self.container_name,
                 f"--network={self.docker_network}",
                 "-p", f"{self.config['server']['port']}:8000",
-                "-e", f"WHISPER_MODEL={self.config['model']['size']}",
+                "-e", f"WHISPER_MODEL={whisper_model}",
                 "-e", f"WHISPER_LANG={self.config['model']['language']}",
                 "-e", f"COMPUTE_TYPE={self.config['execution']['compute_type']}",
             ]

@@ -1,5 +1,38 @@
 # Llama Nexus Deployment Notes
 
+## STT Distil-Large-v3.5 Model Support (2025-12-12)
+
+### Problem
+Deployment of `distil-large-v3.5-ct2` model failed with error:
+```
+ValueError: Invalid model size 'distil-large-v3.5-ct2', expected one of: tiny.en, tiny, base.en, base, small.en, small, medium.en, medium, large-v1, large-v2, large-v3, large, distil-large-v2, distil-medium.en, distil-small.en, distil-large-v3
+```
+
+### Root Cause
+The `faster-whisper` library has a hardcoded list of valid model names and doesn't recognize `distil-large-v3.5-ct2` by default.
+
+### Solution
+Instead of passing just the model name, pass the full HuggingFace repository path. The `faster-whisper` library can load models directly from HuggingFace repositories by specifying the repo path (e.g., `distil-whisper/distil-large-v3.5-ct2`).
+
+### Implementation
+Modified both container startup and transcription request handling:
+
+1. **Container Startup** (`STTManager.start_docker()` in `backend/main.py`):
+   - Added `model_mappings` dictionary to map custom model names to HuggingFace repo paths
+   - When starting the container, check if the model needs mapping and use the repo path if needed
+   - The container will automatically download and cache the model on first use
+
+2. **Transcription Requests** (`transcribe_audio()` in `backend/routes/stt.py`):
+   - Added the same `model_mappings` to the transcribe endpoint
+   - Map the model name before forwarding to the faster-whisper-server
+   - This ensures the correct HuggingFace repo path is used for each transcription request
+
+### Files Modified
+- `backend/main.py` - Updated `STTManager.start_docker()` to map custom model names to HuggingFace repos
+- `backend/routes/stt.py` - Updated `transcribe_audio()` to map model names in transcription requests
+
+---
+
 ## Docker GPU Fix for API-launched Containers (2025-12-08)
 
 ### Problem
@@ -114,6 +147,13 @@ Added `COPY routes/ routes/` to `backend/Dockerfile` to include routes directory
 
 ### GraphRAG API Fix
 The correct GraphRAG extraction endpoint is `/extract-entities-relations`, not `/extract`.
+
+---
+
+## Frontend Regression Fix (2025-12-12)
+
+- Problem: Frontend crash after rebuild with "Something went wrong: useTheme is not defined".
+- Fix: Added missing `useTheme` import in `frontend/src/components/layout/Header.tsx`.
 
 ---
 
@@ -997,6 +1037,27 @@ MUI Select components are sensitive to:
 
 ### Files Fixed
 - `frontend/src/pages/DeployPage.tsx`: Simplified model dropdown to match variant dropdown structure
+
+---
+
+## Bug Fix: STT Deploy Whisper Model Dropdown - FIXED
+
+**Date**: 2025-12-12  
+**Status**: Fixed
+
+### Problem
+- Whisper Model dropdown on `/stt-deploy` would not change selection
+- Clicking a menu item appeared to do nothing
+
+### Root Cause
+- Two back-to-back `updateConfig` calls used the stale `config` snapshot; the second call overwrote the first, so the selected model name never stuck
+
+### Fix
+- Converted `updateConfig` to use functional `setConfig` cloning the latest state
+- Updated the Whisper model `Select` to set model name and size in a single functional state update
+
+### Files Updated
+- `frontend/src/pages/STTDeployPage.tsx`
 
 ---
 

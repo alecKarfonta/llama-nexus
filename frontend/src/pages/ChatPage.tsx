@@ -77,6 +77,7 @@ interface ChatSettings {
   endpoint: string
   apiKey: string
   openaiApiKey: string // For audio transcription (legacy, now uses local STT)
+  model: string
   // Model parameters
   temperature: number
   topP: number
@@ -116,6 +117,7 @@ const defaultSettings: ChatSettings = {
   endpoint: '/v1/chat/completions',
   apiKey: '',
   openaiApiKey: '', // For audio transcription (legacy)
+  model: '',
   // Model parameters
   temperature: 0.7,
   topP: 0.8,
@@ -490,6 +492,18 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               content: `Hello! I'm your AI assistant powered by ${modelInfo.name}. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.`
             }
           ])
+          // Pre-fill model setting if not already set
+          setSettings((prev) => {
+            if (prev.model) return prev
+            const updated = { ...prev, model: modelInfo.name }
+            // Persist so subsequent loads keep the detected model
+            try {
+              localStorage.setItem('chat-settings', JSON.stringify(updated))
+            } catch (error) {
+              console.warn('Failed to save chat settings to localStorage:', error)
+            }
+            return updated
+          })
         }
       } catch (error) {
         console.warn('Failed to fetch current model:', error)
@@ -557,6 +571,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
       const request: ChatCompletionRequest = {
         messages: [...messages, userMessage],
+        model: settings.model,
         temperature: settings.temperature,
         top_p: settings.topP,
         top_k: settings.topK,
@@ -926,6 +941,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         // Continue conversation with tool result
         const followUpRequest: ChatCompletionRequest = {
           messages: [...messages, toolResultMessage],
+          model: settings.model,
           temperature: settings.temperature,
           top_p: settings.topP,
           top_k: settings.topK,
@@ -1065,6 +1081,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
       const request: ChatCompletionRequest = {
         messages: updatedMessages,
+        model: settings.model,
         temperature: settings.temperature,
         top_p: settings.topP,
         top_k: settings.topK,
@@ -1600,6 +1617,26 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   onChange={(e) => saveSettings({ ...settings, endpoint: e.target.value })}
                   placeholder="/v1/chat/completions"
                   helperText="API endpoint path"
+                  sx={{ 
+                    '& .MuiOutlinedInput-root': {
+                      fontSize: '0.875rem',
+                      borderRadius: 1,
+                      backgroundColor: 'background.default',
+                      '&.Mui-focused': {
+                        borderColor: 'primary.main'
+                      }
+                    }
+                  }}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  label="Model"
+                  fullWidth
+                  value={settings.model}
+                  onChange={(e) => saveSettings({ ...settings, model: e.target.value })}
+                  placeholder="e.g. gpt-4o-mini or llama-3.1-8b-instruct"
+                  helperText="Sent as the model parameter to the chat completions endpoint"
                   sx={{ 
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',

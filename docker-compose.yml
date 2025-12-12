@@ -104,9 +104,6 @@ services:
       # Conversation storage
       -       conversation_data:/data/conversations
     shm_size: '16gb'
-    networks:
-      - default
-      - graphrag-network
     depends_on:
       llamacpp-builder:
         condition: service_completed_successfully
@@ -319,9 +316,3 @@ volumes:
     driver: local
   qdrant_data:
     driver: local
-
-networks:
-  # External graphrag network for knowledge graph integration
-  graphrag-network:
-    name: graphrag_graphrag-network
-    external: true
