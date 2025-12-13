@@ -289,6 +289,9 @@ class LlamaCPPManager:
         # Docker network to attach launched containers to (defaults to compose default)
         self.docker_network = os.getenv("DOCKER_NETWORK", "llama-nexus_default")
         
+        # Reference to download manager for metadata access
+        self.download_manager: Optional[ModelDownloadManager] = None
+        
         # Defer container log reading to runtime callers to avoid loop issues during import
         
     def load_default_config(self) -> Dict[str, Any]:
@@ -550,10 +553,25 @@ class LlamaCPPManager:
         execution_mode = self.config.get("execution", {}).get("mode", "gpu")
         cuda_devices = self.config.get("execution", {}).get("cuda_devices", "all")
         
+        # Get repository info from metadata if available
+        model_name = self.config['model']['name']
+        variant = self.config['model']['variant']
+        model_repo = None
+        
+        if self.download_manager:
+            model_repo = self.download_manager.get_model_repository(model_name, variant)
+        
         env_vars = {
-            "MODEL_NAME": self.config['model']['name'],
-            "MODEL_VARIANT": self.config['model']['variant'],
+            "MODEL_NAME": model_name,
+            "MODEL_VARIANT": variant,
         }
+        
+        # Only set MODEL_REPO if we have metadata for it
+        if model_repo:
+            env_vars["MODEL_REPO"] = model_repo
+            logger.info(f"Using repository from metadata: {model_repo} for {model_name}-{variant}")
+        else:
+            logger.warning(f"No repository metadata found for {model_name}-{variant}, container will use fallback logic")
         
         # Build container config
         container_config = {
@@ -651,6 +669,14 @@ class LlamaCPPManager:
         execution_mode = self.config.get("execution", {}).get("mode", "gpu")
         cuda_devices = self.config.get("execution", {}).get("cuda_devices", "all")
         
+        # Get repository info from metadata if available
+        model_name = self.config['model']['name']
+        variant = self.config['model']['variant']
+        model_repo = None
+        
+        if self.download_manager:
+            model_repo = self.download_manager.get_model_repository(model_name, variant)
+        
         docker_cmd = [
             'docker', 'run', '-d',
             '--name', self.container_name,
@@ -659,9 +685,16 @@ class LlamaCPPManager:
             '--network', self.docker_network,
             '-v', 'llama-nexus_gpt_oss_models:/home/llamacpp/models',
             '-v', f'{host_templates_dir}:/home/llamacpp/templates:ro',
-            '-e', f'MODEL_NAME={self.config["model"]["name"]}',
-            '-e', f'MODEL_VARIANT={self.config["model"]["variant"]}',
+            '-e', f'MODEL_NAME={model_name}',
+            '-e', f'MODEL_VARIANT={variant}',
         ]
+        
+        # Only set MODEL_REPO if we have metadata for it
+        if model_repo:
+            docker_cmd.extend(['-e', f'MODEL_REPO={model_repo}'])
+            logger.info(f"Using repository from metadata: {model_repo} for {model_name}-{variant}")
+        else:
+            logger.warning(f"No repository metadata found for {model_name}-{variant}, container will use fallback logic")
         
         # Add runtime and CUDA env vars only for GPU mode
         if execution_mode == "gpu":
@@ -1163,11 +1196,50 @@ class ModelDownloadManager:
         # Models directory shared with llamacpp
         self.models_dir = Path("/home/llamacpp/models")
         self.models_dir.mkdir(parents=True, exist_ok=True)
+        # Metadata directory for storing model source information
+        self.metadata_dir = self.models_dir / ".metadata"
+        self.metadata_dir.mkdir(exist_ok=True)
 
     def _derive_model_id(self, filename: str) -> str:
         # Strip extension
         base = filename[:-5] if filename.endswith('.gguf') else Path(filename).stem
         return base
+
+    def _save_model_metadata(self, model_name: str, variant: str, repo_id: str, filename: str):
+        """Save model metadata to track repository source."""
+        metadata = {
+            "model_name": model_name,
+            "variant": variant,
+            "repo_id": repo_id,
+            "filename": filename,
+            "downloaded_at": datetime.now().isoformat(),
+            "source": "huggingface"
+        }
+        
+        # Use model_name-variant as the metadata filename
+        metadata_file = self.metadata_dir / f"{model_name}-{variant}.json"
+        try:
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            logger.info(f"Saved metadata for {model_name}-{variant} from {repo_id}")
+        except Exception as e:
+            logger.warning(f"Failed to save metadata for {model_name}-{variant}: {e}")
+
+    def _load_model_metadata(self, model_name: str, variant: str) -> Optional[Dict[str, Any]]:
+        """Load model metadata if it exists."""
+        metadata_file = self.metadata_dir / f"{model_name}-{variant}.json"
+        try:
+            if metadata_file.exists():
+                with open(metadata_file, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load metadata for {model_name}-{variant}: {e}")
+        return None
+
+    def get_model_repository(self, model_name: str, variant: str) -> Optional[str]:
+        """Get the repository ID for a model, or None if unknown."""
+        metadata = self._load_model_metadata(model_name, variant)
+        return metadata.get("repo_id") if metadata else None
 
     async def list_local_models(self) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
@@ -1452,6 +1524,14 @@ class ModelDownloadManager:
                     rec.progress = 100.0
                     rec.speed = (rec.total_size / max(1e-6, (time.time() - start_time))) if rec.total_size else 0.0
                     rec.eta = 0.0
+                
+                # Save metadata for the downloaded model
+                try:
+                    model_name, variant = self._parse_name_variant(filename)
+                    if model_name and variant:
+                        self._save_model_metadata(model_name, variant, repo_id, filename)
+                except Exception as e:
+                    logger.warning(f"Failed to save metadata for {filename}: {e}")
         except asyncio.CancelledError:
             # Cleanup and mark cancelled
             try:
@@ -1572,6 +1652,15 @@ class ModelDownloadManager:
                     rec.speed = (rec.total_size / max(1e-6, (time.time() - start_time))) if rec.total_size else 0.0
                     rec.eta = 0.0
                     rec.parts_info["current"] = f"Completed all {len(part_files)} parts"
+                
+                # Save metadata for the downloaded model (use first part filename for parsing)
+                try:
+                    first_part = part_files[0]
+                    model_name, variant = self._parse_name_variant(first_part)
+                    if model_name and variant:
+                        self._save_model_metadata(model_name, variant, repo_id, first_part)
+                except Exception as e:
+                    logger.warning(f"Failed to save metadata for multipart download: {e}")
                     
         except asyncio.CancelledError:
             # Cleanup any partial downloads
@@ -2661,9 +2750,13 @@ class TTSManager:
 
 # Initialize managers
 manager = LlamaCPPManager()
+download_manager = ModelDownloadManager()
 embedding_manager = EmbeddingManager()
 stt_manager = STTManager()
 tts_manager = TTSManager()
+
+# Wire up download manager reference
+manager.download_manager = download_manager
 
 
 def _merge_and_persist_config(new_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -3545,7 +3638,6 @@ def get_current_llamacpp_commit() -> str:
 # /api/v1/service/action handled by routes/service.py
 
 # --- Model management endpoints ---
-download_manager = ModelDownloadManager()
 app.state.download_manager = download_manager
 app.state.merge_and_persist_config = _merge_and_persist_config
 

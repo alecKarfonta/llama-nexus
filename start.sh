@@ -13,19 +13,39 @@ API_KEY=${API_KEY:-"placeholder-api-key"}
 
 # Model paths - determine repository based on model name or use provided MODEL_REPO
 if [ -z "$MODEL_REPO" ]; then
-    # Auto-detect repository based on model name if not explicitly provided
-    if [[ "$MODEL_NAME" == "gpt-oss-120b" ]]; then
-        MODEL_REPO="unsloth/gpt-oss-120b-GGUF"
-    elif [[ "$MODEL_NAME" == "gpt-oss-20b" ]]; then
-        MODEL_REPO="ggml-org/models"
-    elif [[ "$MODEL_NAME" == "Qwen_Qwen3-VL-4B-Thinking" ]]; then
-        MODEL_REPO="bartowski/Qwen_Qwen3-VL-4B-Thinking-GGUF"
+    echo "⚠️  No repository metadata found for ${MODEL_NAME}-${MODEL_VARIANT}"
+    echo "   This model was likely added manually or downloaded outside the system."
+    echo "   Checking if model file exists locally..."
+    
+    # Check if model file exists locally first
+    MODEL_EXISTS=false
+    for pattern in "${patterns[@]}"; do
+        test_path="/home/llamacpp/models/${pattern}"
+        if [ -f "$test_path" ]; then
+            MODEL_EXISTS=true
+            MODEL_FILE="$pattern"
+            MODEL_PATH="$test_path"
+            echo "✅ Found local model file: $MODEL_PATH"
+            break
+        fi
+    done
+    
+    if [ "$MODEL_EXISTS" = true ]; then
+        echo "🎉 Using existing local model file"
+        # Skip download since we have the file
+        MODEL_REPO=""
     else
-        MODEL_REPO="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+        echo "❌ Model file not found locally and no repository metadata available"
+        echo "   Cannot download or use this model."
+        echo "   Please either:"
+        echo "   1. Download the model through the web interface (recommended)"
+        echo "   2. Manually place the model file in /home/llamacpp/models/"
+        echo "   3. Set MODEL_REPO environment variable if you know the repository"
+        exit 1
     fi
 fi
 
-echo "📦 Model Repository: $MODEL_REPO"
+echo "📦 Model Repository: ${MODEL_REPO:-'(using local file)'}"
 
 # Try different filename patterns to find the actual model file
 # Check multiple patterns for existing files, including multi-part files
@@ -73,8 +93,8 @@ TEMPLATE_DIR="${TEMPLATE_DIR:-/home/llamacpp/templates}"
 CHAT_TEMPLATE="${CHAT_TEMPLATE:-chat-template-oss.jinja}"
 TEMPLATE_PATH="${TEMPLATE_DIR}/${CHAT_TEMPLATE}"
 
-# Download model if not exists
-if [ ! -f "$MODEL_PATH" ]; then
+# Download model if not exists and we have a repository
+if [ ! -f "$MODEL_PATH" ] && [ -n "$MODEL_REPO" ]; then
     echo "📥 Downloading ${MODEL_NAME} model (this may take a while on first run)..."
     echo "   Repository: $MODEL_REPO"
     echo "   Variant: $MODEL_VARIANT (~18.6 GB for Q4_K_M)"

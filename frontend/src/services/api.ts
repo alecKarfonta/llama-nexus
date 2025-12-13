@@ -8,6 +8,8 @@ import { settingsManager } from '@/utils/settings';
 import type {
   ModelInfo,
   ModelDownloadRequest,
+  ModelArchiveRequest,
+  ModelArchiveResponse,
   ServiceConfig,
   ConfigUpdateRequest,
   ServiceStatus,
@@ -347,6 +349,26 @@ class ApiService {
     const response = await this.backendClient.delete<ApiResponse<any>>('/v1/models/local-files', {
       params: { file_path: filePath }
     });
+    return response.data.data;
+  }
+
+  async archiveModel(request: ModelArchiveRequest): Promise<ModelArchiveResponse> {
+    const response = await this.backendClient.post<ApiResponse<ModelArchiveResponse>>('/v1/models/archive', request);
+    return response.data.data;
+  }
+
+  async unarchiveModel(modelId: string | number): Promise<{ success: boolean; modelId: string | number }> {
+    const response = await this.backendClient.post<ApiResponse<any>>(`/v1/models/${modelId}/unarchive`);
+    return response.data.data;
+  }
+
+  async getArchivedModels(): Promise<ModelInfo[]> {
+    const response = await this.backendClient.get<ApiResponse<ModelInfo[]>>('/v1/models/archived');
+    return response.data.data || [];
+  }
+
+  async deleteModel(modelId: string | number): Promise<{ success: boolean; modelId: string | number; filesDeleted?: string[]; sizeFreed?: number }> {
+    const response = await this.backendClient.delete<ApiResponse<any>>(`/v1/models/${modelId}`);
     return response.data.data;
   }
 

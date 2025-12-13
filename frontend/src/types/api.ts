@@ -9,7 +9,7 @@ export interface ModelInfo {
   name: string;
   variant: string;
   size: number; // Size in bytes
-  status: 'available' | 'downloading' | 'loading' | 'error' | 'running' | 'stopped';
+  status: 'available' | 'downloading' | 'loading' | 'error' | 'running' | 'stopped' | 'archived';
   downloadProgress?: number; // 0-100 percentage
   repositoryId?: string; // HuggingFace repository ID
   contextLength?: number;
@@ -28,6 +28,12 @@ export interface ModelInfo {
   // Local file information
   localPath?: string; // Relative path to the local file
   filename?: string; // Actual filename on disk
+  // Archive information
+  isArchived?: boolean;
+  archivedAt?: Date;
+  archiveRating?: number; // 1-5 stars
+  archiveNotes?: string;
+  performanceNotes?: string;
 }
 
 export interface ModelDownload {
@@ -44,6 +50,22 @@ export interface ModelDownload {
     completed: number;
     current: string;
   };
+}
+
+export interface ModelArchiveRequest {
+  modelId: string | number;
+  rating?: number; // 1-5 stars
+  notes?: string;
+  performanceNotes?: string;
+  deleteLocalFiles?: boolean;
+}
+
+export interface ModelArchiveResponse {
+  success: boolean;
+  modelId: string | number;
+  archivedAt: string;
+  filesDeleted?: string[];
+  sizeFreed?: number;
 }
 
 // Service Configuration Types

@@ -701,7 +701,7 @@ export const DeployPage: React.FC = () => {
     const uniqueVariants = Array.from(new Set(variants.filter(Boolean))).sort()
     deployLog('variants', `Computed variants for ${config.model.name}:`, { count: uniqueVariants.length, variants: uniqueVariants })
     return uniqueVariants
-  }, [models, config])
+  }, [models, config?.model?.name]) // Only depend on the model name, not the entire config
 
   const hasChanges = useMemo(
     () => JSON.stringify(config) !== JSON.stringify(originalConfig),
@@ -1210,16 +1210,47 @@ export const DeployPage: React.FC = () => {
               <Select
                 fullWidth
                 value={config.model.name}
+                displayEmpty
+                renderValue={(selected) => {
+                  if (!selected) {
+                    return <em>Select a model...</em>
+                  }
+                  return selected
+                }}
                 onChange={(e) => {
                   console.log('==== MODEL ONCHANGE FIRED ====')
                   console.log('New value:', e.target.value)
                   const newName = e.target.value as string
-                  updateConfig('model.name', newName)
-                  // Auto-update variant if current one doesn't exist for new model
-                  if (!availableVariantsForSelected.includes(config.model.variant)) {
-                    const nextVariant = models.find((m) => m.name === newName)?.variant || 'Q4_K_M'
-                    updateConfig('model.variant', nextVariant)
+                  
+                  // Calculate variants for the NEW model name
+                  const newModelVariants = models.filter((m) => m.name === newName).map((m) => m.variant)
+                  const uniqueNewVariants = Array.from(new Set(newModelVariants.filter(Boolean)))
+                  
+                  // Always set the first available variant for the new model
+                  const nextVariant = uniqueNewVariants[0] || 'Q4_K_M'
+                  
+                  deployLog('modelSelect', `Model changed to ${newName} with variant ${nextVariant}`, { 
+                    availableVariants: uniqueNewVariants 
+                  })
+                  
+                  // Update both name and variant atomically to avoid race conditions
+                  if (!config) {
+                    deployLog('modelSelect', 'ABORT: config is null')
+                    return;
                   }
+                  
+                  const nextConfig = JSON.parse(JSON.stringify(config))
+                  nextConfig.model.name = newName
+                  nextConfig.model.variant = nextVariant
+                  
+                  console.log('📝 Calling setConfig with atomic update:', { name: newName, variant: nextVariant })
+                  setConfig(nextConfig)
+                  
+                  // Save to localStorage for persistence
+                  saveDeploySettings(nextConfig, selectedApiKey)
+                  
+                  // Update command line preview (single call)
+                  updateCommandPreview(nextConfig)
                 }}
                 sx={{ 
                   fontSize: '0.875rem',
@@ -1234,35 +1265,53 @@ export const DeployPage: React.FC = () => {
                 ))}
               </Select>
             </Grid>
-            <Grid item xs={12} md={6}>
-              <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Variant</Typography>
-              <Select
-                fullWidth
-                value={config.model.variant}
-                onChange={(e) => {
-                  deployLog('variantSelect', 'Variant selection changed', { 
-                    newVariant: e.target.value, 
-                    previousVariant: config.model.variant,
-                    modelName: config.model.name
-                  })
-                  updateConfig('model.variant', e.target.value)
-                }}
-                sx={{ 
-                  fontSize: '0.875rem',
-                  '& .MuiOutlinedInput-root': {
+            {availableVariantsForSelected.length > 1 && (
+              <Grid item xs={12} md={6}>
+                <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Variant</Typography>
+                <Select
+                  fullWidth
+                  value={config.model.variant}
+                  onChange={(e) => {
+                    deployLog('variantSelect', 'Variant selection changed', { 
+                      newVariant: e.target.value, 
+                      previousVariant: config.model.variant,
+                      modelName: config.model.name
+                    })
+                    updateConfig('model.variant', e.target.value)
+                  }}
+                  sx={{ 
+                    fontSize: '0.875rem',
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      backgroundColor: 'background.default',
+                    }
+                  }}
+                >
+                  {availableVariantsForSelected.map((variant) => (
+                    <MenuItem key={variant} value={variant}>{variant}</MenuItem>
+                  ))}
+                </Select>
+              </Grid>
+            )}
+            {availableVariantsForSelected.length <= 1 && (
+              <Grid item xs={12} md={6}>
+                <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Variant</Typography>
+                <Typography 
+                  sx={{ 
+                    fontSize: '0.875rem', 
+                    color: 'text.secondary',
+                    fontStyle: 'italic',
+                    py: 1.5,
+                    px: 1,
+                    backgroundColor: 'rgba(255, 255, 255, 0.02)',
                     borderRadius: 1,
-                    backgroundColor: 'background.default',
-                  }
-                }}
-              >
-                {availableVariantsForSelected.length === 0 && (
-                  <MenuItem value={config.model.variant}>{config.model.variant}</MenuItem>
-                )}
-                {availableVariantsForSelected.map((variant) => (
-                  <MenuItem key={variant} value={variant}>{variant}</MenuItem>
-                ))}
-              </Select>
-            </Grid>
+                    border: '1px solid rgba(255, 255, 255, 0.1)'
+                  }}
+                >
+                  {config.model.variant} (only variant available)
+                </Typography>
+              </Grid>
+            )}
             <Grid item xs={12} md={6}>
               <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Chat Template</Typography>
               <Select

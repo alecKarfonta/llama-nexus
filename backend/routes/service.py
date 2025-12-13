@@ -126,6 +126,42 @@ async def update_config(request: Request, config: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}")
 
 
+@router.post("/api/v1/service/config/preview")
+async def preview_config(request: Request, payload: Dict[str, Any]):
+    """Preview the command line that would be generated for a configuration without applying it."""
+    manager = get_manager(request)
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Manager not available")
+    
+    config = payload.get("config")
+    if not config:
+        raise HTTPException(status_code=400, detail="Config is required")
+    
+    try:
+        # Create a temporary copy of the manager with the new config
+        # We'll temporarily update the manager's config to generate the command
+        original_config = manager.config.copy()
+        
+        # Merge the new config with the existing one
+        temp_config = {**original_config, **config}
+        manager.config = temp_config
+        
+        # Generate the command
+        command = " ".join(manager.build_command())
+        
+        # Restore the original config
+        manager.config = original_config
+        
+        return {
+            "command": command,
+            "config": temp_config
+        }
+    except Exception as e:
+        # Make sure to restore original config even if there's an error
+        manager.config = original_config
+        raise HTTPException(status_code=500, detail=f"Failed to preview config: {str(e)}")
+
+
 @router.post("/api/v1/service/config/validate")
 async def validate_config(request: Request, config: Dict[str, Any]):
     """Validate a configuration without applying it."""
@@ -210,6 +246,12 @@ async def get_config_alias(request: Request):
 async def update_config_alias(request: Request, config: Dict[str, Any]):
     """Update config (frontend compatibility)."""
     return await update_config(request, config)
+
+
+@router.post("/v1/service/config/preview")
+async def preview_config_alias(request: Request, payload: Dict[str, Any]):
+    """Preview config (frontend compatibility)."""
+    return await preview_config(request, payload)
 
 
 @router.post("/v1/service/config/validate")

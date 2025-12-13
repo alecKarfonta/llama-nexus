@@ -45,9 +45,13 @@ import {
   RocketLaunch as DeployIcon,
   Delete as DeleteIcon,
   FolderOpen as FolderIcon,
-  Storage as StorageIcon
+  Storage as StorageIcon,
+  Archive as ArchiveIcon,
+  Unarchive as UnarchiveIcon,
+  Star as StarIcon,
+  StarBorder as StarBorderIcon
 } from '@mui/icons-material'
-import { ModelInfo, ModelDownload, ModelDownloadRequest } from '@/types/api'
+import { ModelInfo, ModelDownload, ModelDownloadRequest, ModelArchiveRequest } from '@/types/api'
 import { apiService } from '@/services/api'
 import { DownloadModelDialog } from '@/components/DownloadModelDialog'
 
@@ -70,6 +74,7 @@ export const ModelsPage: React.FC = () => {
   const [activeFilter, setActiveFilter] = useState('all')
   const [activeTab, setActiveTab] = useState(0)
   const [models, setModels] = useState<ModelInfo[]>([])
+  const [archivedModels, setArchivedModels] = useState<ModelInfo[]>([])
   const [localFiles, setLocalFiles] = useState<any[]>([])
   const [totalDiskUsage, setTotalDiskUsage] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
@@ -102,12 +107,27 @@ export const ModelsPage: React.FC = () => {
   const [fileToDelete, setFileToDelete] = useState<any | null>(null)
   const [deleting, setDeleting] = useState(false)
   
+  // State for archive dialog
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
+  const [modelToArchive, setModelToArchive] = useState<ModelInfo | null>(null)
+  const [archiveRating, setArchiveRating] = useState(0)
+  const [archiveNotes, setArchiveNotes] = useState('')
+  const [performanceNotes, setPerformanceNotes] = useState('')
+  const [deleteLocalFiles, setDeleteLocalFiles] = useState(true)
+  const [archiving, setArchiving] = useState(false)
+  
+  // State for model delete confirmation
+  const [modelDeleteDialogOpen, setModelDeleteDialogOpen] = useState(false)
+  const [modelToDelete, setModelToDelete] = useState<ModelInfo | null>(null)
+  const [deletingModel, setDeletingModel] = useState(false)
+  
   // State for highlighting a local file when linked from model
   const [highlightedFilePath, setHighlightedFilePath] = useState<string | null>(null)
 
   // Fetch models on component mount
   useEffect(() => {
     fetchModels()
+    fetchArchivedModels()
     fetchLocalFiles()
     
     // Start polling for active downloads
@@ -156,6 +176,16 @@ export const ModelsPage: React.FC = () => {
       setTotalDiskUsage(data.total_size || 0)
     } catch (error) {
       console.error('Failed to fetch local files:', error)
+    }
+  }
+  
+  // Fetch archived models
+  const fetchArchivedModels = async () => {
+    try {
+      const archived = await apiService.getArchivedModels()
+      setArchivedModels(archived)
+    } catch (error) {
+      console.error('Failed to fetch archived models:', error)
     }
   }
 
@@ -311,6 +341,20 @@ export const ModelsPage: React.FC = () => {
     setDeleteDialogOpen(true)
   }
   
+  const handleArchiveClick = (model: ModelInfo) => {
+    setModelToArchive(model)
+    setArchiveRating(0)
+    setArchiveNotes('')
+    setPerformanceNotes('')
+    setDeleteLocalFiles(true)
+    setArchiveDialogOpen(true)
+  }
+  
+  const handleModelDeleteClick = (model: ModelInfo) => {
+    setModelToDelete(model)
+    setModelDeleteDialogOpen(true)
+  }
+  
   // Handle clicking on a model's local file link
   const handleLocalFileClick = (localPath: string) => {
     setHighlightedFilePath(localPath)
@@ -343,6 +387,100 @@ export const ModelsPage: React.FC = () => {
       })
     } finally {
       setDeleting(false)
+    }
+  }
+  
+  const handleArchiveConfirm = async () => {
+    if (!modelToArchive) return
+    
+    setArchiving(true)
+    try {
+      const request: ModelArchiveRequest = {
+        modelId: modelToArchive.id,
+        rating: archiveRating > 0 ? archiveRating : undefined,
+        notes: archiveNotes.trim() || undefined,
+        performanceNotes: performanceNotes.trim() || undefined,
+        deleteLocalFiles
+      }
+      
+      const result = await apiService.archiveModel(request)
+      
+      setSnackbar({
+        open: true,
+        message: `Archived ${modelToArchive.name}${result.sizeFreed ? ` (freed ${formatBytes(result.sizeFreed)})` : ''}`,
+        severity: 'success'
+      })
+      
+      setArchiveDialogOpen(false)
+      setModelToArchive(null)
+      
+      // Refresh the lists
+      fetchModels()
+      fetchArchivedModels()
+      if (deleteLocalFiles) {
+        fetchLocalFiles()
+      }
+    } catch (error) {
+      setSnackbar({
+        open: true,
+        message: `Failed to archive: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        severity: 'error'
+      })
+    } finally {
+      setArchiving(false)
+    }
+  }
+  
+  const handleModelDeleteConfirm = async () => {
+    if (!modelToDelete) return
+    
+    setDeletingModel(true)
+    try {
+      const result = await apiService.deleteModel(modelToDelete.id)
+      
+      setSnackbar({
+        open: true,
+        message: `Deleted ${modelToDelete.name}${result.sizeFreed ? ` (freed ${formatBytes(result.sizeFreed)})` : ''}`,
+        severity: 'success'
+      })
+      
+      setModelDeleteDialogOpen(false)
+      setModelToDelete(null)
+      
+      // Refresh the lists
+      fetchModels()
+      fetchArchivedModels()
+      fetchLocalFiles()
+    } catch (error) {
+      setSnackbar({
+        open: true,
+        message: `Failed to delete: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        severity: 'error'
+      })
+    } finally {
+      setDeletingModel(false)
+    }
+  }
+  
+  const handleUnarchiveModel = async (model: ModelInfo) => {
+    try {
+      await apiService.unarchiveModel(model.id)
+      
+      setSnackbar({
+        open: true,
+        message: `Unarchived ${model.name}`,
+        severity: 'success'
+      })
+      
+      // Refresh the lists
+      fetchModels()
+      fetchArchivedModels()
+    } catch (error) {
+      setSnackbar({
+        open: true,
+        message: `Failed to unarchive: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        severity: 'error'
+      })
     }
   }
   
@@ -480,7 +618,11 @@ export const ModelsPage: React.FC = () => {
           <Button
             variant="outlined"
             startIcon={<RefreshIcon sx={{ fontSize: '1rem' }} />}
-            onClick={fetchModels}
+            onClick={() => {
+              fetchModels()
+              fetchArchivedModels()
+              fetchLocalFiles()
+            }}
             disabled={isLoading}
             size="small"
             sx={{ 
@@ -626,6 +768,18 @@ export const ModelsPage: React.FC = () => {
                 <span>Downloaded Files</span>
                 {localFiles.length > 0 && (
                   <Chip label={localFiles.length} size="small" sx={{ height: 18, fontSize: '0.7rem' }} />
+                )}
+              </Box>
+            } 
+            sx={{ fontSize: '0.8rem', textTransform: 'none', fontWeight: 500 }}
+          />
+          <Tab 
+            label={
+              <Box display="flex" alignItems="center" gap={1}>
+                <ArchiveIcon sx={{ fontSize: '1rem' }} />
+                <span>Archived</span>
+                {archivedModels.length > 0 && (
+                  <Chip label={archivedModels.length} size="small" sx={{ height: 18, fontSize: '0.7rem' }} />
                 )}
               </Box>
             } 
@@ -793,7 +947,7 @@ export const ModelsPage: React.FC = () => {
                       </Tooltip>
                     )}
                 </CardContent>
-                <CardActions sx={{ pt: 0, pb: 1, px: 1, gap: 0.5 }}>
+                <CardActions sx={{ pt: 0, pb: 1, px: 1, gap: 0.5, flexWrap: 'wrap' }}>
                     <Button 
                       size="small" 
                       onClick={() => handleShowInfo(model)} 
@@ -837,6 +991,32 @@ export const ModelsPage: React.FC = () => {
                           Stop
                         </Button>
                     )}
+                    {!isDownloading && model.status !== 'running' && (
+                      <Tooltip title="Archive this model">
+                        <Button 
+                          size="small" 
+                          onClick={() => handleArchiveClick(model)} 
+                          color="warning" 
+                          startIcon={<ArchiveIcon sx={{ fontSize: '0.9rem' }} />}
+                          sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                        >
+                          Archive
+                        </Button>
+                      </Tooltip>
+                    )}
+                    {!isDownloading && model.status !== 'running' && (
+                      <Tooltip title="Delete this model permanently">
+                        <Button 
+                          size="small" 
+                          onClick={() => handleModelDeleteClick(model)} 
+                          color="error" 
+                          startIcon={<DeleteIcon sx={{ fontSize: '0.9rem' }} />}
+                          sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                        >
+                          Delete
+                        </Button>
+                      </Tooltip>
+                    )}
                 </CardActions>
               </Card>
             </Grid>
@@ -875,6 +1055,126 @@ export const ModelsPage: React.FC = () => {
         </Grid>
       )}
       </>
+      )}
+      
+      {/* Archived Models Tab */}
+      {activeTab === 2 && (
+        <Box>
+          {archivedModels.length === 0 ? (
+            <Box sx={{ 
+              textAlign: 'center', 
+              py: 6,
+              bgcolor: 'background.paper',
+              borderRadius: 0.5,
+              border: '1px dashed',
+              borderColor: 'grey.300'
+            }}>
+              <ArchiveIcon sx={{ fontSize: '3rem', color: 'text.secondary', mb: 2 }} />
+              <Typography variant="h6" color="text.secondary" sx={{ mb: 0.5, fontWeight: 600, fontSize: '1rem' }}>
+                No archived models
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.875rem' }}>
+                Models you archive will appear here with their ratings and notes
+              </Typography>
+            </Box>
+          ) : (
+            <Grid container spacing={1.5} sx={{ px: 0 }}>
+              {archivedModels.map((model: any) => (
+                <Grid item key={model.id || model.name} xs={12} sm={6} md={4} lg={3} xl={2}>
+                  <Card variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column', opacity: 0.8 }}>
+                    <CardContent sx={{ flexGrow: 1 }}>
+                      <Typography variant="h6" noWrap title={model.name} sx={{ fontSize: '0.95rem', fontWeight: 600 }}>
+                        {model.name}
+                      </Typography>
+                      <Typography color="textSecondary" gutterBottom sx={{ fontSize: '0.75rem' }}>
+                        {model.quantization || model.variant}
+                      </Typography>
+                      
+                      <Box display="flex" alignItems="center" gap={0.5} mb={1} flexWrap="wrap">
+                        <Chip 
+                          label="archived" 
+                          size="small" 
+                          color="warning" 
+                          sx={{ fontSize: '0.7rem', height: 20 }}
+                        />
+                        {model.parameters && (
+                          <Chip label={model.parameters} size="small" variant="outlined" sx={{ fontSize: '0.7rem', height: 20 }} />
+                        )}
+                      </Box>
+                      
+                      {/* Rating Display */}
+                      {model.archiveRating && (
+                        <Box display="flex" alignItems="center" gap={0.5} mb={1}>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
+                            Rating:
+                          </Typography>
+                          {[1, 2, 3, 4, 5].map((star) => (
+                            <Box key={star} sx={{ color: star <= model.archiveRating ? 'warning.main' : 'grey.300' }}>
+                              <StarIcon sx={{ fontSize: '0.8rem' }} />
+                            </Box>
+                          ))}
+                        </Box>
+                      )}
+                      
+                      {/* Archive Notes */}
+                      {model.archiveNotes && (
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, fontSize: '0.7rem', fontStyle: 'italic' }}>
+                          "{model.archiveNotes}"
+                        </Typography>
+                      )}
+                      
+                      {/* Performance Notes */}
+                      {model.performanceNotes && (
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, fontSize: '0.7rem' }}>
+                          Performance: {model.performanceNotes}
+                        </Typography>
+                      )}
+                      
+                      {/* Archive Date */}
+                      {model.archivedAt && (
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, fontSize: '0.65rem' }}>
+                          Archived: {new Date(model.archivedAt).toLocaleDateString()}
+                        </Typography>
+                      )}
+                    </CardContent>
+                    <CardActions sx={{ pt: 0, pb: 1, px: 1, gap: 0.5 }}>
+                      <Button 
+                        size="small" 
+                        onClick={() => handleShowInfo(model)} 
+                        startIcon={<InfoIcon sx={{ fontSize: '0.9rem' }} />}
+                        sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                      >
+                        Info
+                      </Button>
+                      <Tooltip title="Restore this model">
+                        <Button 
+                          size="small" 
+                          onClick={() => handleUnarchiveModel(model)} 
+                          color="success" 
+                          startIcon={<UnarchiveIcon sx={{ fontSize: '0.9rem' }} />}
+                          sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                        >
+                          Restore
+                        </Button>
+                      </Tooltip>
+                      <Tooltip title="Delete permanently">
+                        <Button 
+                          size="small" 
+                          onClick={() => handleModelDeleteClick(model)} 
+                          color="error" 
+                          startIcon={<DeleteIcon sx={{ fontSize: '0.9rem' }} />}
+                          sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                        >
+                          Delete
+                        </Button>
+                      </Tooltip>
+                    </CardActions>
+                  </Card>
+                </Grid>
+              ))}
+            </Grid>
+          )}
+        </Box>
       )}
       
       {/* Downloaded Files Tab */}
@@ -1146,7 +1446,179 @@ export const ModelsPage: React.FC = () => {
         </DialogActions>
       </Dialog>
       
-      {/* Delete Confirmation Dialog */}
+      {/* Archive Model Dialog */}
+      <Dialog
+        open={archiveDialogOpen}
+        onClose={() => !archiving && setArchiveDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontSize: '1rem', fontWeight: 600 }}>
+          Archive Model
+        </DialogTitle>
+        <DialogContent>
+          {modelToArchive && (
+            <>
+              <Typography variant="body2" sx={{ mb: 3 }}>
+                Archive <strong>{modelToArchive.name}</strong>? This will hide it from the main models list but keep your rating and notes for future reference.
+              </Typography>
+              
+              {/* Rating */}
+              <Box sx={{ mb: 3 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+                  Rate this model (optional)
+                </Typography>
+                <Box display="flex" alignItems="center" gap={0.5}>
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <IconButton
+                      key={star}
+                      size="small"
+                      onClick={() => setArchiveRating(star === archiveRating ? 0 : star)}
+                      sx={{ 
+                        color: star <= archiveRating ? 'warning.main' : 'grey.300',
+                        p: 0.25
+                      }}
+                    >
+                      {star <= archiveRating ? <StarIcon /> : <StarBorderIcon />}
+                    </IconButton>
+                  ))}
+                  {archiveRating > 0 && (
+                    <Typography variant="caption" sx={{ ml: 1 }}>
+                      {archiveRating} star{archiveRating !== 1 ? 's' : ''}
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
+              
+              {/* General Notes */}
+              <Box sx={{ mb: 3 }}>
+                <TextField
+                  fullWidth
+                  multiline
+                  rows={3}
+                  label="Notes (optional)"
+                  placeholder="General thoughts about this model..."
+                  value={archiveNotes}
+                  onChange={(e) => setArchiveNotes(e.target.value)}
+                  variant="outlined"
+                  size="small"
+                />
+              </Box>
+              
+              {/* Performance Notes */}
+              <Box sx={{ mb: 3 }}>
+                <TextField
+                  fullWidth
+                  multiline
+                  rows={2}
+                  label="Performance Notes (optional)"
+                  placeholder="Speed, quality, memory usage, etc..."
+                  value={performanceNotes}
+                  onChange={(e) => setPerformanceNotes(e.target.value)}
+                  variant="outlined"
+                  size="small"
+                />
+              </Box>
+              
+              {/* Delete Local Files Option */}
+              <Box sx={{ mb: 2 }}>
+                <Box display="flex" alignItems="center" gap={1}>
+                  <input
+                    type="checkbox"
+                    id="deleteLocalFiles"
+                    checked={deleteLocalFiles}
+                    onChange={(e) => setDeleteLocalFiles(e.target.checked)}
+                  />
+                  <label htmlFor="deleteLocalFiles">
+                    <Typography variant="body2">
+                      Delete local model files to free up disk space
+                    </Typography>
+                  </label>
+                </Box>
+                {modelToArchive.size > 0 && deleteLocalFiles && (
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: 3, fontSize: '0.75rem' }}>
+                    This will free up approximately {formatBytes(modelToArchive.size)}
+                  </Typography>
+                )}
+              </Box>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button 
+            onClick={() => setArchiveDialogOpen(false)} 
+            disabled={archiving}
+            sx={{ fontSize: '0.8rem' }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleArchiveConfirm} 
+            color="warning" 
+            variant="contained"
+            disabled={archiving}
+            startIcon={archiving ? <CircularProgress size={16} /> : <ArchiveIcon />}
+            sx={{ fontSize: '0.8rem' }}
+          >
+            {archiving ? 'Archiving...' : 'Archive Model'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+      
+      {/* Model Delete Confirmation Dialog */}
+      <Dialog
+        open={modelDeleteDialogOpen}
+        onClose={() => !deletingModel && setModelDeleteDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontSize: '1rem', fontWeight: 600 }}>
+          Delete Model Permanently?
+        </DialogTitle>
+        <DialogContent>
+          {modelToDelete && (
+            <>
+              <Typography variant="body2" sx={{ mb: 2 }}>
+                Are you sure you want to permanently delete <strong>{modelToDelete.name}</strong>? This action cannot be undone and will remove all associated files and data.
+              </Typography>
+              <Box sx={{ bgcolor: 'error.50', p: 2, borderRadius: 1, border: '1px solid', borderColor: 'error.200' }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'error.main' }}>
+                  {modelToDelete.name}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {modelToDelete.variant || modelToDelete.quantization}
+                </Typography>
+                {modelToDelete.size > 0 && (
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Size: {formatBytes(modelToDelete.size)}
+                  </Typography>
+                )}
+              </Box>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button 
+            onClick={() => setModelDeleteDialogOpen(false)} 
+            disabled={deletingModel}
+            sx={{ fontSize: '0.8rem' }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleModelDeleteConfirm} 
+            color="error" 
+            variant="contained"
+            disabled={deletingModel}
+            startIcon={deletingModel ? <CircularProgress size={16} /> : <DeleteIcon />}
+            sx={{ fontSize: '0.8rem' }}
+          >
+            {deletingModel ? 'Deleting...' : 'Delete Permanently'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+      
+      {/* Delete File Confirmation Dialog */}
       <Dialog
         open={deleteDialogOpen}
         onClose={() => !deleting && setDeleteDialogOpen(false)}

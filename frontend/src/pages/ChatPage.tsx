@@ -86,6 +86,8 @@ interface ChatSettings {
   streamResponse: boolean
   enableTools: boolean
   selectedTools: string[]
+  // Reasoning settings
+  reasoningLevel: 'low' | 'medium' | 'high' | 'none'
   // Display settings
   showPerformanceMetrics: boolean
   // Voice settings
@@ -126,6 +128,8 @@ const defaultSettings: ChatSettings = {
   streamResponse: true,
   enableTools: false,
   selectedTools: [],
+  // Reasoning settings
+  reasoningLevel: 'low', // Default to low to prevent excessive thinking
   // Display settings
   showPerformanceMetrics: false,
   // Voice settings
@@ -384,6 +388,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           topP: settings.topP,
           topK: settings.topK,
           maxTokens: settings.maxTokens,
+          reasoningLevel: settings.reasoningLevel,
         },
       };
 
@@ -569,8 +574,36 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         ? availableTools.filter((tool: Tool) => settings.selectedTools.includes(tool.function.name))
         : []
 
+      // Prepare messages with reasoning level system prompt if needed
+      let requestMessages = [...messages, userMessage]
+      
+      // Add or update system message with reasoning level for GPT-OSS models
+      if (settings.reasoningLevel !== 'none') {
+        const systemMessage = {
+          role: 'system' as const,
+          content: `You are a helpful AI assistant. Reasoning: ${settings.reasoningLevel}`
+        }
+        
+        // Check if first message is already a system message
+        if (requestMessages.length > 0 && requestMessages[0].role === 'system') {
+          // Update existing system message to include reasoning level
+          const existingContent = typeof requestMessages[0].content === 'string' 
+            ? requestMessages[0].content 
+            : ''
+          requestMessages[0] = {
+            ...requestMessages[0],
+            content: existingContent.includes('Reasoning:') 
+              ? existingContent.replace(/Reasoning: \w+/, `Reasoning: ${settings.reasoningLevel}`)
+              : `${existingContent}\nReasoning: ${settings.reasoningLevel}`
+          }
+        } else {
+          // Add new system message at the beginning
+          requestMessages = [systemMessage, ...requestMessages]
+        }
+      }
+
       const request: ChatCompletionRequest = {
-        messages: [...messages, userMessage],
+        messages: requestMessages,
         model: settings.model,
         temperature: settings.temperature,
         top_p: settings.topP,
@@ -1079,8 +1112,36 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         ? availableTools.filter((tool: Tool) => settings.selectedTools.includes(tool.function.name))
         : []
 
+      // Prepare messages with reasoning level system prompt if needed
+      let requestMessages = updatedMessages
+      
+      // Add or update system message with reasoning level for GPT-OSS models
+      if (settings.reasoningLevel !== 'none') {
+        const systemMessage = {
+          role: 'system' as const,
+          content: `You are a helpful AI assistant. Reasoning: ${settings.reasoningLevel}`
+        }
+        
+        // Check if first message is already a system message
+        if (requestMessages.length > 0 && requestMessages[0].role === 'system') {
+          // Update existing system message to include reasoning level
+          const existingContent = typeof requestMessages[0].content === 'string' 
+            ? requestMessages[0].content 
+            : ''
+          requestMessages[0] = {
+            ...requestMessages[0],
+            content: existingContent.includes('Reasoning:') 
+              ? existingContent.replace(/Reasoning: \w+/, `Reasoning: ${settings.reasoningLevel}`)
+              : `${existingContent}\nReasoning: ${settings.reasoningLevel}`
+          }
+        } else {
+          // Add new system message at the beginning
+          requestMessages = [systemMessage, ...requestMessages]
+        }
+      }
+
       const request: ChatCompletionRequest = {
-        messages: updatedMessages,
+        messages: requestMessages,
         model: settings.model,
         temperature: settings.temperature,
         top_p: settings.topP,
@@ -1332,7 +1393,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 fontSize: '0.8125rem',
               }}
             >
-              {currentModelName} | ~{tokenCount.prompt.toLocaleString()} tokens
+              {currentModelName} | ~{tokenCount.prompt.toLocaleString()} tokens | Reasoning: {settings.reasoningLevel}
             </Typography>
           </Box>
         </Box>
@@ -1579,7 +1640,23 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       {/* Settings Panel */}
       <Collapse in={showSettings}>
         <Card sx={{ mb: 2, borderRadius: 1, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)' }}>
-          <CardContent>
+          <CardContent sx={{ 
+            maxHeight: 'calc(100vh - 300px)', 
+            overflowY: 'auto',
+            '&::-webkit-scrollbar': {
+              width: '8px',
+            },
+            '&::-webkit-scrollbar-track': {
+              bgcolor: 'rgba(0, 0, 0, 0.1)',
+            },
+            '&::-webkit-scrollbar-thumb': {
+              bgcolor: 'rgba(255, 255, 255, 0.2)',
+              borderRadius: '4px',
+              '&:hover': {
+                bgcolor: 'rgba(255, 255, 255, 0.3)',
+              },
+            },
+          }}>
             <Typography variant="h6" gutterBottom>
               Chat Settings
             </Typography>
@@ -1755,6 +1832,37 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             <Typography variant="h6" gutterBottom sx={{ mt: 2, mb: 1 }}>
               Model Parameters
             </Typography>
+            
+            {/* Reasoning Level Control */}
+            <Grid container spacing={3} sx={{ mb: 3 }}>
+              <Grid item xs={12} sm={6}>
+                <Typography gutterBottom>Reasoning Level</Typography>
+                <Select
+                  fullWidth
+                  value={settings.reasoningLevel}
+                  onChange={(e) => saveSettings({ ...settings, reasoningLevel: e.target.value as 'low' | 'medium' | 'high' | 'none' })}
+                  sx={{ 
+                    '& .MuiOutlinedInput-root': {
+                      fontSize: '0.875rem',
+                      borderRadius: 1,
+                      backgroundColor: 'background.default',
+                      '&.Mui-focused': {
+                        borderColor: 'primary.main'
+                      }
+                    }
+                  }}
+                >
+                  <MenuItem value="none">None (Direct responses)</MenuItem>
+                  <MenuItem value="low">Low (Fast responses)</MenuItem>
+                  <MenuItem value="medium">Medium (Balanced)</MenuItem>
+                  <MenuItem value="high">High (Deep analysis)</MenuItem>
+                </Select>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                  Controls how much the model thinks before responding. Use "Low" or "None" if the model is using too many tokens for thinking.
+                </Typography>
+              </Grid>
+            </Grid>
+            
             <Grid container spacing={3}>
               <Grid item xs={12} sm={6} md={3}>
                 <Typography gutterBottom>Temperature: {settings.temperature}</Typography>
@@ -2003,6 +2111,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   <MenuItem value="small">Small (better)</MenuItem>
                   <MenuItem value="medium">Medium (great)</MenuItem>
                   <MenuItem value="large-v3">Large-v3 (best)</MenuItem>
+                  <MenuItem value="distil-large-v3.5-ct2">Distil-Large-v3.5 (fast & high quality)</MenuItem>
                 </Select>
               </Grid>
               
@@ -2684,6 +2793,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     <MenuItem value="small">Small</MenuItem>
                     <MenuItem value="medium">Medium</MenuItem>
                     <MenuItem value="large-v3">Large</MenuItem>
+                    <MenuItem value="distil-large-v3.5-ct2">Distil-Large</MenuItem>
                   </Select>
                 </Box>
               </Box>
