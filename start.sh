@@ -11,6 +11,22 @@ HOST=${HOST:-"0.0.0.0"}
 PORT=${PORT:-"8080"}
 API_KEY=${API_KEY:-"placeholder-api-key"}
 
+# Try different filename patterns to find the actual model file
+# Check multiple patterns for existing files, including multi-part files
+patterns=(
+    "${MODEL_NAME}-${MODEL_VARIANT}.gguf"
+    "${MODEL_NAME}.${MODEL_VARIANT}.gguf"
+    "${MODEL_NAME}${MODEL_VARIANT}.gguf"
+    "${MODEL_NAME}_${MODEL_VARIANT}.gguf"
+    "${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"  # Multi-part file pattern
+    "${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00003.gguf"  # 3-part pattern
+    # Check in subdirectories (HuggingFace download style)
+    "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}.gguf"  # In variant subdirectory
+    "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"  # Multi-part in subdirectory
+    "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00003.gguf"  # 3-part in subdirectory
+    "gpt-oss-20b-GGUF/${MODEL_NAME}-${MODEL_VARIANT}.gguf" # Specific pattern for gpt-oss-20b
+)
+
 # Model paths - determine repository based on model name or use provided MODEL_REPO
 if [ -z "$MODEL_REPO" ]; then
     echo "⚠️  No repository metadata found for ${MODEL_NAME}-${MODEL_VARIANT}"
@@ -46,22 +62,6 @@ if [ -z "$MODEL_REPO" ]; then
 fi
 
 echo "📦 Model Repository: ${MODEL_REPO:-'(using local file)'}"
-
-# Try different filename patterns to find the actual model file
-# Check multiple patterns for existing files, including multi-part files
-patterns=(
-    "${MODEL_NAME}-${MODEL_VARIANT}.gguf"
-    "${MODEL_NAME}.${MODEL_VARIANT}.gguf"
-    "${MODEL_NAME}${MODEL_VARIANT}.gguf"
-    "${MODEL_NAME}_${MODEL_VARIANT}.gguf"
-    "${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"  # Multi-part file pattern
-    "${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00003.gguf"  # 3-part pattern
-    # Check in subdirectories (HuggingFace download style)
-    "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}.gguf"  # In variant subdirectory
-    "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"  # Multi-part in subdirectory
-    "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00003.gguf"  # 3-part in subdirectory
-    "gpt-oss-20b-GGUF/${MODEL_NAME}-${MODEL_VARIANT}.gguf" # Specific pattern for gpt-oss-20b
-)
 
 for pattern in "${patterns[@]}"; do
     test_path="/home/llamacpp/models/${pattern}"

@@ -42,6 +42,38 @@ export default defineConfig({
           'Authorization': 'Bearer placeholder-api-key'
         }
       },
+      '/api/v1/embedding': {
+        target: process.env.VITE_BACKEND_URL || 'http://192.168.1.77:8700',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '/api'),
+        headers: {
+          'Authorization': 'Bearer placeholder-api-key'
+        }
+      },
+      '/api/v1/rag': {
+        target: process.env.VITE_BACKEND_URL || 'http://192.168.1.77:8700',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '/api'),
+        headers: {
+          'Authorization': 'Bearer placeholder-api-key'
+        }
+      },
+      '/api/v1/stt': {
+        target: process.env.VITE_BACKEND_URL || 'http://192.168.1.77:8700',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '/api'),
+        headers: {
+          'Authorization': 'Bearer placeholder-api-key'
+        }
+      },
+      '/api/v1/tts': {
+        target: process.env.VITE_BACKEND_URL || 'http://192.168.1.77:8700',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '/api'),
+        headers: {
+          'Authorization': 'Bearer placeholder-api-key'
+        }
+      },
       '/api/v1/benchmark': {
         target: process.env.VITE_BACKEND_URL || 'http://192.168.1.77:8700',
         changeOrigin: true,

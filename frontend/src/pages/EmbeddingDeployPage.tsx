@@ -13,6 +13,20 @@ import {
   Chip,
   CircularProgress,
   FormHelperText,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  LinearProgress,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper,
+  IconButton,
+  Tooltip,
 } from '@mui/material'
 import {
   PlayArrow as StartIcon,
@@ -20,7 +34,32 @@ import {
   RestartAlt as RestartIcon,
   Save as SaveIcon,
   Science as TestIcon,
+  CloudDownload as DownloadIcon,
+  Delete as DeleteIcon,
+  Info as InfoIcon,
+  CheckCircle as CheckIcon,
+  Cancel as CancelIcon,
 } from '@mui/icons-material'
+
+// Embedding model repository mappings
+const EMBEDDING_MODEL_REPOS = {
+  'nomic-embed-text-v1.5': {
+    repo: 'nomic-ai/nomic-embed-text-v1.5-GGUF',
+    files: ['nomic-embed-text-v1.5.Q8_0.gguf', 'nomic-embed-text-v1.5.Q4_K_M.gguf', 'nomic-embed-text-v1.5.Q4_0.gguf']
+  },
+  'e5-mistral-7b': {
+    repo: 'intfloat/e5-mistral-7b-instruct-GGUF',
+    files: ['e5-mistral-7b-instruct.Q8_0.gguf', 'e5-mistral-7b-instruct.Q4_K_M.gguf', 'e5-mistral-7b-instruct.Q4_0.gguf']
+  },
+  'bge-m3': {
+    repo: 'BAAI/bge-m3-GGUF',
+    files: ['bge-m3.Q8_0.gguf', 'bge-m3.Q4_K_M.gguf', 'bge-m3.Q4_0.gguf']
+  },
+  'gte-Qwen2-1.5B': {
+    repo: 'Alibaba-NLP/gte-Qwen2-1.5B-instruct-GGUF',
+    files: ['gte-Qwen2-1.5B-instruct.Q8_0.gguf', 'gte-Qwen2-1.5B-instruct.Q4_K_M.gguf', 'gte-Qwen2-1.5B-instruct.Q4_0.gguf']
+  }
+}
 
 export const EmbeddingDeployPage: React.FC = () => {
   // Embedding service state
@@ -40,6 +79,14 @@ export const EmbeddingDeployPage: React.FC = () => {
   const [testResult, setTestResult] = useState<any>(null)
   const [testLoading, setTestLoading] = useState(false)
   const [testError, setTestError] = useState<string | null>(null)
+  
+  // Model download state
+  const [downloadDialogOpen, setDownloadDialogOpen] = useState(false)
+  const [selectedModelForDownload, setSelectedModelForDownload] = useState<string>('')
+  const [selectedVariant, setSelectedVariant] = useState<string>('Q8_0')
+  const [downloadLoading, setDownloadLoading] = useState(false)
+  const [activeDownloads, setActiveDownloads] = useState<any[]>([])
+  const [localModels, setLocalModels] = useState<any[]>([])
   
   const [loading, setLoading] = useState(true)
 
@@ -68,6 +115,12 @@ export const EmbeddingDeployPage: React.FC = () => {
           const ragEmbedCfg = await ragEmbedCfgRes.json()
           setRagEmbeddingConfig(ragEmbedCfg)
         }
+        
+        // Load local models and downloads
+        await Promise.all([
+          loadLocalModels(),
+          loadActiveDownloads()
+        ])
       } catch (e) {
         console.error('Failed to fetch embedding service info:', e)
       } finally {
@@ -78,7 +131,7 @@ export const EmbeddingDeployPage: React.FC = () => {
     init()
   }, [])
 
-  // Refresh embedding status periodically
+  // Refresh embedding status and downloads periodically
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -87,13 +140,18 @@ export const EmbeddingDeployPage: React.FC = () => {
           const status = await res.json()
           setEmbeddingStatus(status)
         }
+        
+        // Also refresh downloads if there are active ones
+        if (activeDownloads.length > 0) {
+          await loadActiveDownloads()
+        }
       } catch (e) {
         // Silently fail
       }
     }, 5000)
     
     return () => clearInterval(interval)
-  }, [])
+  }, [activeDownloads.length])
 
   // Embedding service action handlers
   const runEmbeddingAction = async (action: 'start' | 'stop' | 'restart') => {
@@ -198,36 +256,30 @@ export const EmbeddingDeployPage: React.FC = () => {
       setTestError(null)
       setTestResult(null)
       
-      const serviceUrl = embeddingStatus?.endpoint || 'http://localhost:8602'
-      const apiKey = embeddingConfig?.server?.api_key || 'llamacpp-embed'
-      const modelName = embeddingConfig?.model?.name || 'nomic-embed-text-v1.5'
-      
-      const startTime = Date.now()
-      const res = await fetch(`${serviceUrl}/v1/embeddings`, {
+      // Use the backend API endpoint which proxies to the embedding service
+      const res = await fetch('/api/v1/embedding/test', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          input: testText,
-          model: modelName
+          text: testText
         })
       })
       
       if (!res.ok) {
-        const errorText = await res.text()
-        throw new Error(`Service returned ${res.status}: ${errorText}`)
+        const errorData = await res.json().catch(() => ({ detail: 'Unknown error' }))
+        throw new Error(errorData.detail || `Service returned ${res.status}`)
       }
       
       const result = await res.json()
-      const endTime = Date.now()
-      const timeTaken = endTime - startTime
       
       setTestResult({
-        ...result,
-        timeTaken,
-        vectorLength: result.data?.[0]?.embedding?.length || 0
+        model: result.model,
+        usage: result.usage,
+        data: result.data,
+        timeTaken: result.timeTaken,
+        vectorLength: result.vectorLength
       })
       
     } catch (e) {
@@ -235,6 +287,141 @@ export const EmbeddingDeployPage: React.FC = () => {
     } finally {
       setTestLoading(false)
     }
+  }
+  
+  // Model download functions
+  const loadLocalModels = async () => {
+    try {
+      const res = await fetch('/v1/models')
+      if (res.ok) {
+        const data = await res.json()
+        setLocalModels(data.data || [])
+      }
+    } catch (e) {
+      console.error('Failed to load local models:', e)
+    }
+  }
+  
+  const loadActiveDownloads = async () => {
+    try {
+      const res = await fetch('/v1/models/downloads')
+      if (res.ok) {
+        const data = await res.json()
+        setActiveDownloads(data.data || [])
+      }
+    } catch (e) {
+      console.error('Failed to load downloads:', e)
+    }
+  }
+  
+  const startModelDownload = async () => {
+    if (!selectedModelForDownload || !selectedVariant) {
+      setEmbeddingError('Please select a model and variant')
+      return
+    }
+    
+    const modelRepo = EMBEDDING_MODEL_REPOS[selectedModelForDownload as keyof typeof EMBEDDING_MODEL_REPOS]
+    if (!modelRepo) {
+      setEmbeddingError('Invalid model selected')
+      return
+    }
+    
+    const filename = modelRepo.files.find(f => f.includes(selectedVariant))
+    if (!filename) {
+      setEmbeddingError('Invalid variant selected')
+      return
+    }
+    
+    try {
+      setDownloadLoading(true)
+      setEmbeddingError(null)
+      
+      const res = await fetch('/v1/models/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repositoryId: modelRepo.repo,
+          filename: filename,
+          priority: 'normal'
+        })
+      })
+      
+      if (!res.ok) {
+        const errorData = await res.json()
+        throw new Error(errorData.detail || 'Failed to start download')
+      }
+      
+      setEmbeddingSuccess('Model download started successfully')
+      setDownloadDialogOpen(false)
+      setSelectedModelForDownload('')
+      setSelectedVariant('Q8_0')
+      
+      // Refresh downloads and models
+      await Promise.all([loadActiveDownloads(), loadLocalModels()])
+      
+      setTimeout(() => setEmbeddingSuccess(null), 3000)
+    } catch (e) {
+      setEmbeddingError(e instanceof Error ? e.message : 'Failed to start download')
+    } finally {
+      setDownloadLoading(false)
+    }
+  }
+  
+  const cancelDownload = async (modelId: string) => {
+    try {
+      const res = await fetch(`/v1/models/downloads/${modelId}`, {
+        method: 'DELETE'
+      })
+      
+      if (res.ok) {
+        setEmbeddingSuccess('Download cancelled')
+        await loadActiveDownloads()
+        setTimeout(() => setEmbeddingSuccess(null), 3000)
+      }
+    } catch (e) {
+      setEmbeddingError('Failed to cancel download')
+    }
+  }
+  
+  const deleteLocalModel = async (filePath: string) => {
+    try {
+      const res = await fetch('/v1/models/local-files', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_path: filePath })
+      })
+      
+      if (res.ok) {
+        setEmbeddingSuccess('Model deleted successfully')
+        await loadLocalModels()
+        setTimeout(() => setEmbeddingSuccess(null), 3000)
+      }
+    } catch (e) {
+      setEmbeddingError('Failed to delete model')
+    }
+  }
+  
+  const getModelStatus = (modelName: string, variant: string) => {
+    const expectedFilename = EMBEDDING_MODEL_REPOS[modelName as keyof typeof EMBEDDING_MODEL_REPOS]?.files
+      .find(f => f.includes(variant))
+    
+    if (!expectedFilename) return 'unknown'
+    
+    // Check if model is downloaded
+    const isDownloaded = localModels.some(model => 
+      model.filename === expectedFilename || model.path?.includes(expectedFilename)
+    )
+    
+    if (isDownloaded) return 'downloaded'
+    
+    // Check if model is downloading
+    const isDownloading = activeDownloads.some(download => 
+      download.filename === expectedFilename && download.status === 'downloading'
+    )
+    
+    if (isDownloading) return 'downloading'
+    
+    return 'not_downloaded'
   }
 
   if (loading) {
@@ -476,6 +663,168 @@ export const EmbeddingDeployPage: React.FC = () => {
                   Save Configuration
                 </Button>
               </Box>
+            </CardContent>
+          </Card>
+
+          {/* Model Downloads */}
+          <Card sx={{
+            mb: 3,
+            borderRadius: 2,
+            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+            border: '1px solid',
+            borderColor: 'divider',
+          }}>
+            <CardContent>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+                <Box>
+                  <Typography variant="h6" gutterBottom sx={{ fontSize: '1.125rem', fontWeight: 600 }}>
+                    Embedding Models
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Download and manage embedding models for the service
+                  </Typography>
+                </Box>
+                <Button
+                  variant="contained"
+                  startIcon={<DownloadIcon />}
+                  onClick={() => setDownloadDialogOpen(true)}
+                  sx={{ borderRadius: 1.5, fontWeight: 600, px: 3 }}
+                >
+                  Download Model
+                </Button>
+              </Box>
+              
+              {/* Available Models Status */}
+              <Grid container spacing={2}>
+                {availableEmbeddingModels.map((model) => {
+                  const modelStatus = getModelStatus(model.name, embeddingConfig?.model?.variant || 'Q8_0')
+                  const isCurrentModel = embeddingConfig?.model?.name === model.name
+                  
+                  return (
+                    <Grid item xs={12} md={6} key={model.name}>
+                      <Card variant="outlined" sx={{ 
+                        p: 2,
+                        bgcolor: isCurrentModel ? 'primary.50' : 'background.paper',
+                        borderColor: isCurrentModel ? 'primary.main' : 'divider'
+                      }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                          <Typography variant="h6" sx={{ fontSize: '0.9rem', fontWeight: 600 }}>
+                            {model.name}
+                          </Typography>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            {isCurrentModel && (
+                              <Chip label="Current" size="small" color="primary" />
+                            )}
+                            <Chip 
+                              label={
+                                modelStatus === 'downloaded' ? 'Downloaded' :
+                                modelStatus === 'downloading' ? 'Downloading' :
+                                'Not Downloaded'
+                              }
+                              size="small"
+                              color={
+                                modelStatus === 'downloaded' ? 'success' :
+                                modelStatus === 'downloading' ? 'warning' :
+                                'default'
+                              }
+                              icon={
+                                modelStatus === 'downloaded' ? <CheckIcon sx={{ fontSize: '0.8rem' }} /> :
+                                modelStatus === 'downloading' ? <CircularProgress size={12} /> :
+                                undefined
+                              }
+                            />
+                          </Box>
+                        </Box>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                          {model.description}
+                        </Typography>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Typography variant="caption" color="text.secondary">
+                            {model.dimensions}D • {model.max_tokens} tokens
+                          </Typography>
+                          {modelStatus === 'downloading' && (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <LinearProgress sx={{ width: 60, height: 4 }} />
+                              <Typography variant="caption">
+                                {activeDownloads.find(d => d.filename?.includes(model.name))?.progress || 0}%
+                              </Typography>
+                            </Box>
+                          )}
+                        </Box>
+                      </Card>
+                    </Grid>
+                  )
+                })}
+              </Grid>
+              
+              {/* Active Downloads */}
+              {activeDownloads.length > 0 && (
+                <Box sx={{ mt: 3 }}>
+                  <Typography variant="h6" gutterBottom sx={{ fontSize: '1rem', fontWeight: 600 }}>
+                    Active Downloads
+                  </Typography>
+                  <TableContainer component={Paper} variant="outlined">
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Model</TableCell>
+                          <TableCell>Progress</TableCell>
+                          <TableCell>Speed</TableCell>
+                          <TableCell>ETA</TableCell>
+                          <TableCell align="right">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {activeDownloads.map((download) => (
+                          <TableRow key={download.id}>
+                            <TableCell>
+                              <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                                {download.filename}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {download.repository_id}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <LinearProgress 
+                                  variant="determinate" 
+                                  value={download.progress || 0} 
+                                  sx={{ width: 80, height: 6 }}
+                                />
+                                <Typography variant="caption">
+                                  {Math.round(download.progress || 0)}%
+                                </Typography>
+                              </Box>
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="caption">
+                                {download.download_speed || 'N/A'}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="caption">
+                                {download.eta || 'N/A'}
+                              </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Tooltip title="Cancel Download">
+                                <IconButton 
+                                  size="small" 
+                                  onClick={() => cancelDownload(download.id)}
+                                  color="error"
+                                >
+                                  <CancelIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Box>
+              )}
             </CardContent>
           </Card>
 
@@ -752,6 +1101,85 @@ export const EmbeddingDeployPage: React.FC = () => {
           </Card>
         </Box>
       )}
+
+      {/* Download Model Dialog */}
+      <Dialog open={downloadDialogOpen} onClose={() => setDownloadDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          <Box display="flex" alignItems="center" gap={1}>
+            <DownloadIcon />
+            <Typography variant="h6">Download Embedding Model</Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, pt: 1 }}>
+            <Box>
+              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
+                Select Model
+              </Typography>
+              <Select
+                fullWidth
+                value={selectedModelForDownload}
+                onChange={(e) => setSelectedModelForDownload(e.target.value)}
+                displayEmpty
+              >
+                <MenuItem value="" disabled>Choose an embedding model...</MenuItem>
+                {availableEmbeddingModels.map((model) => (
+                  <MenuItem key={model.name} value={model.name}>
+                    {model.name} ({model.dimensions}D, {model.max_tokens} tokens)
+                  </MenuItem>
+                ))}
+              </Select>
+              {selectedModelForDownload && (
+                <FormHelperText sx={{ mt: 1, fontSize: '0.75rem' }}>
+                  {availableEmbeddingModels.find(m => m.name === selectedModelForDownload)?.description}
+                </FormHelperText>
+              )}
+            </Box>
+
+            <Box>
+              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
+                Model Variant (Quantization)
+              </Typography>
+              <Select
+                fullWidth
+                value={selectedVariant}
+                onChange={(e) => setSelectedVariant(e.target.value)}
+              >
+                <MenuItem value="Q8_0">Q8_0 (Recommended - High Quality)</MenuItem>
+                <MenuItem value="Q4_K_M">Q4_K_M (Balanced)</MenuItem>
+                <MenuItem value="Q4_0">Q4_0 (Smaller, Faster)</MenuItem>
+              </Select>
+              <FormHelperText sx={{ mt: 1, fontSize: '0.75rem' }}>
+                Higher quantization = better quality but larger size
+              </FormHelperText>
+            </Box>
+
+            {selectedModelForDownload && (
+              <Alert severity="info" sx={{ mt: 2 }}>
+                <Typography variant="body2">
+                  <strong>Repository:</strong> {EMBEDDING_MODEL_REPOS[selectedModelForDownload as keyof typeof EMBEDDING_MODEL_REPOS]?.repo}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>File:</strong> {EMBEDDING_MODEL_REPOS[selectedModelForDownload as keyof typeof EMBEDDING_MODEL_REPOS]?.files.find(f => f.includes(selectedVariant))}
+                </Typography>
+              </Alert>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDownloadDialogOpen(false)} disabled={downloadLoading}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={startModelDownload}
+            disabled={downloadLoading || !selectedModelForDownload}
+            startIcon={downloadLoading ? <CircularProgress size={20} /> : <DownloadIcon />}
+          >
+            {downloadLoading ? 'Starting Download...' : 'Download'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   )
 }

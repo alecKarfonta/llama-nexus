@@ -384,3 +384,68 @@ async def update_embedding_config(request: Request, config: Dict[str, Any]):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}")
+
+
+@router.post("/api/v1/embedding/test")
+async def test_embedding(request: Request):
+    """Test the embedding service by generating embeddings for sample text."""
+    import aiohttp
+    
+    embedding_manager = get_embedding_manager(request)
+    if embedding_manager is None:
+        raise HTTPException(status_code=503, detail="Embedding manager not available")
+    
+    status = embedding_manager.get_status()
+    if not status.get("running"):
+        raise HTTPException(status_code=503, detail="Embedding service is not running")
+    
+    try:
+        data = await request.json()
+        text = data.get("text", "The quick brown fox jumps over the lazy dog.")
+        
+        # Get the service configuration
+        config = embedding_manager.config
+        api_key = config.get("server", {}).get("api_key", "llamacpp-embed")
+        model_name = config.get("model", {}).get("name", "nomic-embed-text-v1.5")
+        port = config.get("server", {}).get("port", 8602)
+        
+        # Connect to the embedding service via Docker network
+        # Use the container hostname for inter-container communication
+        service_url = f"http://llamacpp-embed:{port}/v1/embeddings"
+        
+        import time
+        start_time = time.time()
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                service_url,
+                json={"input": text, "model": model_name},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}"
+                },
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise HTTPException(status_code=response.status, detail=f"Embedding service error: {error_text}")
+                
+                result = await response.json()
+        
+        end_time = time.time()
+        time_taken = int((end_time - start_time) * 1000)
+        
+        return {
+            "success": True,
+            "model": result.get("model"),
+            "usage": result.get("usage"),
+            "vectorLength": len(result.get("data", [{}])[0].get("embedding", [])),
+            "timeTaken": time_taken,
+            "data": result.get("data")
+        }
+        
+    except aiohttp.ClientError as e:
+        raise HTTPException(status_code=503, detail=f"Failed to connect to embedding service: {str(e)}")
+    except Exception as e:
+        logger.error(f"Embedding test error: {e}")
+        raise HTTPException(status_code=500, detail=f"Embedding test failed: {str(e)}")

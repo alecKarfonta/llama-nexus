@@ -47,8 +47,8 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
         .then(status => ({ id: 'llm', running: status.health === 'healthy' && status.modelLoaded }))
         .catch(() => ({ id: 'llm', running: false })),
       // Embedding service (check if llamacpp-embed is running)
-      apiService.get('/v1/embeddings/status')
-        .then(() => ({ id: 'embedding', running: true }))
+      apiService.get('/api/v1/embedding/status')
+        .then((status) => ({ id: 'embedding', running: status.running }))
         .catch(() => ({ id: 'embedding', running: false })),
       // STT service
       apiService.getSTTStatus()

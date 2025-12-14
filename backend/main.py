@@ -2138,7 +2138,7 @@ class EmbeddingManager:
             
             # Create container config
             container_config = {
-                "image": "llamacpp-api:latest",
+                "image": "llama-nexus-llamacpp-api:latest",
                 "name": self.container_name,
                 "hostname": "llamacpp-embed",
                 "detach": True,
@@ -2175,23 +2175,31 @@ class EmbeddingManager:
     async def start_docker_cli(self) -> bool:
         """Start using Docker CLI"""
         try:
-            # Check if container exists
-            check_cmd = ["docker", "ps", "-a", "--filter", f"name={self.container_name}", "--format", "{{.Names}}"]
-            check_process = await asyncio.create_subprocess_exec(
-                *check_cmd,
+            # Always try to remove any existing container first (force remove handles non-existent containers)
+            rm_cmd = ["docker", "rm", "-f", self.container_name]
+            rm_process = await asyncio.create_subprocess_exec(
+                *rm_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, _ = await check_process.communicate()
+            await rm_process.communicate()  # Wait for removal to complete
             
-            if self.container_name in stdout.decode():
-                # Container exists, remove it
-                rm_cmd = ["docker", "rm", "-f", self.container_name]
-                await asyncio.create_subprocess_exec(*rm_cmd)
+            # Small delay to ensure Docker has released the name
+            await asyncio.sleep(0.5)
             
             # Build environment and command
             execution_mode = self.config.get("execution", {}).get("mode", "gpu")
             cuda_devices = self.config.get("execution", {}).get("cuda_devices", "all")
+            
+            # Get model repository info for the environment
+            model_name = self.config['model']['name']
+            model_mappings = {
+                "nomic-embed-text-v1.5": "nomic-ai/nomic-embed-text-v1.5-GGUF",
+                "e5-mistral-7b": "intfloat/e5-mistral-7b-instruct-GGUF",
+                "bge-m3": "BAAI/bge-m3-GGUF",
+                "gte-Qwen2-1.5B": "Alibaba-NLP/gte-Qwen2-1.5B-instruct-GGUF",
+            }
+            model_repo = model_mappings.get(model_name, "")
             
             docker_cmd = [
                 "docker", "run",
@@ -2204,6 +2212,7 @@ class EmbeddingManager:
                 "--shm-size", "8gb",
                 "-e", f"MODEL_NAME={self.config['model']['name']}",
                 "-e", f"MODEL_VARIANT={self.config['model']['variant']}",
+                "-e", f"MODEL_REPO={model_repo}",
                 "-e", f"CONTEXT_SIZE={self.config['model']['context_size']}",
                 "-e", f"GPU_LAYERS={self.config['model']['gpu_layers']}",
                 "-e", f"HOST={self.config['server']['host']}",
@@ -2219,8 +2228,9 @@ class EmbeddingManager:
                 docker_cmd.insert(2, "--runtime")
             
             docker_cmd.extend([
-                "llamacpp-api:latest",
-                "bash", "-c",
+                "--entrypoint", "bash",
+                "llama-nexus-llamacpp-api:latest",
+                "-c",
                 " ".join(self.build_command())
             ])
             
