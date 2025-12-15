@@ -21,7 +21,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY main.py enhanced_logger.py tool_call_tests.json .
+COPY main.py enhanced_logger.py tool_call_tests.json training_worker.py .
 COPY modules/ modules/
 COPY routes/ routes/
 

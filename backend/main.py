@@ -144,9 +144,17 @@ try:
     from routes import (
         rag_router, graphrag_router, workflows_router,
         conversations_router, registry_router, prompts_router,
-        benchmark_router, batch_router, models_router,
-        templates_router, tokens_router, service_router,
-        stt_router, tts_router, tools_router
+        benchmark_router,
+        batch_router,
+        models_router,
+        templates_router,
+        tokens_router,
+        service_router,
+        stt_router,
+        tts_router,
+        tools_router,
+        finetuning_router,
+        quantization_router,
     )
     from routes.rag import init_rag_config
     ROUTES_AVAILABLE = True
@@ -165,6 +173,11 @@ except ImportError as e:
     templates_router = None  # type: ignore
     tokens_router = None  # type: ignore
     service_router = None  # type: ignore
+    stt_router = None  # type: ignore
+    tts_router = None  # type: ignore
+    tools_router = None  # type: ignore
+    finetuning_router = None  # type: ignore
+    quantization_router = None  # type: ignore
     logger.warning(f"Route modules not available: {e}")
 
 # RAG Embedding Configuration
@@ -2974,7 +2987,9 @@ if ROUTES_AVAILABLE:
     app.include_router(stt_router)
     app.include_router(tts_router)
     app.include_router(tools_router)
-    logger.info("Route modules included: rag, graphrag, workflows, conversations, registry, prompts, benchmark, batch, models, templates, tokens, service, stt, tts, tools")
+    app.include_router(finetuning_router)
+    app.include_router(quantization_router)
+    logger.info("Route modules included: rag, graphrag, workflows, conversations, registry, prompts, benchmark, batch, models, templates, tokens, service, stt, tts, tools, finetuning, quantization")
 
 # Health check endpoint
 @app.get("/health")
@@ -3208,6 +3223,106 @@ async def broadcast_ws_event(event_type: str, data: dict):
     
     for client in disconnected:
         _ws_clients.remove(client)
+
+
+# ============================================================================
+# Training WebSocket Endpoint for Real-time Metrics
+# ============================================================================
+_training_ws_clients: List[WebSocket] = []
+
+@app.websocket("/ws/training")
+async def websocket_training(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time training metrics.
+    Streams training progress, loss curves, and GPU utilization.
+    """
+    await websocket.accept()
+    _training_ws_clients.append(websocket)
+    
+    try:
+        # Import here to avoid circular imports
+        try:
+            from modules.finetuning import register_ws_broadcaster, unregister_ws_broadcaster
+        except ImportError:
+            from finetuning import register_ws_broadcaster, unregister_ws_broadcaster
+        
+        # Create async callback for broadcasting
+        async def send_training_event(event_type: str, data: dict):
+            try:
+                await websocket.send_json({
+                    "type": event_type,
+                    "timestamp": datetime.now().isoformat(),
+                    "payload": data
+                })
+            except Exception as e:
+                logger.warning(f"Failed to send training event: {e}")
+        
+        # Synchronous wrapper for the async callback
+        def sync_broadcast(event_type: str, data: dict):
+            try:
+                # Use asyncio to run the async function
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(send_training_event(event_type, data))
+                else:
+                    loop.run_until_complete(send_training_event(event_type, data))
+            except Exception as e:
+                logger.warning(f"Training broadcast error: {e}")
+        
+        # Register the callback
+        register_ws_broadcaster(sync_broadcast)
+        
+        # Send connection confirmation
+        await websocket.send_json({
+            "type": "connected",
+            "timestamp": datetime.now().isoformat(),
+            "data": {"endpoint": "training"}
+        })
+        
+        # Keep connection alive and send GPU metrics periodically
+        while True:
+            await asyncio.sleep(2)  # Send GPU metrics every 2 seconds
+            
+            try:
+                gpu_metrics = {}
+                # Get GPU metrics
+                try:
+                    result = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw",
+                         "--format=csv,noheader,nounits"],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    if result.returncode == 0:
+                        parts = [p.strip() for p in result.stdout.strip().split(",")]
+                        if len(parts) >= 5:
+                            gpu_metrics = {
+                                "vram_used_gb": float(parts[0]) / 1024,
+                                "vram_total_gb": float(parts[1]) / 1024,
+                                "gpu_utilization": float(parts[2]),
+                                "temperature_c": float(parts[3]),
+                                "power_w": float(parts[4]) if parts[4] != "[N/A]" else None,
+                            }
+                except Exception:
+                    pass  # GPU metrics not available
+                
+                await websocket.send_json({
+                    "type": "gpu_metrics",
+                    "timestamp": datetime.now().isoformat(),
+                    "payload": gpu_metrics
+                })
+                
+            except Exception as e:
+                logger.warning(f"Error sending GPU metrics: {e}")
+                
+    except WebSocketDisconnect:
+        if websocket in _training_ws_clients:
+            _training_ws_clients.remove(websocket)
+    except Exception as e:
+        logger.error(f"Training WebSocket error: {e}")
+        if websocket in _training_ws_clients:
+            _training_ws_clients.remove(websocket)
 
 
 # Resource monitoring endpoint

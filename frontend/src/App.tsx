@@ -28,6 +28,9 @@ import KnowledgeBasePage from '@/pages/KnowledgeBasePage'
 import KnowledgeGraphPage from '@/pages/KnowledgeGraphPage'
 import DocumentsPage from '@/pages/DocumentsPage'
 import DiscoveryPage from '@/pages/DiscoveryPage'
+import { QuantizationPage } from '@/pages/QuantizationPage'
+import FineTuningPage from '@/pages/FineTuningPage'
+import { DatasetManagementPage, DistillationPage, ModelEvaluationPage, WorkflowTemplatesPage, AdapterComparisonPage } from '@/pages/finetuning'
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -119,6 +122,13 @@ function App() {
               <Route path="/knowledge-graph" element={<KnowledgeGraphPage />} />
               <Route path="/documents" element={<DocumentsPage />} />
               <Route path="/discovery" element={<DiscoveryPage />} />
+              <Route path="/quantization" element={<QuantizationPage />} />
+              <Route path="/finetuning" element={<FineTuningPage />} />
+              <Route path="/finetuning/datasets" element={<DatasetManagementPage />} />
+              <Route path="/finetuning/distillation" element={<DistillationPage />} />
+              <Route path="/finetuning/evaluation" element={<ModelEvaluationPage />} />
+              <Route path="/finetuning/templates" element={<WorkflowTemplatesPage />} />
+              <Route path="/finetuning/compare" element={<AdapterComparisonPage />} />
               <Route path="/monitoring" element={<MonitoringPage />} />
               <Route path="/api-docs" element={<ApiDocsPage />} />
               <Route path="/configuration" element={<ConfigurationPage />} />
