@@ -1,0 +1,71 @@
+# Dockerfile for Model Quantization Worker
+# Provides tools for quantizing models to various formats (GGUF, GPTQ, AWQ, ONNX)
+
+FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV HF_HOME=/root/.cache/huggingface
+ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    git \
+    wget \
+    build-essential \
+    cmake \
+    ccache \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip
+RUN python3 -m pip install --upgrade pip setuptools wheel
+
+# Install PyTorch with CUDA support
+RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install core dependencies
+RUN pip3 install \
+    transformers>=4.40.0 \
+    accelerate>=0.28.0 \
+    datasets>=2.18.0 \
+    sentencepiece>=0.2.0 \
+    protobuf>=4.25.0 \
+    pydantic>=2.0.0 \
+    redis>=5.0.0 \
+    huggingface_hub>=0.20.0
+
+# Install quantization libraries
+# AutoGPTQ for GPTQ quantization
+RUN pip3 install auto-gptq --extra-index-url https://huggingface.github.io/autogptq-index/whl/cu121/ || \
+    pip3 install auto-gptq
+
+# AutoAWQ for AWQ quantization  
+RUN pip3 install autoawq || echo "AWQ installation skipped"
+
+# Optimum for ONNX export
+RUN pip3 install optimum[onnxruntime-gpu]
+
+# Clone and build llama.cpp for GGUF conversion and quantization
+WORKDIR /opt
+RUN git clone https://github.com/ggerganov/llama.cpp.git && \
+    cd llama.cpp && \
+    cmake -B build -DLLAMA_CUDA=ON -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build build --config Release -j$(nproc)
+
+# Add llama.cpp binaries to PATH
+ENV PATH="/opt/llama.cpp/build/bin:${PATH}"
+
+# Create working directory
+WORKDIR /app
+
+# Copy worker script (to be created)
+COPY quantization_worker.py /app/
+
+# Create output directories
+RUN mkdir -p /app/quantization_output /app/models
+
+# Default command
+CMD ["python3", "quantization_worker.py"]

@@ -19,6 +19,7 @@ import {
   Memory as ModelsIcon,
   Settings as ConfigIcon,
   RocketLaunch as DeployIcon,
+  Compress as QuantizationIcon,
   Science as TestingIcon,
   Insights as MonitoringIcon,
   Description as TemplatesIcon,
@@ -37,6 +38,7 @@ import {
   RecordVoiceOver as TTSIcon,
   TextFields as EmbeddingIcon,
   ChevronRight as ChevronRightIcon,
+  Tune as TuneIcon,
 } from '@mui/icons-material'
 import type { NavigationSection } from '@/types'
 
@@ -54,6 +56,7 @@ const navigationSections: NavigationSection[] = [
       { id: 'dashboard', label: 'Dashboard', path: '/dashboard', icon: 'dashboard', color: '#6366f1' },
       { id: 'models', label: 'Models', path: '/models', icon: 'models', color: '#8b5cf6' },
       { id: 'registry', label: 'Registry', path: '/registry', icon: 'registry', color: '#a855f7' },
+      { id: 'quantization', label: 'Quantization', path: '/quantization', icon: 'quantization', color: '#10b981' },
     ],
   },
   {
@@ -74,6 +77,21 @@ const navigationSections: NavigationSection[] = [
       { id: 'prompts', label: 'Prompt Library', path: '/prompts', icon: 'prompts', color: '#14b8a6' },
       { id: 'templates', label: 'Chat Templates', path: '/templates', icon: 'templates', color: '#10b981' },
       { id: 'workflows', label: 'Workflows', path: '/workflows', icon: 'workflow', color: '#a855f7' },
+      { 
+        id: 'finetuning', 
+        label: 'Fine-Tuning', 
+        path: '/finetuning', 
+        icon: 'finetuning', 
+        color: '#4ade80',
+        subItems: [
+          { id: 'finetuning-overview', label: 'Overview', path: '/finetuning' },
+          { id: 'finetuning-templates', label: '🚀 Quick Start', path: '/finetuning/templates' },
+          { id: 'finetuning-distillation', label: 'Distillation', path: '/finetuning/distillation' },
+          { id: 'finetuning-datasets', label: 'Datasets', path: '/finetuning/datasets' },
+          { id: 'finetuning-evaluation', label: 'Evaluation', path: '/finetuning/evaluation' },
+          { id: 'finetuning-compare', label: 'Compare Adapters', path: '/finetuning/compare' },
+        ]
+      },
       { id: 'testing', label: 'Testing', path: '/testing', icon: 'testing', color: '#f97316' },
       { id: 'benchmark', label: 'Benchmark', path: '/benchmark', icon: 'benchmark', color: '#ef4444' },
       { id: 'batch', label: 'Batch Processing', path: '/batch', icon: 'batch', color: '#ec4899' },
@@ -107,6 +125,7 @@ const iconMap: Record<string, React.ElementType> = {
   models: ModelsIcon,
   config: ConfigIcon,
   deploy: DeployIcon,
+  quantization: QuantizationIcon,
   testing: TestingIcon,
   monitoring: MonitoringIcon,
   templates: TemplatesIcon,
@@ -124,6 +143,7 @@ const iconMap: Record<string, React.ElementType> = {
   stt: MicIcon,
   tts: TTSIcon,
   embedding: EmbeddingIcon,
+  finetuning: TuneIcon,
 }
 
 const getIcon = (iconName: string) => {

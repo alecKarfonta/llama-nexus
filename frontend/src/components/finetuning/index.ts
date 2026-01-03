@@ -1,0 +1,1 @@
+export { TrainingDashboard } from './TrainingDashboard';

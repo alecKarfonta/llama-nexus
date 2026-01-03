@@ -1,5 +1,5 @@
 """STT (Speech-to-Text) service management routes."""
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form, Query
 from typing import Dict, Any, Optional
 from datetime import datetime
 import logging
@@ -173,9 +173,64 @@ async def transcribe_audio(
     file: UploadFile = File(...),
     model: str = Form(default="base"),
     language: str = Form(default="auto"),
-    response_format: str = Form(default="json")
+    response_format: str = Form(default="json"),
+    word_timestamps: str = Query(default="false")  # Try Query instead of Form
 ):
-    """Transcribe audio file using the STT service."""
+    """Transcribe audio file using the STT service.
+
+    When word_timestamps=True, response_format is automatically set to 'verbose_json'
+    and word-level timestamps will be included in the response.
+    """
+    # Read file content first (needed for both paths)
+    content = await file.read()
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    # Map model names to HuggingFace repositories for models not in faster-whisper's default list
+    model_mappings = {
+        "distil-large-v3.5-ct2": "distil-whisper/distil-large-v3.5-ct2",
+        # Add more mappings here as needed for other custom models
+    }
+    mapped_model = model_mappings.get(model, model)
+
+    # Parse word_timestamps
+    word_timestamps_bool = word_timestamps.lower() in ('true', '1', 'yes', 'on')
+
+    # For word timestamps, use curl to call the STT server directly
+    if word_timestamps_bool:
+        import subprocess
+        import tempfile
+        import os
+
+        # Save the file temporarily
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_file.write(content)
+            temp_path = temp_file.name
+
+        try:
+            # Call curl directly with the correct parameters
+            cmd = [
+                'curl', '-s', '-X', 'POST',
+                '-F', f'file=@{temp_path}',
+                '-F', f'model={mapped_model}',
+                '-F', 'response_format=verbose_json',
+                '-F', 'timestamp_granularities[]=word',
+                'http://whisper-stt:8000/v1/audio/transcriptions'
+            ]
+
+            print(f"DEBUG: Running curl command: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            print(f"DEBUG: Curl exit code: {result.returncode}")
+
+            if result.returncode == 0:
+                import json
+                response_data = json.loads(result.stdout)
+                return response_data
+            else:
+                raise HTTPException(status_code=500, detail=f"Word timestamps failed: {result.stderr}")
+        finally:
+            os.unlink(temp_path)
     stt_manager = get_stt_manager(request)
     if stt_manager is None:
         raise HTTPException(status_code=503, detail="STT manager not available")
@@ -192,15 +247,12 @@ async def transcribe_audio(
         container_name = stt_manager.container_name
         internal_port = 8000  # Internal container port
         if os.getenv("RUNNING_IN_DOCKER", "false").lower() == "true":
-            endpoint = f"http://{container_name}:{internal_port}/v1/audio/transcriptions"
+            base_url = f"http://{container_name}:{internal_port}"
         else:
-            endpoint = f"http://localhost:{stt_manager.config['server']['port']}/v1/audio/transcriptions"
-        
-        # Read file content
-        content = await file.read()
-        
-        if not content:
-            raise HTTPException(status_code=400, detail="Empty audio file")
+            base_url = f"http://localhost:{stt_manager.config['server']['port']}"
+
+        # Always use OpenAI-compatible endpoint
+        endpoint = f"{base_url}/v1/audio/transcriptions"
         
         # Map model names to HuggingFace repositories for models not in faster-whisper's default list
         model_mappings = {
@@ -214,15 +266,66 @@ async def transcribe_audio(
         async with httpx.AsyncClient(timeout=300.0) as client:
             # Build the files dict for multipart upload
             files = {"file": (file.filename or "audio.wav", content, file.content_type or "audio/wav")}
-            
-            # Build form data - only include non-empty values
+
+            # Build form data - OpenAI-compatible parameters
             data = {}
             if mapped_model:
                 data["model"] = mapped_model
             if language and language != "auto":
                 data["language"] = language
-            if response_format:
-                data["response_format"] = response_format
+
+            # Handle word-level timestamps
+            if word_timestamps_bool:
+                logger.info("Word timestamps requested - using curl fallback")
+                # For testing: use subprocess to call curl directly
+                import subprocess
+                import tempfile
+                import os
+
+                # Save the file temporarily
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                    temp_file.write(content)
+                    temp_path = temp_file.name
+
+                try:
+                    # Call curl directly
+                    cmd = [
+                        'curl', '-s', '-X', 'POST',
+                        '-F', f'file=@{temp_path}',
+                        '-F', f'model={mapped_model}',
+                        '-F', 'response_format=verbose_json',
+                        '-F', 'timestamp_granularities[]=word',
+                        'http://localhost:8603/v1/audio/transcriptions'
+                    ]
+
+                    logger.info(f"Running curl command: {' '.join(cmd)}")
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    logger.info(f"Curl result: {result.returncode}, stdout length: {len(result.stdout)}, stderr: {result.stderr}")
+                    if result.returncode == 0:
+                        import json
+                        response_data = json.loads(result.stdout)
+                        logger.info(f"Curl response keys: {list(response_data.keys())}")
+                        # Convert back to the expected format
+                        return response_data
+                    else:
+                        logger.error(f"Curl failed: {result.stderr}")
+                        raise HTTPException(status_code=500, detail=f"Curl failed: {result.stderr}")
+                finally:
+                    os.unlink(temp_path)
+            else:
+                logger.info("Standard transcription requested")
+                if response_format:
+                    data["response_format"] = response_format
+
+            # Debug logging
+            logger.info(f"Sending data parameters: {data}")
+            logger.info(f"Files: {files}")
+
+            response = await client.post(
+                endpoint,
+                files=files,
+                data=data,
+            )
             
             logger.info(f"Sending transcription request to {endpoint} with file size {len(content)} bytes")
             

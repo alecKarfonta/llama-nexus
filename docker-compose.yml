@@ -82,6 +82,12 @@ services:
       # Qdrant for RAG vector storage
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      # Fine-tuning configuration
+      - USE_DOCKER_TRAINING=true
+      - TRAINING_IMAGE=llama-nexus-training:latest
+      - HF_HOME=/root/.cache/huggingface
+      - FINETUNE_DATASET_DIR=/data/finetune_datasets
+      - FINETUNE_JOB_DIR=/data/finetune_jobs
       # GraphRAG external service (Neo4j + GLiNER)
       - GRAPHRAG_URL=http://graphrag-api-1:8000
       - GRAPHRAG_ENABLED=true
@@ -132,6 +138,8 @@ services:
 
   # Llama.cpp API Server - Direct access
   llamacpp-api:
+    profiles:
+      - extra
     build:
       context: .
       dockerfile: Dockerfile
@@ -299,10 +307,90 @@ services:
       start_period: 300s
     entrypoint: ["/bin/bash", "/start-embed.sh"]
 
+  training:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.training
+    container_name: llama-nexus-training
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - REDIS_URL=redis://redis:6379/0
+      - FINETUNE_DATASET_DIR=/data/finetune_datasets
+      - FINETUNE_JOB_DIR=/data/finetune_jobs
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      # Share the backend data volume for job configs and datasets
+      - backend_data:/data
+      # HuggingFace model cache
+      - huggingface_cache:/root/.cache/huggingface
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Quantization Worker - Model Quantization Service
+  quantization-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.quantization
+    container_name: quantization-worker
+    profiles:
+      - quantize
+    hostname: quantization-worker
+    shm_size: '16gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
+    volumes:
+      - gpt_oss_models:/home/llamacpp/models
+      - quantization_output:/app/quantization_output
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - MODELS_DIR=/home/llamacpp/models
+      - QUANTIZATION_OUTPUT_DIR=/app/quantization_output
+      - QUANTIZATION_DB_PATH=/data/quantization.db
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import redis; redis.from_url('redis://redis:6379/0').ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Training image builder (run with: docker compose build training-image)
+  training-image:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.training
+    image: llama-nexus-training:latest
+    profiles:
+      - build-only  # Only build, don't run as a service
+    command: ["echo", "Training image built successfully"]
+
 volumes:
   gpt_oss_models:
     driver: local
   llamacpp_bin:
+    driver: local
+  finetune_data:
     driver: local
   vllm_models:
     driver: local
@@ -315,4 +403,8 @@ volumes:
   backend_data:
     driver: local
   qdrant_data:
+    driver: local
+  quantization_output:
+    driver: local
+  huggingface_cache:
     driver: local

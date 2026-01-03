@@ -18,6 +18,8 @@ from .service import router as service_router
 from .stt import router as stt_router
 from .tts import router as tts_router
 from .tools import router as tools_router
+from .finetuning import router as finetuning_router
+from .quantization import router as quantization_router
 
 __all__ = [
     'workflows_router',
@@ -35,4 +37,6 @@ __all__ = [
     'stt_router',
     'tts_router',
     'tools_router',
+    'finetuning_router',
+    'quantization_router',
 ]

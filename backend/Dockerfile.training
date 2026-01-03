@@ -1,0 +1,33 @@
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y python3 python3-pip git && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install PyTorch with CUDA 12.8 (supports RTX 5090/Blackwell sm_120)
+RUN pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128
+
+# Install training stack (versions compatible with CUDA 12.8)
+RUN pip3 install --no-cache-dir \
+    transformers>=4.45.0 \
+    peft>=0.13.0 \
+    bitsandbytes>=0.44.0 \
+    accelerate>=0.34.0 \
+    datasets>=2.20.0 \
+    trl>=0.11.0 \
+    pydantic \
+    fastapi \
+    redis \
+    uvloop
+
+# Install unsloth from git (optional, speeds up training)
+RUN pip3 install --no-cache-dir "unsloth @ git+https://github.com/unslothai/unsloth.git" || \
+    echo "Unsloth install failed, continuing without it"
+
+COPY training_worker.py /app/training_worker.py
+
+ENTRYPOINT ["python3", "/app/training_worker.py"]

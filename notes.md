@@ -1,5 +1,980 @@
 # Llama Nexus Deployment Notes
 
+## Dataset Statistics Visualization (2025-12-13)
+
+### Overview
+Added comprehensive dataset analysis with interactive visualizations for understanding training data quality.
+
+### Features
+
+1. **Token Distribution Histogram**
+   - Visual bar chart showing token count distribution across records
+   - Hover tooltips with exact counts and percentages
+   - Min/max labels for quick reference
+
+2. **Sequence Length Distribution**
+   - Character count histogram per record
+   - Color-coded bars with hover effects
+   - Useful for identifying outliers
+
+3. **Field Completeness Stats**
+   - Progress bars for each field showing % completeness
+   - Color-coded (green > 90%, yellow > 70%, red < 70%)
+   - Shows present/total counts and average lengths
+
+4. **Format Auto-Detection**
+   - Visual badge with detected format (Alpaca, ShareGPT, ChatML, Completion)
+   - Confidence score with progress indicator
+   - List of detected fields with checkmarks
+
+### Backend Changes
+
+| File | Changes |
+|------|---------|
+| `backend/modules/finetuning/dataset_processor.py` | Added `analyze()` method, `DatasetStatistics` dataclass, histogram utilities |
+| `backend/routes/finetuning.py` | Added `/datasets/{id}/stats` endpoint |
+
+### Frontend Changes
+
+| Component | Description |
+|-----------|-------------|
+| `Histogram` | Reusable bar chart with tooltips and labels |
+| `FieldCompleteness` | Progress bars showing field coverage |
+| `FormatDetection` | Badge showing format confidence and detected fields |
+
+### Usage
+
+1. Navigate to Datasets page
+2. Select a dataset
+3. Click "Analyze Dataset" button
+4. View interactive statistics:
+   - Token and sequence length distributions
+   - Field completeness percentages
+   - Format detection confidence
+
+---
+
+## Adapter Comparison View (2025-12-13)
+
+### Overview
+New dedicated page for comparing multiple LoRA adapters side-by-side with visual comparisons.
+
+### Features
+
+1. **Adapter Selection**
+   - Checkbox list of registered adapters
+   - Select 2-4 adapters for comparison
+   - Status badges and base model info
+
+2. **Configuration Differences**
+   - Side-by-side comparison of LoRA configs (rank, alpha, dropout)
+   - Training config differences (learning rate, batch size, epochs)
+   - Highlights differing values
+   - Shows "best" values for metrics where higher/lower is better
+
+3. **Training Metrics Overlay**
+   - Visual bars for each metric across adapters
+   - Color-coded by adapter
+   - Legend for easy identification
+   - Highlights best performer per metric
+
+4. **Benchmark Comparison**
+   - Horizontal bar charts per benchmark
+   - Scores normalized to max for visual comparison
+   - Best performer highlighted in green
+
+### Files Added
+
+| File | Description |
+|------|-------------|
+| `frontend/src/pages/finetuning/AdapterComparisonPage.tsx` | Main comparison page component |
+| `frontend/src/pages/finetuning/index.ts` | Updated exports |
+| `frontend/src/App.tsx` | Added route `/finetuning/compare` |
+| `frontend/src/components/layout/Sidebar.tsx` | Added nav link |
+| `frontend/src/pages/FineTuningPage.tsx` | Added "Compare Adapters" button |
+
+### Usage
+
+1. Navigate to Fine-Tuning > Compare Adapters (or click button in Adapters tab)
+2. Select 2-4 adapters from the list
+3. Click "Compare" button
+4. View:
+   - Configuration differences highlighted
+   - Metric visualizations with best performers
+   - Benchmark score comparisons
+
+---
+
+## Real-time Training Metrics Dashboard (2025-12-13)
+
+### Overview
+Implemented WebSocket-based real-time training dashboard with live metrics, animated charts, and GPU monitoring.
+
+### Features
+
+1. **WebSocket Infrastructure**
+   - New `/ws/training` endpoint for training-specific real-time updates
+   - Broadcasting from Redis event consumer to connected clients
+   - GPU metrics streaming every 2 seconds
+   - Training status and log updates in real-time
+
+2. **Live Metrics Display**
+   - **Loss Curve**: Animated SVG chart with gradient fill and glowing effects
+   - **GPU Gauges**: Circular progress indicators for utilization, VRAM, and temperature
+   - **Tokens/sec**: Calculated from step timing data
+   - **ETA**: Dynamic estimated time remaining based on training speed
+
+3. **Frontend Components**
+   - `useTrainingMetrics` hook: WebSocket connection management, metrics aggregation, speed calculations
+   - `TrainingDashboard` component: Glass-morphism styled dashboard with:
+     * Live connection indicator with pulse animation
+     * Progress bar with gradient and glow
+     * Loss chart with grid lines and current point indicator
+     * GPU utilization gauges (usage %, VRAM GB, temperature)
+     * Stat cards for tokens/sec, ETA, current loss, GPU power
+     * Scrollable training logs
+
+4. **Integration**
+   - "Open Live Dashboard" button on running jobs in FineTuningPage
+   - Full-screen dialog for immersive monitoring experience
+   - Automatic WebSocket connection on dashboard open
+   - Clean disconnect on close
+
+### Files Changed/Added
+
+| File | Changes |
+|------|---------|
+| `backend/modules/finetuning/redis_consumer.py` | Added WebSocket broadcasting infrastructure |
+| `backend/modules/finetuning/__init__.py` | Exported new broadcaster functions |
+| `backend/main.py` | Added `/ws/training` WebSocket endpoint |
+| `frontend/src/hooks/useTrainingMetrics.ts` | NEW - WebSocket hook for training metrics |
+| `frontend/src/components/finetuning/TrainingDashboard.tsx` | NEW - Real-time dashboard component |
+| `frontend/src/components/finetuning/index.ts` | NEW - Component exports |
+| `frontend/src/pages/FineTuningPage.tsx` | Integrated dashboard dialog |
+
+### Usage
+
+1. Start a fine-tuning job
+2. Select the job in the Active Jobs tab
+3. Click "Open Live Dashboard" button
+4. Monitor real-time:
+   - Loss curve updating live as training progresses
+   - GPU utilization and temperature
+   - Training speed (tokens/second)
+   - Estimated time remaining
+   - Live training logs
+
+---
+
+## LoRA Fine-Tuning Implementation Status (2025-12-13)
+
+### Summary
+Complete LoRA/QLoRA fine-tuning implementation following industry best practices as described in [Exxact's LoRA guide](https://www.exxactcorp.com/blog/deep-learning/ai-fine-tuning-with-lora).
+
+### Feature Completeness
+
+| Feature | Implementation | Status |
+|---------|---------------|--------|
+| **LoRA (Low-Rank Adaptation)** | `LoRAConfig` with rank, alpha, dropout, target_modules | Complete |
+| **QLoRA (4-bit quantization)** | `QLoRAConfig` with bits, quant_type (nf4), double_quant | Complete |
+| **Trainable Parameters ~1-2%** | Targets q/k/v/o_proj + optional MLP modules | Complete |
+| **VRAM Estimation** | `vram_estimator.py` with detailed memory breakdown | Complete |
+| **Multiple Task-Specific Adapters** | `AdapterManager` with registry, versioning, tagging | Complete |
+| **Modular/Version Control** | `AdapterVersion`, `create_version()`, semver support | Complete |
+| **Precision Options (FP16/BF16)** | `TrainingConfig` with fp16/bf16 options | Complete |
+| **Gradient Checkpointing** | Reduces activation memory ~70%, configurable | Complete |
+| **Batch Size/Sequence Length** | Configurable via `TrainingConfig` | Complete |
+| **GPU Recommendations** | `GPU_VRAM` dictionary with RTX 30xx/40xx, A100, H100 | Complete |
+| **Hyperparameter Presets** | Quick Start, Balanced, High Quality presets | Complete |
+| **Adapter Export** | ZIP export with metadata, metrics | Complete |
+| **Adapter Comparison** | `compare_adapters()` with config/metric diffs | Complete |
+| **Checkpoint Resume** | Resume from latest or specific checkpoint | Complete |
+| **Model Distillation** | Generate training data from teacher models | Complete |
+| **Benchmarking** | MMLU, HellaSwag, ARC, TruthfulQA, GSM8K | Complete |
+| **A/B Testing** | Traffic splitting, metrics collection | Complete |
+
+### Test Coverage
+- **44 tests passing** across 3 test files
+- Unit tests for configs, storage, datasets
+- Integration tests for job lifecycle
+- Real LoRA training tests with Qwen2.5-0.5B
+- Fine-tuning effect proofs (fact learning, style change, override)
+
+### Key Files
+- `backend/modules/finetuning/config.py` - Data models
+- `backend/modules/finetuning/vram_estimator.py` - VRAM calculation
+- `backend/modules/finetuning/adapter_manager.py` - Registry & versioning
+- `backend/training_worker.py` - Actual training logic
+- `backend/tests/test_finetune_effect.py` - Proof of fine-tuning effect
+
+### Deployment: Building the Training Image
+
+Before running fine-tuning jobs, you must build the training image:
+
+```bash
+# Build the training image (has CUDA + all ML dependencies)
+docker compose build training-image
+
+# Or build directly:
+docker build -t llama-nexus-training:latest -f backend/Dockerfile.training backend/
+```
+
+The training architecture:
+1. **Backend API** (python:3.11-slim) - Lightweight API for job management
+2. **Training Container** (nvidia/cuda) - Heavy ML workloads run here
+3. When you start a training job, the backend spawns a training container with GPU access
+
+Environment variables:
+- `USE_DOCKER_TRAINING=true` - Use Docker containers for training (recommended)
+- `TRAINING_IMAGE=llama-nexus-training:latest` - Training image to use
+
+---
+
+## Adapter Versioning, Export & Comparison (2025-12-13)
+
+### Overview
+Implemented comprehensive adapter management with versioning, export/download capabilities, and comparison utilities.
+
+### New Features
+
+1. **Adapter Registry**
+   - Register adapters with full metadata tracking
+   - Filter by base model, status, tags
+   - Track training job association
+   - Store LoRA config and training config
+
+2. **Version Control**
+   - Semantic versioning (1.0.0, 1.0.1, etc.)
+   - Auto-increment patch version on new versions
+   - Version tagging (e.g., "production", "staging")
+   - Track checkpoint step per version
+   - File hash for integrity verification
+
+3. **Export & Download**
+   - Export adapters as ZIP archives
+   - Include metadata, metrics, benchmark results
+   - Direct download endpoint with FileResponse
+   - List all exports for an adapter
+
+4. **Adapter Comparison**
+   - Compare 2+ adapters side-by-side
+   - Config differences (LoRA, training)
+   - Metric comparisons
+   - Benchmark result comparisons
+   - Summary with best performers
+
+### Files Added
+- `backend/modules/finetuning/adapter_manager.py`
+
+### API Endpoints
+
+**Registry Management:**
+- `POST /api/v1/finetune/adapters/register` - Register new adapter
+- `GET /api/v1/finetune/adapters/registry` - List with filters
+- `GET /api/v1/finetune/adapters/registry/{id}` - Get adapter
+- `PATCH /api/v1/finetune/adapters/registry/{id}` - Update metadata
+- `DELETE /api/v1/finetune/adapters/registry/{id}` - Delete
+- `POST /api/v1/finetune/adapters/registry/{id}/archive` - Archive
+
+**Versioning:**
+- `GET /api/v1/finetune/adapters/registry/{id}/versions` - List versions
+- `POST /api/v1/finetune/adapters/registry/{id}/versions` - Create version
+- `POST /api/v1/finetune/adapters/registry/{id}/versions/{ver}/tag` - Tag version
+
+**Export & Download:**
+- `POST /api/v1/finetune/adapters/registry/{id}/export` - Create ZIP export
+- `GET /api/v1/finetune/adapters/registry/{id}/exports` - List exports
+- `GET /api/v1/finetune/adapters/registry/{id}/download` - Download ZIP
+
+**Comparison:**
+- `POST /api/v1/finetune/adapters/compare` - Compare adapters
+- `GET /api/v1/finetune/adapters/registry/{id}/benchmarks` - Get benchmarks
+- `POST /api/v1/finetune/adapters/registry/{id}/benchmarks` - Update benchmarks
+
+**Job Integration:**
+- `POST /api/v1/finetune/adapters/{job_id}/register` - Register from job
+- `GET /api/v1/finetune/adapters` - Enhanced with registry status
+
+### Data Models
+
+```python
+class AdapterStatus(Enum):
+    TRAINING, READY, MERGED, EXPORTED, ARCHIVED
+
+class AdapterVersion:
+    version: str  # "1.0.0"
+    checkpoint_step: int
+    file_hash: str
+    tags: List[str]
+    is_current: bool
+
+class AdapterMetadata:
+    id, name, base_model, training_job_id
+    current_version: str
+    versions: List[AdapterVersion]
+    lora_config, training_config
+    metrics, benchmark_results
+    status, tags
+```
+
+---
+
+## World-Class Distillation Service (2025-12-13)
+
+### Overview
+Complete rewrite of the distillation module to implement state-of-the-art techniques for generating high-quality synthetic training data from teacher models.
+
+### Key Features
+
+1. **Multiple Generation Strategies**
+   - `STANDARD`: Direct response generation
+   - `CHAIN_OF_THOUGHT`: Step-by-step reasoning with explicit thought process
+   - `THINKING_TOKENS`: DeepSeek R1 style with `<think>...</think><answer>...</answer>` format
+   - `SELF_CONSISTENCY`: Multiple samples with voting for accuracy
+   - `MULTI_TURN`: Conversational data with follow-ups
+
+2. **LLM-as-Judge Quality Validation**
+   - Multi-factor scoring: Correctness, Coherence, Completeness, Relevance, Instruction Following
+   - Configurable thresholds (strict: 0.85, high: 0.75, medium: 0.65, low: 0.50)
+   - Heuristic pre-filtering for obvious issues (refusals, incomplete, repetitive)
+   - Detailed feedback for rejected samples
+
+3. **Self-Consistency Validation**
+   - Generate multiple samples with varying temperatures
+   - Semantic similarity-based consensus finding
+   - Configurable agreement threshold
+   - Answer extraction patterns for structured outputs
+
+4. **Response Refinement**
+   - Automatic improvement of low-quality samples
+   - Self-critique and improvement mode
+   - Configurable max refinement attempts
+   - Tracks refinement count in output
+
+5. **Thinking Token Processing**
+   - Proper parsing of `<think>` and `<answer>` sections
+   - Validation of thinking quality (minimum steps, structure)
+   - Automatic prompt formatting for thinking models
+   - Reconstructs proper format for training
+
+6. **Duplicate Detection**
+   - Hash-based exact duplicate detection
+   - Jaccard similarity for near-duplicates
+   - Configurable similarity threshold
+
+7. **Enhanced Output Formats**
+   - `ALPACA`: instruction/input/output
+   - `SHAREGPT`: conversations array
+   - `CHATML`: messages with roles
+   - `THINKING`: includes thinking tokens
+   - `COMPLETION`: prompt/completion pairs
+
+8. **Comprehensive Metrics**
+   - Quality score distribution
+   - Per-dimension averages
+   - Consistency agreement rates
+   - Tokens used, timing, refinement counts
+   - Duplicate and filtering statistics
+
+9. **Additional Teacher Providers**
+   - OpenAI (GPT-4, o1/o3 reasoning models supported)
+   - Anthropic (Claude 3.5)
+   - Google (Gemini)
+   - Local models (OpenAI-compatible API)
+
+10. **Dataset Integration** (2025-12-13)
+   - Optional automatic dataset creation from distillation output
+   - Configurable dataset name and description
+   - Seamless integration with existing dataset management
+   - Download endpoints for raw JSONL files
+   - Export functionality with format conversion
+
+11. **Complete UX Workflow Improvements** (2025-12-13)
+   - **One-Click Training**: Direct training job creation from completed distillation
+   - **Smart Hyperparameters**: Automatic recommendations based on dataset size and quality
+   - **Workflow Templates**: Pre-configured templates for common use cases:
+     * 🔧 Coding Assistant (200 examples, CoT strategy)
+     * ✍️ Creative Writing Assistant (300 examples, high temperature)
+     * 🧠 Reasoning & Math Tutor (400 examples, o1-mini teacher)
+     * 🎯 Domain Expert (500+ examples, specialized knowledge)
+     * 💬 Conversational AI (350 examples, multi-turn format)
+   - **End-to-End Progress Tracking**: Visual workflow progress with 4 stages
+   - **Quality Assessment**: Automatic analysis with grades (A-D) and recommendations
+   - **Performance Estimation**: Predicted model quality based on dataset characteristics
+
+### New Templates
+- `thinking-model`: DeepSeek R1 style reasoning
+- `coding-expert`: Expert code generation with explanations
+- `math-reasoning`: Rigorous mathematical problem solving
+- `instruction-improvement`: Data augmentation via improvement
+- `self-critique`: Self-evaluation and improvement
+- `multi-perspective`: Multi-viewpoint analysis
+- `expert-qa`: Detailed expert answers
+- `conversation-synthesis`: Multi-turn conversation generation
+
+### Configuration Example
+```python
+config = DistillationConfig(
+    teacher_provider=TeacherProvider.OPENAI,
+    teacher_model="gpt-4o",
+    strategy=GenerationStrategy.THINKING_TOKENS,
+    output_format=OutputFormat.THINKING,
+    quality=QualityConfig(
+        enabled=True,
+        use_llm_judge=True,
+        threshold=0.75,
+        max_refinement_attempts=2,
+    ),
+    self_consistency=SelfConsistencyConfig(
+        enabled=True,
+        num_samples=5,
+        agreement_threshold=0.6,
+    ),
+    thinking=ThinkingConfig(
+        enabled=True,
+        min_thinking_steps=3,
+    ),
+)
+```
+
+### Files Changed
+- `backend/modules/finetuning/distillation.py` - Complete rewrite with all new features
+- `backend/modules/finetuning/__init__.py` - Updated exports
+
+### Based on Research
+- CoT-Self-Instruct (arxiv.org/abs/2507.23751)
+- Program-aided Distillation (arxiv.org/abs/2305.13888)
+- Self-Consistency Decoding (Wang et al.)
+- DeepSeek R1 Thinking Token Format
+- Meta-rater Quality Scoring (arxiv.org/abs/2504.14194)
+- FiNE Multi-factor Filtering (NAACL 2025)
+
+---
+
+## Proper Checkpoint Resume in Training Worker (2025-12-13)
+
+### Overview
+Implemented proper checkpoint resume functionality so interrupted training jobs can continue from where they left off, rather than restarting from scratch.
+
+### Changes
+
+1. **Training Worker (`backend/training_worker.py`)**
+   - Added checkpoint detection functions: `find_checkpoints()`, `get_latest_checkpoint()`, `load_checkpoint_info()`
+   - Updated `build_model()` to load adapter weights from checkpoint using `PeftModel.from_pretrained()`
+   - Updated `train()` to:
+     - Accept `resume_from_checkpoint` config option ("latest" or specific path)
+     - Pass checkpoint path to `trainer.train(resume_from_checkpoint=...)`
+     - Save training info JSON with resume metadata
+     - Report resumed step in metrics
+   - Added `ProgressCallback` with proper `on_step_end` for clean stopping with checkpoint save
+
+2. **Training Manager (`backend/modules/finetuning/training_manager.py`)**
+   - Added `list_checkpoints(job_id)` - returns detailed checkpoint info (step, epoch, loss)
+   - Added `get_latest_checkpoint(job_id)` - returns path to most recent checkpoint
+   - Updated `build_job_config()` to accept `resume_from_checkpoint` parameter
+   - Updated `start_job()` to accept `resume_from_checkpoint` parameter
+
+3. **API Routes (`backend/routes/finetuning.py`)**
+   - Updated `POST /jobs/{job_id}/resume` to:
+     - Accept optional `checkpoint` query param (specific path or "latest")
+     - Return resume info including which checkpoint was used
+   - Updated `GET /jobs/{job_id}/checkpoints` to:
+     - Return detailed checkpoint info (step, epoch, loss)
+     - Include `latest_checkpoint` path
+     - Include `can_resume` flag
+
+### How Checkpoint Resume Works
+
+1. When training is interrupted (cancelled/failed), checkpoints are saved in `{job_dir}/checkpoints/checkpoint-{step}/`
+2. Each checkpoint contains:
+   - `adapter_config.json` + adapter weights
+   - `trainer_state.json` with training state (step, epoch, etc.)
+   - Optimizer and scheduler state (for proper learning rate continuation)
+3. On resume:
+   - Worker loads adapter weights from checkpoint
+   - Hugging Face Trainer restores optimizer/scheduler state
+   - Training continues from the saved step
+
+### API Usage
+
+```bash
+# List available checkpoints
+GET /api/v1/finetune/jobs/{job_id}/checkpoints
+
+# Resume from latest checkpoint (default)
+POST /api/v1/finetune/jobs/{job_id}/resume
+
+# Resume from specific checkpoint
+POST /api/v1/finetune/jobs/{job_id}/resume?checkpoint=/path/to/checkpoint-500
+```
+
+---
+
+## LoRA Fine-Tuning: A/B Testing, Metrics, Tests (2025-12-13)
+
+### New Features
+
+1. **A/B Testing for Adapters**
+   - Create multi-variant tests with configurable traffic splits
+   - Real-time request routing based on weights
+   - Metrics collection per variant (latency, throughput, success rate)
+   - User feedback (thumbs up/down) tracking
+   - Winner determination with statistical significance
+   - APIs: `/api/v1/finetune/ab-tests/*`
+
+2. **Performance Metrics Comparison**
+   - Visual bar charts for tokens/sec, latency, P95 latency
+   - Side-by-side variant comparison in A/B test view
+
+3. **Test Suite**
+   - Unit tests for dataset formats, config models, storage
+   - Integration tests for workflows
+   - Benchmark runner and A/B testing tests
+   - Tests auto-skip on host machine if dependencies missing
+
+### Files Added
+- `backend/modules/finetuning/ab_testing.py`
+- `backend/tests/test_finetuning.py`
+- `backend/tests/conftest.py`
+- `backend/tests/__init__.py`
+
+### Running Tests
+
+Option 1: Using local venv (unit tests)
+```bash
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install pydantic httpx pytest pytest-asyncio redis
+.venv/bin/pytest tests/test_finetuning.py -v
+```
+
+Option 2: Real LoRA training tests (requires GPU)
+```bash
+# Install ML dependencies
+.venv/bin/pip install torch transformers peft accelerate datasets bitsandbytes
+
+# Run training tests with Qwen2.5-0.5B
+.venv/bin/pytest tests/test_lora_training.py -v -s
+```
+
+Test coverage:
+- Model loading (Qwen2.5-0.5B, 494M params)
+- LoRA config creation and application
+- Actual training with loss tracking  
+- Inference with trained adapter
+- Adapter merging
+- Training on HuggingFace Alpaca dataset
+- **Proving fine-tuning effect**: Teaches model made-up facts it couldn't know
+- **Style learning**: Model learns custom response format ([END-NEXUS] tag)
+
+Option 3: Run in Docker
+```bash
+docker compose run --rm backend pytest tests/test_finetuning.py -v
+```
+
+### API Endpoints (A/B Testing)
+- `POST /api/v1/finetune/ab-tests` - Create test
+- `POST /api/v1/finetune/ab-tests/{id}/start` - Start
+- `POST /api/v1/finetune/ab-tests/{id}/request` - Execute routed request
+- `GET /api/v1/finetune/ab-tests/{id}/summary` - Get metrics
+
+---
+
+## HuggingFace Benchmark Datasets Integration (2025-12-13)
+
+### Overview
+Replaced mock benchmark datasets with actual HuggingFace dataset connections for robust evaluation.
+
+### New Features
+
+1. **HuggingFaceDatasetManager Class**
+   - Automatic dataset discovery and listing
+   - Caching with configurable location (uses `HF_DATASETS_CACHE` env var)
+   - Authentication for gated datasets (uses `HUGGINGFACE_TOKEN` or `HF_TOKEN`)
+   - Streaming support for large datasets
+   - Standardized data access across different dataset formats
+
+2. **Supported Benchmark Datasets**
+   - MMLU: `cais/mmlu` (all subjects)
+   - HellaSwag: `Rowan/hellaswag`
+   - ARC-Easy: `allenai/ai2_arc` (ARC-Easy subset)
+   - ARC-Challenge: `allenai/ai2_arc` (ARC-Challenge subset)
+   - TruthfulQA: `truthfulqa/truthful_qa` (multiple_choice)
+   - GSM8K: `openai/gsm8k` (main)
+   - HumanEval: `openai/openai_humaneval`
+
+3. **Dataset Discovery API Endpoints**
+   - `GET /api/v1/finetune/benchmarks/datasets/search?query=...` - Search HuggingFace Hub
+   - `GET /api/v1/finetune/benchmarks/datasets/{repo_id}/info` - Get dataset info
+   - `GET /api/v1/finetune/benchmarks/datasets/{benchmark_name}/preview` - Preview samples
+   - `POST /api/v1/finetune/benchmarks/datasets/custom` - Load custom dataset
+   - `GET /api/v1/finetune/benchmarks/datasets/cache` - Get cache stats
+   - `DELETE /api/v1/finetune/benchmarks/datasets/cache` - Clear cache
+
+4. **Enhanced Available Benchmarks Endpoint**
+   - Now includes HuggingFace dataset metadata (repo_id, subset, split)
+   - Shows if dataset is cached/loaded
+   - Shows fallback availability
+
+5. **Fallback Mechanism**
+   - Original mock samples retained as `FALLBACK_BENCHMARK_SAMPLES`
+   - Used when HuggingFace datasets library unavailable or dataset fails to load
+
+### Files Changed
+- `backend/modules/finetuning/benchmarks.py` - Major update with HuggingFaceDatasetManager
+- `backend/modules/finetuning/__init__.py` - Export new classes
+- `backend/routes/finetuning.py` - Added dataset discovery endpoints
+- `backend/requirements.txt` - Added `datasets>=2.18.0`
+
+### Environment Variables
+- `HUGGINGFACE_TOKEN` or `HF_TOKEN` - For accessing gated datasets
+- `HF_DATASETS_CACHE` - Custom cache directory (default: `/tmp/hf_datasets`)
+
+---
+
+## LoRA Fine-Tuning: Dedicated Pages & Checkpoint Resume (2025-12-13)
+
+### New Features
+
+1. **Checkpoint Resume UI**
+   - Resume training from saved checkpoints
+   - Checkpoint selector in job details for failed/cancelled jobs
+   - API: `POST /api/v1/finetune/jobs/{id}/resume`
+
+2. **Dedicated Frontend Pages**
+   - `/finetuning` - Main fine-tuning page with job management
+   - `/finetuning/datasets` - Dataset management with drag-drop upload
+   - `/finetuning/distillation` - Model distillation with prompt templates
+   - `/finetuning/evaluation` - Model comparison, benchmarks, LLM judge
+
+3. **Dataset Management Page**
+   - Drag-and-drop file upload
+   - Dataset preview with sample records
+   - Statistics (record count, file size, format)
+   - Validation with error display
+
+4. **Distillation Page**
+   - Teacher model selection (OpenAI, Anthropic, local)
+   - Prompt template editor
+   - Job progress monitoring
+   - Generated examples preview
+
+5. **Model Evaluation Page**
+   - Side-by-side comparison with blind mode
+   - Human rating interface
+   - Standard benchmarks (MMLU, HellaSwag, etc.)
+   - LLM-as-judge evaluation
+
+6. **Navigation Updates**
+   - Fine-Tuning added to sidebar under Development
+   - Sub-navigation links on main fine-tuning page
+
+### Files Added
+- `frontend/src/pages/finetuning/DatasetManagementPage.tsx`
+- `frontend/src/pages/finetuning/DistillationPage.tsx`
+- `frontend/src/pages/finetuning/ModelEvaluationPage.tsx`
+- `frontend/src/pages/finetuning/index.ts`
+
+### Files Changed
+- `frontend/src/App.tsx` - Added routes for new pages
+- `frontend/src/components/layout/Sidebar.tsx` - Added Fine-Tuning nav item
+- `frontend/src/pages/FineTuningPage.tsx` - Added checkpoint resume UI, nav links
+
+---
+
+## LoRA Fine-Tuning: Standard Benchmark Runner (2025-12-13)
+
+### New Features
+
+1. **Benchmark Runner**
+   - MMLU: Multi-task language understanding
+   - HellaSwag: Commonsense reasoning
+   - ARC-Easy/Challenge: Science question answering
+   - TruthfulQA: Truthfulness evaluation
+   - GSM8K: Grade school math
+   - HumanEval: Code generation
+
+2. **Benchmark Job Management**
+   - Create jobs with multiple benchmarks
+   - Compare base model vs fine-tuned adapter
+   - Track progress and view results
+
+3. **APIs**
+   - `GET /api/v1/finetune/benchmarks/available` - List available benchmarks
+   - `POST /api/v1/finetune/benchmarks/jobs` - Create benchmark job
+   - `POST /api/v1/finetune/benchmarks/jobs/{id}/start` - Start job
+   - `GET /api/v1/finetune/benchmarks/jobs/{id}/summary` - Get results summary
+
+4. **Frontend UI**
+   - Benchmark selector with checkboxes
+   - Adapter selector for comparison
+   - Results table with improvement percentages
+
+### Files Added/Changed
+- `backend/modules/finetuning/benchmarks.py` - Benchmark runner implementation
+- `backend/routes/finetuning.py` - Added benchmark API endpoints
+- `frontend/src/pages/FineTuningPage.tsx` - Added benchmark UI section
+
+### Usage
+```bash
+# List available benchmarks
+curl http://localhost:8700/api/v1/finetune/benchmarks/available
+
+# Create and start benchmark job
+curl -X POST http://localhost:8700/api/v1/finetune/benchmarks/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "eval-test",
+    "base_model": "llama-3-8b",
+    "adapter_id": "job-123",
+    "benchmarks": [
+      {"benchmark_name": "mmlu", "num_samples": 100},
+      {"benchmark_name": "hellaswag", "num_samples": 50}
+    ]
+  }'
+
+# Start the job
+curl -X POST http://localhost:8700/api/v1/finetune/benchmarks/jobs/{job_id}/start
+```
+
+---
+
+## LoRA Fine-Tuning: Polish & Evaluation Features (2025-12-13)
+
+### New Features
+
+1. **Loss Chart Visualization**
+   - SVG-based loss curve in job detail view
+   - Metrics history stored per-job in JSONL format
+   - API: `GET /api/v1/finetune/jobs/{id}/metrics/history`
+
+2. **VRAM Estimation**
+   - Real-time memory requirements based on model/config
+   - Shows recommended GPU and warnings for high configs
+   - API: `POST /api/v1/finetune/estimate`
+
+3. **Model Distillation**
+   - Generate training data from teacher models (GPT-4, Claude, local)
+   - Prompt templates for different use cases
+   - APIs: `/api/v1/finetune/distillation/jobs`, `/distillation/templates`
+
+4. **Model Evaluation**
+   - Side-by-side response comparison
+   - Human rating interface
+   - LLM-as-judge evaluation with configurable criteria
+   - APIs: `/api/v1/finetune/eval/sessions`, `/eval/sessions/{id}/compare`, `/eval/sessions/{id}/judge`
+
+5. **Training Wizard**
+   - Multi-step wizard UI (Model -> Dataset -> Config -> Review)
+   - Toggle between simple form and wizard mode
+   - VRAM estimate displayed throughout
+
+### Files Added/Changed
+- `backend/modules/finetuning/distillation.py` - Teacher model clients, distillation jobs
+- `backend/modules/finetuning/vram_estimator.py` - VRAM estimation logic
+- `backend/modules/finetuning/evaluation.py` - Comparison sessions, LLM judge
+- `backend/modules/finetuning/job_store.py` - Added metrics history storage
+- `backend/routes/finetuning.py` - Added all new endpoints
+- `frontend/src/pages/FineTuningPage.tsx` - Loss chart, wizard, VRAM display
+
+### Usage
+```bash
+# Estimate VRAM
+curl -X POST http://localhost:8700/api/v1/finetune/estimate \
+  -H "Content-Type: application/json" \
+  -d '{"model_name": "meta-llama/Llama-3-8B", "lora_rank": 32, "batch_size": 4}'
+
+# Create distillation job
+curl -X POST http://localhost:8700/api/v1/finetune/distillation/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"name": "gpt4-distill", "config": {"teacher_provider": "openai", "teacher_model": "gpt-4"}, "prompts": ["..."]}'
+
+# Create evaluation session
+curl -X POST http://localhost:8700/api/v1/finetune/eval/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"name": "test-eval", "base_model": "llama-3-8b", "adapter_id": "job-123"}'
+```
+
+---
+
+## LoRA Fine-Tuning: Presets, Merge, and GGUF Export (2025-12-13)
+
+### New Features
+
+1. **Hyperparameter Presets**
+   - Quick Start: Fast training for simple tasks (rank=8, 1 epoch)
+   - Balanced: Recommended default (rank=32, 3 epochs)
+   - High Quality: Best results (rank=128, 5 epochs)
+   - API: `GET /api/v1/finetune/presets`
+
+2. **Adapter Merge**
+   - Merge LoRA weights into base model for standalone deployment
+   - API: `POST /api/v1/finetune/adapters/{job_id}/merge`
+   - Worker handles merge via Redis commands
+
+3. **GGUF Export**
+   - Export merged model to GGUF format using quantization infrastructure
+   - API: `POST /api/v1/finetune/adapters/{job_id}/export?quant_type=q4_k_m`
+   - Requires merge first, then uses existing quantization worker
+
+### Frontend Updates
+- Preset selector in job creation form
+- Merge and Export buttons in Adapters table
+- Additional config fields: learning rate, max_seq_length, QLoRA toggle
+
+### Files Changed
+- `backend/modules/finetuning/config.py` - Added PresetName, HyperparameterPreset, HYPERPARAMETER_PRESETS
+- `backend/routes/finetuning.py` - Added /presets, /adapters/{id}/merge, /adapters/{id}/export endpoints
+- `backend/training_worker.py` - Added merge_adapter function and merge worker mode
+- `frontend/src/pages/FineTuningPage.tsx` - Added preset selector, merge/export buttons
+
+### Usage
+```bash
+# Get presets
+curl http://localhost:8700/api/v1/finetune/presets
+
+# After training completes, merge adapter
+curl -X POST http://localhost:8700/api/v1/finetune/adapters/{job_id}/merge
+
+# Export to GGUF (after merge)
+curl -X POST "http://localhost:8700/api/v1/finetune/adapters/{job_id}/export?quant_type=q4_k_m"
+```
+
+---
+
+## Embedding Service Deployment Fix (2025-12-13)
+
+### Problem
+The `llamacpp-embed` service was not starting because:
+1. The service uses a Docker Compose profile (`profiles: - embed`) and wasn't being started with regular `docker compose up`
+2. The referenced startup script `start-embed.sh` did not exist, causing Docker to create it as a directory instead
+
+### Root Cause
+- Docker Compose profiles are optional services that require explicit activation with `--profile <name>` flag
+- When a volume mount references a non-existent file, Docker creates a directory instead, causing "Is a directory" errors
+
+### Solution
+1. Created `start-embed.sh` script for embedding model deployment
+   - Downloads nomic-embed-text-v1.5 model from HuggingFace if not present
+   - Configures llama-server with embedding-specific flags: `--embeddings`, `--pooling mean`
+   - Uses CPU inference (GPU_LAYERS=0) to avoid memory conflicts with main model
+2. Removed the auto-created directory and created proper script file
+3. Started service with profile flag: `docker compose --profile embed up -d llamacpp-embed`
+
+### Implementation
+- Script location: `start-embed.sh`
+- Service accessible at: `http://localhost:8602`
+- Model: nomic-embed-text-v1.5 (Q8_0 quantization)
+- API key: `llamacpp-embed`
+
+### Verification
+```bash
+# Health check
+curl http://localhost:8602/health
+
+# Test embedding generation
+curl -X POST http://localhost:8602/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer llamacpp-embed" \
+  -d '{"input": "test embedding", "model": "nomic-embed-text-v1.5"}'
+```
+
+### Key Configuration
+- Context Size: 2048
+- GPU Layers: 0 (CPU only to avoid GPU memory conflicts)
+- Batch Size: 512
+- Pooling Type: mean
+- Model File: `nomic-embed-text-v1.5.Q8_0.gguf`
+
+---
+
+## LoRA Fine-Tuning Design Document (2025-12-13)
+
+### Summary
+Created comprehensive design document for implementing LoRA fine-tuning capabilities in Llama Nexus.
+
+### Location
+`docs/lora-fine-tuning-design.md`
+
+### Key Features Planned
+1. **Dataset Management**
+   - Support for Alpaca, ShareGPT, ChatML, and Completion formats
+   - Dataset validation, statistics, and train/val splitting
+   - JSONL upload with preview and quality checks
+
+2. **Model Distillation**
+   - Generate training data from larger teacher models (GPT-4, Claude, etc.)
+   - Self-distillation from deployed Llama Nexus models
+   - Chain-of-thought distillation for reasoning
+
+3. **LoRA/QLoRA Training**
+   - QLoRA (4-bit) support for training 7B-70B models on consumer GPUs
+   - Configurable hyperparameters (rank, alpha, target modules)
+   - Preset configurations for different use cases
+
+4. **Adapter Management**
+   - Store and version LoRA adapters
+   - Merge adapters with base models
+   - Export to GGUF for llama.cpp deployment
+
+### Best Practices Summary
+- **Dataset Size**: 1,000-10,000 high-quality examples often sufficient for LoRA
+- **LoRA Rank**: Start with 32-64 for general use, 128+ for complex tasks
+- **QLoRA**: Uses NF4 quantization, reduces VRAM by ~10x
+- **Target Modules**: q_proj, k_proj, v_proj, o_proj + MLP layers for best results
+
+### Implementation Phases
+- Phase 1: Dataset Management (Week 1-2)
+- Phase 2: Model Distillation (Week 2-3)
+- Phase 3: Training Infrastructure (Week 3-4)
+- Phase 4: Training UI and Monitoring (Week 4-5)
+- Phase 5: Adapter Management and Export (Week 5-6)
+- Phase 6: Model Evaluation (Week 6-7)
+- Phase 7: Testing and Polish (Week 7-8)
+
+### Model Evaluation Features (Added)
+- Side-by-side response comparison (single, batch, blind modes)
+- Standard benchmarks (MMLU, HellaSwag, ARC, TruthfulQA, GSM8K, HumanEval)
+- Custom domain-specific benchmarks
+- LLM-as-Judge automated evaluation
+- Performance comparison (tokens/sec, latency, memory)
+- Human rating interface with criteria scoring
+- Evaluation summary with improvement metrics
+
+### Implementation Progress (2025-12-13)
+- Added backend `finetuning` module skeleton with config models, dataset format helpers, dataset inspection, and an in-memory training manager stub.
+- Exposed initial finetuning API router at `/api/v1/finetune` with dataset inspection and job registration endpoints to unblock frontend wiring.
+- Next: persist dataset/job metadata, add dataset upload/storage, and connect training worker container.
+
+### Implementation Progress (2025-12-13, later)
+- Implemented dataset storage layer with JSON index and on-disk dataset files (configurable via `FINETUNE_DATASET_DIR`).
+- Added dataset upload, list/detail/delete, re-validate, and preview endpoints under `/api/v1/finetune/datasets`, using `DatasetProcessor` for format detection and validation.
+- Kept job endpoints as stubs; training pipeline still pending.
+
+### Implementation Progress (2025-12-13, training pass)
+- Added persistent job store with JSON index and log files; `TrainingManager` now uses it for job lifecycle and progress updates.
+- Extended finetuning routes with job validation against datasets, cancel/resume, and log retrieval endpoints.
+- Added stub `training_worker.py` plus `Dockerfile.training` and a `training` service in docker-compose (GPU-ready, shares dataset/job dirs, Redis configured).
+- Created minimal frontend `FineTuningPage` to list jobs via the new API.
+- Next: real training orchestration (status streaming, metrics), adapter artifacts, and frontend creation/monitor flows.
+
+### Implementation Progress (2025-12-13, full training)
+- Upgraded training image with Torch CUDA 12.1, transformers, peft, bitsandbytes, accelerate, datasets, trl, unsloth.
+- Replaced training worker with real LoRA/QLoRA training using PEFT; streams status/logs to Redis channels.
+- Added Redis consumer to persist status/logs into the job store; training manager now writes job configs and launches worker processes.
+- Finetuning API now validates datasets, starts/resumes jobs, exposes metrics/logs/checkpoints endpoints.
+- Frontend `FineTuningPage` now supports creating jobs (LoRA/QLoRA params) and viewing live logs and job list.
+- Next: persist checkpoints/adapters to a dedicated adapter store, surface metrics/charts in UI, and harden dataset-to-trainer formatting for all formats.
+
+### Implementation Progress (2025-12-13, adapters/commands)
+- Training worker now saves adapters to a dedicated dir, emits final metrics and adapter path in status events, and supports stop commands via Redis `training:commands:{job_id}` channel.
+- Training manager consumes status/log events, updates adapter_path/metrics, and publishes stop on cancel; adapters are listed via `/api/v1/finetune/adapters`.
+- Dataset normalization added in worker for Alpaca/ChatML/ShareGPT/Completion into trainer-ready text; checkpoints/adapters are surfaced via API and UI.
+- Frontend shows loss/adapter presence, job list, logs, and adapters list; job creation form covers key LoRA/QLoRA params.
+- Training image carries full stack; training service runs GPU-ready via `docker compose` (ensure Redis available). To run training: `docker compose up -d training redis`.
+
+---
+
 ## STT Distil-Large-v3.5 Model Support (2025-12-12)
 
 ### Problem
@@ -3712,3 +4687,111 @@ Added ability to start/stop the TTS service directly from the ChatPage without n
 - `POST /api/v1/tts/start` - Start TTS service
 - `POST /api/v1/tts/stop` - Stop TTS service
 - `GET /api/v1/tts/config` - Get TTS config and available voices
+
+### Fine-Tuning Page Fix (2025-12-13)
+
+**Problem:**
+Fine-tuning page was crashing with "U.map is not a function" error. API endpoints returning 404 errors for `/api/v1/finetune/*` routes.
+
+**Root Cause:**
+The `QuantizationEstimate` class was missing from the `modules/quantization/__init__.py` exports. This caused an `ImportError` when loading `routes/quantization.py`, which in turn caused `ROUTES_AVAILABLE = False` in `main.py`. As a result, ALL routes (including finetuning) were not being registered.
+
+**Fix:**
+1. Added `QuantizationEstimate` to `modules/quantization/__init__.py` exports
+2. Added defensive check in `FineTuningPage.tsx` to ensure datasets API response is an array before setting state
+
+**Files Changed:**
+- `backend/modules/quantization/__init__.py` - Added QuantizationEstimate to imports and __all__
+- `frontend/src/pages/FineTuningPage.tsx` - Added res.ok check and Array.isArray guard
+
+### System Integration Tests Added (2025-12-13)
+
+Created comprehensive integration tests in `backend/tests/test_finetuning_api.py` covering:
+
+**Test Categories (49 new tests):**
+1. Dataset Format Detection - Alpaca, ChatML, ShareGPT format detection
+2. Dataset Validation - Valid/invalid record validation
+3. Dataset Processor - JSON/JSONL file inspection, preview
+4. Dataset Storage - CRUD operations, listing, updates
+5. Hyperparameter Presets - All presets exist with correct configs
+6. Job Store - Job lifecycle, logs, metrics tracking
+7. VRAM Estimation - 7B/70B model estimates, QLoRA reduction
+8. Benchmark Runner - Job creation, listing, sample retrieval, MCQ parsing
+9. A/B Testing - Test creation, variant selection, feedback recording
+10. Adapter Manager - Initialization, listing, comparison
+11. Distillation Manager - Template validation, config validation
+12. Evaluation Manager - Session creation, listing
+13. End-to-End Workflow - Dataset to job workflow, preset application
+14. API Response Formats - Serialization verification
+
+**Test Results:**
+- `test_finetuning.py`: 31 tests passing
+- `test_finetuning_api.py`: 49 tests passing
+- Total: 80 tests passing
+
+**Run Tests:**
+```bash
+docker run --rm -v /home/alec/git/llama-nexus/backend/tests:/app/tests \
+  llama-nexus-backend-api python -m pytest tests/test_finetuning_api.py -v
+```
+
+**API Endpoints Verified Working:**
+- GET /api/v1/finetune/presets - 3 presets
+- GET /api/v1/finetune/datasets - Dataset list
+- GET /api/v1/finetune/jobs - Job list
+- GET /api/v1/finetune/adapters - Adapter list
+- GET /api/v1/finetune/benchmarks/available - 7 benchmarks
+- POST /api/v1/finetune/estimate - VRAM estimation (5.23 GB for 7B QLoRA)
+
+## Fine-Tuning UI Complete Refactor (2025-12-13)
+
+### Summary
+Complete UI refactor of all fine-tuning pages to match the existing Material UI theme with glass-morphism design system used throughout the application.
+
+### Changes Made
+
+#### 1. FineTuningPage.tsx (Main Page)
+- Replaced raw inline styles with MUI components (Box, Card, Typography, etc.)
+- Added glass-morphism cards with gradient backgrounds and backdrop blur
+- Implemented tabbed interface for Jobs, Adapters, and Benchmarks
+- Added beautiful stepper-based wizard for creating training jobs
+- Real-time VRAM estimation display with proper styling
+- Proper job table with status chips and progress bars
+- Loss chart with gradient fills and smooth animations
+- Consistent accent colors matching the dashboard theme
+
+#### 2. DatasetManagementPage.tsx
+- Modern drag-and-drop upload zone with hover effects
+- Dataset list with selection highlighting
+- Stats display with icon boxes
+- Proper preview section with JSON syntax highlighting
+- Delete confirmation dialog with glass-morphism styling
+
+#### 3. DistillationPage.tsx  
+- Workflow progress tracker with animated steps
+- Quality assessment display with grade badges
+- Teacher model selection with provider icons
+- Generated examples preview with proper formatting
+- Integration with training job creation
+
+#### 4. ModelEvaluationPage.tsx
+- Four-tab interface: Side-by-Side, Benchmarks, A/B Testing, LLM Judge
+- Comparison sessions with blind mode support
+- Benchmark selection chips with descriptions
+- A/B test variant configuration with weight sliders
+- Performance metric bars with color coding
+- Winner detection and statistical significance indicators
+
+### Design System Applied
+- **Glass-morphism cards**: `background: linear-gradient(145deg, rgba(30, 30, 63, 0.6) 0%, rgba(26, 26, 46, 0.8) 100%)`
+- **Backdrop blur**: `backdropFilter: blur(12px)`
+- **Subtle borders**: `border: 1px solid rgba(255, 255, 255, 0.06)`
+- **Top accent gradients**: 3px gradient line at top of cards
+- **Accent colors**: Primary (#6366f1), Success (#10b981), Warning (#f59e0b), Info (#06b6d4), Purple (#8b5cf6), Rose (#f43f5e)
+- **Hover effects**: Transform, glow shadows, border color changes
+- **Typography**: Gradient headings, consistent font weights
+- **Status chips**: Alpha backgrounds with matching border colors
+
+### Before/After
+- Before: Raw inline styles, basic HTML elements, inconsistent colors
+- After: Full MUI component library, consistent theme, beautiful animations
