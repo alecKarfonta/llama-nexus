@@ -23,6 +23,8 @@ import yaml
 import httpx
 from contextlib import asynccontextmanager
 from collections import deque
+
+print("DEBUG: main.py loaded and imports completed")
 import threading
 from dataclasses import dataclass, asdict
 from huggingface_hub import hf_hub_url
