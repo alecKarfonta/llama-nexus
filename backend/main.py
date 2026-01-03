@@ -315,6 +315,7 @@ class LlamaCPPManager:
             "model": {
                 "name": os.getenv("MODEL_NAME", "Qwen3-Coder-30B-A3B-Instruct"),
                 "variant": os.getenv("MODEL_VARIANT", "Q4_K_M"),
+                "mmproj": os.getenv("MMPROJ_FILE"),
                 "context_size": int(os.getenv("CONTEXT_SIZE", "128000")),
                 "gpu_layers": int(os.getenv("GPU_LAYERS", "999")),
                 "n_cpu_moe": int(os.getenv("N_CPU_MOE", "0")),
@@ -427,7 +428,33 @@ class LlamaCPPManager:
         # Add optional LoRA parameters
         add_param_if_set(cmd, "--lora", self.config["model"].get("lora"))
         add_param_if_set(cmd, "--lora-base", self.config["model"].get("lora_base"))
-        add_param_if_set(cmd, "--mmproj", self.config["model"].get("mmproj"))
+        add_param_if_set(cmd, "--lora-base", self.config["model"].get("lora_base"))
+        
+        # Resolve mmproj path if specified
+        mmproj_file = self.config["model"].get("mmproj")
+        if mmproj_file:
+            mmproj_path = mmproj_file
+            # If it's just a filename (no separator), check in models dir
+            if os.sep not in mmproj_file:
+                # Add check for models directory logic similar to model_path
+                possible_mmproj_paths = [
+                    f"/home/llamacpp/models/{mmproj_file}",
+                    f"/home/llamacpp/models/{variant}/{mmproj_file}"
+                ]
+                
+                # Try to find existing file
+                found = False
+                for path in possible_mmproj_paths:
+                    if Path(path).exists():
+                        mmproj_path = path
+                        found = True
+                        break
+                
+                # Default to standard location if not found
+                if not found:
+                    mmproj_path = f"/home/llamacpp/models/{mmproj_file}"
+            
+            add_param_if_set(cmd, "--mmproj", mmproj_path)
         
         # Add optional performance parameters
         add_param_if_set(cmd, "--n-predict", self.config["performance"].get("num_predict"))
