@@ -24,8 +24,8 @@ RUN pip3 install --no-cache-dir \
     redis \
     uvloop
 
-# Install unsloth from git (optional, speeds up training)
-RUN pip3 install --no-cache-dir "unsloth @ git+https://github.com/unslothai/unsloth.git" || \
+# Install unsloth from PyPI (optional, speeds up training)
+RUN pip3 install --no-cache-dir unsloth || \
     echo "Unsloth install failed, continuing without it"
 
 COPY training_worker.py /app/training_worker.py

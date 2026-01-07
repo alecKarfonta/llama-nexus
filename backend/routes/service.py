@@ -411,7 +411,8 @@ async def test_embedding(request: Request):
         
         # Connect to the embedding service via Docker network
         # Use the container hostname for inter-container communication
-        service_url = f"http://llamacpp-embed:{port}/v1/embeddings"
+        # IMPORTANT: Always use internal port 8080, not the external mapped port
+        service_url = "http://llamacpp-embed:8080/v1/embeddings"
         
         import time
         start_time = time.time()

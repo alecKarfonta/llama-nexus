@@ -2080,23 +2080,33 @@ class EmbeddingManager:
             }
         }
     
+    def _get_model_file(self, model_name: str, variant: str) -> str:
+        """Get the model filename based on name and variant"""
+        # Map model names to filenames with correct separators (dots vs hyphens)
+        model_mappings = {
+            "nomic-embed-text-v1.5": f"nomic-embed-text-v1.5.{variant}.gguf",
+            "e5-mistral-7b": f"e5-mistral-7b-instruct.{variant}.gguf",
+            "bge-m3": f"bge-m3.{variant}.gguf",
+            "gte-Qwen2-1.5B": f"gte-Qwen2-1.5B-instruct.{variant}.gguf",
+        }
+        return model_mappings.get(model_name, f"{model_name}.{variant}.gguf")
+
     def build_command(self) -> List[str]:
         """Build llama-server embedding command"""
         model_name = self.config['model']['name']
         variant = self.config['model']['variant']
         
-        # Map model names to HuggingFace repositories
-        model_mappings = {
-            "nomic-embed-text-v1.5": ("nomic-ai/nomic-embed-text-v1.5-GGUF", f"nomic-embed-text-v1.5.{variant}.gguf"),
-            "e5-mistral-7b": ("intfloat/e5-mistral-7b-instruct-GGUF", f"e5-mistral-7b-instruct.{variant}.gguf"),
-            "bge-m3": ("BAAI/bge-m3-GGUF", f"bge-m3.{variant}.gguf"),
-            "gte-Qwen2-1.5B": ("Alibaba-NLP/gte-Qwen2-1.5B-instruct-GGUF", f"gte-Qwen2-1.5B-instruct.{variant}.gguf"),
+        # Only map repos here, filenames are handled by _get_model_file
+        model_repos = {
+            "nomic-embed-text-v1.5": "nomic-ai/nomic-embed-text-v1.5-GGUF",
+            "e5-mistral-7b": "intfloat/e5-mistral-7b-instruct-GGUF",
+            "bge-m3": "BAAI/bge-m3-GGUF",
+            "gte-Qwen2-1.5B": "Alibaba-NLP/gte-Qwen2-1.5B-instruct-GGUF",
         }
         
-        if model_name in model_mappings:
-            _, model_file = model_mappings[model_name]
-        else:
-            model_file = f"{model_name}.{variant}.gguf"
+        model_file = self._get_model_file(model_name, variant)
+        
+        # This block is replaced by logic above
         
         model_path = f"/home/llamacpp/models/{model_file}"
         
@@ -2175,7 +2185,9 @@ class EmbeddingManager:
                 "UBATCH_SIZE": str(self.config["performance"]["ubatch_size"]),
                 "POOLING_TYPE": self.config["performance"]["pooling_type"],
                 "CUDA_VISIBLE_DEVICES": cuda_devices,
+                "CUDA_VISIBLE_DEVICES": cuda_devices,
                 "NVIDIA_VISIBLE_DEVICES": cuda_devices,
+                "MODEL_FILE": self._get_model_file(self.config["model"]["name"], self.config["model"]["variant"]),
             }
             
             # Create container config
@@ -2262,19 +2274,20 @@ class EmbeddingManager:
                 "-e", f"API_KEY={self.config['server']['api_key']}",
                 "-e", f"NVIDIA_VISIBLE_DEVICES={cuda_devices}",
                 "-e", "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+                "-e", "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+                "-e", "HF_HOME=/home/llamacpp/models/.cache",
+                "-e", f"MODEL_FILE={self._get_model_file(model_name, self.config['model']['variant'])}",
             ]
             
             # Add GPU runtime only for GPU mode
             if execution_mode == "gpu":
-                docker_cmd.insert(2, "nvidia")
-                docker_cmd.insert(2, "--runtime")
+                docker_cmd.insert(2, "all")
+                docker_cmd.insert(2, "--gpus")
             
-            docker_cmd.extend([
-                "--entrypoint", "bash",
-                "llama-nexus-llamacpp-api:latest",
-                "-c",
-                " ".join(self.build_command())
-            ])
+            # Add image and command arguments - start.sh will download model then exec our command
+            docker_cmd.append("llama-nexus-llamacpp-api:latest")
+            # Pass llama-server command as arguments to start.sh
+            docker_cmd.extend(self.build_command())
             
             # Start container
             start_process = await asyncio.create_subprocess_exec(

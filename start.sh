@@ -75,13 +75,16 @@ done
 
 # If no existing file found, determine the correct download filename
 if [ -z "$MODEL_PATH" ]; then
-    # For gpt-oss models, use the multi-part filename
-    if [[ "$MODEL_NAME" == "gpt-oss-120b" ]]; then
-        MODEL_FILE="${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"
-    elif [[ "$MODEL_NAME" == "gpt-oss-20b" ]]; then
-        MODEL_FILE="gpt-oss-20b-GGUF/${MODEL_NAME}-${MODEL_VARIANT}.gguf"  # Subdirectory in models repo
-    else
-        MODEL_FILE="${MODEL_NAME}-${MODEL_VARIANT}.gguf"
+    # Allow MODEL_FILE to be passed from environment
+    if [ -z "$MODEL_FILE" ]; then
+        # For gpt-oss models, use the multi-part filename
+        if [[ "$MODEL_NAME" == "gpt-oss-120b" ]]; then
+            MODEL_FILE="${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"
+        elif [[ "$MODEL_NAME" == "gpt-oss-20b" ]]; then
+            MODEL_FILE="gpt-oss-20b-GGUF/${MODEL_NAME}-${MODEL_VARIANT}.gguf"  # Subdirectory in models repo
+        else
+            MODEL_FILE="${MODEL_NAME}-${MODEL_VARIANT}.gguf"
+        fi
     fi
     MODEL_PATH="/home/llamacpp/models/${MODEL_FILE}"
     echo "Model file not found, will use: $MODEL_PATH"

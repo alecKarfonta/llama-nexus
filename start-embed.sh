@@ -88,11 +88,11 @@ if [ ! -f "$MODEL_PATH" ] && [ -n "$MODEL_REPO" ]; then
     # Use huggingface-cli to download the model
     if [ -n "$HUGGINGFACE_TOKEN" ]; then
         echo "🔑 Using HuggingFace token for authentication"
-        huggingface-cli login --token "$HUGGINGFACE_TOKEN" --add-to-git-credential
+        python3 -c "import huggingface_hub; huggingface_hub.login(token='$HUGGINGFACE_TOKEN', add_to_git_credential=True)"
     fi
     
     # Download the specific model file
-    huggingface-cli download "$MODEL_REPO" "$MODEL_FILE" --local-dir /home/llamacpp/models --local-dir-use-symlinks False
+    python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='$MODEL_REPO', filename='$MODEL_FILE', local_dir='/home/llamacpp/models', local_dir_use_symlinks=False)"
     
     if [ ! -f "$MODEL_PATH" ]; then
         echo "❌ Failed to download model file: $MODEL_PATH"
