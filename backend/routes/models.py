@@ -65,6 +65,18 @@ async def get_current_model(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/archived")
+async def list_archived_models(request: Request):
+    """List all archived models.
+    
+    Note: Model archiving is not yet fully implemented.
+    This endpoint returns an empty list for now to prevent frontend errors.
+    """
+    # TODO: Implement model archiving functionality
+    # For now, return empty list to prevent 404 errors in the frontend
+    return {"success": True, "data": [], "timestamp": datetime.now().isoformat()}
+
+
 @router.get("/local-files")
 async def list_local_model_files():
     """List all downloaded model files in the models directory."""

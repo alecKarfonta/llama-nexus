@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Typography,
@@ -34,8 +34,8 @@ import {
   Paper,
   IconButton
 } from '@mui/material'
-import { 
-  Add as AddIcon, 
+import {
+  Add as AddIcon,
   Refresh as RefreshIcon,
   CloudDownload as CloudDownloadIcon,
   Search as SearchIcon,
@@ -68,7 +68,7 @@ export interface ModelFormData {
 
 export const ModelsPage: React.FC = () => {
   const navigate = useNavigate()
-  
+
   // State for filtering and models
   const [searchTerm, setSearchTerm] = useState('')
   const [activeFilter, setActiveFilter] = useState('all')
@@ -80,7 +80,7 @@ export const ModelsPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [activeDownloads, setActiveDownloads] = useState<ModelDownload[]>([])
-  const [refreshInterval, setRefreshInterval] = useState<number | null>(null)
+  const activeDownloadsRef = useRef<ModelDownload[]>([])
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
     message: string;
@@ -90,23 +90,23 @@ export const ModelsPage: React.FC = () => {
     message: '',
     severity: 'info'
   })
-  
+
   // State for add model menu
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
   const addMenuOpen = Boolean(anchorEl)
-  
+
   // State for download dialog
   const [downloadDialogOpen, setDownloadDialogOpen] = useState(false)
-  
+
   // State for model info dialog
   const [infoDialogOpen, setInfoDialogOpen] = useState(false)
   const [selectedModel, setSelectedModel] = useState<ModelInfo | null>(null)
-  
+
   // State for delete confirmation
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [fileToDelete, setFileToDelete] = useState<any | null>(null)
   const [deleting, setDeleting] = useState(false)
-  
+
   // State for archive dialog
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
   const [modelToArchive, setModelToArchive] = useState<ModelInfo | null>(null)
@@ -115,33 +115,34 @@ export const ModelsPage: React.FC = () => {
   const [performanceNotes, setPerformanceNotes] = useState('')
   const [deleteLocalFiles, setDeleteLocalFiles] = useState(true)
   const [archiving, setArchiving] = useState(false)
-  
+
   // State for model delete confirmation
   const [modelDeleteDialogOpen, setModelDeleteDialogOpen] = useState(false)
   const [modelToDelete, setModelToDelete] = useState<ModelInfo | null>(null)
   const [deletingModel, setDeletingModel] = useState(false)
-  
+
   // State for highlighting a local file when linked from model
   const [highlightedFilePath, setHighlightedFilePath] = useState<string | null>(null)
+
+  // Keep ref in sync with state to avoid stale closures in interval
+  useEffect(() => {
+    activeDownloadsRef.current = activeDownloads
+  }, [activeDownloads])
 
   // Fetch models on component mount
   useEffect(() => {
     fetchModels()
     fetchArchivedModels()
     fetchLocalFiles()
-    
-    // Start polling for active downloads
+
+    // Start polling for active downloads - always poll to catch ongoing downloads
     const interval = window.setInterval(() => {
-      if (activeDownloads.length > 0) {
-        fetchDownloads()
-      }
-    }, 3000)
-    
-    setRefreshInterval(interval)
-    
+      fetchDownloads()
+    }, 2000) // Poll every 2 seconds for more responsive updates
+
     return () => {
-      if (refreshInterval) {
-        window.clearInterval(refreshInterval)
+      if (interval) {
+        window.clearInterval(interval)
       }
     }
   }, [])
@@ -150,11 +151,11 @@ export const ModelsPage: React.FC = () => {
   const fetchModels = async () => {
     setIsLoading(true)
     setLoadError(null)
-    
+
     try {
       const modelData = await apiService.getModels()
       setModels(modelData)
-      
+
       // Also fetch any active downloads
       fetchDownloads()
     } catch (error) {
@@ -167,7 +168,7 @@ export const ModelsPage: React.FC = () => {
       setIsLoading(false)
     }
   }
-  
+
   // Fetch local model files
   const fetchLocalFiles = async () => {
     try {
@@ -178,7 +179,7 @@ export const ModelsPage: React.FC = () => {
       console.error('Failed to fetch local files:', error)
     }
   }
-  
+
   // Fetch archived models
   const fetchArchivedModels = async () => {
     try {
@@ -193,10 +194,10 @@ export const ModelsPage: React.FC = () => {
   const fetchDownloads = async () => {
     try {
       const downloads = await apiService.getModelDownloads()
-      setActiveDownloads(downloads.filter(d => 
+      setActiveDownloads(downloads.filter(d =>
         d.status === 'downloading' || d.status === 'queued'
       ))
-      
+
       // Update model download progress
       if (downloads.length > 0) {
         setModels(prev => {
@@ -211,7 +212,7 @@ export const ModelsPage: React.FC = () => {
             }
             return model
           })
-          
+
           // Add any new downloads that aren't in the models list yet
           downloads.forEach(download => {
             const modelExists = updatedModels.some(model => download.modelId.includes(model.name))
@@ -220,22 +221,22 @@ export const ModelsPage: React.FC = () => {
               const modelName = download.modelId.split('-').slice(0, -1).join('-')
               // Extract quantization from download ID
               const quantization = download.modelId.split('-').pop()
-              
+
               updatedModels.push({
                 id: prev.length + updatedModels.length + 1,
                 name: modelName,
                 framework: 'transformers' as any, // Cast to any or specific type if known
                 status: download.status === 'completed' ? 'available' : 'downloading',
                 downloadProgress: download.status === 'completed' ? undefined : download.progress,
-                parameters: modelName.includes('30B') ? '30B' : 
-                          modelName.includes('7B') ? '7B' : 
-                          modelName.includes('13B') ? '13B' : '?B',
+                parameters: modelName.includes('30B') ? '30B' :
+                  modelName.includes('7B') ? '7B' :
+                    modelName.includes('13B') ? '13B' : '?B',
                 quantization: quantization || 'unknown',
                 contextLength: 32768
               } as any) // Cast to any to bypass strict type checking for now
             }
           })
-          
+
           return updatedModels
         })
       }
@@ -243,21 +244,21 @@ export const ModelsPage: React.FC = () => {
       console.error('Failed to fetch downloads:', error)
     }
   }
-  
+
   // Open add model menu
   const handleAddMenuClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     setAnchorEl(event.currentTarget)
   }
-  
+
   // Close add model menu
   const handleAddMenuClose = () => {
     setAnchorEl(null)
   }
-  
+
   // Open deploy modal with specific type
   const handleDeployTypeSelect = (type: 'huggingface' | 'local' | 'docker') => {
     handleAddMenuClose()
-    
+
     if (type === 'huggingface') {
       setDownloadDialogOpen(true)
     } else {
@@ -268,7 +269,7 @@ export const ModelsPage: React.FC = () => {
       })
     }
   }
-  
+
   // Handle download start
   const handleDownloadStart = () => {
     setSnackbar({
@@ -281,12 +282,12 @@ export const ModelsPage: React.FC = () => {
     // Also refresh models list
     setTimeout(() => fetchModels(), 1000)
   }
-  
+
   // Model action handlers
   const handleStartModel = async (id: number) => {
     const model = models.find(m => m.id === id)
     if (!model) return
-    
+
     try {
       setSnackbar({
         open: true,
@@ -304,11 +305,11 @@ export const ModelsPage: React.FC = () => {
       })
     }
   }
-  
+
   const handleStopModel = async (id: number) => {
     const model = models.find(m => m.id === id)
     if (!model) return
-    
+
     try {
       setSnackbar({
         open: true,
@@ -326,21 +327,21 @@ export const ModelsPage: React.FC = () => {
       })
     }
   }
-  
+
   const handleShowInfo = (model: ModelInfo) => {
     setSelectedModel(model)
     setInfoDialogOpen(true)
   }
-  
+
   const handleDeploy = (model: ModelInfo) => {
     navigate('/deploy', { state: { model } })
   }
-  
+
   const handleDeleteClick = (file: any) => {
     setFileToDelete(file)
     setDeleteDialogOpen(true)
   }
-  
+
   const handleArchiveClick = (model: ModelInfo) => {
     setModelToArchive(model)
     setArchiveRating(0)
@@ -349,12 +350,12 @@ export const ModelsPage: React.FC = () => {
     setDeleteLocalFiles(true)
     setArchiveDialogOpen(true)
   }
-  
+
   const handleModelDeleteClick = (model: ModelInfo) => {
     setModelToDelete(model)
     setModelDeleteDialogOpen(true)
   }
-  
+
   // Handle clicking on a model's local file link
   const handleLocalFileClick = (localPath: string) => {
     setHighlightedFilePath(localPath)
@@ -362,10 +363,10 @@ export const ModelsPage: React.FC = () => {
     // Clear highlight after 3 seconds
     setTimeout(() => setHighlightedFilePath(null), 3000)
   }
-  
+
   const handleDeleteConfirm = async () => {
     if (!fileToDelete) return
-    
+
     setDeleting(true)
     try {
       await apiService.deleteLocalModelFile(fileToDelete.path)
@@ -389,10 +390,10 @@ export const ModelsPage: React.FC = () => {
       setDeleting(false)
     }
   }
-  
+
   const handleArchiveConfirm = async () => {
     if (!modelToArchive) return
-    
+
     setArchiving(true)
     try {
       const request: ModelArchiveRequest = {
@@ -402,18 +403,18 @@ export const ModelsPage: React.FC = () => {
         performanceNotes: performanceNotes.trim() || undefined,
         deleteLocalFiles
       }
-      
+
       const result = await apiService.archiveModel(request)
-      
+
       setSnackbar({
         open: true,
         message: `Archived ${modelToArchive.name}${result.sizeFreed ? ` (freed ${formatBytes(result.sizeFreed)})` : ''}`,
         severity: 'success'
       })
-      
+
       setArchiveDialogOpen(false)
       setModelToArchive(null)
-      
+
       // Refresh the lists
       fetchModels()
       fetchArchivedModels()
@@ -430,23 +431,23 @@ export const ModelsPage: React.FC = () => {
       setArchiving(false)
     }
   }
-  
+
   const handleModelDeleteConfirm = async () => {
     if (!modelToDelete) return
-    
+
     setDeletingModel(true)
     try {
       const result = await apiService.deleteModel(modelToDelete.id)
-      
+
       setSnackbar({
         open: true,
         message: `Deleted ${modelToDelete.name}${result.sizeFreed ? ` (freed ${formatBytes(result.sizeFreed)})` : ''}`,
         severity: 'success'
       })
-      
+
       setModelDeleteDialogOpen(false)
       setModelToDelete(null)
-      
+
       // Refresh the lists
       fetchModels()
       fetchArchivedModels()
@@ -461,17 +462,17 @@ export const ModelsPage: React.FC = () => {
       setDeletingModel(false)
     }
   }
-  
+
   const handleUnarchiveModel = async (model: ModelInfo) => {
     try {
       await apiService.unarchiveModel(model.id)
-      
+
       setSnackbar({
         open: true,
         message: `Unarchived ${model.name}`,
         severity: 'success'
       })
-      
+
       // Refresh the lists
       fetchModels()
       fetchArchivedModels()
@@ -483,7 +484,7 @@ export const ModelsPage: React.FC = () => {
       })
     }
   }
-  
+
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B'
     const k = 1024
@@ -491,37 +492,37 @@ export const ModelsPage: React.FC = () => {
     const i = Math.floor(Math.log(bytes) / Math.log(k))
     return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i]
   }
-  
+
   const formatSpeed = (bytesPerSecond: number) => {
     return formatBytes(bytesPerSecond) + '/s'
   }
-  
+
   const formatETA = (seconds: number) => {
     if (seconds < 60) return `${Math.round(seconds)}s`
     if (seconds < 3600) return `${Math.round(seconds / 60)}m`
     return `${Math.round(seconds / 3600)}h`
   }
-  
+
   // Filter models based on search term and active filter
   const filteredModels = useMemo(() => {
     return models.filter(model => {
       // Filter by search term
       const matchesSearch = model.name?.toLowerCase().includes(searchTerm?.toLowerCase() || '') ||
-                           (model.variant?.toLowerCase().includes(searchTerm?.toLowerCase() || '') || false);
-      
+        (model.variant?.toLowerCase().includes(searchTerm?.toLowerCase() || '') || false);
+
       // Filter by framework
       // const matchesFilter = activeFilter === 'all' || model.framework === activeFilter;
       const matchesFilter = true; // Simplified for now
-      
+
       return matchesSearch && matchesFilter;
     });
   }, [models, searchTerm, activeFilter]);
-  
+
   // Handle snackbar close
   const handleSnackbarClose = () => {
     setSnackbar(prev => ({ ...prev, open: false }))
   }
-  
+
   // Sample models for development
   const getSampleModels = () => [
     {
@@ -564,29 +565,29 @@ export const ModelsPage: React.FC = () => {
       contextLength: 32768
     }
   ]
-  
+
   return (
-    <Box sx={{ 
-      width: '100%', 
+    <Box sx={{
+      width: '100%',
       overflow: 'hidden',
       px: 3,
       py: 2
     }}>
       {/* Modern Header Section */}
-      <Box sx={{ 
-        display: 'flex', 
-        justifyContent: 'space-between', 
-        alignItems: 'center', 
+      <Box sx={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
         mb: 2,
         flexDirection: { xs: 'column', sm: 'row' },
         gap: 2
       }}>
         {/* Title and Description */}
         <Box>
-          <Typography 
-            variant="h1" 
-            sx={{ 
-              fontWeight: 700, 
+          <Typography
+            variant="h1"
+            sx={{
+              fontWeight: 700,
               color: 'text.primary',
               mb: 0.5,
               fontSize: { xs: '1.25rem', sm: '1.5rem' },
@@ -595,9 +596,9 @@ export const ModelsPage: React.FC = () => {
           >
             ML Model Manager
           </Typography>
-          <Typography 
-            variant="body2" 
-            sx={{ 
+          <Typography
+            variant="body2"
+            sx={{
               color: 'text.secondary',
               fontSize: '0.8125rem',
               fontWeight: 400,
@@ -607,9 +608,9 @@ export const ModelsPage: React.FC = () => {
             Deploy, manage, and monitor your machine learning models
           </Typography>
         </Box>
-        
+
         {/* Action Buttons */}
-        <Box sx={{ 
+        <Box sx={{
           display: 'flex',
           gap: 1,
           flexWrap: 'wrap',
@@ -625,7 +626,7 @@ export const ModelsPage: React.FC = () => {
             }}
             disabled={isLoading}
             size="small"
-            sx={{ 
+            sx={{
               borderColor: 'grey.300',
               color: 'text.primary',
               fontWeight: 500,
@@ -638,13 +639,13 @@ export const ModelsPage: React.FC = () => {
           >
             {isLoading ? 'Refreshing' : 'Refresh'}
           </Button>
-          
+
           <Button
             variant="outlined"
             startIcon={<CloudDownloadIcon sx={{ fontSize: '1rem' }} />}
             onClick={() => setDownloadDialogOpen(true)}
             size="small"
-            sx={{ 
+            sx={{
               borderColor: 'grey.300',
               color: 'text.primary',
               fontWeight: 500,
@@ -657,13 +658,13 @@ export const ModelsPage: React.FC = () => {
           >
             Download
           </Button>
-          
+
           <Button
             variant="contained"
             startIcon={<AddIcon sx={{ fontSize: '1rem' }} />}
             onClick={handleAddMenuClick}
             size="small"
-            sx={{ 
+            sx={{
               fontWeight: 600,
               fontSize: '0.75rem'
             }}
@@ -671,7 +672,7 @@ export const ModelsPage: React.FC = () => {
             Add Model
           </Button>
         </Box>
-        
+
         <Menu
           anchorEl={anchorEl}
           open={addMenuOpen}
@@ -695,10 +696,10 @@ export const ModelsPage: React.FC = () => {
             }
           }}
         >
-          <MenuItem 
+          <MenuItem
             onClick={() => handleDeployTypeSelect('huggingface')}
-            sx={{ 
-              px: 1.5, 
+            sx={{
+              px: 1.5,
               py: 1,
               fontSize: '0.8125rem',
               '&:hover': { bgcolor: 'grey.50' }
@@ -711,10 +712,10 @@ export const ModelsPage: React.FC = () => {
               </Typography>
             </Box>
           </MenuItem>
-          <MenuItem 
+          <MenuItem
             onClick={() => handleDeployTypeSelect('local')}
-            sx={{ 
-              px: 1.5, 
+            sx={{
+              px: 1.5,
               py: 1,
               fontSize: '0.8125rem',
               '&:hover': { bgcolor: 'grey.50' }
@@ -727,10 +728,10 @@ export const ModelsPage: React.FC = () => {
               </Typography>
             </Box>
           </MenuItem>
-          <MenuItem 
+          <MenuItem
             onClick={() => handleDeployTypeSelect('docker')}
-            sx={{ 
-              px: 1.5, 
+            sx={{
+              px: 1.5,
               py: 1,
               fontSize: '0.8125rem',
               '&:hover': { bgcolor: 'grey.50' }
@@ -745,11 +746,11 @@ export const ModelsPage: React.FC = () => {
           </MenuItem>
         </Menu>
       </Box>
-      
+
       {/* Tabs */}
       <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
         <Tabs value={activeTab} onChange={(_, newValue) => setActiveTab(newValue)}>
-          <Tab 
+          <Tab
             label={
               <Box display="flex" alignItems="center" gap={1}>
                 <StorageIcon sx={{ fontSize: '1rem' }} />
@@ -758,10 +759,10 @@ export const ModelsPage: React.FC = () => {
                   <Chip label={models.length} size="small" sx={{ height: 18, fontSize: '0.7rem' }} />
                 )}
               </Box>
-            } 
+            }
             sx={{ fontSize: '0.8rem', textTransform: 'none', fontWeight: 500 }}
           />
-          <Tab 
+          <Tab
             label={
               <Box display="flex" alignItems="center" gap={1}>
                 <FolderIcon sx={{ fontSize: '1rem' }} />
@@ -770,10 +771,10 @@ export const ModelsPage: React.FC = () => {
                   <Chip label={localFiles.length} size="small" sx={{ height: 18, fontSize: '0.7rem' }} />
                 )}
               </Box>
-            } 
+            }
             sx={{ fontSize: '0.8rem', textTransform: 'none', fontWeight: 500 }}
           />
-          <Tab 
+          <Tab
             label={
               <Box display="flex" alignItems="center" gap={1}>
                 <ArchiveIcon sx={{ fontSize: '1rem' }} />
@@ -782,36 +783,36 @@ export const ModelsPage: React.FC = () => {
                   <Chip label={archivedModels.length} size="small" sx={{ height: 18, fontSize: '0.7rem' }} />
                 )}
               </Box>
-            } 
+            }
             sx={{ fontSize: '0.8rem', textTransform: 'none', fontWeight: 500 }}
           />
         </Tabs>
       </Box>
-      
+
       {/* Search bar - only show on models tab */}
       {activeTab === 0 && (
         <Box sx={{ mb: 3 }}>
           <TextField
-              fullWidth
-              placeholder="Search models..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              InputProps={{
-                  startAdornment: (
-                      <InputAdornment position="start">
-                          <SearchIcon />
-                      </InputAdornment>
-                  )
-              }}
-              sx={{ maxWidth: 500 }}
+            fullWidth
+            placeholder="Search models..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon />
+                </InputAdornment>
+              )
+            }}
+            sx={{ maxWidth: 500 }}
           />
         </Box>
       )}
-      
+
       {loadError && (
-        <Alert 
-          severity="error" 
-          sx={{ 
+        <Alert
+          severity="error"
+          sx={{
             mb: 2,
             borderRadius: 0.5,
             fontSize: '0.8125rem'
@@ -820,249 +821,262 @@ export const ModelsPage: React.FC = () => {
           {loadError}
         </Alert>
       )}
-      
+
       {/* Tab Content */}
       {activeTab === 0 && (
         <>
-      {isLoading && models.length === 0 ? (
-        <Box sx={{ 
-          display: 'flex', 
-          flexDirection: 'column',
-          justifyContent: 'center', 
-          alignItems: 'center', 
-          height: 300,
-          bgcolor: 'background.paper',
-          borderRadius: 0.5,
-          border: '1px solid',
-          borderColor: 'grey.200'
-        }}>
-          <CircularProgress size={32} sx={{ mb: 1.5 }} />
-          <Typography variant="body1" color="text.secondary" sx={{ mb: 0.5, fontSize: '0.875rem' }}>
-            Loading models...
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
-            Please wait while we fetch your ML models
-          </Typography>
-        </Box>
-      ) : (
-        <Grid container spacing={1.5} sx={{ px: 0 }}>
-          {filteredModels.map((model: any) => {
-            const download = activeDownloads.find(d => d.modelId.includes(model.name))
-            const isDownloading = model.status === 'downloading' || download
-            
-            return (
-            <Grid item key={model.id || model.name} xs={12} sm={6} md={4} lg={3} xl={2}>
-              <Card variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                <CardContent sx={{ flexGrow: 1 }}>
-                    <Typography variant="h6" noWrap title={model.name} sx={{ fontSize: '0.95rem', fontWeight: 600 }}>
-                        {model.name}
-                    </Typography>
-                    <Typography color="textSecondary" gutterBottom sx={{ fontSize: '0.75rem' }}>
-                        {model.quantization || model.variant}
-                    </Typography>
-                    
-                    <Box display="flex" alignItems="center" gap={0.5} mb={1} flexWrap="wrap">
-                        <Chip 
-                            label={model.status} 
-                            size="small" 
-                            color={model.status === 'running' ? 'success' : model.status === 'downloading' ? 'info' : 'default'} 
+          {isLoading && models.length === 0 ? (
+            <Box sx={{
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+              alignItems: 'center',
+              height: 300,
+              bgcolor: 'background.paper',
+              borderRadius: 0.5,
+              border: '1px solid',
+              borderColor: 'grey.200'
+            }}>
+              <CircularProgress size={32} sx={{ mb: 1.5 }} />
+              <Typography variant="body1" color="text.secondary" sx={{ mb: 0.5, fontSize: '0.875rem' }}>
+                Loading models...
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                Please wait while we fetch your ML models
+              </Typography>
+            </Box>
+          ) : (
+            <Grid container spacing={1.5} sx={{ px: 0 }}>
+              {filteredModels.map((model: any) => {
+                const download = activeDownloads.find(d => d.modelId.includes(model.name))
+                const isDownloading = model.status === 'downloading' || download
+
+                return (
+                  <Grid item key={model.id || model.name} xs={12} sm={6} md={4} lg={3} xl={2}>
+                    <Card variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                      <CardContent sx={{ flexGrow: 1 }}>
+                        <Typography variant="h6" noWrap title={model.name} sx={{ fontSize: '0.95rem', fontWeight: 600 }}>
+                          {model.name}
+                        </Typography>
+                        <Typography color="textSecondary" gutterBottom sx={{ fontSize: '0.75rem' }}>
+                          {model.quantization || model.variant}
+                        </Typography>
+
+                        <Box display="flex" alignItems="center" gap={0.5} mb={1} flexWrap="wrap">
+                          <Chip
+                            label={model.status}
+                            size="small"
+                            color={model.status === 'running' ? 'success' : model.status === 'downloading' ? 'info' : 'default'}
                             sx={{ fontSize: '0.7rem', height: 20 }}
-                        />
-                        {model.parameters && (
-                          <Chip label={model.parameters} size="small" variant="outlined" sx={{ fontSize: '0.7rem', height: 20 }} />
-                        )}
-                    </Box>
-                    
-                    {/* Download Progress */}
-                    {isDownloading && (
-                      <Box sx={{ mt: 1 }}>
-                        <Box display="flex" justifyContent="space-between" alignItems="center" mb={0.5}>
-                          <Typography variant="caption" color="text.secondary">
-                            Downloading...
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            {download ? `${Math.round(download.progress)}%` : `${Math.round(model.downloadProgress || 0)}%`}
-                          </Typography>
+                          />
+                          {model.source === 'trained' && (
+                            <Chip
+                              label="Trained"
+                              size="small"
+                              sx={{
+                                fontSize: '0.65rem',
+                                height: 18,
+                                bgcolor: '#059669',
+                                color: 'white',
+                                fontWeight: 600
+                              }}
+                            />
+                          )}
+                          {model.parameters && (
+                            <Chip label={model.parameters} size="small" variant="outlined" sx={{ fontSize: '0.7rem', height: 20 }} />
+                          )}
                         </Box>
-                        <LinearProgress 
-                          variant="determinate" 
-                          value={download?.progress || model.downloadProgress || 0} 
-                          sx={{ height: 4, borderRadius: 2 }}
-                        />
-                        {download && (
-                          <Box display="flex" justifyContent="space-between" mt={0.5}>
-                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                              {formatSpeed(download.speed)}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                              ETA: {formatETA(download.eta)}
-                            </Typography>
+
+                        {/* Download Progress */}
+                        {isDownloading && (
+                          <Box sx={{ mt: 1 }}>
+                            <Box display="flex" justifyContent="space-between" alignItems="center" mb={0.5}>
+                              <Typography variant="caption" color="text.secondary">
+                                Downloading...
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {download ? `${Math.round(download.progress)}%` : `${Math.round(model.downloadProgress || 0)}%`}
+                              </Typography>
+                            </Box>
+                            <LinearProgress
+                              variant="determinate"
+                              value={download?.progress || model.downloadProgress || 0}
+                              sx={{ height: 4, borderRadius: 2 }}
+                            />
+                            {download && (
+                              <Box display="flex" justifyContent="space-between" mt={0.5}>
+                                <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                                  {formatSpeed(download.speed)}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                                  ETA: {formatETA(download.eta)}
+                                </Typography>
+                              </Box>
+                            )}
                           </Box>
                         )}
-                      </Box>
-                    )}
-                    
-                    {/* Model Info */}
-                    {model.size > 0 && (
-                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, fontSize: '0.7rem' }}>
-                        Size: {formatBytes(model.size)}
-                      </Typography>
-                    )}
-                    
-                    {/* Local File Link */}
-                    {model.localPath && (
-                      <Tooltip title={`View file: ${model.filename || model.localPath}`}>
-                        <Box 
-                          onClick={() => handleLocalFileClick(model.localPath!)}
-                          sx={{ 
-                            mt: 0.5, 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: 0.5,
-                            cursor: 'pointer',
-                            '&:hover': {
-                              '& .MuiTypography-root': {
-                                color: 'primary.main',
-                                textDecoration: 'underline'
-                              }
-                            }
-                          }}
-                        >
-                          <FolderIcon sx={{ fontSize: '0.8rem', color: 'text.secondary' }} />
-                          <Typography 
-                            variant="caption" 
-                            color="text.secondary" 
-                            sx={{ 
-                              fontSize: '0.65rem',
-                              fontFamily: 'monospace',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                              maxWidth: '150px'
-                            }}
-                          >
-                            {model.filename || model.localPath}
+
+                        {/* Model Info */}
+                        {model.size > 0 && (
+                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, fontSize: '0.7rem' }}>
+                            Size: {formatBytes(model.size)}
                           </Typography>
-                        </Box>
-                      </Tooltip>
-                    )}
-                </CardContent>
-                <CardActions sx={{ pt: 0, pb: 1, px: 1, gap: 0.5, flexWrap: 'wrap' }}>
-                    <Button 
-                      size="small" 
-                      onClick={() => handleShowInfo(model)} 
-                      startIcon={<InfoIcon sx={{ fontSize: '0.9rem' }} />}
-                      sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                        )}
+
+                        {/* Local File Link */}
+                        {model.localPath && (
+                          <Tooltip title={`View file: ${model.filename || model.localPath}`}>
+                            <Box
+                              onClick={() => handleLocalFileClick(model.localPath!)}
+                              sx={{
+                                mt: 0.5,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                cursor: 'pointer',
+                                '&:hover': {
+                                  '& .MuiTypography-root': {
+                                    color: 'primary.main',
+                                    textDecoration: 'underline'
+                                  }
+                                }
+                              }}
+                            >
+                              <FolderIcon sx={{ fontSize: '0.8rem', color: 'text.secondary' }} />
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{
+                                  fontSize: '0.65rem',
+                                  fontFamily: 'monospace',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  maxWidth: '150px'
+                                }}
+                              >
+                                {model.filename || model.localPath}
+                              </Typography>
+                            </Box>
+                          </Tooltip>
+                        )}
+                      </CardContent>
+                      <CardActions sx={{ pt: 0, pb: 1, px: 1, gap: 0.5, flexWrap: 'wrap' }}>
+                        <Button
+                          size="small"
+                          onClick={() => handleShowInfo(model)}
+                          startIcon={<InfoIcon sx={{ fontSize: '0.9rem' }} />}
+                          sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                        >
+                          Info
+                        </Button>
+                        {!isDownloading && model.status !== 'running' && (
+                          <Tooltip title="Deploy this model">
+                            <Button
+                              size="small"
+                              onClick={() => handleDeploy(model)}
+                              color="primary"
+                              startIcon={<DeployIcon sx={{ fontSize: '0.9rem' }} />}
+                              sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                            >
+                              Deploy
+                            </Button>
+                          </Tooltip>
+                        )}
+                        {model.status === 'stopped' && !isDownloading && (
+                          <Button
+                            size="small"
+                            onClick={() => handleStartModel(model.id)}
+                            color="success"
+                            startIcon={<PlayIcon sx={{ fontSize: '0.9rem' }} />}
+                            sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                          >
+                            Start
+                          </Button>
+                        )}
+                        {model.status === 'running' && (
+                          <Button
+                            size="small"
+                            onClick={() => handleStopModel(model.id)}
+                            color="error"
+                            startIcon={<StopIcon sx={{ fontSize: '0.9rem' }} />}
+                            sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                          >
+                            Stop
+                          </Button>
+                        )}
+                        {!isDownloading && model.status !== 'running' && (
+                          <Tooltip title="Archive this model">
+                            <Button
+                              size="small"
+                              onClick={() => handleArchiveClick(model)}
+                              color="warning"
+                              startIcon={<ArchiveIcon sx={{ fontSize: '0.9rem' }} />}
+                              sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                            >
+                              Archive
+                            </Button>
+                          </Tooltip>
+                        )}
+                        {!isDownloading && model.status !== 'running' && (
+                          <Tooltip title="Delete this model permanently">
+                            <Button
+                              size="small"
+                              onClick={() => handleModelDeleteClick(model)}
+                              color="error"
+                              startIcon={<DeleteIcon sx={{ fontSize: '0.9rem' }} />}
+                              sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
+                            >
+                              Delete
+                            </Button>
+                          </Tooltip>
+                        )}
+                      </CardActions>
+                    </Card>
+                  </Grid>
+                )
+              })}
+
+              {filteredModels.length === 0 && (
+                <Grid item xs={12}>
+                  <Box sx={{
+                    textAlign: 'center',
+                    py: 6,
+                    bgcolor: 'background.paper',
+                    borderRadius: 0.5,
+                    border: '1px dashed',
+                    borderColor: 'grey.300'
+                  }}>
+                    <Typography variant="h6" color="text.secondary" sx={{ mb: 0.5, fontWeight: 600, fontSize: '1rem' }}>
+                      No models found
+                    </Typography>
+                    <Button
+                      variant="contained"
+                      startIcon={<AddIcon sx={{ fontSize: '1rem' }} />}
+                      onClick={handleAddMenuClick}
+                      size="small"
+                      sx={{
+                        fontWeight: 600,
+                        fontSize: '0.75rem',
+                        mt: 2
+                      }}
                     >
-                      Info
+                      Add Your First Model
                     </Button>
-                    {!isDownloading && model.status !== 'running' && (
-                      <Tooltip title="Deploy this model">
-                        <Button 
-                          size="small" 
-                          onClick={() => handleDeploy(model)} 
-                          color="primary" 
-                          startIcon={<DeployIcon sx={{ fontSize: '0.9rem' }} />}
-                          sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
-                        >
-                          Deploy
-                        </Button>
-                      </Tooltip>
-                    )}
-                    {model.status === 'stopped' && !isDownloading && (
-                         <Button 
-                           size="small" 
-                           onClick={() => handleStartModel(model.id)} 
-                           color="success" 
-                           startIcon={<PlayIcon sx={{ fontSize: '0.9rem' }} />}
-                           sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
-                         >
-                           Start
-                         </Button>
-                    )}
-                    {model.status === 'running' && (
-                        <Button 
-                          size="small" 
-                          onClick={() => handleStopModel(model.id)} 
-                          color="error" 
-                          startIcon={<StopIcon sx={{ fontSize: '0.9rem' }} />}
-                          sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
-                        >
-                          Stop
-                        </Button>
-                    )}
-                    {!isDownloading && model.status !== 'running' && (
-                      <Tooltip title="Archive this model">
-                        <Button 
-                          size="small" 
-                          onClick={() => handleArchiveClick(model)} 
-                          color="warning" 
-                          startIcon={<ArchiveIcon sx={{ fontSize: '0.9rem' }} />}
-                          sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
-                        >
-                          Archive
-                        </Button>
-                      </Tooltip>
-                    )}
-                    {!isDownloading && model.status !== 'running' && (
-                      <Tooltip title="Delete this model permanently">
-                        <Button 
-                          size="small" 
-                          onClick={() => handleModelDeleteClick(model)} 
-                          color="error" 
-                          startIcon={<DeleteIcon sx={{ fontSize: '0.9rem' }} />}
-                          sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
-                        >
-                          Delete
-                        </Button>
-                      </Tooltip>
-                    )}
-                </CardActions>
-              </Card>
-            </Grid>
-            )
-          })}
-          
-          {filteredModels.length === 0 && (
-            <Grid item xs={12}>
-              <Box sx={{ 
-                textAlign: 'center', 
-                py: 6,
-                bgcolor: 'background.paper',
-                borderRadius: 0.5,
-                border: '1px dashed',
-                borderColor: 'grey.300'
-              }}>
-                <Typography variant="h6" color="text.secondary" sx={{ mb: 0.5, fontWeight: 600, fontSize: '1rem' }}>
-                  No models found
-                </Typography>
-                <Button
-                  variant="contained"
-                  startIcon={<AddIcon sx={{ fontSize: '1rem' }} />}
-                  onClick={handleAddMenuClick}
-                  size="small"
-                  sx={{ 
-                    fontWeight: 600,
-                    fontSize: '0.75rem',
-                    mt: 2
-                  }}
-                >
-                  Add Your First Model
-                </Button>
-              </Box>
+                  </Box>
+                </Grid>
+              )}
             </Grid>
           )}
-        </Grid>
+        </>
       )}
-      </>
-      )}
-      
+
       {/* Archived Models Tab */}
       {activeTab === 2 && (
         <Box>
           {archivedModels.length === 0 ? (
-            <Box sx={{ 
-              textAlign: 'center', 
+            <Box sx={{
+              textAlign: 'center',
               py: 6,
               bgcolor: 'background.paper',
               borderRadius: 0.5,
@@ -1089,19 +1103,19 @@ export const ModelsPage: React.FC = () => {
                       <Typography color="textSecondary" gutterBottom sx={{ fontSize: '0.75rem' }}>
                         {model.quantization || model.variant}
                       </Typography>
-                      
+
                       <Box display="flex" alignItems="center" gap={0.5} mb={1} flexWrap="wrap">
-                        <Chip 
-                          label="archived" 
-                          size="small" 
-                          color="warning" 
+                        <Chip
+                          label="archived"
+                          size="small"
+                          color="warning"
                           sx={{ fontSize: '0.7rem', height: 20 }}
                         />
                         {model.parameters && (
                           <Chip label={model.parameters} size="small" variant="outlined" sx={{ fontSize: '0.7rem', height: 20 }} />
                         )}
                       </Box>
-                      
+
                       {/* Rating Display */}
                       {model.archiveRating && (
                         <Box display="flex" alignItems="center" gap={0.5} mb={1}>
@@ -1115,21 +1129,21 @@ export const ModelsPage: React.FC = () => {
                           ))}
                         </Box>
                       )}
-                      
+
                       {/* Archive Notes */}
                       {model.archiveNotes && (
                         <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, fontSize: '0.7rem', fontStyle: 'italic' }}>
                           "{model.archiveNotes}"
                         </Typography>
                       )}
-                      
+
                       {/* Performance Notes */}
                       {model.performanceNotes && (
                         <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, fontSize: '0.7rem' }}>
                           Performance: {model.performanceNotes}
                         </Typography>
                       )}
-                      
+
                       {/* Archive Date */}
                       {model.archivedAt && (
                         <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, fontSize: '0.65rem' }}>
@@ -1138,19 +1152,19 @@ export const ModelsPage: React.FC = () => {
                       )}
                     </CardContent>
                     <CardActions sx={{ pt: 0, pb: 1, px: 1, gap: 0.5 }}>
-                      <Button 
-                        size="small" 
-                        onClick={() => handleShowInfo(model)} 
+                      <Button
+                        size="small"
+                        onClick={() => handleShowInfo(model)}
                         startIcon={<InfoIcon sx={{ fontSize: '0.9rem' }} />}
                         sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
                       >
                         Info
                       </Button>
                       <Tooltip title="Restore this model">
-                        <Button 
-                          size="small" 
-                          onClick={() => handleUnarchiveModel(model)} 
-                          color="success" 
+                        <Button
+                          size="small"
+                          onClick={() => handleUnarchiveModel(model)}
+                          color="success"
                           startIcon={<UnarchiveIcon sx={{ fontSize: '0.9rem' }} />}
                           sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
                         >
@@ -1158,10 +1172,10 @@ export const ModelsPage: React.FC = () => {
                         </Button>
                       </Tooltip>
                       <Tooltip title="Delete permanently">
-                        <Button 
-                          size="small" 
-                          onClick={() => handleModelDeleteClick(model)} 
-                          color="error" 
+                        <Button
+                          size="small"
+                          onClick={() => handleModelDeleteClick(model)}
+                          color="error"
                           startIcon={<DeleteIcon sx={{ fontSize: '0.9rem' }} />}
                           sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 0.5 }}
                         >
@@ -1176,7 +1190,7 @@ export const ModelsPage: React.FC = () => {
           )}
         </Box>
       )}
-      
+
       {/* Downloaded Files Tab */}
       {activeTab === 1 && (
         <Box>
@@ -1203,7 +1217,7 @@ export const ModelsPage: React.FC = () => {
               </Box>
             </CardContent>
           </Card>
-          
+
           {/* Files Table */}
           <TableContainer component={Paper} variant="outlined">
             <Table size="small">
@@ -1236,9 +1250,9 @@ export const ModelsPage: React.FC = () => {
                   </TableRow>
                 ) : (
                   localFiles.map((file) => (
-                    <TableRow 
+                    <TableRow
                       key={file.path}
-                      sx={{ 
+                      sx={{
                         '&:hover': { bgcolor: 'grey.50' },
                         '&:last-child td, &:last-child th': { border: 0 },
                         ...(highlightedFilePath === file.path && {
@@ -1261,17 +1275,17 @@ export const ModelsPage: React.FC = () => {
                         {new Date(file.modified).toLocaleDateString()} {new Date(file.modified).toLocaleTimeString()}
                       </TableCell>
                       <TableCell>
-                        <Chip 
-                          label={file.extension.toUpperCase()} 
-                          size="small" 
+                        <Chip
+                          label={file.extension.toUpperCase()}
+                          size="small"
                           variant="outlined"
                           sx={{ fontSize: '0.7rem', height: 20 }}
                         />
                       </TableCell>
                       <TableCell align="right">
                         <Tooltip title="Delete file">
-                          <IconButton 
-                            size="small" 
+                          <IconButton
+                            size="small"
                             color="error"
                             onClick={() => handleDeleteClick(file)}
                           >
@@ -1287,7 +1301,7 @@ export const ModelsPage: React.FC = () => {
           </TableContainer>
         </Box>
       )}
-      
+
       {/* Floating action button for mobile */}
       <Fab
         color="primary"
@@ -1307,7 +1321,7 @@ export const ModelsPage: React.FC = () => {
       >
         <CloudDownloadIcon sx={{ fontSize: '1.25rem' }} />
       </Fab>
-      
+
       {/* Snackbar for notifications */}
       <Snackbar
         open={snackbar.open}
@@ -1315,8 +1329,8 @@ export const ModelsPage: React.FC = () => {
         onClose={handleSnackbarClose}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
       >
-        <Alert 
-          onClose={handleSnackbarClose} 
+        <Alert
+          onClose={handleSnackbarClose}
           severity={snackbar.severity}
           variant="filled"
           sx={{ width: '100%' }}
@@ -1324,14 +1338,14 @@ export const ModelsPage: React.FC = () => {
           {snackbar.message}
         </Alert>
       </Snackbar>
-      
+
       {/* Download Model Dialog */}
       <DownloadModelDialog
         open={downloadDialogOpen}
         onClose={() => setDownloadDialogOpen(false)}
         onDownloadStart={handleDownloadStart}
       />
-      
+
       {/* Model Info Dialog */}
       <Dialog open={infoDialogOpen} onClose={() => setInfoDialogOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>
@@ -1345,35 +1359,35 @@ export const ModelsPage: React.FC = () => {
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <Box>
                 <Typography variant="subtitle2" color="text.secondary">Status</Typography>
-                <Chip 
-                  label={selectedModel.status} 
-                  size="small" 
+                <Chip
+                  label={selectedModel.status}
+                  size="small"
                   color={selectedModel.status === 'running' ? 'success' : selectedModel.status === 'downloading' ? 'info' : 'default'}
                   sx={{ mt: 0.5 }}
                 />
               </Box>
-              
+
               {selectedModel.parameters && (
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">Parameters</Typography>
                   <Typography variant="body1">{selectedModel.parameters}</Typography>
                 </Box>
               )}
-              
+
               {selectedModel.size > 0 && (
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">Size</Typography>
                   <Typography variant="body1">{formatBytes(selectedModel.size)}</Typography>
                 </Box>
               )}
-              
+
               {selectedModel.contextLength && (
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">Context Length</Typography>
                   <Typography variant="body1">{selectedModel.contextLength.toLocaleString()} tokens</Typography>
                 </Box>
               )}
-              
+
               {selectedModel.repositoryId && (
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">Repository</Typography>
@@ -1382,15 +1396,15 @@ export const ModelsPage: React.FC = () => {
                   </Typography>
                 </Box>
               )}
-              
+
               {selectedModel.localPath && (
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">Local File</Typography>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
                     <FolderIcon sx={{ fontSize: '1rem', color: 'text.secondary' }} />
-                    <Typography 
-                      variant="body2" 
-                      sx={{ 
+                    <Typography
+                      variant="body2"
+                      sx={{
                         fontFamily: 'monospace',
                         cursor: 'pointer',
                         '&:hover': { color: 'primary.main', textDecoration: 'underline' }
@@ -1405,25 +1419,103 @@ export const ModelsPage: React.FC = () => {
                   </Box>
                 </Box>
               )}
-              
+
               {selectedModel.description && (
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">Description</Typography>
                   <Typography variant="body2">{selectedModel.description}</Typography>
                 </Box>
               )}
-              
+
               {selectedModel.vramRequired && (
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">VRAM Required</Typography>
                   <Typography variant="body1">{selectedModel.vramRequired} GB</Typography>
                 </Box>
               )}
-              
+
               {selectedModel.license && (
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">License</Typography>
                   <Typography variant="body2">{selectedModel.license}</Typography>
+                </Box>
+              )}
+
+              {/* Training Metadata Section (for fine-tuned models) */}
+              {selectedModel.source === 'trained' && (
+                <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                    <Chip
+                      label="Fine-Tuned Model"
+                      size="small"
+                      sx={{
+                        bgcolor: '#059669',
+                        color: 'white',
+                        fontWeight: 600,
+                        fontSize: '0.7rem'
+                      }}
+                    />
+                  </Box>
+
+                  {selectedModel.baseModel && (
+                    <Box sx={{ mb: 1.5 }}>
+                      <Typography variant="subtitle2" color="text.secondary">Base Model</Typography>
+                      <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                        {selectedModel.baseModel}
+                      </Typography>
+                    </Box>
+                  )}
+
+                  {selectedModel.finalLoss != null && (
+                    <Box sx={{ mb: 1.5 }}>
+                      <Typography variant="subtitle2" color="text.secondary">Final Training Loss</Typography>
+                      <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                        {selectedModel.finalLoss.toFixed(4)}
+                      </Typography>
+                    </Box>
+                  )}
+
+                  {selectedModel.totalSteps && (
+                    <Box sx={{ mb: 1.5 }}>
+                      <Typography variant="subtitle2" color="text.secondary">Training Steps</Typography>
+                      <Typography variant="body1">{selectedModel.totalSteps.toLocaleString()}</Typography>
+                    </Box>
+                  )}
+
+                  {selectedModel.loraConfig && (
+                    <Box sx={{ mb: 1.5 }}>
+                      <Typography variant="subtitle2" color="text.secondary">LoRA Configuration</Typography>
+                      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 0.5 }}>
+                        {selectedModel.loraConfig.r && (
+                          <Chip label={`Rank: ${selectedModel.loraConfig.r}`} size="small" variant="outlined" sx={{ fontSize: '0.7rem' }} />
+                        )}
+                        {selectedModel.loraConfig.lora_alpha && (
+                          <Chip label={`Alpha: ${selectedModel.loraConfig.lora_alpha}`} size="small" variant="outlined" sx={{ fontSize: '0.7rem' }} />
+                        )}
+                        {selectedModel.loraConfig.lora_dropout != null && (
+                          <Chip label={`Dropout: ${selectedModel.loraConfig.lora_dropout}`} size="small" variant="outlined" sx={{ fontSize: '0.7rem' }} />
+                        )}
+                      </Box>
+                    </Box>
+                  )}
+
+                  {selectedModel.mergedAt && (
+                    <Box>
+                      <Typography variant="subtitle2" color="text.secondary">Merged At</Typography>
+                      <Typography variant="body2">
+                        {new Date(selectedModel.mergedAt).toLocaleString()}
+                      </Typography>
+                    </Box>
+                  )}
+
+                  {selectedModel.trainingJobId && (
+                    <Box sx={{ mt: 1.5 }}>
+                      <Typography variant="subtitle2" color="text.secondary">Training Job ID</Typography>
+                      <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                        {selectedModel.trainingJobId}
+                      </Typography>
+                    </Box>
+                  )}
                 </Box>
               )}
             </Box>
@@ -1432,8 +1524,8 @@ export const ModelsPage: React.FC = () => {
         <DialogActions>
           <Button onClick={() => setInfoDialogOpen(false)}>Close</Button>
           {selectedModel && selectedModel.status !== 'downloading' && (
-            <Button 
-              variant="contained" 
+            <Button
+              variant="contained"
               startIcon={<DeployIcon />}
               onClick={() => {
                 setInfoDialogOpen(false)
@@ -1445,7 +1537,7 @@ export const ModelsPage: React.FC = () => {
           )}
         </DialogActions>
       </Dialog>
-      
+
       {/* Archive Model Dialog */}
       <Dialog
         open={archiveDialogOpen}
@@ -1462,7 +1554,7 @@ export const ModelsPage: React.FC = () => {
               <Typography variant="body2" sx={{ mb: 3 }}>
                 Archive <strong>{modelToArchive.name}</strong>? This will hide it from the main models list but keep your rating and notes for future reference.
               </Typography>
-              
+
               {/* Rating */}
               <Box sx={{ mb: 3 }}>
                 <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
@@ -1474,7 +1566,7 @@ export const ModelsPage: React.FC = () => {
                       key={star}
                       size="small"
                       onClick={() => setArchiveRating(star === archiveRating ? 0 : star)}
-                      sx={{ 
+                      sx={{
                         color: star <= archiveRating ? 'warning.main' : 'grey.300',
                         p: 0.25
                       }}
@@ -1489,7 +1581,7 @@ export const ModelsPage: React.FC = () => {
                   )}
                 </Box>
               </Box>
-              
+
               {/* General Notes */}
               <Box sx={{ mb: 3 }}>
                 <TextField
@@ -1504,7 +1596,7 @@ export const ModelsPage: React.FC = () => {
                   size="small"
                 />
               </Box>
-              
+
               {/* Performance Notes */}
               <Box sx={{ mb: 3 }}>
                 <TextField
@@ -1519,7 +1611,7 @@ export const ModelsPage: React.FC = () => {
                   size="small"
                 />
               </Box>
-              
+
               {/* Delete Local Files Option */}
               <Box sx={{ mb: 2 }}>
                 <Box display="flex" alignItems="center" gap={1}>
@@ -1545,16 +1637,16 @@ export const ModelsPage: React.FC = () => {
           )}
         </DialogContent>
         <DialogActions>
-          <Button 
-            onClick={() => setArchiveDialogOpen(false)} 
+          <Button
+            onClick={() => setArchiveDialogOpen(false)}
             disabled={archiving}
             sx={{ fontSize: '0.8rem' }}
           >
             Cancel
           </Button>
-          <Button 
-            onClick={handleArchiveConfirm} 
-            color="warning" 
+          <Button
+            onClick={handleArchiveConfirm}
+            color="warning"
             variant="contained"
             disabled={archiving}
             startIcon={archiving ? <CircularProgress size={16} /> : <ArchiveIcon />}
@@ -1564,7 +1656,7 @@ export const ModelsPage: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
-      
+
       {/* Model Delete Confirmation Dialog */}
       <Dialog
         open={modelDeleteDialogOpen}
@@ -1598,16 +1690,16 @@ export const ModelsPage: React.FC = () => {
           )}
         </DialogContent>
         <DialogActions>
-          <Button 
-            onClick={() => setModelDeleteDialogOpen(false)} 
+          <Button
+            onClick={() => setModelDeleteDialogOpen(false)}
             disabled={deletingModel}
             sx={{ fontSize: '0.8rem' }}
           >
             Cancel
           </Button>
-          <Button 
-            onClick={handleModelDeleteConfirm} 
-            color="error" 
+          <Button
+            onClick={handleModelDeleteConfirm}
+            color="error"
             variant="contained"
             disabled={deletingModel}
             startIcon={deletingModel ? <CircularProgress size={16} /> : <DeleteIcon />}
@@ -1617,7 +1709,7 @@ export const ModelsPage: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
-      
+
       {/* Delete File Confirmation Dialog */}
       <Dialog
         open={deleteDialogOpen}
@@ -1646,16 +1738,16 @@ export const ModelsPage: React.FC = () => {
           )}
         </DialogContent>
         <DialogActions>
-          <Button 
-            onClick={() => setDeleteDialogOpen(false)} 
+          <Button
+            onClick={() => setDeleteDialogOpen(false)}
             disabled={deleting}
             sx={{ fontSize: '0.8rem' }}
           >
             Cancel
           </Button>
-          <Button 
-            onClick={handleDeleteConfirm} 
-            color="error" 
+          <Button
+            onClick={handleDeleteConfirm}
+            color="error"
             variant="contained"
             disabled={deleting}
             startIcon={deleting ? <CircularProgress size={16} /> : <DeleteIcon />}
