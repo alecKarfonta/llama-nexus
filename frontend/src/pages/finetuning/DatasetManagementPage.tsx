@@ -332,7 +332,7 @@ const FieldCompleteness: React.FC<FieldCompletenessProps> = ({ fields }) => {
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
       {fields.map((field) => {
         const color = field.completeness >= 90 ? accentColors.success :
-                      field.completeness >= 70 ? accentColors.warning : accentColors.rose;
+          field.completeness >= 70 ? accentColors.warning : accentColors.rose;
         return (
           <Box key={field.name}>
             <Box sx={{ display: "flex", justifyContent: "space-between", mb: 0.5 }}>
@@ -380,7 +380,7 @@ interface FormatDetectionProps {
 
 const FormatDetection: React.FC<FormatDetectionProps> = ({ format, confidence, indicators }) => {
   const confidenceColor = confidence >= 0.9 ? accentColors.success :
-                          confidence >= 0.7 ? accentColors.warning : accentColors.rose;
+    confidence >= 0.7 ? accentColors.warning : accentColors.rose;
 
   const presentIndicators = Object.entries(indicators)
     .filter(([, present]) => present)
@@ -491,7 +491,7 @@ export const DatasetManagementPage: React.FC = () => {
     }
     fetch(`/api/v1/finetune/datasets/${selectedDataset.id}/preview?limit=10`)
       .then((res) => res.json())
-      .then((data) => setPreview({ records: data.records || [], total: data.total || 0 }))
+      .then((data) => setPreview({ records: data.preview || [], total: selectedDataset.num_records || data.preview?.length || 0 }))
       .catch(() => setPreview(null));
   }, [selectedDataset]);
 

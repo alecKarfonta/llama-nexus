@@ -11,7 +11,6 @@ import { ConfigurationPage } from '@/pages/ConfigurationPage'
 import { DeployPage } from '@/pages/DeployPage'
 import { EmbeddingDeployPage } from '@/pages/EmbeddingDeployPage'
 import STTDeployPage from '@/pages/STTDeployPage'
-import StreamingSTTDeployPage from '@/pages/StreamingSTTDeployPage'
 import TTSDeployPage from '@/pages/TTSDeployPage'
 import { ChatPage } from '@/pages/ChatPage'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
@@ -25,15 +24,10 @@ import ModelComparisonPage from '@/pages/ModelComparisonPage'
 import MonitoringPage from '@/pages/MonitoringPage'
 import ApiDocsPage from '@/pages/ApiDocsPage'
 import WorkflowBuilderPage from '@/pages/WorkflowBuilderPage'
-import KnowledgeBasePage from '@/pages/KnowledgeBasePage'
+// KnowledgeBasePage removed - consolidated into DocumentsPage
 import KnowledgeGraphPage from '@/pages/KnowledgeGraphPage'
 import DocumentsPage from '@/pages/DocumentsPage'
 import DiscoveryPage from '@/pages/DiscoveryPage'
-import IntelligentSearchPage from '@/pages/IntelligentSearchPage'
-import ReasoningPlaygroundPage from '@/pages/ReasoningPlaygroundPage'
-import EntityManagerPage from '@/pages/EntityManagerPage'
-import { CodeSearchPage } from '@/pages/CodeSearchPage'
-import { HybridProcessingPage } from '@/pages/HybridProcessingPage'
 import { QuantizationPage } from '@/pages/QuantizationPage'
 import FineTuningPage from '@/pages/FineTuningPage'
 import { DatasetManagementPage, DistillationPage, ModelEvaluationPage, WorkflowTemplatesPage, AdapterComparisonPage } from '@/pages/finetuning'
@@ -115,7 +109,6 @@ function App() {
                 <Route path="/deploy" element={<DeployPage />} />
                 <Route path="/embedding-deploy" element={<EmbeddingDeployPage />} />
                 <Route path="/stt-deploy" element={<STTDeployPage />} />
-                <Route path="/streaming-stt-deploy" element={<StreamingSTTDeployPage />} />
                 <Route path="/tts-deploy" element={<TTSDeployPage />} />
                 <Route path="/templates" element={<TemplatesPage />} />
                 <Route path="/prompts" element={<PromptLibraryPage />} />
@@ -125,16 +118,14 @@ function App() {
                 <Route path="/batch" element={<BatchProcessingPage />} />
                 <Route path="/compare" element={<ModelComparisonPage />} />
                 <Route path="/workflows" element={<WorkflowBuilderPage />} />
-                <Route path="/knowledge" element={<KnowledgeBasePage />} />
+                <Route path="/knowledge" element={<Navigate to="/documents" replace />} />
                 <Route path="/knowledge-graph" element={<KnowledgeGraphPage />} />
                 <Route path="/documents" element={<DocumentsPage />} />
-                <Route path="/intelligent-search" element={<IntelligentSearchPage />} />
-                <Route path="/reasoning" element={<ReasoningPlaygroundPage />} />
-                <Route path="/entities" element={<EntityManagerPage />} />
-                <Route path="/code-search" element={<CodeSearchPage />} />
-                <Route path="/hybrid-processing" element={<HybridProcessingPage />} />
                 <Route path="/discovery" element={<DiscoveryPage />} />
                 <Route path="/quantization" element={<QuantizationPage />} />
+                <Route path="/datasets" element={<DatasetManagementPage />} />
+                <Route path="/distillation" element={<DistillationPage />} />
+                <Route path="/evaluation" element={<ModelEvaluationPage />} />
                 <Route path="/finetuning" element={<FineTuningPage />} />
                 <Route path="/finetuning/datasets" element={<DatasetManagementPage />} />
                 <Route path="/finetuning/distillation" element={<DistillationPage />} />

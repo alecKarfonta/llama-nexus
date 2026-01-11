@@ -48,7 +48,7 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
         .catch(() => ({ id: 'llm', running: false })),
       // Embedding service (check if llamacpp-embed is running)
       apiService.get('/api/v1/embedding/status')
-        .then((status) => ({ id: 'embedding', running: status.running }))
+        .then((response) => ({ id: 'embedding', running: response.data?.running ?? false }))
         .catch(() => ({ id: 'embedding', running: false })),
       // STT service
       apiService.getSTTStatus()
@@ -90,11 +90,11 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
             </Typography>
             {services.map(service => (
               <Box key={service.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-                <Box sx={{ 
-                  width: 6, 
-                  height: 6, 
-                  borderRadius: '50%', 
-                  bgcolor: service.loading ? 'grey.500' : service.running ? '#10b981' : '#ef4444' 
+                <Box sx={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  bgcolor: service.loading ? 'grey.500' : service.running ? '#10b981' : '#ef4444'
                 }} />
                 <Typography variant="caption">{service.name}</Typography>
               </Box>
@@ -127,10 +127,10 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
                 width: 8,
                 height: 8,
                 borderRadius: '50%',
-                bgcolor: service.loading 
-                  ? 'grey.600' 
-                  : service.running 
-                    ? '#10b981' 
+                bgcolor: service.loading
+                  ? 'grey.600'
+                  : service.running
+                    ? '#10b981'
                     : alpha('#ef4444', 0.5),
                 transition: 'all 0.3s ease',
               }}
@@ -197,7 +197,7 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
           />
         </Tooltip>
       ))}
-      
+
       <Tooltip title="Refresh status">
         <Box
           onClick={() => {

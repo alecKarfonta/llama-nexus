@@ -34,6 +34,19 @@ export interface ModelInfo {
   archiveRating?: number; // 1-5 stars
   archiveNotes?: string;
   performanceNotes?: string;
+  // Training metadata (for fine-tuned models)
+  source?: 'trained' | 'downloaded' | 'local';
+  trainingJobId?: string;
+  baseModel?: string;
+  mergedAt?: string;
+  finalLoss?: number;
+  totalSteps?: number;
+  loraConfig?: {
+    r?: number;
+    lora_alpha?: number;
+    lora_dropout?: number;
+    target_modules?: string[];
+  };
 }
 
 export interface ModelDownload {
@@ -217,7 +230,7 @@ export interface ServiceActionRequest {
 // Chat Completion Types (OpenAI-compatible)
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
+  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;

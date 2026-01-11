@@ -39,9 +39,9 @@ import {
   TextFields as EmbeddingIcon,
   ChevronRight as ChevronRightIcon,
   Tune as TuneIcon,
-  Search as SearchIcon,
-  Psychology as ReasoningIcon,
-  Category as CategoryIcon,
+  TableChart as DatasetSidebarIcon,
+  Science as DistillationIcon,
+  Assessment as EvaluationIcon,
 } from '@mui/icons-material'
 import type { NavigationSection } from '@/types'
 
@@ -68,9 +68,8 @@ const navigationSections: NavigationSection[] = [
     items: [
       { id: 'deploy', label: 'LLM', path: '/deploy', icon: 'deploy', color: '#f59e0b' },
       { id: 'embedding-deploy', label: 'Embedding', path: '/embedding-deploy', icon: 'embedding', color: '#06b6d4' },
-      { id: 'stt-deploy', label: 'STT (Whisper)', path: '/stt-deploy', icon: 'stt', color: '#10b981' },
-      { id: 'streaming-stt-deploy', label: 'STT (Streaming)', path: '/streaming-stt-deploy', icon: 'stt', color: '#8b5cf6' },
-      { id: 'tts-deploy', label: 'TTS', path: '/tts-deploy', icon: 'tts', color: '#ec4899' },
+      { id: 'stt-deploy', label: 'STT', path: '/stt-deploy', icon: 'stt', color: '#10b981' },
+      { id: 'tts-deploy', label: 'TTS', path: '/tts-deploy', icon: 'tts', color: '#8b5cf6' },
     ],
   },
   {
@@ -81,6 +80,9 @@ const navigationSections: NavigationSection[] = [
       { id: 'prompts', label: 'Prompt Library', path: '/prompts', icon: 'prompts', color: '#14b8a6' },
       { id: 'templates', label: 'Chat Templates', path: '/templates', icon: 'templates', color: '#10b981' },
       { id: 'workflows', label: 'Workflows', path: '/workflows', icon: 'workflow', color: '#a855f7' },
+      { id: 'datasets', label: 'Datasets', path: '/datasets', icon: 'datasets', color: '#f59e0b' },
+      { id: 'distillation', label: 'Distillation', path: '/distillation', icon: 'distillation', color: '#06b6d4' },
+      { id: 'evaluation', label: 'Evaluation', path: '/evaluation', icon: 'evaluation', color: '#ec4899' },
       {
         id: 'finetuning',
         label: 'Fine-Tuning',
@@ -90,9 +92,6 @@ const navigationSections: NavigationSection[] = [
         subItems: [
           { id: 'finetuning-overview', label: 'Overview', path: '/finetuning' },
           { id: 'finetuning-templates', label: '🚀 Quick Start', path: '/finetuning/templates' },
-          { id: 'finetuning-distillation', label: 'Distillation', path: '/finetuning/distillation' },
-          { id: 'finetuning-datasets', label: 'Datasets', path: '/finetuning/datasets' },
-          { id: 'finetuning-evaluation', label: 'Evaluation', path: '/finetuning/evaluation' },
           { id: 'finetuning-compare', label: 'Compare Adapters', path: '/finetuning/compare' },
         ]
       },
@@ -106,15 +105,9 @@ const navigationSections: NavigationSection[] = [
     id: 'knowledge',
     title: 'Knowledge & RAG',
     items: [
-      { id: 'intelligent-search', label: 'Intelligent Search', path: '/intelligent-search', icon: 'search', color: '#6366f1' },
-      { id: 'reasoning', label: 'Reasoning Playground', path: '/reasoning', icon: 'reasoning', color: '#8b5cf6' },
-      { id: 'entities', label: 'Entity Manager', path: '/entities', icon: 'category', color: '#10b981' },
-      { id: 'code-search', label: 'Code Search', path: '/code-search', icon: 'code', color: '#f97316' },
-      { id: 'hybrid-processing', label: 'Hybrid Processing', path: '/hybrid-processing', icon: 'hub', color: '#8b5cf6' },
-      { id: 'documents', label: 'Documents', path: '/documents', icon: 'documents', color: '#06b6d4' },
-      { id: 'knowledge-graph', label: 'Knowledge Graph', path: '/knowledge-graph', icon: 'graph', color: '#ec4899' },
-      { id: 'discovery', label: 'Discovery', path: '/discovery', icon: 'discovery', color: '#f59e0b' },
-      { id: 'knowledge', label: 'RAG Search', path: '/knowledge', icon: 'knowledge', color: '#14b8a6' },
+      { id: 'documents', label: 'Documents', path: '/documents', icon: 'documents', color: '#10b981' },
+      { id: 'knowledge-graph', label: 'Knowledge Graph', path: '/knowledge-graph', icon: 'graph', color: '#6366f1' },
+      { id: 'discovery', label: 'Discovery', path: '/discovery', icon: 'discovery', color: '#8b5cf6' },
     ],
   },
   {
@@ -149,13 +142,13 @@ const iconMap: Record<string, React.ElementType> = {
   graph: GraphIcon,
   documents: DocumentsIcon,
   discovery: DiscoveryIcon,
-  search: SearchIcon,
-  reasoning: ReasoningIcon,
-  category: CategoryIcon,
   stt: MicIcon,
   tts: TTSIcon,
   embedding: EmbeddingIcon,
   finetuning: TuneIcon,
+  datasets: DatasetSidebarIcon,
+  distillation: DistillationIcon,
+  evaluation: EvaluationIcon,
 }
 
 const getIcon = (iconName: string) => {
