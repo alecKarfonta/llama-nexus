@@ -16,10 +16,12 @@ aiohttp==3.9.1
 # RAG System Dependencies
 aiosqlite==0.19.0
 qdrant-client==1.7.0
-sentence-transformers==2.2.2
+sentence-transformers>=3.0.1
+einops>=0.7.0  # Required by nomic-embed-text model
 beautifulsoup4==4.12.2
 numpy>=1.24.0
 PyPDF2==3.0.1  # PDF text extraction
+PyMuPDF==1.24.0  # PDF image extraction
 
 # Testing
 pytest==7.4.3

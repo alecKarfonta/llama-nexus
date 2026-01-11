@@ -88,6 +88,16 @@ services:
       - TOKEN_DB_PATH=/data/token_usage.db
       - CONVERSATION_DB_PATH=/data/conversations.db
       - RAG_DB_PATH=/data/rag
+      # Reddit Crawler Configuration
+      - REDDIT_CRAWLER_ENABLED=true
+      - REDDIT_CRAWLER_INTERVAL_HOURS=6
+      - REDDIT_CRAWLER_MAX_PER_RUN=50
+      - REDDIT_CRAWLER_SUBREDDITS=tifu,offmychest,AmItheAsshole,confession,relationship_advice,pettyrevenge,MaliciousCompliance
+      # VLM (Vision-Language Model) Configuration for PDF visual description
+      - VLM_ENDPOINT_URL=${VLM_ENDPOINT_URL:-http://llamacpp-api:8080/v1}
+      - VLM_API_KEY=${VLM_API_KEY:-placeholder-api-key}
+      - VLM_MODEL_NAME=${VLM_MODEL_NAME:-Qwen_Qwen3-VL-4B-Thinking}
+      - VLM_ENABLED=${VLM_ENABLED:-true}
     volumes:
       - backend_data:/data
       - gpt_oss_models:/home/llamacpp/models
@@ -301,6 +311,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile.training
     container_name: llama-nexus-training
+    # GPU reservations for QLoRA training (requires sm_70+ GPU)
     deploy:
       resources:
         reservations:
@@ -314,15 +325,20 @@ services:
       - FINETUNE_DATASET_DIR=/data/finetune_datasets
       - FINETUNE_JOB_DIR=/data/finetune_jobs
       - HF_HOME=/root/.cache/huggingface
+      # Set to false to enable GPU training with QLoRA (requires compatible GPU)
+      - FORCE_CPU_TRAINING=false
     volumes:
       # Share the backend data volume for job configs and datasets
       - backend_data:/data
       # HuggingFace model cache
       - huggingface_cache:/root/.cache/huggingface
+      # Models directory for saving merged models
+      - gpt_oss_models:/home/llamacpp/models
     depends_on:
       redis:
         condition: service_healthy
     restart: unless-stopped
+
 
   # Quantization Worker - Model Quantization Service
   quantization-worker:
@@ -337,6 +353,7 @@ services:
     runtime: nvidia
     volumes:
       - gpt_oss_models:/home/llamacpp/models
+      - backend_data:/data
       - quantization_output:/app/quantization_output
       - huggingface_cache:/root/.cache/huggingface
     environment:

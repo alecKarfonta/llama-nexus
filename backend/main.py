@@ -158,6 +158,7 @@ try:
         tools_router,
         finetuning_router,
         quantization_router,
+        reddit_router,
     )
     from routes.rag import init_rag_config
     ROUTES_AVAILABLE = True
@@ -182,6 +183,7 @@ except ImportError as e:
     tools_router = None  # type: ignore
     finetuning_router = None  # type: ignore
     quantization_router = None  # type: ignore
+    reddit_router = None  # type: ignore
     logger.warning(f"Route modules not available: {e}")
 
 # RAG Embedding Configuration
@@ -1342,23 +1344,122 @@ class ModelDownloadManager:
                 # Skip any unreadable files but log the error
                 logger.debug(f"Skipping unreadable model file {entry}: {e}")
                 continue
+        
+        # Scan for Transformers-style model directories (safetensors/bin with config.json)
+        for config_file in self.models_dir.rglob('config.json'):
+            try:
+                # Skip if in .metadata, checkpoint, or cache directories
+                config_path_str = str(config_file)
+                if any(skip in config_path_str for skip in ['.metadata', 'checkpoint', '.cache', '__pycache__']):
+                    continue
+                    
+                model_dir = config_file.parent
                 
-        # Merge in any actively downloading items
+                # Check if directory contains model weights
+                weight_files = list(model_dir.glob('*.safetensors')) + list(model_dir.glob('model*.bin'))
+                if not weight_files:
+                    continue
+                    
+                # Parse config.json for metadata
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                
+                # Skip if this looks like an adapter config (LoRA)
+                if 'base_model_name_or_path' in config or 'peft_type' in config:
+                    continue
+                
+                # Extract parameters count
+                parameters = self._extract_parameter_count(config)
+                context_length = config.get('max_position_embeddings', 2048)
+                
+                # Get architecture type
+                architectures = config.get('architectures', [])
+                architecture = config.get('model_type', architectures[0] if architectures else 'unknown')
+                
+                # Calculate total size from weight files
+                total_size = sum(wf.stat().st_size for wf in weight_files)
+                latest_mtime = max(wf.stat().st_mtime for wf in weight_files)
+                
+                # Use directory name as model name
+                model_name = model_dir.name
+                
+                # Determine variant from weight file type
+                has_safetensors = any(wf.suffix == '.safetensors' for wf in weight_files)
+                variant = "safetensors" if has_safetensors else "bin"
+                
+                # Check for training metadata (indicates fine-tuned model)
+                training_metadata = None
+                training_metadata_path = model_dir / 'training_metadata.json'
+                if training_metadata_path.exists():
+                    try:
+                        with open(training_metadata_path, 'r') as f:
+                            training_metadata = json.load(f)
+                    except Exception as e:
+                        logger.debug(f"Could not load training metadata: {e}")
+                
+                model_key = f"{model_name}:transformers"
+                if model_key not in seen_models:
+                    seen_models.add(model_key)
+                    model_info = {
+                        "name": model_name,
+                        "variant": variant,
+                        "size": total_size,
+                        "status": "available",
+                        "lastModified": datetime.fromtimestamp(latest_mtime).isoformat(),
+                        "localPath": str(model_dir.relative_to(self.models_dir)),
+                        "filename": model_name,
+                        "framework": "transformers",
+                        "parameters": parameters,
+                        "contextLength": context_length,
+                        "architecture": architecture
+                    }
+                    
+                    # Include training metadata if this is a fine-tuned model
+                    if training_metadata:
+                        model_info["source"] = training_metadata.get("source", "trained")
+                        model_info["trainingJobId"] = training_metadata.get("training_job_id")
+                        model_info["baseModel"] = training_metadata.get("base_model")
+                        model_info["mergedAt"] = training_metadata.get("merged_at")
+                        model_info["finalLoss"] = training_metadata.get("final_loss")
+                        model_info["totalSteps"] = training_metadata.get("total_steps")
+                        model_info["loraConfig"] = training_metadata.get("lora_config")
+                    
+                    items.append(model_info)
+            except Exception as e:
+                logger.debug(f"Skipping invalid model directory {config_file.parent}: {e}")
+                continue
+                
+        # Merge in any actively downloading items (only queued/downloading, not completed)
         async with self._lock:
             for rec in self._downloads.values():
-                if rec.status in ("queued", "downloading"):
+                # Only show actively downloading items - completed ones should appear in local scan
+                if rec.status not in ("queued", "downloading"):
+                    continue
+                
+                # For Transformers models (safetensors/bin), use repo_id as model name
+                is_transformers = any(rec.filename.lower().endswith(ext) for ext in ('.safetensors', '.bin', '.pth', '.pt'))
+                
+                if is_transformers:
+                    # Use repo_id formatted as model name (same as subdirectory)
+                    name = rec.repo_id.replace('/', '_')
+                    variant = "safetensors" if rec.filename.lower().endswith('.safetensors') else "bin"
+                else:
                     name, variant = self._parse_name_variant(rec.filename)
-                    model_key = f"{name}:{variant or 'unknown'}"
-                    
-                    # Only add if not already present from local scan
-                    if model_key not in seen_models:
-                        items.append({
-                            "name": name,
-                            "variant": variant or "unknown",
-                            "size": rec.total_size or 0,
-                            "status": "downloading",
-                            "downloadProgress": rec.progress
-                        })
+                    variant = variant or "unknown"
+                
+                model_key = f"{name}:{variant}"
+                
+                # Only add if not already present from local scan
+                if model_key not in seen_models:
+                    seen_models.add(model_key)
+                    items.append({
+                        "name": name,
+                        "variant": variant,
+                        "size": rec.total_size or 0,
+                        "status": "downloading",
+                        "downloadProgress": rec.progress,
+                        "framework": "transformers" if is_transformers else "gguf"
+                    })
                         
         return items
 
@@ -1408,28 +1509,66 @@ class ModelDownloadManager:
         
         return (stem, None)
 
+    def _extract_parameter_count(self, config: Dict[str, Any]) -> str:
+        """Extract or estimate parameter count from Transformers config.json."""
+        # Check if explicitly provided
+        if 'num_parameters' in config:
+            return self._format_param_count(config['num_parameters'])
+        
+        # Estimate from architecture parameters
+        hidden_size = config.get('hidden_size', 0)
+        num_hidden_layers = config.get('num_hidden_layers', 0)
+        vocab_size = config.get('vocab_size', 0)
+        intermediate_size = config.get('intermediate_size', hidden_size * 4 if hidden_size else 0)
+        
+        if hidden_size and num_hidden_layers and vocab_size:
+            # Rough estimate: embeddings + transformer layers
+            embedding_params = vocab_size * hidden_size * 2  # input + output embeddings
+            layer_params = num_hidden_layers * (
+                4 * hidden_size * hidden_size +  # attention (Q, K, V, O)
+                2 * hidden_size * intermediate_size +  # FFN
+                4 * hidden_size  # layer norms
+            )
+            total_params = embedding_params + layer_params
+            return self._format_param_count(total_params)
+        
+        return "?B"
+
+    def _format_param_count(self, num_params: int) -> str:
+        """Format parameter count as human-readable string."""
+        if num_params >= 1e12:
+            return f"{num_params/1e12:.1f}T"
+        elif num_params >= 1e9:
+            return f"{num_params/1e9:.1f}B"
+        elif num_params >= 1e6:
+            return f"{num_params/1e6:.0f}M"
+        else:
+            return f"{num_params/1e3:.0f}K"
+
     def _is_multipart_file(self, filename: str) -> bool:
-        """Check if filename indicates a multi-part GGUF file"""
+        """Check if filename indicates a multi-part model file (GGUF or safetensors)"""
         import re
-        # Pattern for multi-part files: filename-00001-of-00002.gguf
-        return bool(re.search(r'-\d{5}-of-\d{5}\.gguf$', filename))
+        # Pattern for multi-part GGUF: filename-00001-of-00002.gguf
+        # Pattern for multi-part safetensors: model-00001-of-00002.safetensors
+        return bool(re.search(r'-\d{5}-of-\d{5}\.(gguf|safetensors)$', filename))
     
     def _get_multipart_files(self, filename: str) -> List[str]:
-        """Get all part filenames for a multi-part download"""
+        """Get all part filenames for a multi-part download (GGUF or safetensors)"""
         import re
         
-        # Extract the base name and part info
-        match = re.match(r'(.+)-(\d{5})-of-(\d{5})\.gguf$', filename)
+        # Extract the base name, part info, and extension
+        match = re.match(r'(.+)-(\d{5})-of-(\d{5})\.(gguf|safetensors)$', filename)
         if not match:
             return [filename]  # Not a multi-part file
         
         base_name = match.group(1)
         total_parts = int(match.group(3))
+        extension = match.group(4)
         
         # Generate all part filenames
         part_files = []
         for i in range(1, total_parts + 1):
-            part_filename = f"{base_name}-{i:05d}-of-{total_parts:05d}.gguf"
+            part_filename = f"{base_name}-{i:05d}-of-{total_parts:05d}.{extension}"
             part_files.append(part_filename)
         
         return part_files
@@ -1506,7 +1645,43 @@ class ModelDownloadManager:
             self._cancel_events[model_id].set()
             return True
 
+    async def _download_transformers_metadata(self, repo_id: str, model_dir: Path, cancel_event: asyncio.Event):
+        """Download config.json and other essential metadata files for Transformers models."""
+        metadata_files = ['config.json', 'tokenizer_config.json', 'tokenizer.json']
+        
+        headers = {"User-Agent": "llama-nexus1.0"}
+        hf_token = os.getenv("HUGGINGFACE_TOKEN")
+        if hf_token:
+            headers["Authorization"] = f"Bearer {hf_token}"
+        
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            for meta_file in metadata_files:
+                if cancel_event.is_set():
+                    return
+                try:
+                    url = hf_hub_url(repo_id=repo_id, filename=meta_file)
+                    response = await client.get(url, headers=headers)
+                    if response.status_code == 200:
+                        (model_dir / meta_file).write_bytes(response.content)
+                        logger.info(f"Downloaded {meta_file} for {repo_id}")
+                except Exception as e:
+                    logger.debug(f"Could not download {meta_file} for {repo_id}: {e}")
+
     async def _run_download(self, model_id: str, repo_id: str, filename: str, dest_path: Path, cancel_event: asyncio.Event):
+        # Check if this is a Transformers model (safetensors/bin) - needs special handling
+        is_transformers_model = any(filename.lower().endswith(ext) for ext in ('.safetensors', '.bin', '.pth', '.pt')) and not filename.endswith('.gguf')
+        
+        if is_transformers_model:
+            # Create a subdirectory for the model based on repo_id
+            model_subdir = repo_id.replace('/', '_')
+            model_dir = self.models_dir / model_subdir
+            model_dir.mkdir(parents=True, exist_ok=True)
+            dest_path = model_dir / filename
+            
+            # Download config.json and tokenizer files for metadata
+            logger.info(f"Downloading Transformers model to {model_dir}")
+            await self._download_transformers_metadata(repo_id, model_dir, cancel_event)
+        
         url = hf_hub_url(repo_id=repo_id, filename=filename)
         headers = {"User-Agent": "llama-nexus1.0"}
         hf_token = os.getenv("HUGGINGFACE_TOKEN")
@@ -1611,8 +1786,22 @@ class ModelDownloadManager:
                 self._cancel_events.pop(model_id, None)
 
     async def _run_multipart_download(self, model_id: str, repo_id: str, part_files: List[str], cancel_event: asyncio.Event):
-        """Download all parts of a multi-part GGUF file. llamacpp will automatically load all parts when given the first one."""
+        """Download all parts of a multi-part model file (GGUF or safetensors)."""
         start_time = time.time()
+        
+        # Check if this is a Transformers model (safetensors) - needs subdirectory
+        first_file = part_files[0] if part_files else ""
+        is_transformers_model = first_file.lower().endswith('.safetensors')
+        
+        if is_transformers_model:
+            # Create a subdirectory for the model based on repo_id
+            model_subdir = repo_id.replace('/', '_')
+            model_dir = self.models_dir / model_subdir
+            model_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Downloading multi-part Transformers model to {model_dir}")
+            await self._download_transformers_metadata(repo_id, model_dir, cancel_event)
+        else:
+            model_dir = self.models_dir
         
         async with self._lock:
             rec = self._downloads[model_id]
@@ -1654,8 +1843,8 @@ class ModelDownloadManager:
                         rec.parts_info["current"] = f"Part {i+1}/{len(part_files)}: {part_file}"
                     
                     url = hf_hub_url(repo_id=repo_id, filename=part_file)
-                    temp_path = self.models_dir / f"{part_file}.part"
-                    final_path = self.models_dir / part_file
+                    temp_path = model_dir / f"{part_file}.part"
+                    final_path = model_dir / part_file
                     
                     # Ensure parent directories exist
                     temp_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3154,6 +3343,19 @@ async def lifespan(app: FastAPI):
     app.state.manager = manager
     app.state.token_tracker = token_tracker
 
+    # Initialize Reddit crawler scheduler
+    try:
+        from modules.finetuning.reddit_scheduler import get_reddit_scheduler
+        app.state.reddit_scheduler = get_reddit_scheduler()
+        if app.state.reddit_scheduler.config.enabled:
+            await app.state.reddit_scheduler.start()
+            logger.info("Reddit crawler scheduler started (auto-enabled)")
+        else:
+            logger.info("Reddit crawler scheduler initialized (disabled)")
+    except Exception as e:
+        logger.warning(f"Reddit crawler scheduler not available: {e}")
+        app.state.reddit_scheduler = None
+
     yield
 
     # Shutdown
@@ -3245,6 +3447,8 @@ if ROUTES_AVAILABLE:
     app.include_router(tools_router)
     app.include_router(finetuning_router)
     app.include_router(quantization_router)
+    if reddit_router:
+        app.include_router(reddit_router)
     logger.info("Route modules included: rag, graphrag, workflows, conversations, registry, prompts, benchmark, batch, models, templates, tokens, service, stt, tts, tools, finetuning, quantization")
 
 # Health check endpoint
@@ -3502,6 +3706,9 @@ async def websocket_training(websocket: WebSocket):
         except ImportError:
             from finetuning import register_ws_broadcaster, unregister_ws_broadcaster
         
+        # Capture the current running event loop for thread-safe scheduling
+        main_loop = asyncio.get_running_loop()
+        
         # Create async callback for broadcasting
         async def send_training_event(event_type: str, data: dict):
             try:
@@ -3513,15 +3720,15 @@ async def websocket_training(websocket: WebSocket):
             except Exception as e:
                 logger.warning(f"Failed to send training event: {e}")
         
-        # Synchronous wrapper for the async callback
+        # Thread-safe wrapper for the async callback - called from Redis consumer thread
         def sync_broadcast(event_type: str, data: dict):
             try:
-                # Use asyncio to run the async function
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(send_training_event(event_type, data))
-                else:
-                    loop.run_until_complete(send_training_event(event_type, data))
+                # Use run_coroutine_threadsafe to schedule from background thread
+                future = asyncio.run_coroutine_threadsafe(
+                    send_training_event(event_type, data),
+                    main_loop
+                )
+                # Don't wait for result - fire and forget
             except Exception as e:
                 logger.warning(f"Training broadcast error: {e}")
         
@@ -4105,7 +4312,7 @@ async def process_document_background(
             'document_discovery': app.state.document_discovery
         }
         
-        from modules.rag.document_manager import DocumentStatus
+        from modules.rag.document_manager import DocumentStatus, DocumentType
         
         doc = await rag['document_manager'].get_document(document_id)
         if not doc:
@@ -4139,14 +4346,88 @@ async def process_document_background(
         model_name = embedding_model or (domain.embedding_model if domain else 'all-MiniLM-L6-v2')
         embedder = create_embedder(model_name=model_name)
         
-        # Embed chunks in batches to handle large documents
-        texts = [c.content for c in raw_chunks]
-        logger.info(f"Embedding {len(texts)} chunks for document {document_id}")
+        # ==========================================
+        # VLM Visual Processing for PDF Documents
+        # ==========================================
+        visual_descriptions = []  # List of (page_num, image_path, description) tuples
+        
+        if doc.doc_type == DocumentType.PDF:
+            try:
+                from modules.rag.vlm_client import VLMClient, VLM_ENABLED
+                from routes.rag import extract_pdf_images
+                import os
+                
+                # Extract images from original PDF content
+                # Get the original content (may be base64 or raw PDF)
+                original_content = doc.metadata.get('original_pdf_content', doc.content)
+                if original_content.startswith('%PDF') or len(original_content) > 1000:
+                    extracted_images = extract_pdf_images(
+                        original_content,
+                        document_id,
+                        output_dir="data/rag/images"
+                    )
+                    
+                    if extracted_images:
+                        logger.info(f"Found {len(extracted_images)} images in PDF")
+                        
+                        # Try VLM if enabled
+                        vlm_available = False
+                        vlm_client = None
+                        if VLM_ENABLED:
+                            try:
+                                vlm_client = VLMClient()
+                                # Quick connectivity check could go here
+                                vlm_available = True
+                            except Exception as e:
+                                logger.warning(f"VLM client initialization failed: {e}")
+                        
+                        for page_num, image_path, image_type in extracted_images:
+                            description = None
+                            image_filename = os.path.basename(image_path)
+                            
+                            # Try VLM description first
+                            if vlm_available and vlm_client:
+                                try:
+                                    description = await vlm_client.describe_image(image_path)
+                                    if description:
+                                        logger.info(f"VLM described image from page {page_num}: {len(description)} chars")
+                                except Exception as e:
+                                    logger.warning(f"VLM failed for {image_path}: {e}")
+                                    description = None
+                            
+                            # Fallback: create placeholder with image filename reference
+                            if not description:
+                                description = (
+                                    f"[Visual content from page {page_num}] "
+                                    f"Image file: {image_filename}. "
+                                    f"Document: {doc.name}. "
+                                    f"This is an embedded graphic or chart that could not be automatically described. "
+                                    f"Image path: {image_path}"
+                                )
+                                logger.info(f"Using placeholder for image {image_filename} (page {page_num})")
+                            
+                            visual_descriptions.append((page_num, image_path, description))
+                        
+                        vlm_count = sum(1 for _, _, d in visual_descriptions if not d.startswith('[Visual content'))
+                        placeholder_count = len(visual_descriptions) - vlm_count
+                        logger.info(f"Processed {len(visual_descriptions)} images: {vlm_count} VLM described, {placeholder_count} placeholders")
+                        
+            except ImportError as e:
+                logger.warning(f"VLM/image processing unavailable: {e}")
+            except Exception as e:
+                logger.warning(f"Visual processing failed (continuing with text only): {e}")
+        
+        # Combine text chunks and visual descriptions for embedding
+        all_texts = [c.content for c in raw_chunks]
+        visual_texts = [desc for _, _, desc in visual_descriptions]
+        all_texts.extend(visual_texts)
+        
+        # Embed all chunks (text + visual descriptions)
+        logger.info(f"Embedding {len(all_texts)} items ({len(raw_chunks)} text chunks + {len(visual_descriptions)} visuals) for document {document_id}")
         
         # Process in smaller batches for large documents
-        # Start with very small batch size for deployed service
         batch_size = 4 if USE_DEPLOYED_EMBEDDINGS else 32
-        embed_result = await embedder.embed(texts, batch_size=batch_size, show_progress=False)
+        embed_result = await embedder.embed(all_texts, batch_size=batch_size, show_progress=False)
         
         # Ensure collection exists
         collection_name = f"domain_{doc.domain_id}"
@@ -4165,18 +4446,22 @@ async def process_document_background(
         chunks = []
         records = []
         
-        for i, (chunk, embedding) in enumerate(zip(raw_chunks, embed_result.embeddings)):
+        total_chunks = len(raw_chunks) + len(visual_descriptions)
+        
+        # Process text chunks
+        for i, (chunk, embedding) in enumerate(zip(raw_chunks, embed_result.embeddings[:len(raw_chunks)])):
             chunk_id = str(uuid.uuid4())
-            vector_id = str(uuid.uuid4())  # Use UUID for Qdrant compatibility
+            vector_id = str(uuid.uuid4())
             
             doc_chunk = DocumentChunk(
                 id=chunk_id,
                 document_id=document_id,
                 content=chunk.content,
                 chunk_index=chunk.index,
-                total_chunks=len(raw_chunks),
+                total_chunks=total_chunks,
                 start_char=chunk.start_char,
                 end_char=chunk.end_char,
+                chunk_type="text",
                 vector_id=vector_id
             )
             chunks.append(doc_chunk)
@@ -4190,6 +4475,46 @@ async def process_document_background(
                     'content': chunk.content,
                     'chunk_index': chunk.index,
                     'chunk_id': chunk_id,
+                    'chunk_type': 'text',
+                    'metadata': doc.metadata
+                }
+            ))
+        
+        # Process visual chunks
+        for i, ((page_num, image_path, description), embedding) in enumerate(
+            zip(visual_descriptions, embed_result.embeddings[len(raw_chunks):])
+        ):
+            chunk_id = str(uuid.uuid4())
+            vector_id = str(uuid.uuid4())
+            chunk_index = len(raw_chunks) + i
+            
+            doc_chunk = DocumentChunk(
+                id=chunk_id,
+                document_id=document_id,
+                content=description,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
+                start_char=0,
+                end_char=0,
+                page_number=page_num,
+                chunk_type="visual",
+                image_path=image_path,
+                vector_id=vector_id
+            )
+            chunks.append(doc_chunk)
+            
+            records.append(VectorRecord(
+                id=vector_id,
+                vector=embedding,
+                payload={
+                    'document_id': document_id,
+                    'domain_id': doc.domain_id,
+                    'content': description,
+                    'chunk_index': chunk_index,
+                    'chunk_id': chunk_id,
+                    'chunk_type': 'visual',
+                    'image_path': image_path,
+                    'page_number': page_num,
                     'metadata': doc.metadata
                 }
             ))
@@ -4207,7 +4532,7 @@ async def process_document_background(
         doc.processed_at = datetime.utcnow().isoformat()
         await rag['document_manager'].update_document(doc)
         
-        logger.info(f"Successfully processed document {document_id}: {len(chunks)} chunks created")
+        logger.info(f"Successfully processed document {document_id}: {len(chunks)} chunks ({len(raw_chunks)} text + {len(visual_descriptions)} visual)")
         
     except Exception as e:
         logger.error(f"Error processing document {document_id}: {e}")

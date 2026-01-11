@@ -21,6 +21,7 @@ from .tts import router as tts_router
 from .tools import router as tools_router
 from .finetuning import router as finetuning_router
 from .quantization import router as quantization_router
+from .reddit import router as reddit_router
 
 __all__ = [
     'workflows_router',
@@ -41,4 +42,5 @@ __all__ = [
     'tools_router',
     'finetuning_router',
     'quantization_router',
+    'reddit_router',
 ]
