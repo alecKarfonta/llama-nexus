@@ -105,7 +105,8 @@ async def create_quantization_job(request: CreateQuantizationJobRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error("Failed to create quantization job", extra={"error": str(e)})
+        import traceback
+        logger.error("Failed to create quantization job", extra={"error": str(e), "traceback": traceback.format_exc()})
         raise HTTPException(status_code=500, detail=f"Failed to create job: {str(e)}")
 
 

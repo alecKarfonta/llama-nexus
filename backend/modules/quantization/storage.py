@@ -123,7 +123,7 @@ class QuantizationStore:
                     job.current_step,
                     job.total_outputs,
                     job.completed_outputs,
-                    json.dumps([o.model_dump() for o in job.outputs]),
+                    json.dumps([o.model_dump(mode='json') for o in job.outputs]),
                     job.created_at.isoformat(),
                     job.started_at.isoformat() if job.started_at else None,
                     job.completed_at.isoformat() if job.completed_at else None,

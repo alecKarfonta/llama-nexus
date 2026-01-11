@@ -35,6 +35,7 @@ import {
   TableHead,
   TableRow,
   Paper,
+  Autocomplete,
 } from '@mui/material'
 import {
   Add as AddIcon,
@@ -91,6 +92,23 @@ interface GGUFType {
   size_factor: number
 }
 
+interface LocalModel {
+  name: string
+  localPath?: string
+  repositoryId?: string
+  framework?: string
+  source?: string
+  parameters?: string
+}
+
+interface ModelOption {
+  label: string
+  value: string
+  type: 'local' | 'huggingface'
+  parameters?: string
+  source?: string
+}
+
 export const QuantizationPage: React.FC = () => {
   const [jobs, setJobs] = useState<QuantizationJob[]>([])
   const [loading, setLoading] = useState(true)
@@ -117,12 +135,15 @@ export const QuantizationPage: React.FC = () => {
   const [ggufTypes, setGGUFTypes] = useState<GGUFType[]>([])
   const [estimatedDisk, setEstimatedDisk] = useState<number>(0)
   const [estimatedTime, setEstimatedTime] = useState<number>(0)
+  const [localModels, setLocalModels] = useState<LocalModel[]>([])
+  const [modelInputValue, setModelInputValue] = useState('')
 
   const wizardSteps = ['Select Model', 'Choose Formats', 'Configure', 'Review']
 
   useEffect(() => {
     fetchJobs()
     fetchGGUFTypes()
+    fetchLocalModels()
     const interval = setInterval(fetchJobs, 5000) // Refresh every 5 seconds
     return () => clearInterval(interval)
   }, [])
@@ -148,6 +169,30 @@ export const QuantizationPage: React.FC = () => {
       console.error('Failed to fetch GGUF types:', error)
     }
   }
+
+  const fetchLocalModels = async () => {
+    try {
+      const response = await fetch('/v1/models')
+      const data = await response.json()
+      const models = Array.isArray(data) ? data : (data.data || [])
+      // Filter to Transformers models (safetensors) - these can be quantized
+      const transformersModels = models.filter((m: LocalModel) =>
+        m.framework === 'transformers' || m.localPath?.includes('safetensors') || m.source === 'trained'
+      )
+      setLocalModels(transformersModels)
+    } catch (error) {
+      console.error('Failed to fetch local models:', error)
+    }
+  }
+
+  // Build model options for Autocomplete
+  const modelOptions: ModelOption[] = localModels.map((m) => ({
+    label: `${m.name}${m.parameters ? ` (${m.parameters})` : ''}${m.source === 'trained' ? ' 🎓' : ''}`,
+    value: m.localPath || m.repositoryId || m.name,
+    type: 'local' as const,
+    parameters: m.parameters,
+    source: m.source,
+  }))
 
   const handleCreateJob = () => {
     setWizardOpen(true)
@@ -463,16 +508,65 @@ export const QuantizationPage: React.FC = () => {
                 margin="normal"
                 required
               />
-              <TextField
-                fullWidth
-                label="Source Model"
-                value={sourceModel}
-                onChange={(e) => setSourceModel(e.target.value)}
-                margin="normal"
-                required
-                placeholder="e.g., meta-llama/Llama-2-7b-hf"
-                helperText="Enter a HuggingFace model repository ID"
+              <Autocomplete
+                freeSolo
+                options={modelOptions}
+                value={modelOptions.find(o => o.value === sourceModel) || null}
+                inputValue={modelInputValue}
+                onInputChange={(_, newInputValue) => {
+                  setModelInputValue(newInputValue)
+                }}
+                onChange={(_, newValue) => {
+                  if (typeof newValue === 'string') {
+                    setSourceModel(newValue)
+                  } else if (newValue) {
+                    setSourceModel(newValue.value)
+                    // Auto-set job name if empty
+                    if (!jobName && newValue.label) {
+                      const baseName = newValue.label.split(' (')[0]
+                      setJobName(`${baseName}-quantized`)
+                    }
+                  } else {
+                    setSourceModel('')
+                  }
+                }}
+                getOptionLabel={(option) => {
+                  if (typeof option === 'string') return option
+                  return option.label
+                }}
+                renderOption={(props, option) => (
+                  <li {...props} key={option.value}>
+                    <Box>
+                      <Typography variant="body2">{option.label}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {option.type === 'local' ? '📁 Local Model' : '🌐 HuggingFace'}
+                        {option.value !== option.label && ` • ${option.value}`}
+                      </Typography>
+                    </Box>
+                  </li>
+                )}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    fullWidth
+                    label="Source Model"
+                    margin="normal"
+                    required
+                    placeholder="Select a local model or enter HuggingFace ID"
+                    helperText={
+                      localModels.length > 0
+                        ? `${localModels.length} local Transformers models available, or enter a HuggingFace repo ID`
+                        : "Enter a HuggingFace model repository ID (e.g., meta-llama/Llama-2-7b-hf)"
+                    }
+                  />
+                )}
+                sx={{ mt: 1 }}
               />
+              {sourceModel && (
+                <Alert severity="info" sx={{ mt: 2 }}>
+                  Selected: <strong>{sourceModel}</strong>
+                </Alert>
+              )}
             </Box>
           )}
 

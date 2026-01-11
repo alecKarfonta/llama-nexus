@@ -44,6 +44,11 @@ class QuantizationWorker:
         self.output_dir = Path(os.getenv("QUANTIZATION_OUTPUT_DIR", "/app/quantization_output"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
+        # llama.cpp paths
+        self.llama_cpp_dir = Path("/opt/llama.cpp")
+        self.convert_script = self.llama_cpp_dir / "convert_hf_to_gguf.py"
+        self.quantize_bin = self.llama_cpp_dir / "build" / "bin" / "llama-quantize"
+        
         try:
             self.redis_client = redis.from_url(self.redis_url)
             self.redis_client.ping()
@@ -136,15 +141,33 @@ class QuantizationWorker:
             )
 
     def download_model(self, model_id: str) -> Optional[Path]:
-        """Download model from HuggingFace."""
+        """Download model from HuggingFace or find local path."""
         try:
-            logger.info("Downloading model", extra={"model_id": model_id})
-            local_dir = self.models_dir / model_id.replace("/", "_")
+            # Check if it's already a local absolute path
+            if model_id.startswith("/"):
+                local_path = Path(model_id)
+                if local_path.exists():
+                    logger.info("Using local model path", extra={"path": str(local_path)})
+                    return local_path
+                else:
+                    logger.error("Local path does not exist", extra={"path": model_id})
+                    return None
             
-            if local_dir.exists():
-                logger.info("Model already downloaded", extra={"path": str(local_dir)})
+            # Check if it exists in models directory (local transformers model)
+            local_dir = self.models_dir / model_id.replace("/", "_")
+            if local_dir.exists() and (local_dir / "config.json").exists():
+                logger.info("Model already available locally", extra={"path": str(local_dir)})
                 return local_dir
-
+            
+            # Try alternate naming (merged models)
+            # e.g., "small_test-merged" might be at /home/llamacpp/models/small_test-merged
+            alt_path = self.models_dir / model_id
+            if alt_path.exists() and (alt_path / "config.json").exists():
+                logger.info("Model found at alternate path", extra={"path": str(alt_path)})
+                return alt_path
+            
+            # Download from HuggingFace
+            logger.info("Downloading model from HuggingFace", extra={"model_id": model_id})
             snapshot_download(
                 repo_id=model_id,
                 local_dir=str(local_dir),
@@ -153,7 +176,7 @@ class QuantizationWorker:
             logger.info("Model downloaded", extra={"path": str(local_dir)})
             return local_dir
         except Exception as e:
-            logger.error("Failed to download model", extra={"error": str(e)})
+            logger.error("Failed to download/find model", extra={"error": str(e)})
             return None
 
     def quantize_to_gguf(self, job: QuantizationJob, model_path: Path):
@@ -166,16 +189,23 @@ class QuantizationWorker:
                 current_step="Converting to GGUF FP16",
             )
 
-            # Convert to FP16 GGUF first
-            fp16_path = self.output_dir / f"{job.source_model.replace('/', '_')}_fp16.gguf"
+            # Determine model name for output files
+            model_name = model_path.name if model_path.name else job.source_model.replace('/', '_')
+            
+            # Convert to FP16 GGUF first (in output dir as intermediate)
+            fp16_path = self.output_dir / f"{model_name}_fp16.gguf"
             
             # Use llama.cpp convert script
-            convert_script = Path("/opt/llama.cpp/convert_hf_to_gguf.py")
-            if convert_script.exists():
-                subprocess.run(
+            if self.convert_script.exists():
+                logger.info("Converting to GGUF FP16", extra={
+                    "script": str(self.convert_script),
+                    "model": str(model_path),
+                    "output": str(fp16_path),
+                })
+                result = subprocess.run(
                     [
                         "python3",
-                        str(convert_script),
+                        str(self.convert_script),
                         str(model_path),
                         "--outfile",
                         str(fp16_path),
@@ -188,16 +218,17 @@ class QuantizationWorker:
                 )
                 logger.info("Created FP16 GGUF", extra={"path": str(fp16_path)})
             else:
-                logger.warning("Conversion script not found, skipping GGUF conversion")
-                return
+                logger.error("Conversion script not found", extra={"path": str(self.convert_script)})
+                raise FileNotFoundError(f"Convert script not found at {self.convert_script}")
 
             # Now quantize to each requested type
             base_progress = 30.0
-            progress_per_quant = 60.0 / len(job.gguf_quant_types)
+            progress_per_quant = 60.0 / len(job.gguf_quant_types) if job.gguf_quant_types else 60.0
             
             for i, quant_type in enumerate(job.gguf_quant_types):
                 output_id = f"{job.id}-gguf-{quant_type.value}"
-                output_path = self.output_dir / f"{job.source_model.replace('/', '_')}_{quant_type.value}.gguf"
+                # Save directly to models directory so it's discovered
+                output_path = self.models_dir / f"{model_name}-{quant_type.value}.gguf"
                 
                 self.manager.update_status(
                     job.id,
@@ -206,10 +237,21 @@ class QuantizationWorker:
                     current_step=f"Quantizing to {quant_type.value}",
                 )
 
-                # Use llama-quantize
-                subprocess.run(
+                # Check if quantize binary exists
+                if not self.quantize_bin.exists():
+                    # Try llama-quantize in PATH
+                    quantize_cmd = "llama-quantize"
+                else:
+                    quantize_cmd = str(self.quantize_bin)
+                
+                logger.info("Quantizing GGUF", extra={
+                    "quant_type": quant_type.value,
+                    "output": str(output_path),
+                })
+                
+                result = subprocess.run(
                     [
-                        "llama-quantize",
+                        quantize_cmd,
                         str(fp16_path),
                         str(output_path),
                         quant_type.value,
@@ -232,7 +274,20 @@ class QuantizationWorker:
                     "path": str(output_path),
                     "size": file_size,
                 })
+            
+            # Clean up FP16 intermediate file
+            if fp16_path.exists():
+                fp16_path.unlink()
+                logger.info("Cleaned up FP16 intermediate file")
 
+        except subprocess.CalledProcessError as e:
+            logger.error("Subprocess failed", extra={
+                "cmd": e.cmd,
+                "returncode": e.returncode,
+                "stdout": e.stdout,
+                "stderr": e.stderr,
+            })
+            raise
         except Exception as e:
             logger.error("Failed to quantize to GGUF", extra={"error": str(e)})
             raise

@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     git \
     wget \
+    curl \
+    libcurl4-openssl-dev \
     build-essential \
     cmake \
     ccache \
@@ -35,7 +37,8 @@ RUN pip3 install \
     protobuf>=4.25.0 \
     pydantic>=2.0.0 \
     redis>=5.0.0 \
-    huggingface_hub>=0.20.0
+    huggingface_hub>=0.20.0 \
+    gguf>=0.6.0
 
 # Install quantization libraries
 # AutoGPTQ for GPTQ quantization
@@ -49,10 +52,11 @@ RUN pip3 install autoawq || echo "AWQ installation skipped"
 RUN pip3 install optimum[onnxruntime-gpu]
 
 # Clone and build llama.cpp for GGUF conversion and quantization
+# Using CPU-only build since quantization is CPU-bound and CUDA has linking issues in Docker build
 WORKDIR /opt
 RUN git clone https://github.com/ggerganov/llama.cpp.git && \
     cd llama.cpp && \
-    cmake -B build -DLLAMA_CUDA=ON -DCMAKE_BUILD_TYPE=Release && \
+    cmake -B build -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release && \
     cmake --build build --config Release -j$(nproc)
 
 # Add llama.cpp binaries to PATH
@@ -61,11 +65,14 @@ ENV PATH="/opt/llama.cpp/build/bin:${PATH}"
 # Create working directory
 WORKDIR /app
 
-# Copy worker script (to be created)
+# Copy worker script and backend modules
 COPY quantization_worker.py /app/
+COPY enhanced_logger.py /app/
+COPY modules/ /app/modules/
 
 # Create output directories
 RUN mkdir -p /app/quantization_output /app/models
 
 # Default command
 CMD ["python3", "quantization_worker.py"]
+
