@@ -31,6 +31,7 @@ class TrainingStatus(str, Enum):
     QUEUED = "queued"
     PREPARING = "preparing"
     TRAINING = "training"
+    PAUSED = "paused"
     EVALUATING = "evaluating"
     EXPORTING = "exporting"
     COMPLETED = "completed"

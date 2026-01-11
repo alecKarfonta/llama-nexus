@@ -124,12 +124,75 @@ except ImportError:
     )
 
 
+# Local models directory where merged/trained models are stored
+LOCAL_MODELS_DIR = Path("/home/llamacpp/models")
+
+
+def resolve_local_model_path(model_id: str) -> str:
+    """
+    Resolve a model identifier to an absolute path if it's a local model.
+    
+    If the model_id looks like a HuggingFace model ID (org/model format) and
+    doesn't exist locally, return it as-is for HuggingFace to download.
+    
+    If the model_id matches a local model in the models directory, return
+    the full absolute path.
+    
+    Args:
+        model_id: Model identifier (e.g., "microsoft/phi-1_5" or "small/test-merged")
+    
+    Returns:
+        The resolved path (absolute local path or HuggingFace ID)
+    """
+    import re
+    
+    # If it's already an absolute path, verify it exists
+    if model_id.startswith("/"):
+        if Path(model_id).exists():
+            return model_id
+        raise ValueError(f"Model path not found: {model_id}")
+    
+    # Try to find a matching local model
+    if LOCAL_MODELS_DIR.exists():
+        # Check for exact match with the model_id as directory name  
+        # (e.g., "microsoft_phi-1_5" or "small_test-merged")
+        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', model_id)
+        direct_match = LOCAL_MODELS_DIR / safe_name
+        if direct_match.exists() and (direct_match / "config.json").exists():
+            return str(direct_match)
+        
+        # Check for model_id with suffix replacements (e.g., "small/test-merged")
+        # Try matching the last part of the path
+        model_name = model_id.split("/")[-1] if "/" in model_id else model_id
+        safe_model_name = re.sub(r'[^a-zA-Z0-9_-]', '_', model_name)
+        
+        # Look for directories that end with this name
+        for item in LOCAL_MODELS_DIR.iterdir():
+            if not item.is_dir():
+                continue
+            # Match by ending (e.g., "small_test-merged" matches "test-merged")
+            if item.name.endswith(safe_model_name) or item.name == safe_model_name:
+                if (item / "config.json").exists():
+                    return str(item)
+        
+        # Also check with the full safe name (handles "small/test-merged" -> "small_test-merged")
+        full_safe = re.sub(r'[/\\]', '_', model_id)
+        full_safe = re.sub(r'[^a-zA-Z0-9_-]', '_', full_safe)
+        for item in LOCAL_MODELS_DIR.iterdir():
+            if item.is_dir() and item.name == full_safe:
+                if (item / "config.json").exists():
+                    return str(item)
+    
+    # Return as-is for HuggingFace to handle (will download from hub)
+    return model_id
+
+
 # Simplified request model for job creation from UI
 class CreateJobRequest(BaseModel):
     """Simplified request format for creating training jobs from the UI."""
     name: str
     base_model: str
-    dataset_id: str
+    dataset_ids: List[str]  # Support multiple datasets
     description: Optional[str] = None
     # LoRA settings (flat)
     lora_rank: int = Field(default=16, ge=1, le=256)
@@ -332,17 +395,76 @@ def list_jobs():
 @router.post("/jobs", status_code=201)
 def create_job(request: CreateJobRequest):
     """Create a new fine-tuning job from a simplified request format."""
-    dataset = dataset_store.get(request.dataset_id)
-    if not dataset:
-        raise HTTPException(status_code=400, detail="Dataset not found")
+    # Validate all datasets exist
+    if not request.dataset_ids:
+        raise HTTPException(status_code=400, detail="At least one dataset is required")
+    
+    datasets_to_use = []
+    for ds_id in request.dataset_ids:
+        dataset = dataset_store.get(ds_id)
+        if not dataset:
+            raise HTTPException(status_code=400, detail=f"Dataset not found: {ds_id}")
+        datasets_to_use.append(dataset)
+    
+    # If multiple datasets, create a combined dataset on the fly
+    if len(datasets_to_use) > 1:
+        import json
+        import tempfile
+        from datetime import datetime
+        
+        combined_data = []
+        for ds in datasets_to_use:
+            try:
+                with open(ds.file_path, 'r') as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        combined_data.extend(data)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to load dataset {ds.id}: {e}")
+        
+        # Create temporary combined dataset
+        combined_id = f"combined_{uuid.uuid4().hex[:8]}"
+        combined_path = Path(dataset_store.base_dir) / combined_id / "combined.json"
+        combined_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(combined_path, 'w') as f:
+            json.dump(combined_data, f)
+        
+        # Register combined dataset
+        combined_dataset = Dataset(
+            id=combined_id,
+            name=f"Combined: {', '.join(ds.name for ds in datasets_to_use)}",
+            description=f"Auto-combined from: {', '.join(request.dataset_ids)}",
+            format=datasets_to_use[0].format,
+            status=DatasetStatus.READY,
+            num_examples=len(combined_data),
+            total_tokens=sum(ds.total_tokens or 0 for ds in datasets_to_use),
+            file_path=str(combined_path),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            validation_errors=None,
+            statistics=None,
+        )
+        dataset_store.upsert(combined_dataset)
+        primary_dataset = combined_dataset
+        primary_dataset_id = combined_id
+    else:
+        primary_dataset = datasets_to_use[0]
+        primary_dataset_id = request.dataset_ids[0]
+    
+    # Resolve local model path (handles previously fine-tuned models)
+    try:
+        resolved_base_model = resolve_local_model_path(request.base_model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     
     # Build the full FineTuningJob from the simplified request
     job = FineTuningJob(
         id=str(uuid.uuid4()),
         name=request.name,
         description=request.description,
-        base_model=request.base_model,
-        dataset_id=request.dataset_id,
+        base_model=resolved_base_model,
+        dataset_id=primary_dataset_id,
         lora_config=LoRAConfig(
             rank=request.lora_rank,
             alpha=request.lora_alpha,
@@ -364,7 +486,7 @@ def create_job(request: CreateJobRequest):
     
     created = training_manager.create_job(job)
     try:
-        training_manager.start_job(created, dataset.dict())
+        training_manager.start_job(created, primary_dataset.dict())
     except Exception as exc:
         training_manager.update_status(created.id, TrainingStatus.FAILED, str(exc))
         raise HTTPException(status_code=500, detail="Failed to start training worker")
@@ -380,13 +502,62 @@ def get_job(job_id: str):
 
 
 @router.delete("/jobs/{job_id}", status_code=204)
-def cancel_job(job_id: str):
+def delete_job(job_id: str):
+    """
+    Delete a training job and clean up associated files.
+    
+    If the job is running, it will be stopped first.
+    """
     job = training_manager.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    training_manager.update_status(job_id, TrainingStatus.CANCELLED)
-    training_manager.send_command(job_id, "stop")
+    
+    # Stop the job if it's still running
+    if job.status in (TrainingStatus.TRAINING, TrainingStatus.QUEUED, TrainingStatus.PAUSED):
+        training_manager.send_command(job_id, "stop")
+    
+    # Delete the job and all associated files
+    deleted = training_manager.delete_job(job_id)
+    if not deleted:
+        raise HTTPException(status_code=500, detail="Failed to delete job")
+    
     return Response(status_code=204)
+
+
+@router.post("/jobs/{job_id}/pause")
+def pause_job(job_id: str):
+    """
+    Pause a running training job.
+    
+    The job will save a checkpoint and pause until resumed.
+    """
+    job = training_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != TrainingStatus.TRAINING:
+        raise HTTPException(status_code=400, detail="Job is not training")
+    
+    training_manager.send_command(job_id, "pause")
+    training_manager.update_status(job_id, TrainingStatus.PAUSED)
+    return {"status": "pausing", "job_id": job_id}
+
+
+@router.post("/jobs/{job_id}/unpause")
+def unpause_job(job_id: str):
+    """
+    Resume a paused training job.
+    
+    The job will continue from where it left off.
+    """
+    job = training_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != TrainingStatus.PAUSED:
+        raise HTTPException(status_code=400, detail="Job is not paused")
+    
+    training_manager.send_command(job_id, "resume")
+    training_manager.update_status(job_id, TrainingStatus.TRAINING)
+    return {"status": "resuming", "job_id": job_id}
 
 
 @router.post("/jobs/{job_id}/resume")
@@ -501,12 +672,27 @@ def list_adapters():
     This endpoint returns adapters derived from training jobs.
     For full adapter management with versioning, use /adapters/registry.
     """
+    import re
     jobs = training_manager.list_jobs()
     adapters = []
+    models_dir = Path("/home/llamacpp/models")
+    
     for job in jobs:
         if job.adapter_path:
             # Check if this adapter is registered
             registered = adapter_manager.get_adapter_by_job(job.id)
+            
+            # Check merge status
+            safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', job.name or job.id[:8])
+            merged_dir = models_dir / f"{safe_name}-merged"
+            merged_metadata = merged_dir / "training_metadata.json"
+            
+            if merged_metadata.exists():
+                merge_status = "completed"
+            elif merged_dir.exists():
+                merge_status = "in_progress"
+            else:
+                merge_status = None
             
             adapter_info = {
                 "job_id": job.id,
@@ -517,6 +703,8 @@ def list_adapters():
                 "status": job.status.value if hasattr(job.status, 'value') else str(job.status),
                 "registered": registered is not None,
                 "registry_id": registered.id if registered else None,
+                "merge_status": merge_status,
+                "merged_path": str(merged_dir) if merge_status == "completed" else None,
             }
             adapters.append(adapter_info)
     return {"adapters": adapters}
@@ -619,8 +807,12 @@ def merge_adapter(job_id: str):
     if job.status != TrainingStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Training not completed")
 
-    # Queue a merge task (will be processed by worker)
-    merge_output_dir = Path(job.adapter_path).parent / "merged"
+    # Save merged model to models directory so it appears in Model Manager
+    # Use a sanitized name based on job name
+    import re
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', job.name or job_id[:8])
+    models_dir = Path("/home/llamacpp/models")
+    merge_output_dir = models_dir / f"{safe_name}-merged"
     merge_output_dir.mkdir(parents=True, exist_ok=True)
 
     # Publish merge command to Redis
@@ -721,6 +913,82 @@ def export_adapter_to_gguf(job_id: str, quant_type: str = "q4_k_m"):
         "quant_type": quant_type,
         "message": "GGUF export queued. Monitor quantization job for progress.",
     }
+
+
+@router.post("/adapters/{job_id}/deploy")
+def register_merged_model_for_deployment(job_id: str, name: Optional[str] = None):
+    """
+    Register a merged adapter as a deployable model in the models registry.
+    
+    This creates a model entry that appears in the Models page and can be
+    deployed like any other model.
+    
+    Args:
+        job_id: The training job ID
+        name: Optional custom name for the model (defaults to job name)
+    
+    Returns:
+        The created model entry with its ID
+    """
+    job = training_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.adapter_path:
+        raise HTTPException(status_code=400, detail="No adapter available for this job")
+    if job.status != TrainingStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Training not completed")
+    
+    # Check if merged model exists
+    merged_dir = Path(job.adapter_path).parent / "merged"
+    if not merged_dir.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Model not merged yet. Call /merge first to create the merged model."
+        )
+    
+    # Create model entry in the models registry
+    model_name = name or f"{job.name}-trained"
+    
+    # Check for models service/manager
+    try:
+        from routes.models import model_store
+        
+        # Create the model entry
+        model_entry = {
+            "name": model_name,
+            "framework": "transformers",
+            "status": "available",
+            "path": str(merged_dir),
+            "source": "trained",
+            "training_job_id": job_id,
+            "base_model": job.base_model,
+            "parameters": None,  # Could estimate from base model
+            "quantization": None,
+            "context_length": job.training_config.max_seq_length if job.training_config else 2048,
+            "description": f"Fine-tuned from {job.base_model} using training job {job.name}",
+            "lora_config": job.lora_config.dict() if job.lora_config else None,
+            "training_metrics": job.metrics,
+        }
+        
+        created_model = model_store.create(model_entry)
+        
+        return {
+            "job_id": job_id,
+            "model_id": created_model.get("id"),
+            "model_name": model_name,
+            "model_path": str(merged_dir),
+            "status": "registered",
+            "message": f"Model '{model_name}' registered successfully. It now appears in the Models page.",
+        }
+    except ImportError:
+        # Fallback: just return the path info if model_store not available
+        return {
+            "job_id": job_id,
+            "model_name": model_name,
+            "model_path": str(merged_dir),
+            "status": "registered_local",
+            "message": f"Merged model available at {merged_dir}. Models registry not available.",
+        }
 
 
 # ============================================================================

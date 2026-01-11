@@ -31,6 +31,45 @@ from transformers import (
     TrainerState,
 )
 
+# Force CPU training via environment variable
+FORCE_CPU_TRAINING = os.getenv("FORCE_CPU_TRAINING", "false").lower() in ("true", "1", "yes")
+
+# Minimum CUDA capability required (7.0 = Volta architecture)
+MIN_CUDA_CAPABILITY = 7.0
+
+
+def is_gpu_compatible() -> bool:
+    """
+    Check if the GPU is compatible with the current PyTorch/bitsandbytes installation.
+    Returns False if no compatible GPU is available.
+    """
+    if FORCE_CPU_TRAINING:
+        print("[training] FORCE_CPU_TRAINING=true, using CPU mode", flush=True)
+        return False
+    
+    if not torch.cuda.is_available():
+        print("[training] No CUDA available, using CPU mode", flush=True)
+        return False
+    
+    try:
+        # Check CUDA capability of all available GPUs
+        for i in range(torch.cuda.device_count()):
+            capability = torch.cuda.get_device_capability(i)
+            capability_version = float(f"{capability[0]}.{capability[1]}")
+            device_name = torch.cuda.get_device_name(i)
+            
+            if capability_version < MIN_CUDA_CAPABILITY:
+                print(f"[training] GPU {i} ({device_name}) has CUDA capability {capability_version}, "
+                      f"but {MIN_CUDA_CAPABILITY}+ is required. Using CPU mode.", flush=True)
+                return False
+        
+        print(f"[training] GPU compatible, using CUDA", flush=True)
+        return True
+    except Exception as e:
+        print(f"[training] Error checking GPU compatibility: {e}. Using CPU mode.", flush=True)
+        return False
+
+
 
 def load_job_config() -> Optional[Dict[str, Any]]:
     """Load job config from path or return None if in polling mode."""
@@ -185,21 +224,47 @@ def build_model(
     qlora = job.get("qlora_config", {}).get("enabled", False)
     lora_cfg = job["lora_config"]
     
+    # Check GPU compatibility - force CPU mode if incompatible
+    use_gpu = is_gpu_compatible()
+    
+    # QLoRA requires bitsandbytes which needs compatible GPU
+    if qlora and not use_gpu:
+        print("[training] QLoRA disabled - bitsandbytes requires compatible GPU. Using standard LoRA on CPU.", flush=True)
+        qlora = False
+    
     # Load base model
     if qlora:
+        # GPU mode with 4-bit quantization
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
             load_in_4bit=True,
             device_map="auto",
+            trust_remote_code=True,
         )
         # Prepare quantized model for training (enables gradients on LoRA params)
         model = prepare_model_for_kbit_training(model)
+    elif use_gpu:
+        # GPU mode without quantization
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model, 
+            device_map="auto",
+            trust_remote_code=True,
+        )
     else:
-        model = AutoModelForCausalLM.from_pretrained(base_model, device_map="auto")
+        # CPU mode - load to CPU explicitly, use float32 for compatibility
+        print("[training] Loading model on CPU (this may take a while and use significant RAM)...", flush=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            device_map=None,  # Don't auto-map, keep on CPU
+            torch_dtype=torch.float32,  # Full precision for CPU
+            trust_remote_code=True,
+            low_cpu_mem_usage=True,  # Load in chunks to reduce peak RAM
+        )
     
-    tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=True, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
+
     
     is_resumed = False
     
@@ -291,14 +356,25 @@ def train(job: Dict[str, Any]) -> None:
         starting_step = checkpoint_info.get("global_step", 0)
         stream_log(redis_client, job_id, f"Resuming from step {starting_step}")
 
+    # Check GPU compatibility for training args
+    use_gpu = is_gpu_compatible()
+    
+    # On CPU, we must disable bf16/fp16 as they require GPU
+    use_fp16 = train_cfg.get("fp16", False) if use_gpu else False
+    use_bf16 = train_cfg.get("bf16", True) if use_gpu else False
+    
+    if not use_gpu:
+        stream_log(redis_client, job_id, "Running in CPU-only mode (training will be slow)")
+
     args = TrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=train_cfg["batch_size"],
         gradient_accumulation_steps=train_cfg["gradient_accumulation_steps"],
         num_train_epochs=train_cfg["num_epochs"],
         learning_rate=train_cfg["learning_rate"],
-        fp16=train_cfg.get("fp16", False),
-        bf16=train_cfg.get("bf16", True),
+        fp16=use_fp16,
+        bf16=use_bf16,
+        no_cuda=not use_gpu,  # Force CPU mode when GPU incompatible
         max_steps=train_cfg.get("max_steps") or -1,  # -1 means no limit
         warmup_steps=train_cfg.get("warmup_steps", 0),
         weight_decay=train_cfg.get("weight_decay", 0.0),
@@ -308,11 +384,14 @@ def train(job: Dict[str, Any]) -> None:
         report_to=[],
         # Enable checkpoint saving of optimizer and scheduler state
         save_safetensors=True,
-        # Gradient checkpointing reduces VRAM ~70% by recomputing activations
-        gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
+        # Gradient checkpointing reduces memory usage by recomputing activations
+        gradient_checkpointing=train_cfg.get("gradient_checkpointing", True) if use_gpu else False,
+        # Reduce memory usage on CPU
+        dataloader_pin_memory=use_gpu,
     )
 
-    stop_flag = {"stop": False}
+
+    stop_flag = {"stop": False, "paused": False}
 
     def listen_for_commands():
         pubsub = redis_client.pubsub()
@@ -324,15 +403,36 @@ def train(job: Dict[str, Any]) -> None:
             # Handle simple string commands
             if raw_data == "stop":
                 stop_flag["stop"] = True
+                stop_flag["paused"] = False
                 stream_log(redis_client, job_id, "Stop command received; will halt training")
                 break
+            elif raw_data == "pause":
+                stop_flag["paused"] = True
+                stream_log(redis_client, job_id, "Pause command received; saving checkpoint and pausing...")
+                stream_status(redis_client, job_id, 0, 0, None, "paused")
+            elif raw_data == "resume":
+                if stop_flag["paused"]:
+                    stop_flag["paused"] = False
+                    stream_log(redis_client, job_id, "Resume command received; continuing training...")
+                    stream_status(redis_client, job_id, 0, 0, None, "training")
             # Handle JSON commands
             try:
                 cmd_data = json.loads(raw_data)
-                if cmd_data.get("command") == "stop":
+                cmd = cmd_data.get("command")
+                if cmd == "stop":
                     stop_flag["stop"] = True
+                    stop_flag["paused"] = False
                     stream_log(redis_client, job_id, "Stop command received; will halt training")
                     break
+                elif cmd == "pause":
+                    stop_flag["paused"] = True
+                    stream_log(redis_client, job_id, "Pause command received; saving checkpoint and pausing...")
+                    stream_status(redis_client, job_id, 0, 0, None, "paused")
+                elif cmd == "resume":
+                    if stop_flag["paused"]:
+                        stop_flag["paused"] = False
+                        stream_log(redis_client, job_id, "Resume command received; continuing training...")
+                        stream_status(redis_client, job_id, 0, 0, None, "training")
             except (json.JSONDecodeError, TypeError):
                 pass
         pubsub.close()
@@ -359,11 +459,14 @@ def train(job: Dict[str, Any]) -> None:
     
     stream_status(redis_client, job_id, starting_step, total_steps, None, "training")
 
-    # Custom callback for progress reporting with resume support
+    # Custom callback for progress reporting with resume and pause support
     class ProgressCallback(TrainerCallback):
-        def __init__(self, hook_fn, stop_flag_ref):
+        def __init__(self, hook_fn, stop_flag_ref, redis_client_ref, job_id_ref):
             self.hook_fn = hook_fn
             self.stop_flag = stop_flag_ref
+            self.redis_client = redis_client_ref
+            self.job_id = job_id_ref
+            self.last_paused_step = None
         
         def on_log(self, args, state: TrainerState, control: TrainerControl, logs=None, **kwargs):
             if logs is None:
@@ -373,16 +476,39 @@ def train(job: Dict[str, Any]) -> None:
                 self.hook_fn(state.global_step, float(loss))
         
         def on_step_end(self, args, state: TrainerState, control: TrainerControl, **kwargs):
+            # Handle stop
             if self.stop_flag["stop"]:
                 control.should_training_stop = True
                 control.should_save = True  # Save checkpoint before stopping
+                return control
+            
+            # Handle pause - save checkpoint and wait
+            if self.stop_flag["paused"]:
+                # Only save once when entering pause
+                if self.last_paused_step != state.global_step:
+                    self.last_paused_step = state.global_step
+                    control.should_save = True  # Save checkpoint when pausing
+                    stream_log(self.redis_client, self.job_id, f"Training paused at step {state.global_step}")
+                
+                # Wait loop while paused
+                import time
+                while self.stop_flag["paused"] and not self.stop_flag["stop"]:
+                    time.sleep(1)  # Check every second
+                
+                if self.stop_flag["stop"]:
+                    control.should_training_stop = True
+                else:
+                    stream_log(self.redis_client, self.job_id, f"Training resumed from step {state.global_step}")
+            
             return control
 
     def hook(step, loss):
-        stream_status(redis_client, job_id, step, total_steps, loss, "training")
-        stream_log(redis_client, job_id, f"step={step} loss={loss:.4f}")
+        # Only report if not paused
+        if not stop_flag["paused"]:
+            stream_status(redis_client, job_id, step, total_steps, loss, "training")
+            stream_log(redis_client, job_id, f"step={step} loss={loss:.4f}")
 
-    trainer.add_callback(ProgressCallback(hook, stop_flag))
+    trainer.add_callback(ProgressCallback(hook, stop_flag, redis_client, job_id))
     
     # Resume from checkpoint if available
     if checkpoint_path and checkpoint_path.exists():
@@ -432,16 +558,23 @@ def train(job: Dict[str, Any]) -> None:
 
 
 
-def merge_adapter(adapter_path: str, base_model: str, output_dir: str) -> str:
+def merge_adapter(adapter_path: str, base_model: str, output_dir: str, job_id: str = None) -> str:
     """
     Merge LoRA adapter weights into the base model.
     Returns the path to the merged model.
+    
+    Args:
+        adapter_path: Path to the LoRA adapter directory
+        base_model: HuggingFace model ID or path to base model
+        output_dir: Directory to save the merged model
+        job_id: Optional training job ID for metadata tracking
     """
     from peft import PeftModel
+    from datetime import datetime
     
     print(f"[merge] Loading base model: {base_model}", flush=True)
-    model = AutoModelForCausalLM.from_pretrained(base_model, device_map="auto")
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    model = AutoModelForCausalLM.from_pretrained(base_model, device_map="auto", trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     
     print(f"[merge] Loading adapter from: {adapter_path}", flush=True)
     model = PeftModel.from_pretrained(model, adapter_path)
@@ -453,6 +586,51 @@ def merge_adapter(adapter_path: str, base_model: str, output_dir: str) -> str:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     merged_model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
+    
+    # Load training info from adapter directory if available
+    training_info = {}
+    training_info_path = Path(adapter_path) / "training_info.json"
+    if training_info_path.exists():
+        try:
+            with open(training_info_path, "r") as f:
+                training_info = json.load(f)
+        except Exception as e:
+            print(f"[merge] Could not load training_info.json: {e}", flush=True)
+    
+    # Load adapter config for LoRA details
+    lora_config = {}
+    adapter_config_path = Path(adapter_path) / "adapter_config.json"
+    if adapter_config_path.exists():
+        try:
+            with open(adapter_config_path, "r") as f:
+                lora_config = json.load(f)
+        except Exception as e:
+            print(f"[merge] Could not load adapter_config.json: {e}", flush=True)
+    
+    # Save training metadata for the Models page to discover
+    training_metadata = {
+        "source": "trained",
+        "training_job_id": job_id or training_info.get("job_id"),
+        "base_model": base_model,
+        "merged_at": datetime.utcnow().isoformat(),
+        "adapter_path": adapter_path,
+        "final_loss": training_info.get("final_loss"),
+        "total_steps": training_info.get("total_steps"),
+        "lora_config": {
+            "r": lora_config.get("r"),
+            "lora_alpha": lora_config.get("lora_alpha"),
+            "lora_dropout": lora_config.get("lora_dropout"),
+            "target_modules": lora_config.get("target_modules"),
+        } if lora_config else None,
+    }
+    
+    metadata_path = Path(output_dir) / "training_metadata.json"
+    try:
+        with open(metadata_path, "w") as f:
+            json.dump(training_metadata, f, indent=2)
+        print(f"[merge] Saved training metadata to: {metadata_path}", flush=True)
+    except Exception as e:
+        print(f"[merge] Warning: Could not save training metadata: {e}", flush=True)
     
     print(f"[merge] Merge completed: {output_dir}", flush=True)
     return output_dir
@@ -493,7 +671,7 @@ def run_merge_worker():
             print(f"[merge-worker] Processing merge for job {job_id}", flush=True)
             
             try:
-                merged_path = merge_adapter(adapter_path, base_model, output_dir)
+                merged_path = merge_adapter(adapter_path, base_model, output_dir, job_id)
                 # Publish success
                 publish(
                     redis_client,
@@ -524,6 +702,12 @@ def poll_for_jobs():
     """Poll for new training jobs in the job directory."""
     job_dir = Path(os.getenv("FINETUNE_JOB_DIR", "/data/finetune_jobs"))
     print(f"[training-worker] Starting in polling mode, watching: {job_dir}", flush=True)
+    
+    # Start merge worker in background thread
+    import threading
+    merge_thread = threading.Thread(target=run_merge_worker, daemon=True)
+    merge_thread.start()
+    print("[training-worker] Started merge worker in background thread", flush=True)
     
     processed_jobs = set()
     redis_client = connect_redis()

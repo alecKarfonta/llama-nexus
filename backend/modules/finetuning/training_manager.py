@@ -347,3 +347,47 @@ class TrainingManager:
             client.publish(f"training:commands:{job_id}", command)
         except Exception as exc:
             logger.warning("Failed to publish command", extra={"job_id": job_id, "error": str(exc)})
+
+    def delete_job(self, job_id: str) -> bool:
+        """
+        Delete a training job and clean up associated files.
+        
+        Returns True if the job was deleted, False if not found.
+        """
+        job = self.store.get(job_id)
+        if not job:
+            return False
+        
+        # Delete from store (also removes log file)
+        deleted = self.store.delete(job_id)
+        
+        if deleted:
+            # Clean up job directory (checkpoints, adapter, etc.)
+            job_dir = self.job_dir / job_id
+            if job_dir.exists():
+                try:
+                    import shutil
+                    shutil.rmtree(job_dir)
+                    logger.info("Deleted job directory", extra={"job_id": job_id, "path": str(job_dir)})
+                except Exception as exc:
+                    logger.warning("Failed to delete job directory", extra={"job_id": job_id, "error": str(exc)})
+            
+            # Clean up config file
+            cfg_path = self.job_dir / f"{job_id}.json"
+            if cfg_path.exists():
+                try:
+                    cfg_path.unlink()
+                except Exception as exc:
+                    logger.warning("Failed to delete job config", extra={"job_id": job_id, "error": str(exc)})
+            
+            # Clean up metrics file
+            metrics_path = self.store.metrics_path(job_id)
+            if metrics_path.exists():
+                try:
+                    metrics_path.unlink()
+                except Exception as exc:
+                    logger.warning("Failed to delete metrics file", extra={"job_id": job_id, "error": str(exc)})
+            
+            logger.info("Deleted fine-tuning job", extra={"job_id": job_id})
+        
+        return deleted
