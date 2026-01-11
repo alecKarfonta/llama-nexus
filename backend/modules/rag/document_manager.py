@@ -87,6 +87,10 @@ class DocumentChunk:
     # Metadata
     page_number: Optional[int] = None
     section_header: Optional[str] = None
+    # Chunk type: "text" for regular text chunks, "visual" for image descriptions
+    chunk_type: str = "text"
+    # Path to image file (only for visual chunks)
+    image_path: Optional[str] = None
     # Embedding
     embedding: Optional[List[float]] = None
     vector_id: Optional[str] = None
@@ -215,11 +219,23 @@ class DocumentManager:
                     end_char INTEGER DEFAULT 0,
                     page_number INTEGER,
                     section_header TEXT,
+                    chunk_type TEXT DEFAULT 'text',
+                    image_path TEXT,
                     vector_id TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
                 )
             """)
+            
+            # Add new columns to existing chunks table if they don't exist
+            try:
+                await db.execute("ALTER TABLE chunks ADD COLUMN chunk_type TEXT DEFAULT 'text'")
+            except:
+                pass  # Column already exists
+            try:
+                await db.execute("ALTER TABLE chunks ADD COLUMN image_path TEXT")
+            except:
+                pass  # Column already exists
             
             # Indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_documents_domain ON documents(domain_id)")
@@ -563,13 +579,14 @@ class DocumentManager:
             await db.executemany("""
                 INSERT OR REPLACE INTO chunks (id, document_id, content, chunk_index,
                     total_chunks, start_char, end_char, page_number, section_header,
-                    vector_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    chunk_type, image_path, vector_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     chunk.id, chunk.document_id, chunk.content, chunk.chunk_index,
                     chunk.total_chunks, chunk.start_char, chunk.end_char,
-                    chunk.page_number, chunk.section_header, chunk.vector_id, now
+                    chunk.page_number, chunk.section_header, chunk.chunk_type,
+                    chunk.image_path, chunk.vector_id, now
                 )
                 for chunk in chunks
             ])
@@ -605,6 +622,8 @@ class DocumentManager:
                     end_char=row['end_char'],
                     page_number=row['page_number'],
                     section_header=row['section_header'],
+                    chunk_type=row['chunk_type'] if 'chunk_type' in row.keys() else 'text',
+                    image_path=row['image_path'] if 'image_path' in row.keys() else None,
                     vector_id=row['vector_id']
                 )
                 for row in rows
@@ -630,6 +649,8 @@ class DocumentManager:
                     end_char=row['end_char'],
                     page_number=row['page_number'],
                     section_header=row['section_header'],
+                    chunk_type=row['chunk_type'] if 'chunk_type' in row.keys() else 'text',
+                    image_path=row['image_path'] if 'image_path' in row.keys() else None,
                     vector_id=row['vector_id']
                 )
         return None

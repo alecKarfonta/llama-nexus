@@ -88,6 +88,7 @@ import {
   AccountTree as KnowledgeGraphIcon,
 } from '@mui/icons-material';
 import { apiService as api } from '../services/api';
+import RedditCrawlerCard from '../components/RedditCrawlerCard';
 
 // Types
 interface Domain {
@@ -202,10 +203,10 @@ const DomainTree: React.FC<{
             pl: 2 + level * 2,
             borderRadius: 1,
             mb: 0.5,
-            bgcolor: isDragOver 
-              ? alpha('#10B981', 0.3) 
-              : isSelected 
-                ? alpha('#6366F1', 0.15) 
+            bgcolor: isDragOver
+              ? alpha('#10B981', 0.3)
+              : isSelected
+                ? alpha('#6366F1', 0.15)
                 : 'transparent',
             border: isDragOver ? '2px dashed #10B981' : '2px solid transparent',
             transition: 'all 0.2s ease',
@@ -244,8 +245,8 @@ const DomainTree: React.FC<{
             <Chip
               label={domain.document_count}
               size="small"
-              sx={{ 
-                height: 20, 
+              sx={{
+                height: 20,
                 bgcolor: alpha('#6366F1', 0.2),
                 '& .MuiChip-label': { px: 1, fontSize: 11 },
               }}
@@ -349,16 +350,16 @@ const DocumentsPage: React.FC = () => {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [totalDocuments, setTotalDocuments] = useState(0);
-  
+
   // Batch operations
   const [selectedDocuments, setSelectedDocuments] = useState<Set<string>>(new Set());
   const [batchProcessing, setBatchProcessing] = useState(false);
-  
+
   // Drag and drop
   const [dragOverDomain, setDragOverDomain] = useState<string | null>(null);
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const [globalDragOver, setGlobalDragOver] = useState(false);
-  
+
   // Processing queue
   const [processingQueue, setProcessingQueue] = useState<any>(null);
 
@@ -395,18 +396,25 @@ const DocumentsPage: React.FC = () => {
   const [uploadMode, setUploadMode] = useState<'paste' | 'file' | 'url'>('paste');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
+  // Vector Search
+  const [searchDialogOpen, setSearchDialogOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchTopK, setSearchTopK] = useState(10);
+
   // Load domains
   const loadDomains = useCallback(async () => {
     try {
       const res = await api.get('/api/v1/rag/domains');
       const flatDomains = res.data.domains || [];
-      
+
       // Build tree structure
       const domainMap = new Map<string, Domain>();
       flatDomains.forEach((d: Domain) => {
         domainMap.set(d.id, { ...d, children: [] });
       });
-      
+
       const rootDomains: Domain[] = [];
       domainMap.forEach(domain => {
         if (domain.parent_id && domainMap.has(domain.parent_id)) {
@@ -415,7 +423,7 @@ const DocumentsPage: React.FC = () => {
           rootDomains.push(domain);
         }
       });
-      
+
       setDomains(rootDomains);
     } catch (err) {
       console.error('Failed to load domains:', err);
@@ -508,9 +516,9 @@ const DocumentsPage: React.FC = () => {
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    
+
     setSelectedFile(file);
-    
+
     // Auto-detect document type from file extension
     const ext = file.name.split('.').pop()?.toLowerCase();
     let docType = 'txt';
@@ -520,7 +528,7 @@ const DocumentsPage: React.FC = () => {
     else if (ext === 'html') docType = 'html';
     else if (ext === 'json') docType = 'json';
     else if (ext === 'csv') docType = 'csv';
-    
+
     // Read file content - use base64 for binary files (PDF, DOCX)
     try {
       let content: string;
@@ -551,16 +559,16 @@ const DocumentsPage: React.FC = () => {
   // Handle drag and drop files onto a domain
   const handleFileDrop = async (domain: Domain, files: FileList) => {
     if (files.length === 0) return;
-    
+
     setUploadingFiles(true);
     setSuccess(`Uploading ${files.length} file(s) to "${domain.name}"...`);
-    
+
     let successCount = 0;
     let errorCount = 0;
-    
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      
+
       try {
         // Auto-detect document type from file extension
         const ext = file.name.split('.').pop()?.toLowerCase();
@@ -571,7 +579,7 @@ const DocumentsPage: React.FC = () => {
         else if (ext === 'html' || ext === 'htm') docType = 'html';
         else if (ext === 'json') docType = 'json';
         else if (ext === 'csv') docType = 'csv';
-        
+
         // Read file content
         let content: string;
         if (docType === 'pdf' || docType === 'docx') {
@@ -587,7 +595,7 @@ const DocumentsPage: React.FC = () => {
           // Read text files as text
           content = await file.text();
         }
-        
+
         // Upload document
         await api.post('/api/v1/rag/documents', {
           name: file.name,
@@ -595,24 +603,24 @@ const DocumentsPage: React.FC = () => {
           content: content,
           domain_id: domain.id,
         });
-        
+
         successCount++;
       } catch (err) {
         console.error(`Failed to upload ${file.name}:`, err);
         errorCount++;
       }
     }
-    
+
     setUploadingFiles(false);
-    
+
     if (errorCount === 0) {
       setSuccess(`Successfully uploaded ${successCount} file(s) to "${domain.name}"`);
     } else {
       setError(`Uploaded ${successCount} file(s), ${errorCount} failed`);
     }
-    
+
     setTimeout(() => setSuccess(null), 3000);
-    
+
     // Refresh data
     loadDocuments();
     loadDomains();
@@ -653,7 +661,7 @@ const DocumentsPage: React.FC = () => {
       setError('Failed to delete document');
     }
   };
-  
+
   // Batch operations handlers
   const toggleDocumentSelection = (docId: string) => {
     const newSelection = new Set(selectedDocuments);
@@ -664,19 +672,19 @@ const DocumentsPage: React.FC = () => {
     }
     setSelectedDocuments(newSelection);
   };
-  
+
   const selectAllDocuments = () => {
     const allIds = new Set(documents.map(d => d.id));
     setSelectedDocuments(allIds);
   };
-  
+
   const clearSelection = () => {
     setSelectedDocuments(new Set());
   };
-  
+
   const handleBatchProcess = async () => {
     if (selectedDocuments.size === 0) return;
-    
+
     try {
       setBatchProcessing(true);
       const response = await fetch('/api/v1/rag/documents/batch-process', {
@@ -688,9 +696,9 @@ const DocumentsPage: React.FC = () => {
           embedding_model: selectedDomain?.embedding_model || 'all-MiniLM-L6-v2'
         })
       });
-      
+
       if (!response.ok) throw new Error('Batch processing failed');
-      
+
       const result = await response.json();
       setSuccess(result.message);
       setTimeout(() => setSuccess(null), 3000);
@@ -702,7 +710,7 @@ const DocumentsPage: React.FC = () => {
       setBatchProcessing(false);
     }
   };
-  
+
   const handleProcessAllPending = async () => {
     try {
       setBatchProcessing(true);
@@ -715,9 +723,9 @@ const DocumentsPage: React.FC = () => {
           embedding_model: selectedDomain?.embedding_model || 'all-MiniLM-L6-v2'
         })
       });
-      
+
       if (!response.ok) throw new Error('Failed to process pending documents');
-      
+
       const result = await response.json();
       setSuccess(result.message);
       setTimeout(() => setSuccess(null), 3000);
@@ -728,7 +736,7 @@ const DocumentsPage: React.FC = () => {
       setBatchProcessing(false);
     }
   };
-  
+
   const handleReprocessDocument = async (docId: string) => {
     try {
       const response = await fetch(`/api/v1/rag/documents/${docId}/reprocess`, {
@@ -739,9 +747,9 @@ const DocumentsPage: React.FC = () => {
           embedding_model: selectedDomain?.embedding_model || 'all-MiniLM-L6-v2'
         })
       });
-      
+
       if (!response.ok) throw new Error('Reprocessing failed');
-      
+
       const result = await response.json();
       setSuccess(result.message);
       setTimeout(() => setSuccess(null), 3000);
@@ -750,17 +758,17 @@ const DocumentsPage: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Failed to reprocess document');
     }
   };
-  
+
   const handleRemoveFromVectorStore = async (docId: string) => {
     if (!confirm('Remove this document from the vector store? The document will remain in the database.')) return;
-    
+
     try {
       const response = await fetch(`/api/v1/rag/documents/${docId}/vectors`, {
         method: 'DELETE'
       });
-      
+
       if (!response.ok) throw new Error('Failed to remove from vector store');
-      
+
       const result = await response.json();
       setSuccess(`Removed ${result.vectors_deleted} vectors from vector store`);
       setTimeout(() => setSuccess(null), 3000);
@@ -769,11 +777,11 @@ const DocumentsPage: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Failed to remove from vector store');
     }
   };
-  
+
   const handleReindexDomain = async () => {
     if (!selectedDomain) return;
     if (!confirm(`Reindex entire domain "${selectedDomain.name}"? This will reprocess all documents.`)) return;
-    
+
     try {
       setBatchProcessing(true);
       const response = await fetch(`/api/v1/rag/domains/${selectedDomain.id}/reindex`, {
@@ -785,9 +793,9 @@ const DocumentsPage: React.FC = () => {
           recreate_collection: false
         })
       });
-      
+
       if (!response.ok) throw new Error('Domain reindex failed');
-      
+
       const result = await response.json();
       setSuccess(result.message);
       setTimeout(() => setSuccess(null), 3000);
@@ -798,7 +806,7 @@ const DocumentsPage: React.FC = () => {
       setBatchProcessing(false);
     }
   };
-  
+
   // Knowledge Graph extraction handlers
   const handleExtractKnowledge = async (docId: string) => {
     try {
@@ -812,10 +820,10 @@ const DocumentsPage: React.FC = () => {
       setLoading(false);
     }
   };
-  
+
   const handleBatchExtractKnowledge = async () => {
     if (selectedDocuments.size === 0) return;
-    
+
     try {
       setBatchProcessing(true);
       const result = await api.batchExtractDocumentKnowledge(Array.from(selectedDocuments));
@@ -828,7 +836,7 @@ const DocumentsPage: React.FC = () => {
       setBatchProcessing(false);
     }
   };
-  
+
   // Load processing queue
   const loadProcessingQueue = useCallback(async () => {
     try {
@@ -841,7 +849,7 @@ const DocumentsPage: React.FC = () => {
       console.error('Failed to load processing queue:', err);
     }
   }, []);
-  
+
   useEffect(() => {
     const interval = setInterval(loadProcessingQueue, 5000);
     loadProcessingQueue();
@@ -875,13 +883,36 @@ const DocumentsPage: React.FC = () => {
     });
   };
 
+  // Vector Search
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    if (!selectedDomain) {
+      setError('Please select a domain first. Documents are organized into domain-specific vector collections.');
+      return;
+    }
+    setSearchLoading(true);
+    try {
+      const response = await api.post('/api/v1/rag/retrieve', {
+        query: searchQuery,
+        domain_id: selectedDomain.id,
+        top_k: searchTopK,
+      });
+      setSearchResults(response.data.results || []);
+    } catch (err: any) {
+      setError(err.message || 'Search failed');
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
   return (
     <Box sx={{ p: 3 }}>
       {/* Header */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Box>
-          <Typography variant="h4" sx={{ 
-            fontWeight: 700, 
+          <Typography variant="h4" sx={{
+            fontWeight: 700,
             mb: 0.5,
             background: 'linear-gradient(135deg, #10B981 0%, #06B6D4 100%)',
             WebkitBackgroundClip: 'text',
@@ -910,6 +941,14 @@ const DocumentsPage: React.FC = () => {
           >
             Add Document
           </Button>
+          <Button
+            startIcon={<SearchIcon />}
+            onClick={() => setSearchDialogOpen(true)}
+            variant="outlined"
+            sx={{ borderColor: '#6366f1', color: '#6366f1', '&:hover': { borderColor: '#818cf8', background: 'rgba(99, 102, 241, 0.1)' } }}
+          >
+            Vector Search
+          </Button>
         </Box>
       </Box>
 
@@ -918,16 +957,16 @@ const DocumentsPage: React.FC = () => {
           {error}
         </Alert>
       )}
-      
+
       {success && (
         <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccess(null)}>
           {success}
         </Alert>
       )}
-      
+
       {uploadingFiles && (
-        <Alert 
-          severity="info" 
+        <Alert
+          severity="info"
           sx={{ mb: 2 }}
           icon={<CircularProgress size={20} />}
         >
@@ -963,13 +1002,13 @@ const DocumentsPage: React.FC = () => {
           p: 3,
           borderRadius: 2,
           border: '2px dashed',
-          borderColor: globalDragOver 
-            ? '#10B981' 
-            : selectedDomain 
-              ? alpha('#10B981', 0.3) 
+          borderColor: globalDragOver
+            ? '#10B981'
+            : selectedDomain
+              ? alpha('#10B981', 0.3)
               : alpha('#fff', 0.1),
-          bgcolor: globalDragOver 
-            ? alpha('#10B981', 0.08) 
+          bgcolor: globalDragOver
+            ? alpha('#10B981', 0.08)
             : 'transparent',
           transition: 'all 0.2s ease',
           cursor: selectedDomain ? 'pointer' : 'default',
@@ -985,20 +1024,20 @@ const DocumentsPage: React.FC = () => {
           }
         }}
       >
-        <CloudUploadIcon sx={{ 
-          fontSize: 40, 
-          color: globalDragOver ? '#10B981' : selectedDomain ? alpha('#10B981', 0.6) : 'text.disabled' 
+        <CloudUploadIcon sx={{
+          fontSize: 40,
+          color: globalDragOver ? '#10B981' : selectedDomain ? alpha('#10B981', 0.6) : 'text.disabled'
         }} />
-        <Typography 
-          variant="body1" 
-          sx={{ 
-            fontWeight: 600, 
-            color: globalDragOver ? '#10B981' : selectedDomain ? 'text.primary' : 'text.disabled' 
+        <Typography
+          variant="body1"
+          sx={{
+            fontWeight: 600,
+            color: globalDragOver ? '#10B981' : selectedDomain ? 'text.primary' : 'text.disabled'
           }}
         >
-          {globalDragOver 
-            ? `Drop files to upload to "${selectedDomain.name}"` 
-            : selectedDomain 
+          {globalDragOver
+            ? `Drop files to upload to "${selectedDomain.name}"`
+            : selectedDomain
               ? `Drag files here to upload to "${selectedDomain.name}"`
               : 'Select a domain to upload documents'}
         </Typography>
@@ -1006,8 +1045,8 @@ const DocumentsPage: React.FC = () => {
           Supports TXT, PDF, DOCX, MD, HTML, JSON, CSV
         </Typography>
         {selectedDomain && !globalDragOver && (
-          <Button 
-            size="small" 
+          <Button
+            size="small"
             startIcon={<UploadIcon />}
             sx={{ mt: 1, textTransform: 'none' }}
           >
@@ -1017,82 +1056,118 @@ const DocumentsPage: React.FC = () => {
       </Box>
 
       <Grid container spacing={3}>
-        {/* Domain Tree Sidebar */}
-        <Grid item xs={3}>
-          <Paper sx={{ 
-            p: 2, 
-            height: 'calc(100vh - 200px)',
-            overflow: 'auto',
-            background: 'linear-gradient(135deg, rgba(26, 26, 46, 0.9) 0%, rgba(15, 15, 26, 0.9) 100%)',
-            border: '1px solid rgba(16, 185, 129, 0.2)',
-          }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-              <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                <FolderIcon sx={{ mr: 1, verticalAlign: 'middle', color: '#F59E0B' }} />
-                Domains
-              </Typography>
-              <IconButton size="small" onClick={loadDomains}>
-                <RefreshIcon fontSize="small" />
-              </IconButton>
-            </Box>
-            
-            <Button
-              fullWidth
-              variant="outlined"
-              size="small"
-              onClick={() => {
-                setSelectedDomain(null);
-                setPage(0);
-              }}
-              sx={{ mb: 2, borderStyle: 'dashed' }}
-            >
-              All Documents
-            </Button>
-            
-            {domains.length > 0 && (
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1, textAlign: 'center' }}>
-                Drag & drop files onto a domain to upload
-              </Typography>
-            )}
-
-            {domains.length === 0 ? (
-              <Box sx={{ textAlign: 'center', py: 4 }}>
-                <FolderIcon sx={{ fontSize: 48, color: 'text.disabled', mb: 1 }} />
-                <Typography variant="body2" color="text.secondary">
-                  No domains yet
-                </Typography>
-                <Button
-                  size="small"
-                  startIcon={<AddIcon />}
-                  onClick={() => setDomainDialogOpen(true)}
-                  sx={{ mt: 1 }}
-                >
-                  Create Domain
-                </Button>
+        {/* Sidebar with Domain Tree and compact utilities */}
+        <Grid item xs={12} md={4} lg={3}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {/* Compact Statistics Bar */}
+            <Paper sx={{
+              p: 1.5,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-around',
+              background: 'linear-gradient(135deg, rgba(26, 26, 46, 0.9) 0%, rgba(15, 15, 26, 0.9) 100%)',
+              border: '1px solid rgba(99, 102, 241, 0.2)',
+            }}>
+              <Box sx={{ textAlign: 'center' }}>
+                <Typography variant="h6" sx={{ fontWeight: 700, color: '#6366f1' }}>{totalDocuments}</Typography>
+                <Typography variant="caption" color="text.secondary">Documents</Typography>
               </Box>
-            ) : (
-              <DomainTree
-                domains={domains}
-                selectedDomain={selectedDomain?.id || null}
-                expandedDomains={expandedDomains}
-                dragOverDomain={dragOverDomain}
-                onSelect={(domain) => {
-                  setSelectedDomain(domain);
+              <Divider orientation="vertical" flexItem sx={{ borderColor: 'rgba(255,255,255,0.1)' }} />
+              <Box sx={{ textAlign: 'center' }}>
+                <Typography variant="h6" sx={{ fontWeight: 700, color: '#10b981' }}>{domains.length}</Typography>
+                <Typography variant="caption" color="text.secondary">Domains</Typography>
+              </Box>
+              {selectedDomain && (
+                <>
+                  <Divider orientation="vertical" flexItem sx={{ borderColor: 'rgba(255,255,255,0.1)' }} />
+                  <Box sx={{ textAlign: 'center' }}>
+                    <Typography variant="h6" sx={{ fontWeight: 700, color: '#f59e0b' }}>{selectedDomain.document_count}</Typography>
+                    <Typography variant="caption" color="text.secondary">Selected</Typography>
+                  </Box>
+                </>
+              )}
+            </Paper>
+
+            {/* Domain Tree - now gets most of the space */}
+            <Paper sx={{
+              p: 2,
+              minHeight: 400,
+              maxHeight: 'calc(100vh - 380px)',
+              overflow: 'auto',
+              background: 'linear-gradient(135deg, rgba(26, 26, 46, 0.9) 0%, rgba(15, 15, 26, 0.9) 100%)',
+              border: '1px solid rgba(16, 185, 129, 0.2)',
+            }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                  <FolderIcon sx={{ mr: 1, verticalAlign: 'middle', color: '#F59E0B' }} />
+                  Domains
+                </Typography>
+                <IconButton size="small" onClick={loadDomains}>
+                  <RefreshIcon fontSize="small" />
+                </IconButton>
+              </Box>
+
+              <Button
+                fullWidth
+                variant="outlined"
+                size="small"
+                onClick={() => {
+                  setSelectedDomain(null);
                   setPage(0);
                 }}
-                onToggle={toggleDomain}
-                onEdit={() => {}}
-                onDelete={handleDeleteDomain}
-                onDragOver={setDragOverDomain}
-                onFileDrop={handleFileDrop}
-              />
-            )}
-          </Paper>
+                sx={{ mb: 2, borderStyle: 'dashed' }}
+              >
+                All Documents
+              </Button>
+
+              {domains.length > 0 && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1, textAlign: 'center' }}>
+                  Drag & drop files onto a domain to upload
+                </Typography>
+              )}
+
+              {domains.length === 0 ? (
+                <Box sx={{ textAlign: 'center', py: 4 }}>
+                  <FolderIcon sx={{ fontSize: 48, color: 'text.disabled', mb: 1 }} />
+                  <Typography variant="body2" color="text.secondary">
+                    No domains yet
+                  </Typography>
+                  <Button
+                    size="small"
+                    startIcon={<AddIcon />}
+                    onClick={() => setDomainDialogOpen(true)}
+                    sx={{ mt: 1 }}
+                  >
+                    Create Domain
+                  </Button>
+                </Box>
+              ) : (
+                <DomainTree
+                  domains={domains}
+                  selectedDomain={selectedDomain?.id || null}
+                  expandedDomains={expandedDomains}
+                  dragOverDomain={dragOverDomain}
+                  onSelect={(domain) => {
+                    setSelectedDomain(domain);
+                    setPage(0);
+                  }}
+                  onToggle={toggleDomain}
+                  onEdit={() => { }}
+                  onDelete={handleDeleteDomain}
+                  onDragOver={setDragOverDomain}
+                  onFileDrop={handleFileDrop}
+                />
+              )}
+            </Paper>
+
+            {/* Reddit Crawler Card */}
+            <RedditCrawlerCard />
+          </Box>
         </Grid>
 
         {/* Document List */}
-        <Grid item xs={selectedDocument ? 5 : 9}>
-          <Paper sx={{ 
+        <Grid item xs={12} md={selectedDocument ? 4 : 8} lg={selectedDocument ? 5 : 9}>
+          <Paper sx={{
             p: 2,
             background: 'linear-gradient(135deg, rgba(26, 26, 46, 0.9) 0%, rgba(15, 15, 26, 0.9) 100%)',
             border: '1px solid rgba(16, 185, 129, 0.2)',
@@ -1175,7 +1250,7 @@ const DocumentsPage: React.FC = () => {
                 </Box>
               </Paper>
             )}
-            
+
             {/* Quick Actions */}
             <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
               <Button
@@ -1205,7 +1280,7 @@ const DocumentsPage: React.FC = () => {
                 {selectedDocuments.size === documents.length ? 'Deselect All' : 'Select All'}
               </Button>
             </Box>
-            
+
             {/* Processing Queue Status */}
             {processingQueue && (processingQueue.processing.count > 0 || processingQueue.pending.count > 0) && (
               <Alert severity="info" sx={{ mb: 2 }}>
@@ -1419,7 +1494,7 @@ const DocumentsPage: React.FC = () => {
         {/* Document Details Panel */}
         {selectedDocument && (
           <Grid item xs={4}>
-            <Paper sx={{ 
+            <Paper sx={{
               p: 2,
               height: 'calc(100vh - 200px)',
               overflow: 'auto',
@@ -1589,8 +1664,8 @@ const DocumentsPage: React.FC = () => {
           </Grid>
 
           {/* Input Method Tabs */}
-          <Tabs 
-            value={uploadMode} 
+          <Tabs
+            value={uploadMode}
             onChange={(_, newValue) => setUploadMode(newValue)}
             sx={{ mb: 2 }}
           >
@@ -1694,9 +1769,9 @@ const DocumentsPage: React.FC = () => {
           }}>
             Cancel
           </Button>
-          <Button 
-            onClick={handleCreateDocument} 
-            variant="contained" 
+          <Button
+            onClick={handleCreateDocument}
+            variant="contained"
             disabled={!documentForm.name || (!documentForm.content && uploadMode !== 'url')}
           >
             Add Document
@@ -1785,6 +1860,114 @@ const DocumentsPage: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setViewDialogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Vector Search Dialog */}
+      <Dialog open={searchDialogOpen} onClose={() => setSearchDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <SearchIcon sx={{ color: '#6366f1' }} />
+            Vector Search
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: 'flex', gap: 2, mb: 3, mt: 1 }}>
+            <TextField
+              fullWidth
+              placeholder="Enter your semantic search query..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+              InputProps={{
+                startAdornment: <SearchIcon sx={{ mr: 1, color: 'text.disabled' }} />,
+              }}
+            />
+            <FormControl size="small" sx={{ minWidth: 100 }}>
+              <InputLabel>Results</InputLabel>
+              <Select
+                value={searchTopK}
+                label="Results"
+                onChange={(e) => setSearchTopK(Number(e.target.value))}
+              >
+                <MenuItem value={5}>5</MenuItem>
+                <MenuItem value={10}>10</MenuItem>
+                <MenuItem value={20}>20</MenuItem>
+                <MenuItem value={50}>50</MenuItem>
+              </Select>
+            </FormControl>
+            <Button
+              variant="contained"
+              onClick={handleSearch}
+              disabled={searchLoading || !searchQuery.trim()}
+              sx={{ background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)' }}
+            >
+              {searchLoading ? <CircularProgress size={20} /> : 'Search'}
+            </Button>
+          </Box>
+
+          {selectedDomain && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+              Searching in domain: <strong>{selectedDomain.name}</strong> (select "All Documents" to search everywhere)
+            </Typography>
+          )}
+
+          {searchResults.length > 0 ? (
+            <List sx={{ maxHeight: 400, overflow: 'auto' }}>
+              {searchResults.map((result, idx) => (
+                <ListItem
+                  key={idx}
+                  sx={{
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    border: '1px solid rgba(99, 102, 241, 0.2)',
+                    borderRadius: 1,
+                    mb: 1,
+                    background: 'rgba(99, 102, 241, 0.05)',
+                  }}
+                >
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', mb: 1 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <DocIcon fontSize="small" sx={{ color: '#6366f1' }} />
+                      <Typography variant="subtitle2">
+                        {result.document_name || result.metadata?.document_name || `Result ${idx + 1}`}
+                      </Typography>
+                    </Box>
+                    <Chip
+                      size="small"
+                      label={`Score: ${(result.score * 100).toFixed(1)}%`}
+                      sx={{
+                        bgcolor: result.score > 0.8 ? 'rgba(16, 185, 129, 0.2)' : result.score > 0.5 ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                        color: result.score > 0.8 ? '#10b981' : result.score > 0.5 ? '#f59e0b' : '#ef4444',
+                      }}
+                    />
+                  </Box>
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: 'text.secondary',
+                      fontSize: 13,
+                      lineHeight: 1.6,
+                      whiteSpace: 'pre-wrap',
+                      maxHeight: 120,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {result.content?.substring(0, 500) || 'No content preview'}
+                    {result.content?.length > 500 && '...'}
+                  </Typography>
+                </ListItem>
+              ))}
+            </List>
+          ) : searchQuery && !searchLoading ? (
+            <Box sx={{ textAlign: 'center', py: 4 }}>
+              <Typography color="text.secondary">No results found for "{searchQuery}"</Typography>
+            </Box>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setSearchDialogOpen(false); setSearchResults([]); setSearchQuery(''); }}>Close</Button>
         </DialogActions>
       </Dialog>
     </Box>

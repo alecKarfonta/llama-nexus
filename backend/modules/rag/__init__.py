@@ -8,6 +8,7 @@ This module provides:
 - Multiple chunking strategies
 - Embedding model management
 - Advanced retrieval mechanisms
+- VLM-based visual description for PDF graphics
 """
 
 from .document_manager import DocumentManager, Document, Domain
@@ -16,6 +17,7 @@ from .vector_stores.qdrant_store import QdrantStore
 from .chunkers.base import Chunker
 from .embedders.base import Embedder
 from .graph_rag import GraphRAG, Entity, Relationship
+from .vlm_client import VLMClient, get_vlm_client
 
 __all__ = [
     'DocumentManager',
@@ -28,4 +30,6 @@ __all__ = [
     'GraphRAG',
     'Entity',
     'Relationship',
+    'VLMClient',
+    'get_vlm_client',
 ]

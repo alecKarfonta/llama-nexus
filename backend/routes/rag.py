@@ -120,6 +120,125 @@ def extract_pdf_text(content: str) -> str:
         return content
 
 
+def extract_pdf_images(
+    content: str,
+    document_id: str,
+    output_dir: str = "data/rag/images"
+) -> list:
+    """
+    Extract images from PDF content and save to disk.
+    
+    Args:
+        content: PDF content (base64 encoded or raw)
+        document_id: Document ID for organizing images
+        output_dir: Base directory for saving images
+        
+    Returns:
+        List of tuples: (page_number, image_path, image_type)
+    """
+    import io
+    import base64
+    import os
+    
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        logger.warning("PyMuPDF not installed, cannot extract PDF images")
+        return []
+    
+    extracted_images = []
+    
+    try:
+        # Decode PDF content to bytes (same logic as extract_pdf_text)
+        pdf_bytes = None
+        
+        try:
+            pdf_bytes = base64.b64decode(content)
+            if pdf_bytes[:4] != b'%PDF':
+                pdf_bytes = None
+        except:
+            pass
+        
+        if pdf_bytes is None:
+            for encoding in ['latin-1', 'utf-8', 'cp1252', 'iso-8859-1']:
+                try:
+                    pdf_bytes = content.encode(encoding)
+                    if pdf_bytes[:4] == b'%PDF':
+                        break
+                    pdf_bytes = None
+                except:
+                    continue
+        
+        if pdf_bytes is None and content.startswith('%PDF'):
+            try:
+                pdf_bytes = bytes([ord(c) & 0xFF for c in content])
+            except:
+                pass
+        
+        if pdf_bytes is None or pdf_bytes[:4] != b'%PDF':
+            logger.warning("Cannot extract images: content is not valid PDF")
+            return []
+        
+        # Create output directory for this document
+        doc_image_dir = os.path.join(output_dir, document_id)
+        os.makedirs(doc_image_dir, exist_ok=True)
+        
+        # Open PDF with PyMuPDF
+        pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        image_count = 0
+        for page_num in range(len(pdf_doc)):
+            page = pdf_doc[page_num]
+            image_list = page.get_images(full=True)
+            
+            for img_index, img_info in enumerate(image_list):
+                xref = img_info[0]  # Image reference number
+                
+                try:
+                    # Extract image
+                    base_image = pdf_doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
+                    width = base_image.get("width", 0)
+                    height = base_image.get("height", 0)
+                    
+                    # Filter out tiny images (likely icons/bullets) and very small graphics
+                    if width < 100 or height < 100:
+                        continue
+                    
+                    # Filter out very thin images (likely lines/borders)
+                    aspect_ratio = max(width, height) / max(min(width, height), 1)
+                    if aspect_ratio > 10:
+                        continue
+                    
+                    # Save image
+                    image_name = f"page{page_num + 1}_img{img_index + 1}.{image_ext}"
+                    image_path = os.path.join(doc_image_dir, image_name)
+                    
+                    with open(image_path, "wb") as f:
+                        f.write(image_bytes)
+                    
+                    extracted_images.append((page_num + 1, image_path, image_ext))
+                    image_count += 1
+                    
+                    logger.debug(f"Extracted image: {image_path} ({width}x{height})")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to extract image {xref} from page {page_num + 1}: {e}")
+                    continue
+        
+        pdf_doc.close()
+        
+        if image_count > 0:
+            logger.info(f"Extracted {image_count} images from PDF document {document_id}")
+        
+        return extracted_images
+        
+    except Exception as e:
+        logger.error(f"Failed to extract PDF images: {e}")
+        return []
+
+
 # Domain Management
 @router.get("/domains")
 async def list_rag_domains(request: Request):
@@ -324,9 +443,10 @@ async def create_rag_document(request: Request, background_tasks: BackgroundTask
 
     content = data.get('content', '')
     doc_type = data.get('doc_type', 'txt')
+    original_pdf_content = None
     
     if content and doc_type == 'pdf':
-        original_content = content
+        original_pdf_content = content  # Preserve for VLM image extraction
         content = extract_pdf_text(content)
         if not content or content.startswith('%PDF'):
             raise HTTPException(
@@ -339,6 +459,11 @@ async def create_rag_document(request: Request, background_tasks: BackgroundTask
         if existing:
             raise HTTPException(status_code=409, detail=f"Duplicate content, existing document: {existing}")
 
+    # Prepare metadata - include original PDF content for VLM image extraction
+    metadata = data.get('metadata', {})
+    if original_pdf_content:
+        metadata['original_pdf_content'] = original_pdf_content
+
     doc = Document(
         id=str(uuid.uuid4()),
         domain_id=data.get('domain_id'),
@@ -346,7 +471,7 @@ async def create_rag_document(request: Request, background_tasks: BackgroundTask
         doc_type=DocumentType(data.get('doc_type', 'txt')),
         content=content,
         source_url=data.get('source_url'),
-        metadata=data.get('metadata', {})
+        metadata=metadata
     )
 
     result = await rag['document_manager'].create_document(doc)
@@ -905,11 +1030,18 @@ async def retrieve_documents(request: Request):
     if not query:
         raise HTTPException(status_code=400, detail="Query is required")
     
-    embedding_model = data.get('embedding_model', 'all-MiniLM-L6-v2')
-    embedder = create_embedder(request, model_name=embedding_model)
-    
     domain_id = data.get('domain_id')
     collection_name = f"domain_{domain_id}" if domain_id else "documents"
+    
+    # Get the domain's embedding model to ensure dimension match
+    default_embedding_model = 'all-MiniLM-L6-v2'
+    if domain_id:
+        domain = await rag['document_manager'].get_domain(domain_id)
+        if domain and domain.embedding_model:
+            default_embedding_model = domain.embedding_model
+    
+    embedding_model = data.get('embedding_model', default_embedding_model)
+    embedder = create_embedder(request, model_name=embedding_model)
     
     retriever = VectorRetriever(
         rag['vector_store'],
