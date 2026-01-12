@@ -205,6 +205,8 @@ class CreateJobRequest(BaseModel):
     max_seq_length: int = Field(default=2048, ge=1)
     gradient_accumulation_steps: int = Field(default=4, ge=1)
     warmup_steps: int = Field(default=100, ge=0)
+    # GPU selection
+    gpu_devices: Optional[List[int]] = Field(default=None, description="Specific GPU indices to use")
     # QLoRA settings
     use_qlora: bool = Field(default=True)
     qlora_bits: int = Field(default=4, ge=2, le=8)
@@ -477,6 +479,7 @@ def create_job(request: CreateJobRequest):
             max_seq_length=request.max_seq_length,
             gradient_accumulation_steps=request.gradient_accumulation_steps,
             warmup_steps=request.warmup_steps,
+            gpu_devices=request.gpu_devices,
         ),
         qlora_config=QLoRAConfig(
             enabled=request.use_qlora,

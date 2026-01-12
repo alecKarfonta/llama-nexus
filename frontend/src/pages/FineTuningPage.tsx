@@ -714,10 +714,28 @@ export const FineTuningPage: React.FC = () => {
     e?.preventDefault();
     setError(null);
     try {
+      // Flatten nested config for backend CreateJobRequest
+      const payload = {
+        name: form.name,
+        base_model: form.base_model,
+        dataset_ids: form.dataset_ids,
+        lora_rank: form.lora_config.rank,
+        lora_alpha: form.lora_config.alpha,
+        lora_dropout: form.lora_config.dropout,
+        learning_rate: form.training_config.learning_rate,
+        batch_size: form.training_config.batch_size,
+        num_epochs: form.training_config.num_epochs,
+        max_seq_length: form.training_config.max_seq_length,
+        gradient_accumulation_steps: form.training_config.gradient_accumulation_steps,
+        warmup_steps: form.training_config.warmup_steps,
+        gpu_devices: form.training_config.gpu_devices || null,
+        use_qlora: form.qlora_config.enabled,
+        qlora_bits: form.qlora_config.bits,
+      };
       const res = await fetch("/api/v1/finetune/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error("Failed to create job");
       await fetchJobs();
