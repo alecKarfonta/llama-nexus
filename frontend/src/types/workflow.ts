@@ -256,7 +256,7 @@ export const BUILTIN_NODE_TYPES: NodeTypeDefinition[] = [
     configSchema: {
       type: 'object',
       properties: {
-        model: { type: 'string', description: 'Model to use' },
+        model: { type: 'string', format: 'model-select', description: 'Select a deployed model', required: true },
         temperature: { type: 'number', minimum: 0, maximum: 2, default: 0.7 },
         maxTokens: { type: 'integer', minimum: 1, default: 2048 },
       },
@@ -287,6 +287,188 @@ export const BUILTIN_NODE_TYPES: NodeTypeDefinition[] = [
     },
   },
   {
+    type: 'openai_api_llm',
+    displayName: 'OpenAI API LLM',
+    category: 'llm',
+    description: 'Advanced OpenAI-compatible API endpoint with full configuration',
+    color: '#6366f1',
+    inputs: [
+      { id: 'messages', name: 'Messages', type: 'array', required: true },
+      { id: 'system', name: 'System Prompt', type: 'string' },
+      { id: 'tools', name: 'Tools', type: 'array', description: 'Function calling tools' },
+    ],
+    outputs: [
+      { id: 'response', name: 'Response', type: 'string' },
+      { id: 'usage', name: 'Token Usage', type: 'object' },
+      { id: 'tool_calls', name: 'Tool Calls', type: 'array' },
+      { id: 'finish_reason', name: 'Finish Reason', type: 'string' },
+    ],
+    configSchema: {
+      type: 'object',
+      properties: {
+        // Connection settings
+        endpoint: { 
+          type: 'string', 
+          description: 'API endpoint URL',
+          default: 'https://api.openai.com/v1/chat/completions',
+          format: 'url'
+        },
+        apiKey: { 
+          type: 'string', 
+          format: 'password',
+          description: 'API key for authentication'
+        },
+        organization: {
+          type: 'string',
+          description: 'Optional organization ID'
+        },
+        
+        // Model settings
+        model: { 
+          type: 'string', 
+          default: 'gpt-4',
+          description: 'Model name (e.g., gpt-4, gpt-4-turbo, gpt-3.5-turbo, o1, o1-mini)'
+        },
+        
+        // Generation parameters
+        temperature: { 
+          type: 'number', 
+          minimum: 0, 
+          maximum: 2, 
+          default: 0.7,
+          description: 'Controls randomness (0=deterministic, 2=very random)'
+        },
+        topP: { 
+          type: 'number', 
+          minimum: 0, 
+          maximum: 1, 
+          default: 1,
+          description: 'Nucleus sampling probability'
+        },
+        topK: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 200,
+          description: 'Top-k sampling (if supported by model)'
+        },
+        maxTokens: { 
+          type: 'integer', 
+          minimum: 1,
+          maximum: 128000,
+          description: 'Maximum tokens to generate'
+        },
+        presencePenalty: {
+          type: 'number',
+          minimum: -2,
+          maximum: 2,
+          default: 0,
+          description: 'Penalize tokens based on presence (-2 to 2)'
+        },
+        frequencyPenalty: {
+          type: 'number',
+          minimum: -2,
+          maximum: 2,
+          default: 0,
+          description: 'Penalize tokens based on frequency (-2 to 2)'
+        },
+        repetitionPenalty: {
+          type: 'number',
+          minimum: 0.1,
+          maximum: 2,
+          description: 'Alternative repetition penalty (if supported)'
+        },
+        
+        // Thinking/reasoning (for o1 models)
+        thinkingLevel: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 10,
+          default: 0,
+          description: 'Thinking level for reasoning models (0=none, 10=maximum)'
+        },
+        
+        // Advanced settings
+        stream: {
+          type: 'boolean',
+          default: false,
+          description: 'Enable streaming responses'
+        },
+        n: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 10,
+          default: 1,
+          description: 'Number of completions to generate'
+        },
+        stop: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Stop sequences'
+        },
+        logprobs: {
+          type: 'boolean',
+          default: false,
+          description: 'Return log probabilities'
+        },
+        topLogprobs: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 20,
+          description: 'Number of top log probabilities to return'
+        },
+        seed: {
+          type: 'integer',
+          description: 'Random seed for deterministic generation'
+        },
+        responseFormat: {
+          type: 'object',
+          properties: {
+            type: { 
+              type: 'string', 
+              enum: ['text', 'json_object', 'json_schema'],
+              default: 'text'
+            },
+            schema: {
+              type: 'object',
+              description: 'JSON schema for structured output'
+            }
+          }
+        },
+        
+        // Request configuration
+        timeout: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 600,
+          default: 120,
+          description: 'Request timeout in seconds'
+        },
+        retryAttempts: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 5,
+          default: 2,
+          description: 'Number of retry attempts on failure'
+        },
+        retryDelay: {
+          type: 'integer',
+          minimum: 100,
+          maximum: 10000,
+          default: 1000,
+          description: 'Delay between retries in milliseconds'
+        },
+        
+        // Custom headers
+        customHeaders: {
+          type: 'object',
+          description: 'Additional HTTP headers',
+          additionalProperties: { type: 'string' }
+        },
+      },
+      required: ['endpoint', 'apiKey', 'model'],
+    },
+  },
+  {
     type: 'embedding',
     displayName: 'Generate Embedding',
     category: 'llm',
@@ -301,7 +483,7 @@ export const BUILTIN_NODE_TYPES: NodeTypeDefinition[] = [
     configSchema: {
       type: 'object',
       properties: {
-        model: { type: 'string', description: 'Embedding model' },
+        model: { type: 'string', format: 'model-select', description: 'Select an embedding model' },
       },
     },
   },
@@ -390,6 +572,139 @@ export const BUILTIN_NODE_TYPES: NodeTypeDefinition[] = [
       },
     },
   },
+  {
+    type: 'graphrag_search',
+    displayName: 'GraphRAG Hybrid Search',
+    category: 'rag',
+    description: 'Hybrid search with LLM answer generation (vector + graph + keyword)',
+    color: '#8b5cf6',
+    inputs: [
+      { id: 'query', name: 'Query', type: 'string', required: true },
+      { id: 'domain', name: 'Domain', type: 'string' },
+    ],
+    outputs: [
+      { id: 'answer', name: 'Answer', type: 'string' },
+      { id: 'documents', name: 'Documents', type: 'array' },
+      { id: 'sources', name: 'Sources', type: 'array' },
+      { id: 'entities', name: 'Entities', type: 'array' },
+    ],
+    configSchema: {
+      type: 'object',
+      properties: {
+        searchType: { 
+          type: 'string', 
+          enum: ['auto', 'hybrid', 'vector', 'graph', 'keyword'],
+          default: 'auto',
+          description: 'Search method (auto selects best)'
+        },
+        topK: { type: 'integer', default: 10, minimum: 1, maximum: 50 },
+      },
+    },
+  },
+  {
+    type: 'entity_extraction',
+    displayName: 'Extract Entities',
+    category: 'rag',
+    description: 'Extract entities and relationships using GLiNER',
+    color: '#8b5cf6',
+    inputs: [
+      { id: 'text', name: 'Text', type: 'string', required: true },
+      { id: 'domain', name: 'Domain', type: 'string' },
+    ],
+    outputs: [
+      { id: 'entities', name: 'Entities', type: 'array' },
+      { id: 'relationships', name: 'Relationships', type: 'array' },
+      { id: 'entity_count', name: 'Entity Count', type: 'number' },
+    ],
+    configSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    type: 'multi_hop_reasoning',
+    displayName: 'Multi-Hop Reasoning',
+    category: 'rag',
+    description: 'Find reasoning paths between entities in knowledge graph',
+    color: '#8b5cf6',
+    inputs: [
+      { id: 'source', name: 'Source Entity', type: 'string', required: true },
+      { id: 'target', name: 'Target Entity', type: 'string', required: true },
+    ],
+    outputs: [
+      { id: 'reasoning_path', name: 'Reasoning Path', type: 'array' },
+      { id: 'answer', name: 'Answer', type: 'string' },
+      { id: 'sources', name: 'Sources', type: 'array' },
+      { id: 'hop_count', name: 'Hop Count', type: 'number' },
+    ],
+    configSchema: {
+      type: 'object',
+      properties: {
+        maxHops: { type: 'integer', default: 3, minimum: 1, maximum: 10 },
+      },
+    },
+  },
+  {
+    type: 'causal_reasoning',
+    displayName: 'Causal Reasoning',
+    category: 'rag',
+    description: 'Find cause-effect relationships',
+    color: '#8b5cf6',
+    inputs: [
+      { id: 'query', name: 'Query', type: 'string', required: true },
+    ],
+    outputs: [
+      { id: 'causes', name: 'Causes', type: 'array' },
+      { id: 'effects', name: 'Effects', type: 'array' },
+      { id: 'reasoning', name: 'Reasoning', type: 'string' },
+      { id: 'answer', name: 'Answer', type: 'string' },
+    ],
+    configSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    type: 'comparative_reasoning',
+    displayName: 'Comparative Analysis',
+    category: 'rag',
+    description: 'Compare entities and find similarities/differences',
+    color: '#8b5cf6',
+    inputs: [
+      { id: 'entity1', name: 'Entity 1', type: 'string', required: true },
+      { id: 'entity2', name: 'Entity 2', type: 'string', required: true },
+    ],
+    outputs: [
+      { id: 'similarities', name: 'Similarities', type: 'array' },
+      { id: 'differences', name: 'Differences', type: 'array' },
+      { id: 'analysis', name: 'Analysis', type: 'string' },
+      { id: 'answer', name: 'Answer', type: 'string' },
+    ],
+    configSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    type: 'entity_linking',
+    displayName: 'Entity Linking',
+    category: 'rag',
+    description: 'Link entity mentions to knowledge graph',
+    color: '#8b5cf6',
+    inputs: [
+      { id: 'entities', name: 'Entities', type: 'array', required: true },
+      { id: 'context', name: 'Context', type: 'string' },
+    ],
+    outputs: [
+      { id: 'linked_entities', name: 'Linked Entities', type: 'array' },
+      { id: 'disambiguated', name: 'Disambiguated', type: 'array' },
+      { id: 'link_count', name: 'Link Count', type: 'number' },
+    ],
+    configSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
 
   // Tools Nodes
   {
@@ -430,6 +745,48 @@ export const BUILTIN_NODE_TYPES: NodeTypeDefinition[] = [
       type: 'object',
       properties: {
         functionName: { type: 'string' },
+      },
+    },
+  },
+  {
+    type: 'code_detection',
+    displayName: 'Code Detection',
+    category: 'tools',
+    description: 'Detect code in documents using GraphRAG',
+    color: '#f59e0b',
+    inputs: [
+      { id: 'content', name: 'Content', type: 'string', required: true },
+      { id: 'filename', name: 'Filename', type: 'string' },
+    ],
+    outputs: [
+      { id: 'is_code', name: 'Is Code', type: 'boolean' },
+      { id: 'language', name: 'Language', type: 'string' },
+      { id: 'confidence', name: 'Confidence', type: 'number' },
+    ],
+    configSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    type: 'code_search',
+    displayName: 'Code Search',
+    category: 'tools',
+    description: 'Search for code examples using GraphRAG',
+    color: '#f59e0b',
+    inputs: [
+      { id: 'query', name: 'Query', type: 'string', required: true },
+      { id: 'language', name: 'Language', type: 'string' },
+    ],
+    outputs: [
+      { id: 'code_examples', name: 'Code Examples', type: 'array' },
+      { id: 'sources', name: 'Sources', type: 'array' },
+      { id: 'total_results', name: 'Total Results', type: 'number' },
+    ],
+    configSchema: {
+      type: 'object',
+      properties: {
+        topK: { type: 'integer', default: 10, minimum: 1, maximum: 50 },
       },
     },
   },

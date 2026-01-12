@@ -1820,6 +1820,238 @@ class ApiService {
     return response.data;
   }
 
+  /**
+   * Upload document to GraphRAG for processing
+   */
+  async uploadToGraphRAG(file: File, options?: {
+    domain?: string;
+    useSemanticChunking?: boolean;
+    buildKnowledgeGraph?: boolean;
+  }): Promise<{
+    filename: string;
+    chunks: any[];
+    total_chunks: number;
+    knowledge_graph?: {
+      entities: number;
+      relationships: number;
+    };
+  }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('domain', options?.domain || 'general');
+    formData.append('use_semantic_chunking', String(options?.useSemanticChunking ?? true));
+    formData.append('build_knowledge_graph', String(options?.buildKnowledgeGraph ?? true));
+
+    const response = await this.backendClient.post('/api/v1/graphrag/ingest/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 180000, // 3 minutes for large documents
+    });
+    return response.data;
+  }
+
+  /**
+   * Batch upload documents to GraphRAG
+   */
+  async uploadBatchToGraphRAG(files: File[], options?: {
+    domain?: string;
+    useSemanticChunking?: boolean;
+  }): Promise<{
+    results: Record<string, any>;
+    total_files: number;
+  }> {
+    const formData = new FormData();
+    files.forEach(file => formData.append('files', file));
+    formData.append('domain', options?.domain || 'general');
+    formData.append('use_semantic_chunking', String(options?.useSemanticChunking ?? true));
+
+    const response = await this.backendClient.post('/api/v1/graphrag/ingest/batch', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 300000, // 5 minutes for batch
+    });
+    return response.data;
+  }
+
+  /**
+   * Rebuild GraphRAG knowledge graph from existing documents
+   */
+  async rebuildGraphRAGKnowledgeGraph(domain?: string): Promise<{
+    message: string;
+    documents_processed: number;
+    entities_extracted: number;
+    relationships_extracted: number;
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/rebuild', {
+      domain
+    });
+    return response.data;
+  }
+
+  /**
+   * Export GraphRAG knowledge graph
+   */
+  async exportGraphRAGGraph(params?: {
+    domain?: string;
+    format?: string;
+  }): Promise<any> {
+    const response = await this.backendClient.post('/api/v1/graphrag/export', params || {});
+    return response.data;
+  }
+
+  /**
+   * Analyze query intent for intelligent search
+   */
+  async analyzeQueryIntent(query: string): Promise<{
+    intent: string;
+    entities: string[];
+    keywords: string[];
+    complexity: number;
+    reasoning_type?: string;
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/query/intent', {
+      params: { query }
+    });
+    return response.data;
+  }
+
+  /**
+   * Intelligent search with automatic method selection
+   */
+  async intelligentSearch(params: {
+    query: string;
+    search_type?: 'auto' | 'hybrid' | 'vector' | 'graph' | 'keyword';
+    top_k?: number;
+    domain?: string;
+    filters?: Record<string, any>;
+  }): Promise<{
+    answer: string;
+    results: Array<{
+      content: string;
+      source: string;
+      score: number;
+      metadata?: any;
+    }>;
+    query_analysis: any;
+    search_method_used: string;
+    total_results: number;
+    sources?: string[];
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/search/intelligent', params);
+    return response.data;
+  }
+
+  /**
+   * Explain relationship between two entities
+   */
+  async explainRelationship(params: {
+    source: string;
+    target: string;
+    entities?: any[];
+    relationships?: any[];
+  }): Promise<{
+    source: string;
+    target: string;
+    explanation: string;
+    paths: any[];
+    confidence: number;
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/reasoning/explain', params);
+    return response.data;
+  }
+
+  // ============================================================================
+  // GraphRAG Hybrid Processing API
+  // ============================================================================
+
+  /**
+   * Get hybrid processing system status (GraphRAG + Code RAG)
+   */
+  async getHybridStatus(): Promise<{
+    graphrag_healthy: boolean;
+    code_rag_healthy: boolean;
+    hybrid_available: boolean;
+    code_rag_status?: {
+      available: boolean;
+      status: string;
+      response: string;
+    };
+    error?: string;
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/hybrid/status');
+    return response.data;
+  }
+
+  /**
+   * Process file using hybrid routing (code to Code RAG, documents to GraphRAG)
+   */
+  async hybridProcess(file: File, domain?: string): Promise<{
+    file_type: 'code' | 'document';
+    language: string | null;
+    code_rag_processing: {
+      success: boolean;
+      response?: any;
+      error?: string;
+    } | null;
+    graphrag_processing: {
+      success: boolean;
+      response?: any;
+      error?: string;
+    };
+    hybrid_processing: boolean;
+  }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (domain) {
+      formData.append('domain', domain);
+    }
+    
+    const response = await this.backendClient.post('/api/v1/graphrag/hybrid/process', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 300000, // 5 minutes for processing
+    });
+    return response.data;
+  }
+
+  /**
+   * Get entity extraction method statistics
+   */
+  async getExtractionStats(): Promise<{
+    enhanced_extraction_stats?: {
+      spanbert_available: boolean;
+      dependency_available: boolean;
+      entity_linking_available: boolean;
+      extraction_methods: string[];
+    };
+    available_methods: string[];
+    spanbert_available: boolean;
+    dependency_available: boolean;
+    entity_linking_available: boolean;
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/extraction-stats');
+    return response.data;
+  }
+
+  /**
+   * Get supported file formats and features
+   */
+  async getSupportedFormats(): Promise<{
+    supported_formats: string[];
+    features: {
+      semantic_chunking: boolean;
+      metadata_extraction: boolean;
+      content_type_classification: boolean;
+      structure_preservation: boolean;
+    };
+  }> {
+    const response = await this.backendClient.get('/api/v1/graphrag/supported-formats');
+    return response.data;
+  }
+
   // ============================================================================
   // STT (Speech-to-Text) API
   // ============================================================================
