@@ -96,6 +96,10 @@ class TrainingConfig(BaseModel):
         True,
         description="Enable gradient checkpointing to reduce VRAM usage (~70% reduction in activation memory)"
     )
+    gpu_count: Optional[int] = Field(
+        None, ge=1, le=8,
+        description="Number of GPUs to use (None = use all available)"
+    )
 
     @validator("fp16")
     def fp16_bf16_exclusive(cls, value: bool, values: Dict[str, Any]) -> bool:

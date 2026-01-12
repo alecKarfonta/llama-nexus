@@ -450,3 +450,113 @@ async def test_embedding(request: Request):
     except Exception as e:
         logger.error(f"Embedding test error: {e}")
         raise HTTPException(status_code=500, detail=f"Embedding test failed: {str(e)}")
+
+
+# =============================================================================
+# Worker Service Control Endpoints
+# =============================================================================
+
+# Managed worker containers
+WORKER_CONTAINERS = {
+    "training": "llama-nexus-training",
+    "quantization": "quantization-worker",
+}
+
+
+def run_docker_command(args: list) -> tuple[bool, str]:
+    """Run a docker CLI command and return success status and output."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["docker"] + args,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        return result.returncode == 0, result.stdout + result.stderr
+    except Exception as e:
+        return False, str(e)
+
+
+@router.get("/api/v1/workers/status")
+async def get_workers_status():
+    """Get status of all managed worker containers."""
+    import subprocess
+    
+    workers = []
+    for worker_id, container_name in WORKER_CONTAINERS.items():
+        try:
+            # Get container status using docker inspect
+            result = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Status}}", container_name],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                status = result.stdout.strip()
+                running = status == "running"
+            else:
+                status = "not_found"
+                running = False
+            
+            # Check GPU usage if running
+            gpu_active = False
+            if running:
+                try:
+                    gpu_result = subprocess.run(
+                        ["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if gpu_result.returncode == 0 and gpu_result.stdout.strip():
+                        gpu_active = True
+                except Exception:
+                    pass
+            
+            workers.append({
+                "id": worker_id,
+                "name": container_name,
+                "running": running,
+                "status": status,
+                "gpu_active": gpu_active,
+            })
+        except Exception as e:
+            workers.append({
+                "id": worker_id,
+                "name": container_name,
+                "running": False,
+                "status": "error",
+                "error": str(e),
+            })
+    
+    return {"workers": workers}
+
+
+@router.post("/api/v1/workers/{worker_id}/start")
+async def start_worker(worker_id: str):
+    """Start a worker container."""
+    if worker_id not in WORKER_CONTAINERS:
+        raise HTTPException(status_code=404, detail=f"Unknown worker: {worker_id}")
+    
+    container_name = WORKER_CONTAINERS[worker_id]
+    success, output = run_docker_command(["start", container_name])
+    
+    if success:
+        return {"success": True, "message": f"{worker_id} started successfully"}
+    else:
+        logger.error(f"Failed to start {worker_id}: {output}")
+        raise HTTPException(status_code=500, detail=f"Failed to start {worker_id}: {output}")
+
+
+@router.post("/api/v1/workers/{worker_id}/stop")
+async def stop_worker(worker_id: str):
+    """Stop a worker container."""
+    if worker_id not in WORKER_CONTAINERS:
+        raise HTTPException(status_code=404, detail=f"Unknown worker: {worker_id}")
+    
+    container_name = WORKER_CONTAINERS[worker_id]
+    success, output = run_docker_command(["stop", "-t", "10", container_name])
+    
+    if success:
+        return {"success": True, "message": f"{worker_id} stopped successfully"}
+    else:
+        logger.error(f"Failed to stop {worker_id}: {output}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop {worker_id}: {output}")

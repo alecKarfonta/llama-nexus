@@ -1447,6 +1447,58 @@ export const FineTuningPage: React.FC = () => {
                             }
                           />
                         </Box>
+
+                        {/* GPU Count Slider */}
+                        <Box sx={{ mt: 3 }}>
+                          <Tooltip title="Number of GPUs to use for training. Set to a specific number to leave GPUs free for other tasks (like inference). '0' or 'All' uses all available GPUs. For QLoRA, using just 1 GPU is recommended to avoid multi-GPU quantization issues." arrow>
+                            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1, cursor: 'help' }}>
+                              GPU Count 🛈
+                            </Typography>
+                          </Tooltip>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                            <Slider
+                              value={form.training_config.gpu_count ?? 0}
+                              onChange={(_, value) =>
+                                setForm({
+                                  ...form,
+                                  training_config: { ...form.training_config, gpu_count: value === 0 ? null : (value as number) },
+                                })
+                              }
+                              min={0}
+                              max={8}
+                              step={1}
+                              marks={[
+                                { value: 0, label: 'All' },
+                                { value: 1, label: '1' },
+                                { value: 2, label: '2' },
+                                { value: 4, label: '4' },
+                                { value: 8, label: '8' },
+                              ]}
+                              valueLabelDisplay="auto"
+                              valueLabelFormat={(v) => v === 0 ? 'All' : v.toString()}
+                              sx={{
+                                flex: 1,
+                                '& .MuiSlider-markLabel': { fontSize: '0.7rem' },
+                              }}
+                            />
+                            <Chip
+                              label={form.training_config.gpu_count ? `${form.training_config.gpu_count} GPU${form.training_config.gpu_count > 1 ? 's' : ''}` : 'All GPUs'}
+                              size="small"
+                              sx={{
+                                minWidth: 70,
+                                bgcolor: alpha(accentColors.warning, 0.1),
+                                color: accentColors.warning,
+                              }}
+                            />
+                          </Box>
+                          {form.qlora_config.enabled && (form.training_config.gpu_count ?? 0) > 1 && (
+                            <Alert severity="warning" sx={{ mt: 1, py: 0 }}>
+                              <Typography variant="caption">
+                                QLoRA with multiple GPUs may cause memory access errors. Consider setting GPU Count to 1.
+                              </Typography>
+                            </Alert>
+                          )}
+                        </Box>
                       </Box>
                     </Box>
                   )}

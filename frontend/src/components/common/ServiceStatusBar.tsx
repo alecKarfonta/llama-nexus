@@ -5,6 +5,8 @@ import {
   TextFields as EmbeddingIcon,
   Mic as STTIcon,
   RecordVoiceOver as TTSIcon,
+  ModelTraining as TrainingIcon,
+  Compress as QuantizationIcon,
   CheckCircle as OnlineIcon,
   Cancel as OfflineIcon,
   Refresh as RefreshIcon,
@@ -19,6 +21,8 @@ interface ServiceStatus {
   loading: boolean
   color: string
   path: string
+  isWorker?: boolean
+  gpuActive?: boolean
 }
 
 interface ServiceStatusBarProps {
@@ -37,8 +41,11 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
     { id: 'embedding', name: 'Embed', icon: <EmbeddingIcon />, running: false, loading: true, color: '#06b6d4', path: '/embedding-deploy' },
     { id: 'stt', name: 'STT', icon: <STTIcon />, running: false, loading: true, color: '#10b981', path: '/stt-deploy' },
     { id: 'tts', name: 'TTS', icon: <TTSIcon />, running: false, loading: true, color: '#8b5cf6', path: '/tts-deploy' },
+    { id: 'training', name: 'Train', icon: <TrainingIcon />, running: false, loading: true, color: '#ec4899', path: '/finetuning', isWorker: true },
+    { id: 'quantization', name: 'Quant', icon: <QuantizationIcon />, running: false, loading: true, color: '#f97316', path: '/quantization', isWorker: true },
   ])
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   const checkServices = async () => {
     const updates = await Promise.all([
@@ -58,10 +65,36 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
       apiService.getTTSStatus()
         .then(status => ({ id: 'tts', running: status.running }))
         .catch(() => ({ id: 'tts', running: false })),
+      // Worker services
+      apiService.get('/api/v1/workers/status')
+        .then((response) => {
+          const workers = response.data?.workers || []
+          return workers.map((w: any) => ({
+            id: w.id,
+            running: w.running,
+            gpuActive: w.gpu_active,
+          }))
+        })
+        .catch(() => [
+          { id: 'training', running: false },
+          { id: 'quantization', running: false },
+        ]),
     ])
 
+    // Flatten worker updates
+    const workerUpdates = updates[4] as Array<{ id: string; running: boolean; gpuActive?: boolean }>
+
     setServices(prev => prev.map(service => {
-      const update = updates.find(u => u.id === service.id)
+      if (service.isWorker) {
+        const workerUpdate = workerUpdates.find(u => u.id === service.id)
+        return {
+          ...service,
+          running: workerUpdate?.running ?? false,
+          gpuActive: workerUpdate?.gpuActive ?? false,
+          loading: false,
+        }
+      }
+      const update = updates.find(u => !Array.isArray(u) && u.id === service.id) as { id: string; running: boolean } | undefined
       return {
         ...service,
         running: update?.running ?? false,
@@ -69,6 +102,20 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
       }
     }))
     setLastUpdated(new Date())
+  }
+
+  const handleWorkerAction = async (workerId: string, isRunning: boolean) => {
+    setActionLoading(workerId)
+    try {
+      const action = isRunning ? 'stop' : 'start'
+      await apiService.post(`/api/v1/workers/${workerId}/${action}`)
+      // Refresh status after action
+      await checkServices()
+    } catch (error) {
+      console.error(`Failed to ${isRunning ? 'stop' : 'start'} ${workerId}:`, error)
+    } finally {
+      setActionLoading(null)
+    }
   }
 
   useEffect(() => {
@@ -156,11 +203,29 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
       {services.map(service => (
         <Tooltip
           key={service.id}
-          title={`${service.name}: ${service.loading ? 'Checking...' : service.running ? 'Running' : 'Stopped'}`}
+          title={
+            <Box>
+              <Typography variant="caption" sx={{ display: 'block' }}>
+                {service.name}: {service.loading ? 'Checking...' : service.running ? 'Running' : 'Stopped'}
+              </Typography>
+              {service.isWorker && service.running && (service as any).gpuActive && (
+                <Typography variant="caption" sx={{ color: '#f59e0b', fontSize: '0.65rem' }}>
+                  Using GPU resources
+                </Typography>
+              )}
+              {service.isWorker && (
+                <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.65rem', display: 'block' }}>
+                  Click to {service.running ? 'stop' : 'start'}
+                </Typography>
+              )}
+            </Box>
+          }
         >
           <Chip
             icon={
-              service.loading ? (
+              actionLoading === service.id ? (
+                <CircularProgress size={12} sx={{ color: service.color }} />
+              ) : service.loading ? (
                 <CircularProgress size={12} sx={{ color: 'text.secondary' }} />
               ) : service.running ? (
                 <OnlineIcon sx={{ fontSize: '14px !important', color: '#10b981 !important' }} />
@@ -170,7 +235,13 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
             }
             label={showLabels ? service.name : undefined}
             size="small"
-            onClick={() => onServiceClick?.(service.id, service.path)}
+            onClick={() => {
+              if (service.isWorker) {
+                handleWorkerAction(service.id, service.running)
+              } else {
+                onServiceClick?.(service.id, service.path)
+              }
+            }}
             sx={{
               height: 28,
               bgcolor: service.running ? alpha('#10b981', 0.1) : 'rgba(255, 255, 255, 0.03)',
