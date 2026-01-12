@@ -4,8 +4,18 @@ Node Executors - Implementations for each workflow node type
 
 from .base import NodeExecutor, ExecutionContext
 from .trigger_executors import ManualTriggerExecutor, HttpWebhookExecutor
-from .llm_executors import LLMChatExecutor, OpenAIChatExecutor, EmbeddingExecutor
+from .llm_executors import LLMChatExecutor, OpenAIChatExecutor, OpenAIAPILLMExecutor, EmbeddingExecutor
 from .rag_executors import DocumentLoaderExecutor, ChunkerExecutor, RetrieverExecutor, VectorStoreExecutor
+from .graphrag_executors import (
+    GraphRAGSearchExecutor,
+    EntityExtractionExecutor,
+    MultiHopReasoningExecutor,
+    CausalReasoningExecutor,
+    ComparativeReasoningExecutor,
+    EntityLinkingExecutor,
+    CodeDetectionExecutor,
+    CodeSearchExecutor,
+)
 from .data_executors import (
     TemplateExecutor, 
     JsonParseExecutor, 
@@ -50,6 +60,7 @@ NODE_EXECUTORS = {
     # LLM
     'llm_chat': LLMChatExecutor,
     'openai_chat': OpenAIChatExecutor,
+    'openai_api_llm': OpenAIAPILLMExecutor,
     'embedding': EmbeddingExecutor,
     
     # RAG
@@ -57,6 +68,14 @@ NODE_EXECUTORS = {
     'chunker': ChunkerExecutor,
     'retriever': RetrieverExecutor,
     'vector_store': VectorStoreExecutor,
+    
+    # GraphRAG
+    'graphrag_search': GraphRAGSearchExecutor,
+    'entity_extraction': EntityExtractionExecutor,
+    'multi_hop_reasoning': MultiHopReasoningExecutor,
+    'causal_reasoning': CausalReasoningExecutor,
+    'comparative_reasoning': ComparativeReasoningExecutor,
+    'entity_linking': EntityLinkingExecutor,
     
     # Data
     'template': TemplateExecutor,
@@ -93,6 +112,8 @@ NODE_EXECUTORS = {
     'code_executor': CodeExecutorExecutor,
     'function_call': FunctionCallExecutor,
     'shell_command': ShellCommandExecutor,
+    'code_detection': CodeDetectionExecutor,
+    'code_search': CodeSearchExecutor,
     
     # Output
     'output': OutputExecutor,

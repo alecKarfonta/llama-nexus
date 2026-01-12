@@ -20,6 +20,7 @@ import {
   Slider,
   Chip,
   Tooltip,
+  CircularProgress,
 } from '@mui/material';
 import {
   Close as CloseIcon,
@@ -35,6 +36,9 @@ import {
   NodeTypeDefinition,
   PortDefinition,
 } from '@/types/workflow';
+import { ModelSelector } from './ModelSelector';
+import { OpenAIAPINodeConfig } from './OpenAIAPINodeConfig';
+import { apiService } from '@/services/api';
 
 interface PropertyPanelProps {
   node: WorkflowNode | null;
@@ -53,15 +57,19 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
 }) => {
   const [localData, setLocalData] = useState<WorkflowNodeData | null>(null);
   const [nodeTypeDef, setNodeTypeDef] = useState<NodeTypeDefinition | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
 
   // Update local state when node changes
   useEffect(() => {
     if (node) {
       setLocalData({ ...node.data });
       setNodeTypeDef(getNodeTypeDefinition(node.type) || null);
+      setTestResult(null); // Clear test result when node changes
     } else {
       setLocalData(null);
       setNodeTypeDef(null);
+      setTestResult(null);
     }
   }, [node]);
 
@@ -96,6 +104,155 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
       ...node,
       data: updatedData,
     });
+  };
+
+  // Handle node test
+  const handleTestNode = async () => {
+    if (!node || !localData || !nodeTypeDef) return;
+
+    setTesting(true);
+    setTestResult(null);
+
+    try {
+      // For LLM nodes, test the connection
+      if (node.type === 'llm_chat' || node.type === 'openai_chat') {
+        const model = localData.config?.model;
+        
+        if (!model) {
+          setTestResult({
+            success: false,
+            message: 'No model selected. Please select a model first.',
+          });
+          return;
+        }
+
+        // Test with a simple message
+        const testMessages = [{ role: 'user', content: 'Hello! Please respond with "OK" if you can read this.' }];
+        
+        // Call the backend API to test the LLM
+        const response = await apiService.post('/v1/chat/completions', {
+          model: model,
+          messages: testMessages,
+          max_tokens: 50,
+          temperature: 0.7,
+        });
+
+        if (response.data?.choices?.[0]?.message?.content) {
+          const content = response.data.choices[0].message.content;
+          const usage = response.data.usage;
+          
+          setTestResult({
+            success: true,
+            message: `Model connected successfully! Response: "${content.substring(0, 100)}${content.length > 100 ? '...' : ''}"`,
+            data: usage,
+          });
+        } else {
+          setTestResult({
+            success: false,
+            message: 'Model responded but format was unexpected.',
+          });
+        }
+      } else if (node.type === 'openai_api_llm') {
+        // Test OpenAI API LLM node
+        const endpoint = localData.config?.endpoint;
+        const apiKey = localData.config?.apiKey;
+        const model = localData.config?.model;
+        
+        if (!endpoint || !apiKey || !model) {
+          setTestResult({
+            success: false,
+            message: 'Please configure endpoint, API key, and model first.',
+          });
+          return;
+        }
+
+        // Test with a simple message
+        const testMessages = [{ role: 'user', content: 'Hello! Please respond with "OK" if you can read this.' }];
+        
+        // Test directly via the configured endpoint
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            ...(localData.config?.organization && { 'OpenAI-Organization': localData.config.organization }),
+          },
+          body: JSON.stringify({
+            model: model === 'custom' ? (localData.config?.customModel || model) : model,
+            messages: testMessages,
+            max_tokens: 50,
+            temperature: 0.7,
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const content = data.choices?.[0]?.message?.content;
+          const usage = data.usage;
+          
+          if (content) {
+            setTestResult({
+              success: true,
+              message: `API connected successfully! Response: "${content.substring(0, 100)}${content.length > 100 ? '...' : ''}"`,
+              data: usage,
+            });
+          } else {
+            setTestResult({
+              success: false,
+              message: 'API responded but format was unexpected.',
+            });
+          }
+        } else {
+          const errorText = await response.text();
+          let errorMsg = `API error (${response.status})`;
+          try {
+            const errorData = JSON.parse(errorText);
+            errorMsg += `: ${errorData.error?.message || errorText.substring(0, 100)}`;
+          } catch {
+            errorMsg += `: ${errorText.substring(0, 100)}`;
+          }
+          
+          setTestResult({
+            success: false,
+            message: errorMsg,
+          });
+        }
+      } else {
+        setTestResult({
+          success: false,
+          message: 'Testing is only available for LLM nodes currently.',
+        });
+      }
+    } catch (err: any) {
+      console.error('Node test failed:', err);
+      setTestResult({
+        success: false,
+        message: err.message || 'Failed to connect to model. Please check your configuration.',
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  // Check if node can be tested
+  const canTestNode = () => {
+    if (!node || !localData) return false;
+    
+    // Only LLM nodes with a model configured can be tested
+    if (node.type === 'llm_chat' || node.type === 'openai_chat') {
+      return Boolean(localData.config?.model);
+    }
+    
+    // OpenAI API LLM node needs endpoint, API key and model
+    if (node.type === 'openai_api_llm') {
+      return Boolean(
+        localData.config?.endpoint && 
+        localData.config?.apiKey && 
+        localData.config?.model
+      );
+    }
+    
+    return false;
   };
 
   if (!node || !localData || !nodeTypeDef) {
@@ -254,13 +411,34 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           Configuration
         </Typography>
 
-        {/* Render config fields based on schema */}
-        {renderConfigFields(nodeTypeDef.configSchema, localData.config, handleConfigChange)}
+        {/* Use custom component for OpenAI API LLM node */}
+        {node.type === 'openai_api_llm' ? (
+          <OpenAIAPINodeConfig
+            config={localData.config}
+            onChange={(newConfig) => {
+              if (!node || !localData) return;
+              const updatedData = {
+                ...localData,
+                config: newConfig,
+              };
+              setLocalData(updatedData);
+              onNodeUpdate({
+                ...node,
+                data: updatedData,
+              });
+            }}
+          />
+        ) : (
+          <>
+            {/* Render config fields based on schema */}
+            {renderConfigFields(nodeTypeDef.configSchema, localData.config, handleConfigChange)}
 
-        {Object.keys(nodeTypeDef.configSchema.properties || {}).length === 0 && (
-          <Typography variant="body2" color="text.secondary">
-            This node has no configurable options.
-          </Typography>
+            {Object.keys(nodeTypeDef.configSchema.properties || {}).length === 0 && (
+              <Typography variant="body2" color="text.secondary">
+                This node has no configurable options.
+              </Typography>
+            )}
+          </>
         )}
       </Box>
 
@@ -274,13 +452,45 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
       >
         <Button
           variant="outlined"
-          startIcon={<TestIcon />}
+          startIcon={testing ? <CircularProgress size={16} /> : <TestIcon />}
           fullWidth
-          disabled
+          disabled={!canTestNode() || testing}
+          onClick={handleTestNode}
           sx={{ mb: 1 }}
         >
-          Test Node
+          {testing ? 'Testing...' : 'Test Node'}
         </Button>
+        
+        {testResult && (
+          <Paper
+            elevation={0}
+            sx={{
+              p: 1.5,
+              mb: 1,
+              bgcolor: testResult.success ? alpha('#10b981', 0.1) : alpha('#ef4444', 0.1),
+              border: '1px solid',
+              borderColor: testResult.success ? alpha('#10b981', 0.3) : alpha('#ef4444', 0.3),
+              borderRadius: 1,
+            }}
+          >
+            <Typography
+              variant="caption"
+              sx={{
+                color: testResult.success ? '#10b981' : '#ef4444',
+                display: 'block',
+                mb: testResult.data ? 0.5 : 0,
+              }}
+            >
+              {testResult.message}
+            </Typography>
+            {testResult.data && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                Tokens: {testResult.data.total_tokens || 0} (prompt: {testResult.data.prompt_tokens || 0}, completion: {testResult.data.completion_tokens || 0})
+              </Typography>
+            )}
+          </Paper>
+        )}
+        
         <Typography variant="caption" color="text.secondary" display="block" textAlign="center">
           Node ID: {node.id}
         </Typography>
@@ -460,6 +670,19 @@ const ConfigField: React.FC<ConfigFieldProps> = ({ name, schema, value, onChange
         fullWidth
         size="small"
         helperText={description}
+      />
+    );
+  }
+
+  // Model selector field
+  if (format === 'model-select') {
+    return (
+      <ModelSelector
+        value={currentValue}
+        onChange={onChange}
+        label={label}
+        description={description}
+        required={schema.required}
       />
     );
   }

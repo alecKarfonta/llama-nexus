@@ -43,7 +43,7 @@ import {
 import { ReactFlowProvider } from 'reactflow';
 import 'reactflow/dist/style.css';
 
-import { WorkflowCanvas, NodePalette, PropertyPanel, ExecutionPanel } from '@/components/workflow';
+import { WorkflowCanvas, NodePalette, PropertyPanel, ExecutionPanel, WorkflowOnboarding } from '@/components/workflow';
 import {
   Workflow,
   WorkflowNode,
@@ -90,6 +90,7 @@ const WorkflowBuilderPage: React.FC = () => {
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [openDialogOpen, setOpenDialogOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
 
   // Menu state
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
@@ -97,6 +98,13 @@ const WorkflowBuilderPage: React.FC = () => {
   // Load saved workflows from API
   useEffect(() => {
     loadWorkflows();
+    
+    // Check if this is the first time visiting workflow builder
+    const hasSeenOnboarding = localStorage.getItem('workflow-onboarding-seen');
+    if (!hasSeenOnboarding) {
+      // Show onboarding after a brief delay
+      setTimeout(() => setOnboardingOpen(true), 500);
+    }
   }, []);
 
   const loadWorkflows = async () => {
@@ -405,6 +413,50 @@ const WorkflowBuilderPage: React.FC = () => {
     };
     input.click();
     setMenuAnchor(null);
+  };
+
+  // Handle onboarding template selection
+  const handleOnboardingTemplateSelect = async (templateId: string) => {
+    try {
+      setLoading(true);
+      const template = await workflowApi.getTemplate(templateId);
+      
+      // Create a new workflow from the template
+      const newWorkflow: Workflow = {
+        id: `wf-${Date.now()}`,
+        name: template.name,
+        description: template.description,
+        nodes: template.nodes || [],
+        connections: template.connections || [],
+        variables: {},
+        settings: {},
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        version: 1,
+        isActive: true,
+      };
+      
+      setWorkflow(newWorkflow);
+      setHasUnsavedChanges(true);
+      localStorage.setItem('workflow-onboarding-seen', 'true');
+    } catch (err: any) {
+      console.error('Failed to load template:', err);
+      setError(err.message || 'Failed to load template');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle onboarding skip
+  const handleOnboardingSkip = () => {
+    localStorage.setItem('workflow-onboarding-seen', 'true');
+    handleNewWorkflow();
+  };
+
+  // Handle onboarding close
+  const handleOnboardingClose = () => {
+    localStorage.setItem('workflow-onboarding-seen', 'true');
+    setOnboardingOpen(false);
   };
 
   return (
@@ -749,6 +801,14 @@ const WorkflowBuilderPage: React.FC = () => {
           <Button onClick={() => setSettingsDialogOpen(false)}>Close</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Onboarding Wizard */}
+      <WorkflowOnboarding
+        open={onboardingOpen}
+        onClose={handleOnboardingClose}
+        onTemplateSelect={handleOnboardingTemplateSelect}
+        onSkip={handleOnboardingSkip}
+      />
     </Box>
   );
 };

@@ -18,6 +18,8 @@ import {
   CheckCircle as SuccessIcon,
   Error as ErrorIcon,
   HourglassEmpty as PendingIcon,
+  Circle as DotIcon,
+  Warning as WarningIcon,
 } from '@mui/icons-material';
 import { WorkflowNodeData, NodeCategory, ExecutionStatus } from '@/types/workflow';
 
@@ -117,6 +119,11 @@ export const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = memo(({ data, sel
   const icon = categoryIcons[category];
   const status = data.status || 'idle';
   const statusInfo = statusConfig[status];
+  
+  // Check if this is an LLM node and get configuration status
+  const isLlmNode = category === 'llm';
+  const modelConfigured = isLlmNode && data.config?.model;
+  const modelName = data.config?.model;
 
   return (
     <Paper
@@ -178,6 +185,58 @@ export const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = memo(({ data, sel
           />
         )}
       </Box>
+
+      {/* Model Configuration Status (for LLM nodes) */}
+      {isLlmNode && (
+        <Box
+          sx={{
+            px: 1.5,
+            py: 0.75,
+            bgcolor: modelConfigured ? alpha('#10b981', 0.1) : alpha('#f59e0b', 0.1),
+            borderBottom: '1px solid',
+            borderColor: modelConfigured ? alpha('#10b981', 0.2) : alpha('#f59e0b', 0.2),
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.5,
+          }}
+        >
+          <DotIcon
+            sx={{
+              fontSize: 12,
+              color: modelConfigured ? '#10b981' : '#f59e0b',
+            }}
+          />
+          {modelConfigured ? (
+            <Typography
+              variant="caption"
+              sx={{
+                color: '#10b981',
+                fontSize: '0.7rem',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                flex: 1,
+              }}
+            >
+              Model: {modelName}
+            </Typography>
+          ) : (
+            <Typography
+              variant="caption"
+              sx={{
+                color: '#f59e0b',
+                fontSize: '0.7rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.5,
+              }}
+            >
+              <WarningIcon sx={{ fontSize: 12 }} />
+              No model selected
+            </Typography>
+          )}
+        </Box>
+      )}
 
       {/* Input Handles */}
       {data.inputs.length > 0 && (
