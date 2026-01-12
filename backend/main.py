@@ -528,7 +528,6 @@ class LlamaCPPManager:
         
         # Add default flags that are always enabled
         cmd.extend([
-            "--verbose",
             "--flash-attn", "auto"
         ])
         
@@ -2111,7 +2110,6 @@ class EmbeddingManager:
             "--pooling", self.config["performance"]["pooling_type"],
             "--embeddings",
             "--metrics",
-            "--verbose",
             "--flash-attn", "auto",
             "--cont-batching",
         ]

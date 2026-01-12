@@ -1008,6 +1008,65 @@ Modified both container startup and transcription request handling:
 
 ---
 
+## Embedding Model Deployment Fix (2025-12-13)
+
+### Problem
+Embedding model deployment failed with error:
+```
+Failed to start embedding container: Unable to find image 'llamacpp-api:latest' locally
+docker: Error response from daemon: pull access denied for llamacpp-api, repository does not exist or may require 'docker login': denied: requested access to the resource is denied
+```
+
+### Root Cause
+The `EmbeddingManager` class in `backend/main.py` was hardcoded to use the Docker image name `llamacpp-api:latest`, but the actual image built by docker-compose is named `llama-nexus-llamacpp-api:latest`.
+
+### Solution
+Updated both Docker deployment methods in `EmbeddingManager`:
+
+1. **Docker SDK method** (`start_docker_sdk()` line 2141):
+   - Changed `"image": "llamacpp-api:latest"` to `"image": "llama-nexus-llamacpp-api:latest"`
+
+2. **Docker CLI method** (`start_docker_cli()` line 2222):
+   - Changed `"llamacpp-api:latest"` to `"llama-nexus-llamacpp-api:latest"`
+
+### Additional Issues Found and Fixed
+
+**Issue 1: Model not found in container**
+After fixing the Docker image name, the embedding service would start but immediately exit because the container's default entrypoint (`/start.sh`) couldn't find the model file, even though it was downloaded correctly.
+
+**Root Cause:** The EmbeddingManager was running `docker run ... image bash -c 'llama-server ...'` but the container's default entrypoint (`/start.sh`) was being prepended, resulting in `/start.sh bash -c 'llama-server ...'`. The start.sh script has its own model-finding logic that was failing.
+
+**Issue 2: Container name conflicts**
+The container cleanup logic wasn't waiting for the `docker rm` command to complete before starting a new container, causing name conflicts.
+
+### Complete Solution
+
+1. **Fixed Docker image name** - Changed from `llamacpp-api:latest` to `llama-nexus-llamacpp-api:latest`
+
+2. **Fixed container entrypoint** - Added `--entrypoint bash` to bypass the default `/start.sh` entrypoint and run `llama-server` directly
+
+3. **Fixed container cleanup race condition** - Made the container removal wait for completion and added a small delay before creating the new container
+
+4. **Added MODEL_REPO environment variable** - Passes the HuggingFace repository to the container for future model downloads
+
+### Files Modified
+- `backend/main.py` - Updated `EmbeddingManager`:
+  - Docker image reference: `llamacpp-api:latest` → `llama-nexus-llamacpp-api:latest`
+  - Added `--entrypoint bash` to Docker run command to bypass start.sh
+  - Fixed container cleanup to wait for removal completion
+  - Added `MODEL_REPO` environment variable for embedding models
+
+- `start-embed.sh` - Created dedicated embedding startup script (though not used by EmbeddingManager since we bypass start.sh)
+
+### Verification
+The embedding service now:
+- Starts correctly with `llama-server` running directly
+- Model loads properly (768-dimensional embeddings from nomic-embed-text-v1.5)
+- Service stays running (verified with 46+ second uptime)
+- Embeddings API works correctly at `http://localhost:8602/v1/embeddings`
+
+---
+
 ## Docker GPU Fix for API-launched Containers (2025-12-08)
 
 ### Problem

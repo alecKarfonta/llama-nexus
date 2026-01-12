@@ -178,7 +178,6 @@ if [ $# -eq 0 ]; then
         "--port" "$PORT"
         "-c" "${CONTEXT_SIZE:-4096}"
         "--api-key" "$API_KEY"
-        "--verbose"
         "--metrics" 
         "--flash-attn" "auto"
         "--cont-batching"
