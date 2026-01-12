@@ -310,23 +310,11 @@ def build_model(
 
 def train(job: Dict[str, Any]) -> None:
     # Restrict GPU visibility if specified (must be done BEFORE any torch.cuda calls)
-    gpu_count = job.get("training_config", {}).get("gpu_count")
-    if gpu_count is not None and gpu_count >= 1:
-        # Query available GPUs via nvidia-smi to avoid initializing CUDA in this process
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                available_gpus = [int(x.strip()) for x in result.stdout.strip().split('\n') if x.strip()]
-                selected_gpus = available_gpus[:gpu_count]
-                os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, selected_gpus))
-                print(f"[training] Restricted to GPUs: {selected_gpus} "
-                      f"(requested {gpu_count}, available {len(available_gpus)})", flush=True)
-        except Exception as e:
-            print(f"[training] Warning: Could not restrict GPUs: {e}", flush=True)
+    gpu_devices = job.get("training_config", {}).get("gpu_devices")
+    if gpu_devices is not None and len(gpu_devices) > 0:
+        # Set CUDA_VISIBLE_DEVICES to the specified GPU indices
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_devices))
+        print(f"[training] Restricted to GPUs: {gpu_devices}", flush=True)
     
     redis_client = connect_redis()
     job_id = job["id"]

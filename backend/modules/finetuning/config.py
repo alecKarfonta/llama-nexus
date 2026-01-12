@@ -96,9 +96,9 @@ class TrainingConfig(BaseModel):
         True,
         description="Enable gradient checkpointing to reduce VRAM usage (~70% reduction in activation memory)"
     )
-    gpu_count: Optional[int] = Field(
-        None, ge=1, le=8,
-        description="Number of GPUs to use (None = use all available)"
+    gpu_devices: Optional[List[int]] = Field(
+        None,
+        description="Specific GPU device indices to use (e.g., [0, 2]). None = use all available"
     )
 
     @validator("fp16")
