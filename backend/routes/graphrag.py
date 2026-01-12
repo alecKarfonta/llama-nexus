@@ -4,8 +4,8 @@ These endpoints proxy requests to the external graphrag microservice
 which provides advanced knowledge graph features using Neo4j and GLiNER.
 """
 
-from fastapi import APIRouter, HTTPException, Request
-from typing import Optional, Any
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
+from typing import Optional, Any, List
 import httpx
 import os
 import logging
@@ -436,4 +436,554 @@ async def graphrag_get_communities(domain: Optional[str] = None):
             response.raise_for_status()
             return response.json()
     except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.post("/ingest/upload")
+async def graphrag_upload_document(
+    file: UploadFile = File(...),
+    domain: str = Form("general"),
+    use_semantic_chunking: bool = Form(True),
+    build_knowledge_graph: bool = Form(True)
+):
+    """Upload and process a document through GraphRAG pipeline."""
+    check_graphrag_enabled()
+    
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+    
+    try:
+        # Read file content
+        content = await file.read()
+        
+        # Create multipart form data for GraphRAG
+        files = {"file": (file.filename, content, file.content_type or "application/octet-stream")}
+        data = {
+            "use_semantic_chunking": str(use_semantic_chunking).lower()
+        }
+        
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            # Upload and process document
+            response = await client.post(
+                f"{GRAPHRAG_URL}/process-document",
+                files=files,
+                data=data
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            # If build_knowledge_graph is enabled, trigger ingestion
+            if build_knowledge_graph:
+                try:
+                    ingest_response = await client.post(
+                        f"{GRAPHRAG_URL}/ingest-documents",
+                        json={
+                            "documents": [file.filename],
+                            "domain": domain,
+                            "extract_entities": True,
+                            "extract_relationships": True,
+                            "build_knowledge_graph": True
+                        }
+                    )
+                    if ingest_response.status_code == 200:
+                        ingest_data = ingest_response.json()
+                        result["knowledge_graph"] = {
+                            "entities": ingest_data.get("entities_extracted", 0),
+                            "relationships": ingest_data.get("relationships_extracted", 0)
+                        }
+                except Exception as e:
+                    logger.warning(f"Knowledge graph building failed: {e}")
+                    result["knowledge_graph_error"] = str(e)
+            
+            return result
+    
+    except httpx.HTTPError as e:
+        logger.error(f"GraphRAG upload error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Document upload error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error uploading document: {str(e)}")
+
+
+@router.post("/ingest/batch")
+async def graphrag_upload_batch(
+    files: List[UploadFile] = File(...),
+    domain: str = Form("general"),
+    use_semantic_chunking: bool = Form(True)
+):
+    """Batch upload documents to GraphRAG."""
+    check_graphrag_enabled()
+    
+    if not files:
+        raise HTTPException(status_code=400, detail="At least one file is required")
+    
+    try:
+        # Prepare files for GraphRAG
+        files_data = []
+        for file in files:
+            content = await file.read()
+            files_data.append(
+                ("files", (file.filename, content, file.content_type or "application/octet-stream"))
+            )
+        
+        data = {
+            "use_semantic_chunking": str(use_semantic_chunking).lower()
+        }
+        
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(
+                f"{GRAPHRAG_URL}/process-documents-batch",
+                files=files_data,
+                data=data
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"GraphRAG batch upload error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Batch upload error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error uploading documents: {str(e)}")
+
+
+@router.post("/rebuild")
+async def graphrag_rebuild_kg(request: Request):
+    """Rebuild knowledge graph from existing documents."""
+    check_graphrag_enabled()
+    
+    try:
+        data = await request.json()
+    except:
+        data = {}
+    
+    domain = data.get("domain")
+    
+    try:
+        payload = {}
+        if domain:
+            payload["domain"] = domain
+        
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(
+                f"{GRAPHRAG_URL}/rebuild-knowledge-graph",
+                json=payload
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"GraphRAG rebuild error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Rebuild error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error rebuilding knowledge graph: {str(e)}")
+
+
+@router.post("/export")
+async def graphrag_export_graph(request: Request):
+    """Export knowledge graph data."""
+    check_graphrag_enabled()
+    
+    try:
+        data = await request.json()
+    except:
+        data = {}
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(
+                f"{GRAPHRAG_URL}/knowledge-graph/export",
+                params=data
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.get("/query/intent")
+async def analyze_query_intent(query: str):
+    """Analyze query to determine intent, entities, and complexity."""
+    check_graphrag_enabled()
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="query parameter is required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # GraphRAG expects query as a query parameter
+            response = await client.get(
+                f"{GRAPHRAG_URL}/api/analyze-query-intent",
+                params={"query": query}
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Query intent analysis error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.post("/search/intelligent")
+async def intelligent_search(request: Request):
+    """Intelligent search with automatic method selection and LLM answer generation."""
+    check_graphrag_enabled()
+    
+    data = await request.json()
+    query = data.get("query")
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # Step 1: Analyze query intent if not already provided
+            search_type = data.get("search_type", "auto")
+            
+            if search_type == "auto":
+                # Let GraphRAG determine the best search method
+                search_type = "hybrid"  # Default to hybrid for now
+            
+            # Step 2: Perform advanced search with LLM answer generation
+            search_payload = {
+                "query": query,
+                "search_type": search_type,
+                "top_k": data.get("top_k", 10),
+                "domain": data.get("domain"),
+                "filters": data.get("filters")
+            }
+            
+            response = await client.post(
+                f"{GRAPHRAG_URL}/search-advanced",
+                json=search_payload
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            # Add search method used
+            result["search_method_used"] = search_type
+            
+            return result
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Intelligent search error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error performing search: {str(e)}")
+
+
+@router.post("/reasoning/explain")
+async def explain_relationship(request: Request):
+    """Explain the relationship between two entities."""
+    check_graphrag_enabled()
+    
+    data = await request.json()
+    source = data.get("source")
+    target = data.get("target")
+    
+    if not source or not target:
+        raise HTTPException(status_code=400, detail="source and target are required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # GraphRAG expects source, target, entities, relationships
+            # We need to fetch entities and relationships first
+            payload = {
+                "source": source,
+                "target": target,
+                "entities": data.get("entities", []),
+                "relationships": data.get("relationships", [])
+            }
+            
+            response = await client.post(
+                f"{GRAPHRAG_URL}/reasoning/explain-relationship",
+                json=payload
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Relationship explanation error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.post("/reasoning/causal")
+async def graphrag_causal_reasoning(request: Request):
+    """Causal reasoning to find cause-effect relationships."""
+    check_graphrag_enabled()
+    
+    data = await request.json()
+    query = data.get("query")
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # GraphRAG endpoint expects query as form data
+            response = await client.post(
+                f"{GRAPHRAG_URL}/api/causal-reasoning",
+                data={"query": query}
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Causal reasoning error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.post("/reasoning/comparative")
+async def graphrag_comparative_reasoning(request: Request):
+    """Compare entities or concepts."""
+    check_graphrag_enabled()
+    
+    data = await request.json()
+    query = data.get("query")
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{GRAPHRAG_URL}/api/comparative-reasoning",
+                data={"query": query}
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Comparative reasoning error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.post("/entity/link")
+async def graphrag_link_entities(request: Request):
+    """Link entities to knowledge graph."""
+    check_graphrag_enabled()
+    
+    data = await request.json()
+    entities = data.get("entities", [])
+    context = data.get("context", "")
+    
+    if not entities:
+        raise HTTPException(status_code=400, detail="entities array is required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{GRAPHRAG_URL}/entity/link",
+                json={
+                    "entities": entities,
+                    "context": context
+                }
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Entity linking error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.post("/entity/disambiguate")
+async def graphrag_disambiguate_entities(request: Request):
+    """Disambiguate entity mentions."""
+    check_graphrag_enabled()
+    
+    data = await request.json()
+    entity_name = data.get("entity_name")
+    candidates = data.get("candidates", [])
+    context = data.get("context", "")
+    
+    if not entity_name:
+        raise HTTPException(status_code=400, detail="entity_name is required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{GRAPHRAG_URL}/entity/disambiguate",
+                json={
+                    "entity_name": entity_name,
+                    "candidates": candidates,
+                    "context": context
+                }
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Entity disambiguation error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.post("/reasoning/advanced")
+async def graphrag_advanced_reasoning(request: Request):
+    """Advanced reasoning with query analysis."""
+    check_graphrag_enabled()
+    
+    data = await request.json()
+    query = data.get("query")
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{GRAPHRAG_URL}/api/advanced-reasoning",
+                data={"query": query}
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Advanced reasoning error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.get("/code/health")
+async def graphrag_code_health():
+    """Check code search service health."""
+    check_graphrag_enabled()
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{GRAPHRAG_URL}/code-detection/health")
+            return response.json()
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+
+@router.post("/code/detect")
+async def graphrag_detect_code(request: Request):
+    """Detect code in text."""
+    check_graphrag_enabled()
+    
+    data = await request.json()
+    text = data.get("text")
+    
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{GRAPHRAG_URL}/code-detection/detect",
+                json={"text": text}
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Code detection error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.post("/code/search")
+async def graphrag_search_code(request: Request):
+    """Search for code examples."""
+    check_graphrag_enabled()
+    
+    data = await request.json()
+    query = data.get("query")
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{GRAPHRAG_URL}/search/code",
+                json=data
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Code search error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+# ============== Hybrid Processing Endpoints ==============
+
+@router.get("/hybrid/status")
+async def graphrag_hybrid_status():
+    """Get status of GraphRAG, Code RAG, and hybrid availability."""
+    check_graphrag_enabled()
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{GRAPHRAG_URL}/hybrid/status")
+            return response.json()
+    except Exception as e:
+        return {
+            "graphrag_healthy": False,
+            "code_rag_healthy": False,
+            "hybrid_available": False,
+            "error": str(e)
+        }
+
+
+@router.post("/hybrid/process")
+async def graphrag_hybrid_process(
+    file: UploadFile = File(...),
+    domain: str = Form("general")
+):
+    """Process file with hybrid routing (code to Code RAG, docs to GraphRAG)."""
+    check_graphrag_enabled()
+    
+    try:
+        content = await file.read()
+        files = {"file": (file.filename, content, file.content_type or "application/octet-stream")}
+        data = {"domain": domain}
+        
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(
+                f"{GRAPHRAG_URL}/hybrid/process",
+                files=files,
+                data=data
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    except httpx.HTTPError as e:
+        logger.error(f"Hybrid processing error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Hybrid processing error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+
+@router.get("/extraction-stats")
+async def graphrag_extraction_stats():
+    """Get entity extraction method statistics."""
+    check_graphrag_enabled()
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{GRAPHRAG_URL}/extraction-stats")
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Extraction stats error: {e}")
+        raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
+
+
+@router.get("/supported-formats")
+async def graphrag_supported_formats():
+    """Get supported file formats and features."""
+    check_graphrag_enabled()
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{GRAPHRAG_URL}/supported-formats")
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Supported formats error: {e}")
         raise HTTPException(status_code=502, detail=f"GraphRAG service error: {str(e)}")
