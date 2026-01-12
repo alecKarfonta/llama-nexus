@@ -754,12 +754,30 @@ def poll_for_jobs():
                         print(f"[training-worker] Found new job: {job_id}", flush=True)
                         processed_jobs.add(job_id)
                         
-                        # Run the training
+                        # Run the training in a subprocess with GPU restriction
                         try:
-                            train(job_config)
-                            # Mark as completed
-                            job_output_dir.mkdir(parents=True, exist_ok=True)
-                            completed_marker.touch()
+                            gpu_devices = job_config.get("training_config", {}).get("gpu_devices")
+                            
+                            # Prepare environment with GPU restriction
+                            env = os.environ.copy()
+                            if gpu_devices is not None and len(gpu_devices) > 0:
+                                env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_devices))
+                                print(f"[training-worker] Restricting to GPUs: {gpu_devices}", flush=True)
+                            
+                            # Run training in subprocess with restricted GPUs
+                            import subprocess
+                            result = subprocess.run(
+                                [sys.executable, __file__, "--job-file", str(config_file)],
+                                env=env,
+                                capture_output=False,  # Let output stream to parent
+                            )
+                            
+                            if result.returncode == 0:
+                                # Mark as completed
+                                job_output_dir.mkdir(parents=True, exist_ok=True)
+                                completed_marker.touch()
+                            else:
+                                raise RuntimeError(f"Training subprocess exited with code {result.returncode}")
                         except Exception as exc:
                             print(f"[training-worker] Job {job_id} failed: {exc}", flush=True)
                             publish(
@@ -785,6 +803,20 @@ def main():
     # Check if running in merge mode
     if len(sys.argv) > 1 and sys.argv[1] == "--merge-worker":
         run_merge_worker()
+        return
+    
+    # Check if running with specific job file (subprocess mode with GPU restriction)
+    if len(sys.argv) > 2 and sys.argv[1] == "--job-file":
+        job_file = Path(sys.argv[2])
+        if job_file.exists():
+            with job_file.open("r") as f:
+                job = json.load(f)
+            # CUDA_VISIBLE_DEVICES is already set by parent process
+            print(f"[training] Starting with CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', 'all')}", flush=True)
+            train(job)
+        else:
+            print(f"[training] Job file not found: {job_file}", flush=True)
+            sys.exit(1)
         return
     
     job = load_job_config()
