@@ -89,7 +89,7 @@ services:
       - FINETUNE_DATASET_DIR=/data/finetune_datasets
       - FINETUNE_JOB_DIR=/data/finetune_jobs
       # GraphRAG external service (Neo4j + GLiNER)
-      - GRAPHRAG_URL=http://graphrag-api-1:8000
+      - GRAPHRAG_URL=http://192.168.1.77:18000
       - GRAPHRAG_ENABLED=true
       # Database paths for persistent storage
       - TOKEN_DB_PATH=/data/token_usage.db
@@ -384,6 +384,67 @@ services:
     profiles:
       - build-only  # Only build, don't run as a service
     command: ["echo", "Training image built successfully"]
+
+  # =============================================================
+  # STREAMING STT: NVIDIA Nemotron Speech Streaming
+  # Real-time speech-to-text with cache-aware streaming inference
+  # Start with: docker compose --profile streaming-stt up -d streaming-stt
+  # =============================================================
+  streaming-stt:
+    build:
+      context: ./streaming-stt
+      dockerfile: Dockerfile
+    container_name: streaming-stt
+    profiles:
+      - streaming-stt  # Opt-in: requires GPU, doesn't start by default
+    ports:
+      - "8609:8009"
+    # NVIDIA NeMo Framework requires these settings for proper SHMEM allocation
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    environment:
+      # The NeMo model to use for streaming STT
+      - MODEL_NAME=${STREAMING_STT_MODEL:-nvidia/nemotron-speech-streaming-en-0.6b}
+      # Audio chunk size sent from frontend (ms). Keep at 80ms for optimal latency
+      - CHUNK_SIZE_MS=${STREAMING_STT_CHUNK_MS:-80}
+      # Audio sample rate (Hz). Model expects 16kHz
+      - SAMPLE_RATE=${STREAMING_STT_SAMPLE_RATE:-16000}
+      # RMS level to detect speech start. Lower = more sensitive to quiet speech
+      - VAD_THRESHOLD=${STT_VAD_THRESHOLD:-0.005}
+      # RMS level to detect silence. Lower = more tolerant of quiet pauses
+      - VAD_SILENCE_THRESHOLD=${STT_VAD_SILENCE_THRESHOLD:-0.005}
+      # Debounce time for speech/silence transitions
+      - VAD_HYSTERESIS_MS=${STT_VAD_HYSTERESIS_MS:-100}
+      # Silence duration (ms) before pending text is committed as a sentence
+      - SENTENCE_END_SILENCE_MS=${STT_SENTENCE_END_SILENCE_MS:-800}
+      # Minimum word count for text to be committed as a sentence
+      - MIN_SENTENCE_WORDS=${STT_MIN_SENTENCE_WORDS:-2}
+      # Audio buffer before model inference (~900ms optimal for NeMo)
+      - MODEL_BUFFER_MS=${STT_MODEL_BUFFER_MS:-896}
+      # Logging level (DEBUG, INFO, WARNING, ERROR)
+      - LOG_LEVEL=${STT_LOG_LEVEL:-INFO}
+      - NVIDIA_VISIBLE_DEVICES=all
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8009/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s  # NeMo model loading takes time
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
 
 volumes:
   gpt_oss_models:

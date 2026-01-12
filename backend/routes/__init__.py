@@ -16,6 +16,7 @@ from .templates import router as templates_router
 from .tokens import router as tokens_router
 from .service import router as service_router
 from .stt import router as stt_router
+from .streaming_stt import router as streaming_stt_router
 from .tts import router as tts_router
 from .tools import router as tools_router
 from .finetuning import router as finetuning_router
@@ -35,6 +36,7 @@ __all__ = [
     'tokens_router',
     'service_router',
     'stt_router',
+    'streaming_stt_router',
     'tts_router',
     'tools_router',
     'finetuning_router',

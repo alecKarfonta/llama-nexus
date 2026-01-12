@@ -39,6 +39,9 @@ import {
   TextFields as EmbeddingIcon,
   ChevronRight as ChevronRightIcon,
   Tune as TuneIcon,
+  Search as SearchIcon,
+  Psychology as ReasoningIcon,
+  Category as CategoryIcon,
 } from '@mui/icons-material'
 import type { NavigationSection } from '@/types'
 
@@ -65,8 +68,9 @@ const navigationSections: NavigationSection[] = [
     items: [
       { id: 'deploy', label: 'LLM', path: '/deploy', icon: 'deploy', color: '#f59e0b' },
       { id: 'embedding-deploy', label: 'Embedding', path: '/embedding-deploy', icon: 'embedding', color: '#06b6d4' },
-      { id: 'stt-deploy', label: 'STT', path: '/stt-deploy', icon: 'stt', color: '#10b981' },
-      { id: 'tts-deploy', label: 'TTS', path: '/tts-deploy', icon: 'tts', color: '#8b5cf6' },
+      { id: 'stt-deploy', label: 'STT (Whisper)', path: '/stt-deploy', icon: 'stt', color: '#10b981' },
+      { id: 'streaming-stt-deploy', label: 'STT (Streaming)', path: '/streaming-stt-deploy', icon: 'stt', color: '#8b5cf6' },
+      { id: 'tts-deploy', label: 'TTS', path: '/tts-deploy', icon: 'tts', color: '#ec4899' },
     ],
   },
   {
@@ -77,11 +81,11 @@ const navigationSections: NavigationSection[] = [
       { id: 'prompts', label: 'Prompt Library', path: '/prompts', icon: 'prompts', color: '#14b8a6' },
       { id: 'templates', label: 'Chat Templates', path: '/templates', icon: 'templates', color: '#10b981' },
       { id: 'workflows', label: 'Workflows', path: '/workflows', icon: 'workflow', color: '#a855f7' },
-      { 
-        id: 'finetuning', 
-        label: 'Fine-Tuning', 
-        path: '/finetuning', 
-        icon: 'finetuning', 
+      {
+        id: 'finetuning',
+        label: 'Fine-Tuning',
+        path: '/finetuning',
+        icon: 'finetuning',
         color: '#4ade80',
         subItems: [
           { id: 'finetuning-overview', label: 'Overview', path: '/finetuning' },
@@ -102,9 +106,14 @@ const navigationSections: NavigationSection[] = [
     id: 'knowledge',
     title: 'Knowledge & RAG',
     items: [
-      { id: 'documents', label: 'Documents', path: '/documents', icon: 'documents', color: '#10b981' },
-      { id: 'knowledge-graph', label: 'Knowledge Graph', path: '/knowledge-graph', icon: 'graph', color: '#6366f1' },
-      { id: 'discovery', label: 'Discovery', path: '/discovery', icon: 'discovery', color: '#8b5cf6' },
+      { id: 'intelligent-search', label: 'Intelligent Search', path: '/intelligent-search', icon: 'search', color: '#6366f1' },
+      { id: 'reasoning', label: 'Reasoning Playground', path: '/reasoning', icon: 'reasoning', color: '#8b5cf6' },
+      { id: 'entities', label: 'Entity Manager', path: '/entities', icon: 'category', color: '#10b981' },
+      { id: 'code-search', label: 'Code Search', path: '/code-search', icon: 'code', color: '#f97316' },
+      { id: 'hybrid-processing', label: 'Hybrid Processing', path: '/hybrid-processing', icon: 'hub', color: '#8b5cf6' },
+      { id: 'documents', label: 'Documents', path: '/documents', icon: 'documents', color: '#06b6d4' },
+      { id: 'knowledge-graph', label: 'Knowledge Graph', path: '/knowledge-graph', icon: 'graph', color: '#ec4899' },
+      { id: 'discovery', label: 'Discovery', path: '/discovery', icon: 'discovery', color: '#f59e0b' },
       { id: 'knowledge', label: 'RAG Search', path: '/knowledge', icon: 'knowledge', color: '#14b8a6' },
     ],
   },
@@ -140,6 +149,9 @@ const iconMap: Record<string, React.ElementType> = {
   graph: GraphIcon,
   documents: DocumentsIcon,
   discovery: DiscoveryIcon,
+  search: SearchIcon,
+  reasoning: ReasoningIcon,
+  category: CategoryIcon,
   stt: MicIcon,
   tts: TTSIcon,
   embedding: EmbeddingIcon,
@@ -201,11 +213,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ open, onToggle }) => {
       }}
     >
       <Toolbar sx={{ minHeight: '64px !important' }} />
-      
+
       {/* Sidebar Content */}
-      <Box sx={{ 
-        flex: 1, 
-        overflowY: 'auto', 
+      <Box sx={{
+        flex: 1,
+        overflowY: 'auto',
         overflowX: 'hidden',
         py: 1,
         '&::-webkit-scrollbar': {
@@ -219,189 +231,190 @@ export const Sidebar: React.FC<SidebarProps> = ({ open, onToggle }) => {
         {navigationSections.map((section) => {
           const isCollapsed = collapsedSections[section.id] ?? false
           const hasActiveItem = section.items.some(item => item.path === location.pathname)
-          
+
           return (
-          <React.Fragment key={section.id}>
-            <Box
-              onClick={() => toggleSection(section.id)}
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                cursor: 'pointer',
-                mx: 1,
-                mt: 2,
-                mb: 0.75,
-                px: 1,
-                py: 0.25,
-                borderRadius: 1,
-                transition: 'all 0.15s ease',
-                '&:hover': {
-                  bgcolor: 'rgba(255, 255, 255, 0.03)',
-                },
-              }}
-            >
-              <Typography
-                sx={{
-                  fontSize: '0.6875rem',
-                  textTransform: 'uppercase',
-                  color: hasActiveItem ? alpha('#fff', 0.8) : alpha('#fff', 0.4),
-                  letterSpacing: '0.08em',
-                  fontWeight: 600,
-                  transition: 'color 0.15s ease',
-                }}
-              >
-                {section.title}
-              </Typography>
+            <React.Fragment key={section.id}>
               <Box
+                onClick={() => toggleSection(section.id)}
                 sx={{
                   display: 'flex',
                   alignItems: 'center',
-                  color: alpha('#fff', 0.3),
-                  transition: 'transform 0.2s ease',
-                  transform: isCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+                  justifyContent: 'space-between',
+                  cursor: 'pointer',
+                  mx: 1,
+                  mt: 2,
+                  mb: 0.75,
+                  px: 1,
+                  py: 0.25,
+                  borderRadius: 1,
+                  transition: 'all 0.15s ease',
+                  '&:hover': {
+                    bgcolor: 'rgba(255, 255, 255, 0.03)',
+                  },
                 }}
               >
-                <ChevronRightIcon sx={{ fontSize: 14 }} />
+                <Typography
+                  sx={{
+                    fontSize: '0.6875rem',
+                    textTransform: 'uppercase',
+                    color: hasActiveItem ? alpha('#fff', 0.8) : alpha('#fff', 0.4),
+                    letterSpacing: '0.08em',
+                    fontWeight: 600,
+                    transition: 'color 0.15s ease',
+                  }}
+                >
+                  {section.title}
+                </Typography>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    color: alpha('#fff', 0.3),
+                    transition: 'transform 0.2s ease',
+                    transform: isCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+                  }}
+                >
+                  <ChevronRightIcon sx={{ fontSize: 14 }} />
+                </Box>
               </Box>
-            </Box>
-            <Collapse in={!isCollapsed} timeout={200}>
-            <List sx={{ py: 0, px: 1 }}>
-              {section.items.map((item) => {
-                const isSelected = location.pathname === item.path
-                const itemColor = item.color || '#6366f1'
-                
-                return (
-                  <ListItem key={item.id} disablePadding sx={{ mb: 0.25 }}>
-                    <ListItemButton
-                      selected={isSelected}
-                      onClick={() => handleNavigation(item.path)}
-                      sx={{
-                        py: 1,
-                        px: 1.5,
-                        borderRadius: 2,
-                        minHeight: 42,
-                        position: 'relative',
-                        overflow: 'hidden',
-                        transition: 'all 0.2s ease-in-out',
-                        
-                        // Default state
-                        bgcolor: 'transparent',
-                        
-                        // Hover state
-                        '&:hover': {
-                          bgcolor: alpha(itemColor, 0.08),
-                          '& .nav-icon': {
-                            color: itemColor,
-                            transform: 'scale(1.1)',
-                          },
-                          '& .nav-label': {
-                            color: 'text.primary',
-                          },
-                        },
-                        
-                        // Selected state
-                        '&.Mui-selected': {
-                          bgcolor: alpha(itemColor, 0.12),
-                          
-                          // Left border glow
-                          '&::before': {
-                            content: '""',
-                            position: 'absolute',
-                            left: 0,
-                            top: '50%',
-                            transform: 'translateY(-50%)',
-                            width: 3,
-                            height: '60%',
-                            bgcolor: itemColor,
-                            borderRadius: '0 3px 3px 0',
-                            boxShadow: `0 0 12px ${itemColor}`,
-                          },
-                          
-                          '& .nav-icon': {
-                            color: itemColor,
-                          },
-                          '& .nav-label': {
-                            color: 'text.primary',
-                            fontWeight: 600,
-                          },
-                          
-                          '&:hover': {
-                            bgcolor: alpha(itemColor, 0.16),
-                          },
-                        },
-                      }}
-                    >
-                      <ListItemIcon 
-                        className="nav-icon"
-                        sx={{ 
-                          minWidth: 36, 
-                          color: isSelected ? itemColor : 'text.secondary', 
-                          transition: 'all 0.2s ease-in-out',
-                          '& .MuiSvgIcon-root': {
-                            fontSize: '1.25rem',
-                          },
-                        }}
-                      >
-                        {getIcon(item.icon || 'dashboard')}
-                      </ListItemIcon>
-                      <ListItemText 
-                        className="nav-label"
-                        primary={item.label} 
-                        primaryTypographyProps={{ 
-                          fontSize: '0.875rem',
-                          fontWeight: isSelected ? 600 : 500,
-                          color: isSelected ? 'text.primary' : 'text.secondary',
-                          lineHeight: 1.3,
-                          transition: 'all 0.2s ease-in-out',
-                        }} 
-                      />
-                      
-                      {/* Active indicator dot */}
-                      {isSelected && (
-                        <Box sx={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: '50%',
-                          bgcolor: itemColor,
-                          boxShadow: `0 0 8px ${itemColor}`,
-                          animation: 'pulse 2s infinite',
-                          '@keyframes pulse': {
-                            '0%, 100%': {
-                              opacity: 1,
+              <Collapse in={!isCollapsed} timeout={200}>
+                <List sx={{ py: 0, px: 1 }}>
+                  {section.items.map((item) => {
+                    const isSelected = location.pathname === item.path
+                    const itemColor = item.color || '#6366f1'
+
+                    return (
+                      <ListItem key={item.id} disablePadding sx={{ mb: 0.25 }}>
+                        <ListItemButton
+                          selected={isSelected}
+                          onClick={() => handleNavigation(item.path)}
+                          sx={{
+                            py: 1,
+                            px: 1.5,
+                            borderRadius: 2,
+                            minHeight: 42,
+                            position: 'relative',
+                            overflow: 'hidden',
+                            transition: 'all 0.2s ease-in-out',
+
+                            // Default state
+                            bgcolor: 'transparent',
+
+                            // Hover state
+                            '&:hover': {
+                              bgcolor: alpha(itemColor, 0.08),
+                              '& .nav-icon': {
+                                color: itemColor,
+                                transform: 'scale(1.1)',
+                              },
+                              '& .nav-label': {
+                                color: 'text.primary',
+                              },
                             },
-                            '50%': {
-                              opacity: 0.5,
+
+                            // Selected state
+                            '&.Mui-selected': {
+                              bgcolor: alpha(itemColor, 0.12),
+
+                              // Left border glow
+                              '&::before': {
+                                content: '""',
+                                position: 'absolute',
+                                left: 0,
+                                top: '50%',
+                                transform: 'translateY(-50%)',
+                                width: 3,
+                                height: '60%',
+                                bgcolor: itemColor,
+                                borderRadius: '0 3px 3px 0',
+                                boxShadow: `0 0 12px ${itemColor}`,
+                              },
+
+                              '& .nav-icon': {
+                                color: itemColor,
+                              },
+                              '& .nav-label': {
+                                color: 'text.primary',
+                                fontWeight: 600,
+                              },
+
+                              '&:hover': {
+                                bgcolor: alpha(itemColor, 0.16),
+                              },
                             },
-                          },
-                        }} />
-                      )}
-                    </ListItemButton>
-                  </ListItem>
-                )
-              })}
-            </List>
-            </Collapse>
-          </React.Fragment>
-        )})}
-      
+                          }}
+                        >
+                          <ListItemIcon
+                            className="nav-icon"
+                            sx={{
+                              minWidth: 36,
+                              color: isSelected ? itemColor : 'text.secondary',
+                              transition: 'all 0.2s ease-in-out',
+                              '& .MuiSvgIcon-root': {
+                                fontSize: '1.25rem',
+                              },
+                            }}
+                          >
+                            {getIcon(item.icon || 'dashboard')}
+                          </ListItemIcon>
+                          <ListItemText
+                            className="nav-label"
+                            primary={item.label}
+                            primaryTypographyProps={{
+                              fontSize: '0.875rem',
+                              fontWeight: isSelected ? 600 : 500,
+                              color: isSelected ? 'text.primary' : 'text.secondary',
+                              lineHeight: 1.3,
+                              transition: 'all 0.2s ease-in-out',
+                            }}
+                          />
+
+                          {/* Active indicator dot */}
+                          {isSelected && (
+                            <Box sx={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: '50%',
+                              bgcolor: itemColor,
+                              boxShadow: `0 0 8px ${itemColor}`,
+                              animation: 'pulse 2s infinite',
+                              '@keyframes pulse': {
+                                '0%, 100%': {
+                                  opacity: 1,
+                                },
+                                '50%': {
+                                  opacity: 0.5,
+                                },
+                              },
+                            }} />
+                          )}
+                        </ListItemButton>
+                      </ListItem>
+                    )
+                  })}
+                </List>
+              </Collapse>
+            </React.Fragment>
+          )
+        })}
+
       </Box>
-      
+
       {/* Footer */}
-      <Box sx={{ 
-        p: 2, 
+      <Box sx={{
+        p: 2,
         borderTop: '1px solid rgba(255, 255, 255, 0.06)',
         background: 'linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.2) 100%)',
       }}>
-        <Box sx={{ 
-          p: 1.5, 
+        <Box sx={{
+          p: 1.5,
           borderRadius: 2,
           bgcolor: 'rgba(255, 255, 255, 0.02)',
           border: '1px solid rgba(255, 255, 255, 0.04)',
         }}>
-          <Typography 
-            variant="caption" 
-            sx={{ 
+          <Typography
+            variant="caption"
+            sx={{
               color: 'text.secondary',
               display: 'block',
               fontSize: '0.6875rem',
@@ -410,9 +423,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ open, onToggle }) => {
           >
             Llama Nexus v1.0
           </Typography>
-          <Typography 
-            variant="caption" 
-            sx={{ 
+          <Typography
+            variant="caption"
+            sx={{
               color: alpha('#64748b', 0.6),
               display: 'block',
               fontSize: '0.625rem',
