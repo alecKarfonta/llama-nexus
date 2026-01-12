@@ -474,10 +474,6 @@ export const FineTuningPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState(0);
 
   // Benchmarks
-  const [availableBenchmarks, setAvailableBenchmarks] = useState<BenchmarkInfo[]>([]);
-  const [benchmarkJobs, setBenchmarkJobs] = useState<BenchmarkJob[]>([]);
-  const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>(["mmlu", "hellaswag"]);
-  const [benchmarkAdapterId, setBenchmarkAdapterId] = useState<string>("");
 
   // Checkpoints
   const [checkpoints, setCheckpoints] = useState<string[]>([]);
@@ -501,11 +497,6 @@ export const FineTuningPage: React.FC = () => {
       .then(setJobs)
       .catch((err) => setError(err.message));
 
-  const fetchBenchmarkJobs = () =>
-    fetch("/api/v1/finetune/benchmarks/jobs")
-      .then((res) => res.json())
-      .then((data) => setBenchmarkJobs(data.jobs || []))
-      .catch(() => { });
 
   useEffect(() => {
     fetchJobs();
@@ -523,10 +514,6 @@ export const FineTuningPage: React.FC = () => {
     fetch("/api/v1/finetune/presets")
       .then((res) => res.json())
       .then((data) => setPresets(data.presets || []))
-      .catch(() => { });
-    fetch("/api/v1/finetune/benchmarks/available")
-      .then((res) => res.json())
-      .then((data) => setAvailableBenchmarks(data.benchmarks || []))
       .catch(() => { });
     // Fetch models from models page for base model dropdown
     fetch("/v1/models")
@@ -557,10 +544,8 @@ export const FineTuningPage: React.FC = () => {
           }));
       })
       .catch(() => { });
-    fetchBenchmarkJobs();
     const interval = setInterval(() => {
       fetchJobs();
-      fetchBenchmarkJobs();
     }, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -599,41 +584,6 @@ export const FineTuningPage: React.FC = () => {
     }
   };
 
-  const toggleBenchmark = (name: string) => {
-    setSelectedBenchmarks((prev) => (prev.includes(name) ? prev.filter((b) => b !== name) : [...prev, name]));
-  };
-
-  const handleRunBenchmark = async () => {
-    if (selectedBenchmarks.length === 0) {
-      setError("Select at least one benchmark");
-      return;
-    }
-    setActionStatus("Creating benchmark job...");
-    try {
-      const benchmarks = selectedBenchmarks.map((name) => ({
-        benchmark_name: name,
-        num_samples: 50,
-        num_few_shot: 3,
-        temperature: 0.0,
-      }));
-      const res = await fetch("/api/v1/finetune/benchmarks/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: `Benchmark ${new Date().toISOString().slice(0, 16)}`,
-          base_model: form.base_model,
-          adapter_id: benchmarkAdapterId || undefined,
-          benchmarks,
-        }),
-      });
-      const job = await res.json();
-      await fetch(`/api/v1/finetune/benchmarks/jobs/${job.id}/start`, { method: "POST" });
-      setActionStatus("Benchmark started successfully");
-      fetchBenchmarkJobs();
-    } catch {
-      setActionStatus("Failed to start benchmark");
-    }
-  };
 
   useEffect(() => {
     if (!selectedJob) return;
@@ -948,12 +898,7 @@ export const FineTuningPage: React.FC = () => {
             iconPosition="start"
             label={`Training Jobs (${jobs.length})`}
           />
-          <Tab
-            icon={<AdapterIcon sx={{ fontSize: 18 }} />}
-            iconPosition="start"
-            label={`Adapters (${adapters.length})`}
-          />
-          <Tab icon={<BenchmarkIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="Benchmarks" />
+          <Tab icon={<AdapterIcon sx={{ fontSize: 18 }} />} iconPosition="start" label={`Adapters (${adapters.length})`} />
           <Tab icon={<UncensorIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="Uncensor Model" />
         </Tabs>
       </Box>
@@ -2170,162 +2115,8 @@ export const FineTuningPage: React.FC = () => {
         </SectionCard>
       )}
 
-      {/* Benchmarks Tab */}
-      {activeTab === 3 && (
-        <Grid container spacing={3}>
-          <Grid item xs={12} lg={5}>
-            <SectionCard
-              title="Run Benchmarks"
-              subtitle="Evaluate model performance"
-              icon={<BenchmarkIcon />}
-              accentColor={accentColors.success}
-            >
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                <FormControl fullWidth size="small">
-                  <InputLabel>Benchmark Suite</InputLabel>
-                  <Select
-                    multiple
-                    value={selectedBenchmarks}
-                    onChange={(e) => setSelectedBenchmarks(typeof e.target.value === 'string' ? e.target.value.split(',') : e.target.value)}
-                    label="Benchmark Suite"
-                    renderValue={(selected) => (
-                      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-                        {selected.map((value) => (
-                          <Chip key={value} label={value} size="small" />
-                        ))}
-                      </Box>
-                    )}
-                  >
-                    {availableBenchmarks.map((b) => (
-                      <MenuItem key={b.name} value={b.name}>
-                        {b.display_name}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-
-                <TextField
-                  label="Adapter ID (Optional)"
-                  value={benchmarkAdapterId}
-                  onChange={(e) => setBenchmarkAdapterId(e.target.value)}
-                  placeholder="Leave empty to test base model"
-                  size="small"
-                  fullWidth
-                />
-
-                <Button
-                  variant="contained"
-                  onClick={handleRunBenchmark}
-                  disabled={selectedBenchmarks.length === 0}
-                  startIcon={<StartIcon />}
-                  sx={{
-                    background: `linear-gradient(135deg, ${accentColors.success} 0%, ${accentColors.info} 100%)`,
-                  }}
-                >
-                  Run Benchmark Suite
-                </Button>
-              </Box>
-            </SectionCard>
-          </Grid>
-
-          <Grid item xs={12} lg={7}>
-            <SectionCard
-              title="Benchmark Results"
-              subtitle={`${benchmarkJobs.length} benchmark jobs`}
-              icon={<MetricsIcon />}
-              accentColor={accentColors.success}
-            >
-              {benchmarkJobs.length === 0 ? (
-                <Box sx={{ p: 4, textAlign: "center" }}>
-                  <BenchmarkIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-                  <Typography color="text.secondary">No benchmark results yet</Typography>
-                </Box>
-              ) : (
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  {benchmarkJobs.map((bj) => (
-                    <Box
-                      key={bj.id}
-                      sx={{
-                        p: 2,
-                        bgcolor: "rgba(255,255,255,0.02)",
-                        border: "1px solid rgba(255,255,255,0.06)",
-                        borderRadius: 2,
-                      }}
-                    >
-                      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1.5 }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                          {bj.name}
-                        </Typography>
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                          <StatusChip status={bj.status} />
-                          {bj.status === "running" && (
-                            <Typography variant="caption" color="text.secondary">
-                              ({bj.current_benchmark})
-                            </Typography>
-                          )}
-                        </Box>
-                      </Box>
-
-                      {bj.status === "running" && (
-                        <LinearProgress
-                          variant="determinate"
-                          value={bj.progress}
-                          sx={{
-                            mb: 1.5,
-                            height: 4,
-                            borderRadius: 2,
-                            bgcolor: "rgba(255,255,255,0.1)",
-                            "& .MuiLinearProgress-bar": {
-                              background: `linear-gradient(90deg, ${accentColors.info}, ${accentColors.success})`,
-                            },
-                          }}
-                        />
-                      )}
-
-                      {bj.results.length > 0 && (
-                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-                          {bj.results.map((r) => (
-                            <Chip
-                              key={r.benchmark_name}
-                              size="small"
-                              label={
-                                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                                  <span>{r.benchmark_name}:</span>
-                                  <span style={{ fontWeight: 700 }}>
-                                    {r.finetuned_score?.toFixed(1) ?? r.base_model_score?.toFixed(1) ?? "-"}%
-                                  </span>
-                                  {r.improvement !== undefined && r.improvement !== null && (
-                                    <span
-                                      style={{
-                                        color: r.improvement > 0 ? accentColors.success : accentColors.rose,
-                                        fontWeight: 600,
-                                      }}
-                                    >
-                                      ({r.improvement > 0 ? "+" : ""}
-                                      {r.improvement.toFixed(1)}%)
-                                    </span>
-                                  )}
-                                </Box>
-                              }
-                              sx={{
-                                bgcolor: "rgba(255,255,255,0.05)",
-                                border: "1px solid rgba(255,255,255,0.1)",
-                              }}
-                            />
-                          ))}
-                        </Box>
-                      )}
-                    </Box>
-                  ))}
-                </Box>
-              )}
-            </SectionCard>
-          </Grid>
-        </Grid>
-      )}
-
       {/* Uncensor Tab */}
-      {activeTab === 4 && (
+      {activeTab === 3 && (
         <Grid container spacing={3}>
           <Grid item xs={12} lg={8}>
             <SectionCard

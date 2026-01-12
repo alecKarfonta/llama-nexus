@@ -324,7 +324,7 @@ export const ModelEvaluationPage: React.FC = () => {
     try {
       const res = await fetch("/api/v1/finetune/jobs");
       if (res.ok) setJobs(await res.json());
-    } catch {}
+    } catch { }
   }, []);
 
   const fetchSessions = useCallback(async () => {
@@ -334,7 +334,7 @@ export const ModelEvaluationPage: React.FC = () => {
         const data = await res.json();
         setSessions(data.sessions || []);
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const fetchBenchmarks = useCallback(async () => {
@@ -344,7 +344,7 @@ export const ModelEvaluationPage: React.FC = () => {
         const data = await res.json();
         setBenchmarks(data.benchmarks || []);
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const fetchAbTests = useCallback(async () => {
@@ -354,7 +354,7 @@ export const ModelEvaluationPage: React.FC = () => {
         const data = await res.json();
         setAbTests(data.tests || []);
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const fetchBenchmarkJobs = useCallback(async () => {
@@ -364,7 +364,7 @@ export const ModelEvaluationPage: React.FC = () => {
         const data = await res.json();
         setBenchmarkJobs(data.jobs || []);
       }
-    } catch {}
+    } catch { }
   }, []);
 
   useEffect(() => {
@@ -467,7 +467,7 @@ export const ModelEvaluationPage: React.FC = () => {
       const res = await fetch(`/api/v1/finetune/eval/sessions/${selectedSession.id}`);
       const data = await res.json();
       setComparisons(data.comparisons || []);
-    } catch {}
+    } catch { }
   };
 
   const handleRunJudge = async (comparisonId: string) => {
@@ -638,7 +638,7 @@ export const ModelEvaluationPage: React.FC = () => {
             variant="outlined"
             size="small"
             startIcon={<BackIcon />}
-            onClick={() => navigate("/finetuning")}
+            onClick={() => navigate("/benchmark")}
             sx={{
               borderColor: "rgba(255, 255, 255, 0.1)",
               color: "text.secondary",

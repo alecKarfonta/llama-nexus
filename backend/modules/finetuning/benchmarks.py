@@ -747,9 +747,21 @@ class BenchmarkRunner:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8700",
+        base_url: Optional[str] = None,
         dataset_manager: Optional[HuggingFaceDatasetManager] = None,
     ):
+        # Default to environment variable if provided, else use Docker internal name or localhost
+        if base_url is None:
+            # First try VLM_ENDPOINT_URL as it's already used for inference in Docker
+            env_url = os.getenv("VLM_ENDPOINT_URL") or os.getenv("LLM_ENDPOINT_URL")
+            if env_url:
+                # Strip /v1 if it's there as BenchmarkRunner adds it back or expects the base
+                base_url = env_url.replace("/v1", "").rstrip("/")
+            elif os.getenv("RUNNING_IN_DOCKER") == "true":
+                base_url = "http://llamacpp-api:8080"
+            else:
+                base_url = "http://localhost:8700"
+        
         self.base_url = base_url.rstrip("/")
         self.jobs: Dict[str, BenchmarkJob] = {}
         self._running_tasks: Dict[str, asyncio.Task] = {}

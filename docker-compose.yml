@@ -99,6 +99,7 @@ services:
       - VLM_API_KEY=${VLM_API_KEY:-placeholder-api-key}
       - VLM_MODEL_NAME=${VLM_MODEL_NAME:-Qwen_Qwen3-VL-4B-Thinking}
       - VLM_ENABLED=${VLM_ENABLED:-true}
+      - USE_DEPLOYED_EMBEDDINGS=true
     volumes:
       - backend_data:/data
       - gpt_oss_models:/home/llamacpp/models

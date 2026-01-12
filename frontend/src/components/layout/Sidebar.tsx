@@ -73,6 +73,14 @@ const navigationSections: NavigationSection[] = [
     ],
   },
   {
+    id: 'benchmarking',
+    title: 'Benchmarks',
+    items: [
+      { id: 'benchmark', label: 'Inference Performance', path: '/benchmark', icon: 'benchmark', color: '#ef4444' },
+      { id: 'evaluation', label: 'Model Evaluation', path: '/evaluation', icon: 'evaluation', color: '#ec4899' },
+    ],
+  },
+  {
     id: 'development',
     title: 'Development',
     items: [
@@ -82,7 +90,6 @@ const navigationSections: NavigationSection[] = [
       { id: 'workflows', label: 'Workflows', path: '/workflows', icon: 'workflow', color: '#a855f7' },
       { id: 'datasets', label: 'Datasets', path: '/datasets', icon: 'datasets', color: '#f59e0b' },
       { id: 'distillation', label: 'Distillation', path: '/distillation', icon: 'distillation', color: '#06b6d4' },
-      { id: 'evaluation', label: 'Evaluation', path: '/evaluation', icon: 'evaluation', color: '#ec4899' },
       {
         id: 'finetuning',
         label: 'Fine-Tuning',
@@ -96,7 +103,6 @@ const navigationSections: NavigationSection[] = [
         ]
       },
       { id: 'testing', label: 'Testing', path: '/testing', icon: 'testing', color: '#f97316' },
-      { id: 'benchmark', label: 'Benchmark', path: '/benchmark', icon: 'benchmark', color: '#ef4444' },
       { id: 'batch', label: 'Batch Processing', path: '/batch', icon: 'batch', color: '#ec4899' },
       { id: 'compare', label: 'Compare Models', path: '/compare', icon: 'compare', color: '#f43f5e' },
     ],

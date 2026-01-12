@@ -185,7 +185,12 @@ def get_llm_endpoint(request: Request, custom_endpoint: Optional[str] = None) ->
     if manager:
         status = manager.get_status()
         if status.get("running"):
-            port = manager.config.get('server', {}).get('port', 8081)
+            port = manager.config.get('server', {}).get('port', 8080)
+            
+            # If running in Docker, we must use the service name 'llamacpp-api'
+            # and the internal port (8080) rather than localhost
+            if os.getenv("RUNNING_IN_DOCKER") == "true":
+                return f"http://llamacpp-api:{port}"
             return f"http://localhost:{port}"
     
     raise HTTPException(status_code=503, detail="No LLM endpoint available. Start the local server or provide a custom endpoint.")
