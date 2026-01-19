@@ -30,7 +30,7 @@ import DocumentsPage from '@/pages/DocumentsPage'
 import DiscoveryPage from '@/pages/DiscoveryPage'
 import { QuantizationPage } from '@/pages/QuantizationPage'
 import FineTuningPage from '@/pages/FineTuningPage'
-import { DatasetManagementPage, DistillationPage, ModelEvaluationPage, WorkflowTemplatesPage, AdapterComparisonPage } from '@/pages/finetuning'
+import { DatasetManagementPage, DistillationPage, ModelEvaluationPage, WorkflowTemplatesPage, AdapterComparisonPage, BookDatasetPage, BenchmarkComparisonPage } from '@/pages/finetuning'
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -132,6 +132,8 @@ function App() {
                 <Route path="/finetuning/evaluation" element={<ModelEvaluationPage />} />
                 <Route path="/finetuning/templates" element={<WorkflowTemplatesPage />} />
                 <Route path="/finetuning/compare" element={<AdapterComparisonPage />} />
+                <Route path="/finetuning/book-datasets" element={<BookDatasetPage />} />
+                <Route path="/benchmark-comparison" element={<BenchmarkComparisonPage />} />
                 <Route path="/monitoring" element={<MonitoringPage />} />
                 <Route path="/api-docs" element={<ApiDocsPage />} />
                 <Route path="/configuration" element={<ConfigurationPage />} />

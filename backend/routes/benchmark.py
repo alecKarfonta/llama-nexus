@@ -193,7 +193,10 @@ def get_llm_endpoint(request: Request, custom_endpoint: Optional[str] = None) ->
                 return f"http://llamacpp-api:{port}"
             return f"http://localhost:{port}"
     
-    raise HTTPException(status_code=503, detail="No LLM endpoint available. Start the local server or provide a custom endpoint.")
+    raise HTTPException(
+        status_code=503, 
+        detail="No local LLM server is running. Please deploy a model first from the LLM Deploy page, or provide an external endpoint URL with an API key."
+    )
 
 
 def calculate_percentile(data: List[float], percentile: float) -> float:

@@ -58,19 +58,25 @@ class Domain:
     # Domain-specific settings
     chunk_size: int = 512
     chunk_overlap: int = 50
-    embedding_model: str = "nomic-embed-text"
+    embedding_model: str = "nomic-embed-text-v1.5"
     # Metadata
     document_count: int = 0
     total_chunks: int = 0
     created_at: str = ""
     updated_at: str = ""
+    # Custom collection name (if set, use this instead of domain_{id})
+    custom_collection: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Domain':
-        return cls(**data)
+        # Filter to only valid fields for this dataclass
+        import dataclasses
+        valid_fields = {f.name for f in dataclasses.fields(cls)}
+        filtered_data = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered_data)
 
 
 @dataclass
@@ -84,6 +90,8 @@ class DocumentChunk:
     # Position in source
     start_char: int = 0
     end_char: int = 0
+    # Token count for this chunk
+    token_count: int = 0
     # Metadata
     page_number: Optional[int] = None
     section_header: Optional[str] = None
@@ -217,6 +225,7 @@ class DocumentManager:
                     total_chunks INTEGER NOT NULL,
                     start_char INTEGER DEFAULT 0,
                     end_char INTEGER DEFAULT 0,
+                    token_count INTEGER DEFAULT 0,
                     page_number INTEGER,
                     section_header TEXT,
                     chunk_type TEXT DEFAULT 'text',
@@ -237,6 +246,18 @@ class DocumentManager:
             except:
                 pass  # Column already exists
             
+            # Add token_count column to chunks table if it doesn't exist
+            try:
+                await db.execute("ALTER TABLE chunks ADD COLUMN token_count INTEGER DEFAULT 0")
+            except:
+                pass  # Column already exists
+            
+            # Add custom_collection column to domains table if it doesn't exist
+            try:
+                await db.execute("ALTER TABLE domains ADD COLUMN custom_collection TEXT")
+            except:
+                pass  # Column already exists
+            
             # Indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_documents_domain ON documents(domain_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)")
@@ -246,21 +267,53 @@ class DocumentManager:
             
             await db.commit()
             
-            # Create default domain if none exists
-            cursor = await db.execute("SELECT COUNT(*) FROM domains")
-            count = (await cursor.fetchone())[0]
-            if count == 0:
+            # Create default General domain if none exists
+            # Use UUID5 for stable, predictable ID across restarts
+            GENERAL_DOMAIN_NAMESPACE = uuid.UUID('d8f5c6a3-9b2e-4f1a-8c7d-3e5f9a1b2c4d')
+            GENERAL_DOMAIN_ID = str(uuid.uuid5(GENERAL_DOMAIN_NAMESPACE, "general"))
+            
+            cursor = await db.execute(
+                "SELECT id FROM domains WHERE id = ? OR name = 'General'",
+                (GENERAL_DOMAIN_ID,)
+            )
+            existing = await cursor.fetchone()
+            if not existing:
                 default_domain = Domain(
-                    id=str(uuid.uuid4()),
+                    id=GENERAL_DOMAIN_ID,
                     name="General",
                     description="Default document domain",
                     created_at=datetime.utcnow().isoformat(),
                     updated_at=datetime.utcnow().isoformat()
                 )
                 await self.create_domain(default_domain)
+                logger.info(f"Created General domain with stable ID: {GENERAL_DOMAIN_ID}")
         
         self._initialized = True
         logger.info(f"DocumentManager initialized with database: {self.db_path}")
+    
+    async def get_general_domain(self) -> Optional[Domain]:
+        """Get the General domain (default domain for documents).
+        
+        Returns the General domain which uses a stable UUID5-based ID.
+        """
+        GENERAL_DOMAIN_NAMESPACE = uuid.UUID('d8f5c6a3-9b2e-4f1a-8c7d-3e5f9a1b2c4d')
+        GENERAL_DOMAIN_ID = str(uuid.uuid5(GENERAL_DOMAIN_NAMESPACE, "general"))
+        
+        domain = await self.get_domain(GENERAL_DOMAIN_ID)
+        if domain:
+            return domain
+        
+        # Fallback: find by name if UUID doesn't match (legacy data)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM domains WHERE name = 'General' ORDER BY created_at LIMIT 1"
+            )
+            row = await cursor.fetchone()
+            if row:
+                return Domain.from_dict(dict(row))
+        
+        return None
     
     # Domain Operations
     
@@ -274,13 +327,13 @@ class DocumentManager:
             await db.execute("""
                 INSERT INTO domains (id, name, description, parent_id, chunk_size,
                     chunk_overlap, embedding_model, document_count, total_chunks,
-                    created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, updated_at, custom_collection)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 domain.id, domain.name, domain.description, domain.parent_id,
                 domain.chunk_size, domain.chunk_overlap, domain.embedding_model,
                 domain.document_count, domain.total_chunks,
-                domain.created_at, domain.updated_at
+                domain.created_at, domain.updated_at, domain.custom_collection
             ))
             await db.commit()
         
@@ -325,13 +378,14 @@ class DocumentManager:
                 UPDATE domains SET
                     name = ?, description = ?, parent_id = ?,
                     chunk_size = ?, chunk_overlap = ?, embedding_model = ?,
-                    document_count = ?, total_chunks = ?, updated_at = ?
+                    document_count = ?, total_chunks = ?, updated_at = ?,
+                    custom_collection = ?
                 WHERE id = ?
             """, (
                 domain.name, domain.description, domain.parent_id,
                 domain.chunk_size, domain.chunk_overlap, domain.embedding_model,
                 domain.document_count, domain.total_chunks, domain.updated_at,
-                domain.id
+                domain.custom_collection, domain.id
             ))
             await db.commit()
         
@@ -578,13 +632,13 @@ class DocumentManager:
         async with aiosqlite.connect(self.db_path) as db:
             await db.executemany("""
                 INSERT OR REPLACE INTO chunks (id, document_id, content, chunk_index,
-                    total_chunks, start_char, end_char, page_number, section_header,
+                    total_chunks, start_char, end_char, token_count, page_number, section_header,
                     chunk_type, image_path, vector_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     chunk.id, chunk.document_id, chunk.content, chunk.chunk_index,
-                    chunk.total_chunks, chunk.start_char, chunk.end_char,
+                    chunk.total_chunks, chunk.start_char, chunk.end_char, chunk.token_count,
                     chunk.page_number, chunk.section_header, chunk.chunk_type,
                     chunk.image_path, chunk.vector_id, now
                 )
@@ -620,6 +674,7 @@ class DocumentManager:
                     total_chunks=row['total_chunks'],
                     start_char=row['start_char'],
                     end_char=row['end_char'],
+                    token_count=row['token_count'] if 'token_count' in row.keys() else 0,
                     page_number=row['page_number'],
                     section_header=row['section_header'],
                     chunk_type=row['chunk_type'] if 'chunk_type' in row.keys() else 'text',
@@ -647,6 +702,7 @@ class DocumentManager:
                     total_chunks=row['total_chunks'],
                     start_char=row['start_char'],
                     end_char=row['end_char'],
+                    token_count=row['token_count'] if 'token_count' in row.keys() else 0,
                     page_number=row['page_number'],
                     section_header=row['section_header'],
                     chunk_type=row['chunk_type'] if 'chunk_type' in row.keys() else 'text',
@@ -654,6 +710,121 @@ class DocumentManager:
                     vector_id=row['vector_id']
                 )
         return None
+    
+    async def get_chunks_paginated(
+        self,
+        document_id: str,
+        offset: int = 0,
+        limit: Optional[int] = None,
+        max_limit: int = 500
+    ) -> Tuple[List[DocumentChunk], int]:
+        """Get paginated chunks for a document, ordered by chunk_index.
+        
+        Args:
+            document_id: Document ID to get chunks for
+            offset: Starting chunk index for pagination (default: 0)
+            limit: Max chunks to return (None = all, capped at max_limit)
+            max_limit: Maximum allowed limit (default: 500)
+            
+        Returns:
+            Tuple of (chunks list, total chunk count)
+        """
+        # Cap limit to max_limit
+        if limit is not None:
+            limit = min(limit, max_limit)
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            
+            # Get total count
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+                (document_id,)
+            )
+            total = (await cursor.fetchone())[0]
+            
+            # Build query with pagination
+            if limit is not None:
+                cursor = await db.execute(
+                    "SELECT * FROM chunks WHERE document_id = ? ORDER BY chunk_index LIMIT ? OFFSET ?",
+                    (document_id, limit, offset)
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT * FROM chunks WHERE document_id = ? ORDER BY chunk_index LIMIT ? OFFSET ?",
+                    (document_id, max_limit, offset)
+                )
+            
+            rows = await cursor.fetchall()
+            chunks = [
+                DocumentChunk(
+                    id=row['id'],
+                    document_id=row['document_id'],
+                    content=row['content'],
+                    chunk_index=row['chunk_index'],
+                    total_chunks=row['total_chunks'],
+                    start_char=row['start_char'],
+                    end_char=row['end_char'],
+                    token_count=row['token_count'] if 'token_count' in row.keys() else 0,
+                    page_number=row['page_number'],
+                    section_header=row['section_header'],
+                    chunk_type=row['chunk_type'] if 'chunk_type' in row.keys() else 'text',
+                    image_path=row['image_path'] if 'image_path' in row.keys() else None,
+                    vector_id=row['vector_id']
+                )
+                for row in rows
+            ]
+            
+        return chunks, total
+    
+    async def get_chunks_by_range(
+        self,
+        document_id: str,
+        start_index: int,
+        end_index: int
+    ) -> List[DocumentChunk]:
+        """Get chunks within index range [start, end] for a document.
+        
+        Used for fetching neighboring chunks around a similarity match.
+        
+        Args:
+            document_id: Document ID
+            start_index: Starting chunk index (inclusive, clamped to 0)
+            end_index: Ending chunk index (inclusive)
+            
+        Returns:
+            List of chunks in the range, ordered by chunk_index
+        """
+        # Clamp start to 0
+        start_index = max(0, start_index)
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """SELECT * FROM chunks 
+                   WHERE document_id = ? AND chunk_index >= ? AND chunk_index <= ?
+                   ORDER BY chunk_index""",
+                (document_id, start_index, end_index)
+            )
+            rows = await cursor.fetchall()
+            return [
+                DocumentChunk(
+                    id=row['id'],
+                    document_id=row['document_id'],
+                    content=row['content'],
+                    chunk_index=row['chunk_index'],
+                    total_chunks=row['total_chunks'],
+                    start_char=row['start_char'],
+                    end_char=row['end_char'],
+                    token_count=row['token_count'] if 'token_count' in row.keys() else 0,
+                    page_number=row['page_number'],
+                    section_header=row['section_header'],
+                    chunk_type=row['chunk_type'] if 'chunk_type' in row.keys() else 'text',
+                    image_path=row['image_path'] if 'image_path' in row.keys() else None,
+                    vector_id=row['vector_id']
+                )
+                for row in rows
+            ]
     
     async def delete_chunks(self, document_id: str) -> int:
         """Delete all chunks for a document"""

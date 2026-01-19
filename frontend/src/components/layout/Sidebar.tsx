@@ -78,6 +78,7 @@ const navigationSections: NavigationSection[] = [
     items: [
       { id: 'benchmark', label: 'Inference Performance', path: '/benchmark', icon: 'benchmark', color: '#ef4444' },
       { id: 'evaluation', label: 'Model Evaluation', path: '/evaluation', icon: 'evaluation', color: '#ec4899' },
+      { id: 'benchmark-results', label: 'Comparison Dashboard', path: '/benchmark-comparison', icon: 'compare', color: '#8b5cf6' },
     ],
   },
   {

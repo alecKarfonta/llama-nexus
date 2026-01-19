@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install lm-evaluation-harness for standardized benchmarks
+RUN pip install --no-cache-dir "lm_eval[api]"
+
 # Copy application code
 COPY main.py enhanced_logger.py tool_call_tests.json training_worker.py ./
 COPY modules/ modules/

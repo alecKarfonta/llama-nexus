@@ -4461,6 +4461,7 @@ async def process_document_background(
                 total_chunks=total_chunks,
                 start_char=chunk.start_char,
                 end_char=chunk.end_char,
+                token_count=len(chunk.content.split()),  # Approximate token count
                 chunk_type="text",
                 vector_id=vector_id
             )
@@ -4496,6 +4497,7 @@ async def process_document_background(
                 total_chunks=total_chunks,
                 start_char=0,
                 end_char=0,
+                token_count=len(description.split()),  # Approximate token count
                 page_number=page_num,
                 chunk_type="visual",
                 image_path=image_path,

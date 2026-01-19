@@ -117,6 +117,20 @@ from .adapter_manager import (
     AdapterManager,
     get_adapter_manager,
 )
+from .book_dataset import (
+    BookDatasetConfig,
+    BookDatasetGenerator,
+    BookGenerationMode,
+    GeneratedExample,
+    estimate_dataset_size,
+)
+from .book_distillation import (
+    BookDistillationConfig,
+    BookDistillationGenerator,
+    BookDistillationManager,
+    BookDistillationJob,
+    DistillationJobStatus,
+)
 
 __all__ = [
     "DatasetFormat",

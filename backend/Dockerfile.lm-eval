@@ -1,0 +1,36 @@
+FROM nvidia/cuda:13.0.1-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y python3 python3-pip git cmake build-essential ninja-build && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install PyTorch nightly with CUDA 13.0 support for Blackwell GPUs
+# Note: Using cu128 nightly as cu130 may not be available yet - driver is forward compatible
+RUN pip3 install --no-cache-dir --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
+
+# Install llama-cpp-python with CUDA support for GPU inference
+# Set CUDA arch list to only include Blackwell (sm_120) - CUDA 13.x drops old archs
+# Create symlink for libcuda.so.1 from stubs for build-time linking
+# The real libcuda.so.1 will be provided by NVIDIA runtime at container start
+ENV TORCH_CUDA_ARCH_LIST="12.0"
+ENV CMAKE_CUDA_ARCHITECTURES="120"
+RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 && \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH} \
+    CMAKE_ARGS="-DGGML_CUDA=on -DGGML_CUDA_F16=on -DCMAKE_CUDA_ARCHITECTURES=120" pip3 install --no-cache-dir llama-cpp-python && \
+    rm /usr/local/cuda/lib64/stubs/libcuda.so.1
+
+# Install lm-eval and dependencies
+RUN pip3 install --no-cache-dir \
+    "lm_eval[api]" \
+    redis \
+    pydantic
+
+COPY lm_eval_worker.py /app/lm_eval_worker.py
+COPY gguf_local_model.py /app/gguf_local_model.py
+COPY run_lm_eval.py /app/run_lm_eval.py
+
+ENTRYPOINT ["python3", "/app/lm_eval_worker.py"]

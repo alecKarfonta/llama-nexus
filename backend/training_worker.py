@@ -167,7 +167,14 @@ def stream_status(
     )
 
 
-def load_dataset_for_job(job: Dict[str, Any]) -> Any:
+def load_dataset_for_job(job: Dict[str, Any], tokenizer=None) -> Any:
+    """
+    Load and format dataset for training.
+    
+    Args:
+        job: Job configuration dict
+        tokenizer: Optional tokenizer for applying chat templates
+    """
     path = job["dataset_path"]
     fmt = job["dataset_format"]
     ds = load_dataset("json", data_files=path, split="train")
@@ -178,14 +185,59 @@ def load_dataset_for_job(job: Dict[str, Any]) -> Any:
             inp = rec.get("input", "")
             out = rec.get("output", "")
             return f"### Instruction:\n{instr}\n\n### Input:\n{inp}\n\n### Response:\n{out}"
+        
         if fmt == "chatml":
             msgs = rec.get("messages", [])
-            parts = [f"{m.get('role')}: {m.get('content')}" for m in msgs]
+            # Use tokenizer's chat template if available
+            if tokenizer and hasattr(tokenizer, 'apply_chat_template'):
+                try:
+                    # Convert messages to the format expected by apply_chat_template
+                    formatted_msgs = [
+                        {"role": m.get("role", "user"), "content": m.get("content", "")}
+                        for m in msgs
+                    ]
+                    return tokenizer.apply_chat_template(
+                        formatted_msgs, 
+                        tokenize=False, 
+                        add_generation_prompt=False
+                    )
+                except Exception as e:
+                    print(f"[training] apply_chat_template failed: {e}, falling back to manual format", flush=True)
+            # Fallback to proper ChatML format with special tokens
+            parts = []
+            for m in msgs:
+                role = m.get("role", "user")
+                content = m.get("content", "")
+                parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
             return "\n".join(parts)
+        
         if fmt == "sharegpt":
             conv = rec.get("conversations", [])
-            parts = [f"{c.get('from')}: {c.get('value')}" for c in conv]
+            # Use tokenizer's chat template if available
+            if tokenizer and hasattr(tokenizer, 'apply_chat_template'):
+                try:
+                    # Convert ShareGPT format to standard messages format
+                    role_map = {"human": "user", "gpt": "assistant", "system": "system"}
+                    formatted_msgs = [
+                        {"role": role_map.get(c.get("from", "human"), "user"), "content": c.get("value", "")}
+                        for c in conv
+                    ]
+                    return tokenizer.apply_chat_template(
+                        formatted_msgs, 
+                        tokenize=False, 
+                        add_generation_prompt=False
+                    )
+                except Exception as e:
+                    print(f"[training] apply_chat_template failed: {e}, falling back to manual format", flush=True)
+            # Fallback to proper ChatML format
+            parts = []
+            role_map = {"human": "user", "gpt": "assistant", "system": "system"}
+            for c in conv:
+                role = role_map.get(c.get("from", "human"), "user")
+                content = c.get("value", "")
+                parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
             return "\n".join(parts)
+        
         if fmt == "completion":
             return rec.get("text", "")
         return json.dumps(rec)
@@ -343,14 +395,15 @@ def train(job: Dict[str, Any]) -> None:
     else:
         stream_log(redis_client, job_id, f"Starting job {job_id}")
     
-    # Load dataset
-    dataset = load_dataset_for_job(job)
-    
-    # Build model (with checkpoint if resuming)
+    # Build model first to get tokenizer (needed for chat template formatting)
     model, tokenizer, is_resumed = build_model(job, checkpoint_path)
     
     if is_resumed:
         stream_log(redis_client, job_id, "Model loaded from checkpoint successfully")
+    
+    # Load dataset with tokenizer for proper chat template formatting
+    stream_log(redis_client, job_id, f"Loading dataset with format: {job.get('dataset_format', 'unknown')}")
+    dataset = load_dataset_for_job(job, tokenizer)
     
     train_cfg = job["training_config"]
     tokenized = dataset.map(tokenize_function(tokenizer, train_cfg["max_seq_length"]), batched=True)

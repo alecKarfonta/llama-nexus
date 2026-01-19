@@ -22,6 +22,10 @@ DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 GRAPHRAG_URL = "http://graphrag-api-1:8000"
 GRAPHRAG_ENABLED = True
 
+# Context window expansion - include neighboring chunks in retrieval
+RAG_CONTEXT_NEIGHBORS_BEFORE = int(os.getenv("RAG_CONTEXT_NEIGHBORS_BEFORE", "1"))
+RAG_CONTEXT_NEIGHBORS_AFTER = int(os.getenv("RAG_CONTEXT_NEIGHBORS_AFTER", "1"))
+
 
 def init_rag_config(
     rag_available: bool,
@@ -53,13 +57,129 @@ def get_rag_components(request: Request):
         'document_discovery': getattr(request.app.state, 'document_discovery', None),
     }
 
+# Model name aliases for backward compatibility
+EMBEDDING_MODEL_ALIASES = {
+    "nomic-embed-text": "nomic-embed-text-v1.5",
+    "all-MiniLM-L6-v2": "all-MiniLM-L6-v2",  # Direct mapping
+    "bge-large": "bge-large-en-v1.5",
+}
+
+def resolve_embedding_model_name(model_name: Optional[str]) -> str:
+    """Resolve model aliases to full model names for backward compatibility."""
+    if not model_name:
+        return "nomic-embed-text-v1.5"
+    return EMBEDDING_MODEL_ALIASES.get(model_name, model_name)
+
 
 def create_embedder(request: Request, model_name: Optional[str] = None):
     """Create an embedder instance using app state factory."""
     embedder_factory = getattr(request.app.state, 'create_embedder', None)
     if not embedder_factory:
         raise HTTPException(status_code=503, detail="Embedder factory not available")
-    return embedder_factory(model_name=model_name)
+    # Resolve model aliases
+    resolved_model = resolve_embedding_model_name(model_name)
+    return embedder_factory(model_name=resolved_model)
+
+
+
+def get_collection_name(domain) -> str:
+    """Get Qdrant collection name for a domain.
+    
+    Uses custom_collection if set, otherwise defaults to domain_{id}.
+    """
+    if domain.custom_collection:
+        return domain.custom_collection
+    return f"domain_{domain.id}"
+
+
+async def sync_memory_vectors_to_documents(
+    domain,
+    vector_store,
+    document_manager
+) -> int:
+    """Sync vectors from a memory collection to SQLite documents.
+    
+    For domains with custom_collection set, this syncs Qdrant vectors
+    to SQLite Document records on first access / refresh.
+    
+    Returns: Number of documents synced
+    """
+    from modules.rag.document_manager import Document, DocumentStatus, DocumentType
+    
+    if not domain.custom_collection:
+        return 0
+    
+    collection = domain.custom_collection
+    
+    # Check if collection exists
+    if not await vector_store.collection_exists(collection):
+        return 0
+    
+    # Scroll through all vectors in the collection
+    try:
+        # Use scroll to get all points
+        from qdrant_client.models import ScrollRequest
+        points = []
+        offset = None
+        
+        while True:
+            result = await vector_store._client.scroll(
+                collection_name=collection,
+                limit=100,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False
+            )
+            batch, offset = result
+            if not batch:
+                break
+            points.extend(batch)
+            if offset is None:
+                break
+        
+        # Get existing document IDs for this domain
+        existing_docs, _ = await document_manager.list_documents(
+            domain_id=domain.id,
+            limit=10000
+        )
+        existing_ids = {d.id for d in existing_docs}
+        
+        synced = 0
+        for point in points:
+            # Use original_id from payload if available
+            original_id = point.payload.get('original_id', str(point.id))
+            doc_id = f"mem_{domain.custom_collection}_{original_id}"
+            
+            if doc_id in existing_ids:
+                continue  # Already synced
+            
+            # Create document from vector payload
+            content = point.payload.get('content', '')
+            metadata = {k: v for k, v in point.payload.items() if k not in ('content', 'original_id')}
+            
+            doc = Document(
+                id=doc_id,
+                domain_id=domain.id,
+                name=f"Memory: {original_id[:50]}..." if len(original_id) > 50 else f"Memory: {original_id}",
+                doc_type=DocumentType.TXT,
+                status=DocumentStatus.READY,
+                content=content,
+                chunk_count=1,
+                metadata=metadata,
+            )
+            
+            try:
+                await document_manager.create_document(doc)
+                synced += 1
+            except Exception as e:
+                logger.warning(f"Failed to sync memory {original_id}: {e}")
+        
+        logger.info(f"Synced {synced} memory vectors to domain {domain.id}")
+        return synced
+        
+    except Exception as e:
+        logger.error(f"Failed to sync memory vectors: {e}")
+        return 0
 
 
 def extract_pdf_text(content: str) -> str:
@@ -367,7 +487,8 @@ async def reindex_domain(request: Request, domain_id: str, background_tasks: Bac
         }
     
     if data.get('recreate_collection', False):
-        collection_name = f"domain_{domain_id}"
+        domain = await rag['document_manager'].get_domain(domain_id)
+        collection_name = get_collection_name(domain) if domain else f"domain_{domain_id}"
         if await rag['vector_store'].collection_exists(collection_name):
             await rag['vector_store'].delete_collection(collection_name)
             logger.info(f"Deleted collection {collection_name} for reindexing")
@@ -410,6 +531,16 @@ async def list_rag_documents(
         raise HTTPException(status_code=503, detail="Document manager not initialized")
     
     from modules.rag.document_manager import DocumentStatus, DocumentType
+    
+    # For memory domains (custom_collection), sync vectors to SQLite first
+    if domain_id and rag['vector_store']:
+        domain = await rag['document_manager'].get_domain(domain_id)
+        if domain and domain.custom_collection:
+            synced = await sync_memory_vectors_to_documents(
+                domain, rag['vector_store'], rag['document_manager']
+            )
+            if synced > 0:
+                logger.info(f"Synced {synced} memory vectors for domain {domain_id}")
     
     status_enum = DocumentStatus(status) if status else None
     type_enum = DocumentType(doc_type) if doc_type else None
@@ -520,14 +651,67 @@ async def delete_rag_document(request: Request, document_id: str):
 
 
 @router.get("/documents/{document_id}/chunks")
-async def get_document_chunks(request: Request, document_id: str):
-    """Get document chunks."""
+async def get_document_chunks(
+    request: Request,
+    document_id: str,
+    offset: int = 0,
+    limit: Optional[int] = None,
+    include_embeddings: bool = False
+):
+    """Get document chunks with pagination.
+    
+    Retrieve all chunks for a specific document, ordered by chunk_index.
+    Supports pagination for sequential reading of large documents.
+    
+    Args:
+        document_id: UUID of the document
+        offset: Starting chunk index for pagination (default: 0)
+        limit: Max chunks to return (default: all, max: 500)
+        include_embeddings: Include vector embeddings in response (default: false)
+    """
     rag = get_rag_components(request)
     if not rag['document_manager']:
         raise HTTPException(status_code=503, detail="Document manager not initialized")
     
-    chunks = await rag['document_manager'].get_chunks(document_id)
-    return {"chunks": [c.to_dict() for c in chunks]}
+    # Get document for metadata
+    doc = await rag['document_manager'].get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Get paginated chunks
+    chunks, total_chunks = await rag['document_manager'].get_chunks_paginated(
+        document_id,
+        offset=offset,
+        limit=limit
+    )
+    
+    # Build chunk response
+    chunk_data = []
+    for c in chunks:
+        chunk_dict = {
+            "chunk_id": c.id,
+            "chunk_index": c.chunk_index,
+            "content": c.content,
+            "token_count": c.token_count,
+            "section_header": c.section_header,
+            "page_number": c.page_number,
+            "chunk_type": c.chunk_type,
+            "metadata": {}
+        }
+        if include_embeddings and c.embedding:
+            chunk_dict["embedding"] = c.embedding
+        chunk_data.append(chunk_dict)
+    
+    return {
+        "document_id": document_id,
+        "document_name": doc.name,
+        "domain_id": doc.domain_id,
+        "total_chunks": total_chunks,
+        "offset": offset,
+        "limit": limit if limit else total_chunks,
+        "chunks": chunk_data
+    }
+
 
 
 @router.post("/documents/{document_id}/process")
@@ -585,7 +769,8 @@ async def reprocess_document(request: Request, document_id: str, background_task
     data = await request.json()
     
     # Delete existing vectors
-    collection_name = f"domain_{doc.domain_id}"
+    domain = await rag['document_manager'].get_domain(doc.domain_id)
+    collection_name = get_collection_name(domain) if domain else f"domain_{doc.domain_id}"
     if await rag['vector_store'].collection_exists(collection_name):
         chunks = await rag['document_manager'].get_chunks(document_id)
         vector_ids = [chunk.vector_id for chunk in chunks if chunk.vector_id]
@@ -640,7 +825,8 @@ async def remove_document_from_vector_store(request: Request, document_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    collection_name = f"domain_{doc.domain_id}"
+    domain = await rag['document_manager'].get_domain(doc.domain_id)
+    collection_name = get_collection_name(domain) if domain else f"domain_{doc.domain_id}"
     chunks = await rag['document_manager'].get_chunks(document_id)
     vector_ids = [chunk.vector_id for chunk in chunks if chunk.vector_id]
     
@@ -683,7 +869,7 @@ async def add_document_to_vector_store(request: Request, document_id: str):
     texts = [chunk.content for chunk in chunks]
     embed_result = await embedder.embed(texts)
     
-    collection_name = f"domain_{doc.domain_id}"
+    collection_name = get_collection_name(domain) if domain else f"domain_{doc.domain_id}"
     if not await rag['vector_store'].collection_exists(collection_name):
         from modules.rag.vector_stores.base import CollectionConfig
         collection_config = CollectionConfig(
@@ -1017,7 +1203,13 @@ async def delete_collection(request: Request, name: str):
 # Retrieval
 @router.post("/retrieve")
 async def retrieve_documents(request: Request):
-    """Retrieve relevant documents for a query."""
+    """Retrieve relevant documents for a query.
+    
+    If domain_id is specified, search only that domain's collection.
+    If domain_id is not specified:
+      - If search_all_domains=True, search across all domain collections
+      - Otherwise, use the General domain as default
+    """
     from modules.rag.retrievers import VectorRetriever, RetrievalConfig
     
     rag = get_rag_components(request)
@@ -1026,22 +1218,89 @@ async def retrieve_documents(request: Request):
     
     data = await request.json()
     query = data.get('query', '')
+    search_all_domains = data.get('search_all_domains', False)
     
     if not query:
         raise HTTPException(status_code=400, detail="Query is required")
     
     domain_id = data.get('domain_id')
-    collection_name = f"domain_{domain_id}" if domain_id else "documents"
     
-    # Get the domain's embedding model to ensure dimension match
-    default_embedding_model = 'all-MiniLM-L6-v2'
+    # Get the domain's embedding model and collection name
+    default_embedding_model = 'nomic-embed-text-v1.5'
+    domain = None
+    
     if domain_id:
         domain = await rag['document_manager'].get_domain(domain_id)
         if domain and domain.embedding_model:
             default_embedding_model = domain.embedding_model
+    elif not search_all_domains:
+        # No domain_id specified - use the General domain as default
+        domain = await rag['document_manager'].get_general_domain()
+        if domain:
+            domain_id = domain.id
+            if domain.embedding_model:
+                default_embedding_model = domain.embedding_model
+            logger.info(f"No domain_id specified, using General domain: {domain.id}")
+        else:
+            logger.warning("No General domain found and no domain_id specified")
     
     embedding_model = data.get('embedding_model', default_embedding_model)
     embedder = create_embedder(request, model_name=embedding_model)
+    
+    # Cross-domain search: search all domain collections
+    if search_all_domains:
+        all_results = []
+        domains = await rag['document_manager'].list_domains()
+        
+        for d in domains:
+            coll_name = get_collection_name(d)
+            if not await rag['vector_store'].collection_exists(coll_name):
+                continue
+            
+            retriever = VectorRetriever(
+                rag['vector_store'],
+                embedder,
+                rag['document_manager'],
+                coll_name
+            )
+            
+            config = RetrievalConfig(
+                top_k=data.get('top_k', 10),
+                score_threshold=data.get('score_threshold'),
+                domain_ids=[d.id]
+            )
+            
+            results = await retriever.retrieve(query, config)
+            all_results.extend(results)
+        
+        # Sort by score descending and take top_k
+        all_results.sort(key=lambda r: r.score if hasattr(r, 'score') else 0, reverse=True)
+        all_results = all_results[:data.get('top_k', 10)]
+        
+        return {
+            "query": query,
+            "search_mode": "all_domains",
+            "domains_searched": len(domains),
+            "results": [r.to_dict() for r in all_results]
+        }
+    
+    # Single domain search
+    collection_name = get_collection_name(domain) if domain else None
+    
+    if not collection_name:
+        raise HTTPException(
+            status_code=400, 
+            detail="No domain_id specified and no General domain available. Please specify a domain_id or create a General domain."
+        )
+    
+    # Check if collection exists
+    if not await rag['vector_store'].collection_exists(collection_name):
+        return {
+            "query": query,
+            "collection": collection_name,
+            "results": [],
+            "message": f"Collection '{collection_name}' does not exist yet. Add documents to this domain first."
+        }
     
     retriever = VectorRetriever(
         rag['vector_store'],
@@ -1058,15 +1317,66 @@ async def retrieve_documents(request: Request):
     
     results = await retriever.retrieve(query, config)
     
+    # Context window expansion - fetch neighboring chunks
+    neighbors_before = data.get('context_neighbors_before', RAG_CONTEXT_NEIGHBORS_BEFORE)
+    neighbors_after = data.get('context_neighbors_after', RAG_CONTEXT_NEIGHBORS_AFTER)
+    
+    enhanced_results = []
+    for r in results:
+        result_dict = r.to_dict()
+        
+        # Only expand context if we have chunk_index and document_id
+        if neighbors_before > 0 or neighbors_after > 0:
+            chunk_index = r.chunk_index
+            if chunk_index is not None and r.document_id:
+                start_idx = chunk_index - neighbors_before
+                end_idx = chunk_index + neighbors_after
+                
+                # Fetch neighboring chunks
+                neighbor_chunks = await rag['document_manager'].get_chunks_by_range(
+                    r.document_id, start_idx, end_idx
+                )
+                
+                # Build context object
+                before_content = []
+                after_content = []
+                all_content = []
+                
+                for chunk in neighbor_chunks:
+                    if chunk.chunk_index < chunk_index:
+                        before_content.append(chunk.content)
+                    elif chunk.chunk_index > chunk_index:
+                        after_content.append(chunk.content)
+                    all_content.append(chunk.content)
+                
+                result_dict['context'] = {
+                    'before': before_content,
+                    'after': after_content,
+                    'combined': '\n\n'.join(all_content),
+                    'neighbors_before': neighbors_before,
+                    'neighbors_after': neighbors_after
+                }
+        
+        enhanced_results.append(result_dict)
+    
     return {
         "query": query,
-        "results": [r.to_dict() for r in results]
+        "collection": collection_name,
+        "domain_id": domain_id,
+        "context_expansion": {
+            "neighbors_before": neighbors_before,
+            "neighbors_after": neighbors_after
+        },
+        "results": enhanced_results
     }
 
 
 @router.post("/retrieve/hybrid")
 async def hybrid_retrieve(request: Request):
-    """Hybrid retrieval combining dense and sparse search."""
+    """Hybrid retrieval combining dense and sparse search.
+    
+    Uses the General domain if no domain_id is specified.
+    """
     from modules.rag.retrievers import HybridRetriever, RetrievalConfig
     
     rag = get_rag_components(request)
@@ -1079,11 +1389,42 @@ async def hybrid_retrieve(request: Request):
     if not query:
         raise HTTPException(status_code=400, detail="Query is required")
     
-    embedding_model = data.get('embedding_model', 'all-MiniLM-L6-v2')
-    embedder = create_embedder(request, model_name=embedding_model)
-
     domain_id = data.get('domain_id')
-    collection_name = f"domain_{domain_id}" if domain_id else "documents"
+    default_embedding_model = 'nomic-embed-text-v1.5'
+    domain = None
+    
+    if domain_id:
+        domain = await rag['document_manager'].get_domain(domain_id)
+        if domain and domain.embedding_model:
+            default_embedding_model = domain.embedding_model
+    else:
+        # No domain_id specified - use the General domain as default
+        domain = await rag['document_manager'].get_general_domain()
+        if domain:
+            domain_id = domain.id
+            if domain.embedding_model:
+                default_embedding_model = domain.embedding_model
+    
+    embedding_model = data.get('embedding_model', default_embedding_model)
+    embedder = create_embedder(request, model_name=embedding_model)
+    
+    collection_name = get_collection_name(domain) if domain else None
+    
+    if not collection_name:
+        raise HTTPException(
+            status_code=400, 
+            detail="No domain_id specified and no General domain available."
+        )
+    
+    # Check if collection exists
+    if not await rag['vector_store'].collection_exists(collection_name):
+        return {
+            "query": query,
+            "collection": collection_name,
+            "retrieval_method": "hybrid",
+            "results": [],
+            "message": f"Collection '{collection_name}' does not exist yet."
+        }
 
     retriever = HybridRetriever(
         rag['vector_store'],
@@ -1100,11 +1441,58 @@ async def hybrid_retrieve(request: Request):
     
     results = await retriever.retrieve(query, config)
     
+    # Context window expansion - fetch neighboring chunks
+    neighbors_before = data.get('context_neighbors_before', RAG_CONTEXT_NEIGHBORS_BEFORE)
+    neighbors_after = data.get('context_neighbors_after', RAG_CONTEXT_NEIGHBORS_AFTER)
+    
+    enhanced_results = []
+    for r in results:
+        result_dict = r.to_dict()
+        
+        # Only expand context if we have chunk_index and document_id
+        if neighbors_before > 0 or neighbors_after > 0:
+            chunk_index = r.chunk_index
+            if chunk_index is not None and r.document_id:
+                start_idx = chunk_index - neighbors_before
+                end_idx = chunk_index + neighbors_after
+                
+                # Fetch neighboring chunks
+                neighbor_chunks = await rag['document_manager'].get_chunks_by_range(
+                    r.document_id, start_idx, end_idx
+                )
+                
+                # Build context object
+                before_content = []
+                after_content = []
+                all_content = []
+                
+                for chunk in neighbor_chunks:
+                    if chunk.chunk_index < chunk_index:
+                        before_content.append(chunk.content)
+                    elif chunk.chunk_index > chunk_index:
+                        after_content.append(chunk.content)
+                    all_content.append(chunk.content)
+                
+                result_dict['context'] = {
+                    'before': before_content,
+                    'after': after_content,
+                    'combined': '\n\n'.join(all_content),
+                    'neighbors_before': neighbors_before,
+                    'neighbors_after': neighbors_after
+                }
+        
+        enhanced_results.append(result_dict)
+    
     return {
         "query": query,
+        "collection": collection_name,
         "retrieval_method": "hybrid",
         "alpha": config.alpha,
-        "results": [r.to_dict() for r in results]
+        "context_expansion": {
+            "neighbors_before": neighbors_before,
+            "neighbors_after": neighbors_after
+        },
+        "results": enhanced_results
     }
 
 
@@ -1662,3 +2050,280 @@ async def get_rag_statistics(request: Request):
     }
 
     return stats
+
+
+# =============================================================================
+# Memory API - External memory management for services like Chatter
+# =============================================================================
+
+# Allowed memory collections
+ALLOWED_MEMORY_COLLECTIONS = ["chatter_stm", "chatter_core", "chatter_user"]
+
+# Memory domain metadata
+MEMORY_DOMAIN_INFO = {
+    "chatter_stm": {"name": "Chatter: Short-Term Memory", "description": "Active conversation context and recent interactions"},
+    "chatter_core": {"name": "Chatter: Core Memories", "description": "Pivotal moments, key insights, and important facts"},
+    "chatter_user": {"name": "Chatter: User Profiles", "description": "User preferences, interests, and history"},
+}
+
+# UUID namespace for memory IDs (deterministic ID generation)
+MEMORY_UUID_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
+
+
+def memory_id_to_uuid(memory_id: str) -> str:
+    """Convert arbitrary memory ID string to a valid Qdrant UUID."""
+    return str(uuid.uuid5(MEMORY_UUID_NAMESPACE, memory_id))
+
+
+async def ensure_memory_domain(collection: str, document_manager) -> None:
+    """Ensure a domain exists for a memory collection.
+    
+    Creates the domain if it doesn't exist, with custom_collection set.
+    """
+    from modules.rag.document_manager import Domain
+    
+    domain_id = f"memory_{collection}"
+    
+    # Check if domain already exists
+    existing = await document_manager.get_domain(domain_id)
+    if existing:
+        return
+    
+    # Create domain with custom_collection
+    info = MEMORY_DOMAIN_INFO.get(collection, {"name": f"Memory: {collection}", "description": ""})
+    domain = Domain(
+        id=domain_id,
+        name=info["name"],
+        description=info["description"],
+        custom_collection=collection,
+        embedding_model="all-MiniLM-L6-v2"
+    )
+    
+    await document_manager.create_domain(domain)
+    logger.info(f"Created memory domain: {domain.name} ({domain_id}) -> {collection}")
+
+
+@router.post("/memory/upsert")
+async def memory_upsert(request: Request):
+    """
+    Embed text and store in a Qdrant memory collection.
+    Auto-creates collection if it doesn't exist.
+    """
+    rag = get_rag_components(request)
+    if not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="Vector store not initialized")
+    
+    data = await request.json()
+    
+    collection = data.get('collection')
+    memory_id = data.get('id')
+    content = data.get('content')
+    metadata = data.get('metadata', {})
+    embedding_model = data.get('embedding_model', 'all-MiniLM-L6-v2')
+    
+    # Validate required fields
+    if not collection:
+        raise HTTPException(status_code=400, detail="collection is required")
+    if not memory_id:
+        raise HTTPException(status_code=400, detail="id is required")
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+    
+    # Validate collection name
+    if collection not in ALLOWED_MEMORY_COLLECTIONS:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid collection. Allowed: {ALLOWED_MEMORY_COLLECTIONS}"
+        )
+    
+    # Generate embedding
+    embedder = create_embedder(request, model_name=embedding_model)
+    embed_result = await embedder.embed([content])
+    embedding = embed_result.embeddings[0]
+    
+    # Auto-create collection if it doesn't exist
+    if not await rag['vector_store'].collection_exists(collection):
+        from modules.rag.vector_stores.base import CollectionConfig, DistanceMetric
+        config = CollectionConfig(
+            name=collection,
+            vector_size=embed_result.dimensions,
+            distance=DistanceMetric.COSINE
+        )
+        await rag['vector_store'].create_collection(config)
+        logger.info(f"Created memory collection: {collection}")
+        
+        # Also create the domain for UI browsing
+        if rag['document_manager']:
+            await ensure_memory_domain(collection, rag['document_manager'])
+    
+    # Build payload with content for retrieval (include original ID)
+    payload = {
+        'content': content,
+        'original_id': memory_id,  # Store original ID for API responses
+        **metadata
+    }
+    
+    # Convert user ID to valid UUID for Qdrant
+    qdrant_id = memory_id_to_uuid(memory_id)
+    
+    # Upsert vector
+    from modules.rag.vector_stores.base import VectorRecord
+    record = VectorRecord(
+        id=qdrant_id,
+        vector=embedding,
+        payload=payload
+    )
+    upserted = await rag['vector_store'].upsert(collection, [record])
+    
+    return {
+        "success": True,
+        "collection": collection,
+        "id": memory_id,
+        "vector_dimensions": embed_result.dimensions,
+        "upserted_count": upserted
+    }
+
+
+@router.post("/memory/search")
+async def memory_search(request: Request):
+    """
+    Search across one or more memory collections.
+    Returns merged results sorted by score.
+    """
+    rag = get_rag_components(request)
+    if not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="Vector store not initialized")
+    
+    data = await request.json()
+    
+    query = data.get('query')
+    collections = data.get('collections', ALLOWED_MEMORY_COLLECTIONS)
+    top_k = data.get('top_k', 5)
+    min_score = data.get('min_score', 0.0)
+    embedding_model = data.get('embedding_model', 'all-MiniLM-L6-v2')
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    
+    # Validate collections
+    invalid_collections = [c for c in collections if c not in ALLOWED_MEMORY_COLLECTIONS]
+    if invalid_collections:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid collections: {invalid_collections}. Allowed: {ALLOWED_MEMORY_COLLECTIONS}"
+        )
+    
+    # Generate query embedding
+    embedder = create_embedder(request, model_name=embedding_model)
+    query_embedding = await embedder.embed_query(query)
+    
+    # Filter to only collections that exist
+    existing_collections = []
+    for coll in collections:
+        if await rag['vector_store'].collection_exists(coll):
+            existing_collections.append(coll)
+    
+    if not existing_collections:
+        return {
+            "query": query,
+            "results": [],
+            "collections_searched": [],
+            "total_results": 0
+        }
+    
+    # Search each collection
+    all_results = []
+    for coll in existing_collections:
+        results = await rag['vector_store'].search(
+            collection=coll,
+            query_vector=query_embedding,
+            limit=top_k,
+            score_threshold=min_score
+        )
+        for r in results:
+            # Use original_id from payload if available, otherwise use Qdrant ID
+            original_id = r.payload.get('original_id', r.id)
+            all_results.append({
+                "collection": coll,
+                "id": original_id,
+                "score": r.score,
+                "content": r.payload.get('content', ''),
+                "metadata": {k: v for k, v in r.payload.items() if k not in ('content', 'original_id')}
+            })
+    
+    # Sort by score descending
+    all_results.sort(key=lambda x: x['score'], reverse=True)
+    
+    # Limit total results
+    max_results = top_k * len(existing_collections)
+    all_results = all_results[:max_results]
+    
+    return {
+        "query": query,
+        "results": all_results,
+        "collections_searched": existing_collections,
+        "total_results": len(all_results)
+    }
+
+
+@router.delete("/memory/{collection}/{memory_id}")
+async def memory_delete(request: Request, collection: str, memory_id: str):
+    """
+    Delete a vector from a memory collection.
+    """
+    rag = get_rag_components(request)
+    if not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="Vector store not initialized")
+    
+    # Validate collection
+    if collection not in ALLOWED_MEMORY_COLLECTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid collection. Allowed: {ALLOWED_MEMORY_COLLECTIONS}"
+        )
+    
+    # Check if collection exists
+    if not await rag['vector_store'].collection_exists(collection):
+        raise HTTPException(status_code=404, detail=f"Collection '{collection}' not found")
+    
+    # Convert user ID to Qdrant UUID
+    qdrant_id = memory_id_to_uuid(memory_id)
+    
+    # Delete vector
+    deleted = await rag['vector_store'].delete(collection, [qdrant_id])
+    
+    return {
+        "success": deleted > 0,
+        "collection": collection,
+        "id": memory_id,
+        "deleted_count": deleted
+    }
+
+
+@router.get("/memory/collections")
+async def memory_list_collections(request: Request):
+    """
+    List memory collections and their stats.
+    """
+    rag = get_rag_components(request)
+    if not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="Vector store not initialized")
+    
+    collections_info = []
+    
+    for coll in ALLOWED_MEMORY_COLLECTIONS:
+        exists = await rag['vector_store'].collection_exists(coll)
+        info = {"name": coll, "exists": exists}
+        
+        if exists:
+            coll_info = await rag['vector_store'].get_collection_info(coll)
+            if coll_info:
+                info["stats"] = {
+                    "vectors_count": coll_info.vectors_count,
+                    "points_count": coll_info.points_count
+                }
+        
+        collections_info.append(info)
+    
+    return {"collections": collections_info}
+

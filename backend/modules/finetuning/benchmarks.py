@@ -175,7 +175,12 @@ class HuggingFaceDatasetManager:
     
     def is_available(self) -> bool:
         """Check if datasets library is available."""
-        return DATASETS_AVAILABLE
+        # Dynamically check - import may have failed at startup but be available now
+        try:
+            from datasets import load_dataset
+            return True
+        except ImportError:
+            return False
     
     def list_benchmark_datasets(self) -> List[Dict[str, Any]]:
         """List all configured benchmark datasets with their status."""
@@ -749,6 +754,7 @@ class BenchmarkRunner:
         self,
         base_url: Optional[str] = None,
         dataset_manager: Optional[HuggingFaceDatasetManager] = None,
+        api_key: Optional[str] = None,
     ):
         # Default to environment variable if provided, else use Docker internal name or localhost
         if base_url is None:
@@ -763,6 +769,12 @@ class BenchmarkRunner:
                 base_url = "http://localhost:8700"
         
         self.base_url = base_url.rstrip("/")
+        
+        # Get API key from environment if not provided
+        if api_key is None:
+            api_key = os.getenv("VLM_API_KEY") or os.getenv("LLM_API_KEY")
+        self.api_key = api_key
+        
         self.jobs: Dict[str, BenchmarkJob] = {}
         self._running_tasks: Dict[str, asyncio.Task] = {}
         self.dataset_manager = dataset_manager or get_dataset_manager()
@@ -824,6 +836,10 @@ class BenchmarkRunner:
         adapter_path: Optional[str] = None,
     ) -> str:
         """Generate a response from the model."""
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        
         async with httpx.AsyncClient(timeout=120.0) as client:
             payload = {
                 "messages": [{"role": "user", "content": prompt}],
@@ -837,12 +853,13 @@ class BenchmarkRunner:
                 response = await client.post(
                     f"{self.base_url}/v1/chat/completions",
                     json=payload,
+                    headers=headers,
                 )
                 response.raise_for_status()
                 data = response.json()
                 return data["choices"][0]["message"]["content"]
             except Exception as e:
-                logger.error("Generation failed", extra={"error": str(e)})
+                logger.error("Generation failed", extra={"error": str(e), "base_url": self.base_url})
                 return ""
 
     def _format_mcq_prompt(

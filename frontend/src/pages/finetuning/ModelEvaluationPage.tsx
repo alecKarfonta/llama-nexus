@@ -96,6 +96,36 @@ type BenchmarkJob = {
   }>;
 };
 
+// LM Evaluation Harness Types (Standardized Benchmarks)
+type LMEvalTask = {
+  name: string;
+  display_name: string;
+  description: string;
+  default_fewshot: number;
+  category: string;
+};
+
+type LMEvalJob = {
+  id: string;
+  tasks: string[];
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  progress: number;
+  results: {
+    tasks: Record<string, {
+      score: number;
+      metrics: Record<string, number>;
+    }>;
+    model_name?: string;
+    date?: string;
+  };
+  error?: string;
+  created_at: string;
+  completed_at?: string;
+  log_output?: string;
+  model_path?: string;
+  gpu_device?: number;
+};
+
 type ABTest = {
   id: string;
   name: string;
@@ -305,9 +335,24 @@ export const ModelEvaluationPage: React.FC = () => {
   const [testPrompt, setTestPrompt] = useState("");
   const [blindMode, setBlindMode] = useState(false);
 
-  // Benchmark form
-  const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>(["mmlu", "hellaswag"]);
+  // Benchmark form (legacy)
+  const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([]);
   const [benchmarkAdapter, setBenchmarkAdapter] = useState("");
+  const [benchmarkSampleCount, setBenchmarkSampleCount] = useState(100);
+
+  // LM-Eval (Standardized Benchmarks)
+  const [lmEvalAvailable, setLmEvalAvailable] = useState(false);
+  const [lmEvalTasks, setLmEvalTasks] = useState<LMEvalTask[]>([]);
+  const [lmEvalJobs, setLmEvalJobs] = useState<LMEvalJob[]>([]);
+  const [selectedLmEvalTasks, setSelectedLmEvalTasks] = useState<string[]>(["mmlu", "hellaswag"]);
+  const [lmEvalFewshot, setLmEvalFewshot] = useState(5);
+  const [lmEvalLimit, setLmEvalLimit] = useState<number | null>(100);
+  const [lmEvalRunning, setLmEvalRunning] = useState(false);
+  const [lmEvalProgress, setLmEvalProgress] = useState("");
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [availableGpus, setAvailableGpus] = useState<Array<{ index: number; name: string }>>([]);
+  const [selectedGpu, setSelectedGpu] = useState<number | null>(null);
 
   // A/B Testing
   const [abTests, setAbTests] = useState<ABTest[]>([]);
@@ -367,19 +412,93 @@ export const ModelEvaluationPage: React.FC = () => {
     } catch { }
   }, []);
 
+  // LM-Eval API functions
+  const fetchLmEvalStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/finetune/lm-eval/status");
+      if (res.ok) {
+        const data = await res.json();
+        setLmEvalAvailable(data.available);
+      }
+    } catch {
+      setLmEvalAvailable(false);
+    }
+  }, []);
+
+  const fetchLmEvalTasks = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/finetune/lm-eval/tasks");
+      if (res.ok) {
+        const data = await res.json();
+        setLmEvalTasks(data.tasks || []);
+      }
+    } catch { }
+  }, []);
+
+  const fetchLmEvalJobs = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/finetune/lm-eval/jobs");
+      if (res.ok) {
+        const data = await res.json();
+        setLmEvalJobs(data.jobs || []);
+      }
+    } catch { }
+  }, []);
+
+  const fetchAvailableModels = useCallback(async () => {
+    try {
+      // Use local-files endpoint to list all GGUF files on disk
+      const res = await fetch("/v1/models/local-files");
+      if (res.ok) {
+        const data = await res.json();
+        // Response format: { data: { files: [{name, path, extension...}] } }
+        const files = data.data?.files || [];
+        // Filter for GGUF files only
+        const ggufModels = files
+          .filter((f: { extension?: string }) => f.extension?.toLowerCase() === '.gguf')
+          .map((f: { name?: string }) => f.name || '');
+        setAvailableModels(ggufModels);
+        // Auto-select first model if none selected
+        if (ggufModels.length > 0 && !selectedModel) {
+          setSelectedModel(ggufModels[0]);
+        }
+      }
+    } catch { }
+  }, [selectedModel]);
+
+  // Initialize GPU list (matching FineTuningPage pattern)
+  useEffect(() => {
+    // Use standard GPU indices like FineTuningPage does
+    const defaultGpus = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({
+      index: i,
+      name: `GPU ${i}`,
+    }));
+    setAvailableGpus(defaultGpus);
+    if (selectedGpu === null) {
+      setSelectedGpu(0);
+    }
+  }, [selectedGpu]);
+
   useEffect(() => {
     fetchJobs();
     fetchSessions();
     fetchBenchmarks();
     fetchBenchmarkJobs();
     fetchAbTests();
+    // Initialize lm-eval
+    fetchLmEvalStatus();
+    fetchLmEvalTasks();
+    fetchLmEvalJobs();
+    fetchAvailableModels();
+
     const interval = setInterval(() => {
       fetchSessions();
       fetchBenchmarkJobs();
       fetchAbTests();
+      fetchLmEvalJobs();
     }, 5000);
     return () => clearInterval(interval);
-  }, [fetchJobs, fetchSessions, fetchBenchmarks, fetchBenchmarkJobs, fetchAbTests]);
+  }, [fetchJobs, fetchSessions, fetchBenchmarks, fetchBenchmarkJobs, fetchAbTests, fetchAvailableModels]);
 
   useEffect(() => {
     if (!selectedSession) {
@@ -502,7 +621,7 @@ export const ModelEvaluationPage: React.FC = () => {
       const job = jobs.find((j) => j.id === benchmarkAdapter);
       const benchmarkConfigs = selectedBenchmarks.map((name) => ({
         benchmark_name: name,
-        num_samples: 50,
+        num_samples: benchmarkSampleCount,
         num_few_shot: 3,
         temperature: 0.0,
       }));
@@ -522,6 +641,84 @@ export const ModelEvaluationPage: React.FC = () => {
       fetchBenchmarkJobs();
     } catch {
       setError("Failed to start benchmark");
+    }
+  };
+
+  // LM-Eval toggle and run handler
+  const toggleLmEvalTask = (name: string) => {
+    setSelectedLmEvalTasks((prev) =>
+      prev.includes(name) ? prev.filter((t) => t !== name) : [...prev, name]
+    );
+  };
+
+  const handleRunLmEval = async () => {
+    if (selectedLmEvalTasks.length === 0) {
+      setError("Select at least one benchmark task");
+      return;
+    }
+    if (!selectedModel) {
+      setError("Please select a model to evaluate");
+      return;
+    }
+
+    setLmEvalRunning(true);
+    setLmEvalProgress("Creating benchmark job...");
+    setError(null);
+
+    try {
+      // Create job with model_path
+      const createRes = await fetch("/api/v1/finetune/lm-eval/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: `LM-Eval ${new Date().toISOString().slice(0, 16)}`,
+          tasks: selectedLmEvalTasks,
+          model_path: selectedModel,
+          gpu_device: selectedGpu,
+          num_fewshot: lmEvalFewshot,
+          limit: lmEvalLimit,
+        }),
+      });
+
+      if (!createRes.ok) {
+        throw new Error("Failed to create benchmark job");
+      }
+
+      const job = await createRes.json();
+      setLmEvalProgress(`Starting job ${job.id}...`);
+
+      // Start job with streaming
+      const eventSource = new EventSource(
+        `/api/v1/finetune/lm-eval/jobs/${job.id}/start`
+      );
+
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === "progress") {
+          setLmEvalProgress(`Progress: ${data.progress}% - ${data.message}`);
+        } else if (data.type === "log") {
+          setLmEvalProgress(data.message);
+        } else if (data.type === "complete") {
+          setLmEvalProgress("Benchmark completed!");
+          setLmEvalRunning(false);
+          fetchLmEvalJobs();
+          eventSource.close();
+        } else if (data.type === "error") {
+          setError(`Benchmark failed: ${data.error}`);
+          setLmEvalRunning(false);
+          eventSource.close();
+        }
+      };
+
+      eventSource.onerror = () => {
+        setError("Connection lost to benchmark stream");
+        setLmEvalRunning(false);
+        eventSource.close();
+        fetchLmEvalJobs();
+      };
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to run benchmark");
+      setLmEvalRunning(false);
     }
   };
 
@@ -696,7 +893,7 @@ export const ModelEvaluationPage: React.FC = () => {
           }}
         >
           <Tab icon={<CompareIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="Side-by-Side" />
-          <Tab icon={<BenchmarkIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="Benchmarks" />
+          <Tab icon={<BenchmarkIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="Benchmark Jobs" />
           <Tab icon={<ABTestIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="A/B Testing" />
           <Tab icon={<JudgeIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="LLM Judge" />
         </Tabs>
@@ -920,401 +1117,539 @@ export const ModelEvaluationPage: React.FC = () => {
         </Grid>
       )}
 
-      {/* Benchmarks Tab */}
+      {/* Benchmarks Tab - LM Evaluation Harness */}
       {activeTab === 1 && (
         <Grid container spacing={3}>
-          <Grid item xs={12} md={4}>
-            <SectionCard title="Run Benchmarks" icon={<BenchmarkIcon />} accentColor={accentColors.info}>
-              <FormControl fullWidth size="small" sx={{ mb: 2 }}>
-                <InputLabel>Adapter (optional)</InputLabel>
-                <Select value={benchmarkAdapter} onChange={(e) => setBenchmarkAdapter(e.target.value)} label="Adapter (optional)">
-                  <MenuItem value="">Base model only</MenuItem>
-                  {completedJobs.map((j) => (
-                    <MenuItem key={j.id} value={j.id}>
-                      {j.name}
+          <Grid item xs={12} md={5}>
+            <SectionCard
+              title="LM Evaluation Harness"
+              subtitle={lmEvalAvailable ? "Standardized Benchmarks" : "Checking availability..."}
+              icon={<BenchmarkIcon />}
+              accentColor={accentColors.info}
+            >
+              {!lmEvalAvailable && lmEvalTasks.length === 0 ? (
+                <Alert severity="warning" sx={{ mb: 2 }}>
+                  lm-evaluation-harness is initializing or not available. Rebuild the backend container to install.
+                </Alert>
+              ) : null}
+
+              {/* Model Selector */}
+              <FormControl fullWidth size="small" sx={{ mb: 3 }}>
+                <InputLabel>Select Model to Evaluate</InputLabel>
+                <Select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value as string)}
+                  label="Select Model to Evaluate"
+                >
+                  <MenuItem value="">
+                    <em>Choose a GGUF model...</em>
+                  </MenuItem>
+                  {availableModels.map((model) => (
+                    <MenuItem key={model} value={model}>
+                      {model}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              {/* GPU Selector */}
+              <FormControl fullWidth size="small" sx={{ mb: 3 }}>
+                <InputLabel>Select GPU Device</InputLabel>
+                <Select
+                  value={selectedGpu ?? ""}
+                  onChange={(e) => setSelectedGpu(e.target.value === "" ? null : Number(e.target.value))}
+                  label="Select GPU Device"
+                >
+                  {availableGpus.map((gpu) => (
+                    <MenuItem key={gpu.index} value={gpu.index}>
+                      {gpu.name}
                     </MenuItem>
                   ))}
                 </Select>
               </FormControl>
 
               <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
-                Select Benchmarks
+                Select Benchmark Tasks
               </Typography>
-              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mb: 3 }}>
-                {benchmarks.map((b) => (
-                  <Tooltip key={b.name} title={b.description}>
-                    <Chip
-                      label={b.display_name}
-                      onClick={() => toggleBenchmark(b.name)}
-                      sx={{
-                        bgcolor: selectedBenchmarks.includes(b.name) ? alpha(accentColors.success, 0.2) : "rgba(255, 255, 255, 0.05)",
-                        color: selectedBenchmarks.includes(b.name) ? accentColors.success : "text.secondary",
-                        border: `1px solid ${selectedBenchmarks.includes(b.name) ? accentColors.success : "rgba(255, 255, 255, 0.1)"}`,
-                        fontWeight: 600,
-                      }}
-                    />
-                  </Tooltip>
-                ))}
-              </Box>
+
+              {/* Group tasks by category */}
+              {["reasoning", "knowledge", "math", "truthfulness", "reading"].map((category) => {
+                const categoryTasks = lmEvalTasks.filter((t) => t.category === category);
+                if (categoryTasks.length === 0) return null;
+                return (
+                  <Box key={category} sx={{ mb: 2 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ textTransform: "uppercase", fontWeight: 600 }}>
+                      {category}
+                    </Typography>
+                    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mt: 0.5 }}>
+                      {categoryTasks.map((t) => (
+                        <Tooltip key={t.name} title={t.description}>
+                          <Chip
+                            label={t.display_name}
+                            onClick={() => toggleLmEvalTask(t.name)}
+                            size="small"
+                            sx={{
+                              bgcolor: selectedLmEvalTasks.includes(t.name) ? alpha(accentColors.success, 0.2) : "rgba(255, 255, 255, 0.05)",
+                              color: selectedLmEvalTasks.includes(t.name) ? accentColors.success : "text.secondary",
+                              border: `1px solid ${selectedLmEvalTasks.includes(t.name) ? accentColors.success : "rgba(255, 255, 255, 0.1)"}`,
+                              fontWeight: 600,
+                              cursor: "pointer",
+                            }}
+                          />
+                        </Tooltip>
+                      ))}
+                    </Box>
+                  </Box>
+                );
+              })}
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                Few-shot Examples: {lmEvalFewshot}
+              </Typography>
+              <Slider
+                value={lmEvalFewshot}
+                onChange={(_, value) => setLmEvalFewshot(value as number)}
+                min={0}
+                max={25}
+                step={1}
+                marks={[
+                  { value: 0, label: "0" },
+                  { value: 5, label: "5" },
+                  { value: 10, label: "10" },
+                  { value: 25, label: "25" },
+                ]}
+                sx={{ mb: 2 }}
+              />
+
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                Sample Limit: {lmEvalLimit ?? "Full dataset"}
+              </Typography>
+              <Slider
+                value={lmEvalLimit ?? 0}
+                onChange={(_, value) => setLmEvalLimit((value as number) || null)}
+                min={0}
+                max={500}
+                step={10}
+                marks={[
+                  { value: 0, label: "Full" },
+                  { value: 100, label: "100" },
+                  { value: 250, label: "250" },
+                  { value: 500, label: "500" },
+                ]}
+                sx={{ mb: 3 }}
+              />
+
+              {lmEvalRunning && (
+                <Box sx={{ mb: 2 }}>
+                  <LinearProgress sx={{ mb: 1, borderRadius: 1 }} />
+                  <Typography variant="caption" color="text.secondary">
+                    {lmEvalProgress}
+                  </Typography>
+                </Box>
+              )}
 
               <Button
                 variant="contained"
                 fullWidth
                 startIcon={<StartIcon />}
-                onClick={handleRunBenchmark}
-                disabled={selectedBenchmarks.length === 0}
+                onClick={handleRunLmEval}
+                disabled={selectedLmEvalTasks.length === 0 || lmEvalRunning}
                 sx={{ background: `linear-gradient(135deg, ${accentColors.info} 0%, ${accentColors.purple} 100%)` }}
               >
-                Run Benchmarks
+                {lmEvalRunning ? "Running..." : "Run Standardized Benchmarks"}
               </Button>
-            </SectionCard>
-          </Grid>
 
-          <Grid item xs={12} md={8}>
-            <SectionCard title="Benchmark Results" subtitle={`${benchmarkJobs.length} jobs`} icon={<EvalIcon />} accentColor={accentColors.success}>
-              {benchmarkJobs.length === 0 ? (
-                <Box sx={{ p: 4, textAlign: "center" }}>
-                  <BenchmarkIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-                  <Typography color="text.secondary">No benchmark jobs yet</Typography>
-                </Box>
-              ) : (
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  {benchmarkJobs.map((bj) => (
-                    <Box
-                      key={bj.id}
-                      sx={{ p: 2, borderRadius: 2, bgcolor: "rgba(0, 0, 0, 0.2)", border: "1px solid rgba(255, 255, 255, 0.06)" }}
-                    >
-                      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1.5 }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                          {bj.name}
-                        </Typography>
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                          <StatusChip status={bj.status} />
-                          {bj.status === "running" && bj.current_benchmark && (
-                            <Typography variant="caption" color="text.secondary">
-                              ({bj.current_benchmark})
-                            </Typography>
-                          )}
-                        </Box>
-                      </Box>
-
-                      {bj.status === "running" && (
-                        <LinearProgress
-                          variant="determinate"
-                          value={bj.progress}
-                          sx={{
-                            mb: 2,
-                            height: 4,
-                            borderRadius: 2,
-                            bgcolor: "rgba(255, 255, 255, 0.1)",
-                            "& .MuiLinearProgress-bar": {
-                              background: `linear-gradient(90deg, ${accentColors.info}, ${accentColors.success})`,
-                            },
-                          }}
-                        />
-                      )}
-
-                      {bj.results.length > 0 && (
-                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-                          {bj.results.map((r) => (
-                            <Chip
-                              key={r.benchmark_name}
-                              size="small"
-                              label={
-                                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                                  <span>{r.benchmark_name}:</span>
-                                  <span style={{ fontWeight: 700 }}>
-                                    {r.finetuned_score?.toFixed(1) ?? r.base_model_score?.toFixed(1) ?? "-"}%
-                                  </span>
-                                  {r.improvement !== undefined && (
-                                    <span style={{ color: r.improvement > 0 ? accentColors.success : accentColors.rose, fontWeight: 600 }}>
-                                      ({r.improvement > 0 ? "+" : ""}{r.improvement.toFixed(1)}%)
-                                    </span>
-                                  )}
-                                </Box>
-                              }
-                              sx={{ bgcolor: "rgba(255, 255, 255, 0.05)", border: "1px solid rgba(255, 255, 255, 0.1)" }}
-                            />
-                          ))}
-                        </Box>
-                      )}
-                    </Box>
-                  ))}
-                </Box>
-              )}
-            </SectionCard>
-          </Grid>
-        </Grid>
-      )}
-
-      {/* A/B Testing Tab */}
-      {activeTab === 2 && (
-        <Grid container spacing={3}>
-          <Grid item xs={12} md={5}>
-            <SectionCard title="Create A/B Test" icon={<ABTestIcon />} accentColor={accentColors.purple}>
-              <TextField
-                label="Test Name"
-                value={abTestName}
-                onChange={(e) => setAbTestName(e.target.value)}
-                placeholder="e.g., v1-vs-v2-test"
-                fullWidth
-                size="small"
-                sx={{ mb: 2 }}
-              />
-
-              <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
-                Variants
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2, textAlign: "center" }}>
+                Powered by EleutherAI lm-evaluation-harness
               </Typography>
-              {abTestVariants.map((v, i) => (
-                <Box key={i} sx={{ mb: 2, p: 2, bgcolor: "rgba(0, 0, 0, 0.2)", borderRadius: 2 }}>
-                  <TextField
-                    value={v.name}
-                    onChange={(e) => {
-                      const updated = [...abTestVariants];
-                      updated[i].name = e.target.value;
-                      setAbTestVariants(updated);
-                    }}
-                    placeholder="Variant name"
-                    fullWidth
-                    size="small"
-                    sx={{ mb: 1 }}
-                  />
-                  <FormControl fullWidth size="small" sx={{ mb: 1 }}>
-                    <InputLabel>Adapter</InputLabel>
-                    <Select
-                      value={v.adapterId}
-                      onChange={(e) => {
-                        const updated = [...abTestVariants];
-                        updated[i].adapterId = e.target.value;
-                        setAbTestVariants(updated);
-                      }}
-                      label="Adapter"
-                    >
-                      <MenuItem value="">Base Model</MenuItem>
-                      {completedJobs.map((j) => (
-                        <MenuItem key={j.id} value={j.id}>
-                          {j.name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-                    <Typography variant="caption">Weight:</Typography>
-                    <Slider
-                      value={v.weight * 100}
-                      onChange={(_, value) => {
-                        const updated = [...abTestVariants];
-                        updated[i].weight = (value as number) / 100;
-                        setAbTestVariants(updated);
-                      }}
-                      min={0}
-                      max={100}
-                      size="small"
-                      sx={{ flex: 1 }}
-                    />
-                    <Typography variant="caption" sx={{ minWidth: 40 }}>
-                      {(v.weight * 100).toFixed(0)}%
-                    </Typography>
-                  </Box>
-                </Box>
-              ))}
-
-              <Button
-                size="small"
-                startIcon={<AddIcon />}
-                onClick={() => setAbTestVariants([...abTestVariants, { name: `Variant ${abTestVariants.length + 1}`, adapterId: "", weight: 0.5 }])}
-                sx={{ mb: 2 }}
-              >
-                Add Variant
-              </Button>
-
-              <Button
-                variant="contained"
-                fullWidth
-                onClick={handleCreateAbTest}
-                sx={{ background: `linear-gradient(135deg, ${accentColors.purple} 0%, ${accentColors.primary} 100%)` }}
-              >
-                Create A/B Test
-              </Button>
-
-              <Divider sx={{ my: 3, borderColor: "rgba(255, 255, 255, 0.06)" }} />
-
-              <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
-                Active Tests
-              </Typography>
-              {abTests.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">
-                  No A/B tests yet
-                </Typography>
-              ) : (
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                  {abTests.map((t) => (
-                    <Box
-                      key={t.id}
-                      onClick={() => setSelectedAbTest(t)}
-                      sx={{
-                        p: 1.5,
-                        borderRadius: 2,
-                        bgcolor: selectedAbTest?.id === t.id ? alpha(accentColors.success, 0.1) : "rgba(255, 255, 255, 0.02)",
-                        border: `1px solid ${selectedAbTest?.id === t.id ? accentColors.success : "rgba(255, 255, 255, 0.06)"}`,
-                        cursor: "pointer",
-                      }}
-                    >
-                      <Box sx={{ display: "flex", justifyContent: "space-between" }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                          {t.name}
-                        </Typography>
-                        <StatusChip status={t.status} />
-                      </Box>
-                      <Typography variant="caption" color="text.secondary">
-                        {t.variants.length} variants
-                      </Typography>
-                    </Box>
-                  ))}
-                </Box>
-              )}
             </SectionCard>
           </Grid>
 
           <Grid item xs={12} md={7}>
             <SectionCard
-              title={selectedAbTest ? selectedAbTest.name : "A/B Test Details"}
+              title="Benchmark Jobs"
+              subtitle={`${lmEvalJobs.length} jobs`}
               icon={<EvalIcon />}
-              accentColor={accentColors.info}
-              action={
-                selectedAbTest && (
-                  <Box sx={{ display: "flex", gap: 1 }}>
-                    {selectedAbTest.status === "draft" && (
-                      <Button size="small" startIcon={<StartIcon />} onClick={() => handleStartAbTest(selectedAbTest.id)}>
-                        Start
-                      </Button>
-                    )}
-                    {selectedAbTest.status === "running" && (
-                      <Button size="small" color="warning" startIcon={<PauseIcon />} onClick={() => handlePauseAbTest(selectedAbTest.id)}>
-                        Pause
-                      </Button>
-                    )}
+              accentColor={accentColors.success}
+            >
+              {
+                lmEvalJobs.length === 0 ? (
+                  <Box sx={{ p: 4, textAlign: "center" }}>
+                    <BenchmarkIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
+                    <Typography color="text.secondary">No benchmark jobs yet</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Select tasks and run to get standardized evaluation scores
+                    </Typography>
+                  </Box>
+                ) : (
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+                    {lmEvalJobs.map((job) => (
+                      <Box
+                        key={job.id}
+                        sx={{
+                          p: 2,
+                          borderRadius: 2,
+                          bgcolor: "rgba(0, 0, 0, 0.2)",
+                          border: "1px solid rgba(255, 255, 255, 0.06)",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                        }}
+                      >
+                        <Box sx={{ flex: 1 }}>
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                              {job.model_path || job.results?.model_name || job.tasks.join(", ")}
+                            </Typography>
+                            <StatusChip status={job.status} />
+                          </Box>
+                          <Typography variant="caption" color="text.secondary">
+                            Tasks: {job.tasks.join(", ")} • {new Date(job.created_at).toLocaleString()}
+                          </Typography>
+
+                          {job.status === "running" && (
+                            <LinearProgress
+                              variant="determinate"
+                              value={job.progress}
+                              sx={{
+                                mt: 1,
+                                height: 4,
+                                borderRadius: 2,
+                                bgcolor: "rgba(255, 255, 255, 0.1)",
+                                "& .MuiLinearProgress-bar": {
+                                  background: `linear-gradient(90deg, ${accentColors.info}, ${accentColors.success})`,
+                                },
+                              }}
+                            />
+                          )}
+
+                          {job.status === "completed" && job.results?.tasks && (
+                            <Box sx={{ display: "flex", gap: 1, mt: 1, flexWrap: "wrap" }}>
+                              {Object.entries(job.results.tasks).slice(0, 4).map(([taskName, taskResult]: [string, any]) => (
+                                <Chip
+                                  key={taskName}
+                                  size="small"
+                                  label={`${taskName}: ${taskResult.score?.toFixed(1) || 0}%`}
+                                  sx={{
+                                    bgcolor: "rgba(16, 185, 129, 0.1)",
+                                    color: accentColors.success,
+                                    fontSize: "0.7rem",
+                                  }}
+                                />
+                              ))}
+                              {Object.keys(job.results.tasks).length > 4 && (
+                                <Chip
+                                  size="small"
+                                  label={`+${Object.keys(job.results.tasks).length - 4} more`}
+                                  sx={{ fontSize: "0.7rem" }}
+                                />
+                              )}
+                            </Box>
+                          )}
+
+                          {job.error && (
+                            <Alert severity="error" sx={{ mt: 1, py: 0 }}>
+                              {job.error.slice(0, 100)}
+                            </Alert>
+                          )}
+                        </Box>
+
+                        {job.status === "completed" && (
+                          <Button
+                            size="small"
+                            onClick={() => window.location.href = `/benchmark-comparison?job=${job.id}`}
+                            sx={{ ml: 2, color: accentColors.info }}
+                          >
+                            View Results
+                          </Button>
+                        )}
+                      </Box>
+                    ))}
+
+
                   </Box>
                 )
               }
-            >
-              {selectedAbTest ? (
-                <Box>
-                  {selectedAbTest.status === "running" && (
-                    <Box sx={{ display: "flex", gap: 1.5, mb: 3 }}>
-                      <TextField
-                        value={abTestPrompt}
-                        onChange={(e) => setAbTestPrompt(e.target.value)}
-                        placeholder="Enter test prompt..."
-                        fullWidth
-                        size="small"
-                      />
-                      <Button variant="contained" onClick={handleAbTestRequest} disabled={!abTestPrompt}>
-                        Send
-                      </Button>
-                    </Box>
-                  )}
-
-                  {abTestSummary && (
-                    <Box>
-                      <Typography variant="subtitle2" sx={{ mb: 2 }}>
-                        Performance Comparison
-                      </Typography>
-                      {abTestSummary.variants.map((v) => {
-                        const maxTps = Math.max(...abTestSummary.variants.map((x) => x.avg_tokens_per_second));
-                        const maxLatency = Math.max(...abTestSummary.variants.map((x) => x.p95_latency_ms));
-                        return (
-                          <Box key={v.variant_id} sx={{ mb: 2, p: 2, bgcolor: "rgba(0, 0, 0, 0.2)", borderRadius: 2 }}>
-                            <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1.5 }}>
-                              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                                {v.name}
-                              </Typography>
-                              <Typography variant="caption" color="text.secondary">
-                                {v.total_requests} requests
-                              </Typography>
-                            </Box>
-
-                            <MetricBar label="Tokens/sec" value={v.avg_tokens_per_second} max={maxTps} unit=" t/s" color={accentColors.success} />
-                            <MetricBar label="Avg Latency" value={v.avg_latency_ms} max={maxLatency} unit=" ms" color={accentColors.info} />
-                            <MetricBar label="P95 Latency" value={v.p95_latency_ms} max={maxLatency} unit=" ms" color={accentColors.warning} />
-
-                            <Box sx={{ display: "flex", justifyContent: "space-between", mt: 1.5 }}>
-                              <Typography variant="caption" color="text.secondary">
-                                Success: {v.success_rate}%
-                              </Typography>
-                              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                                <ThumbUpIcon sx={{ fontSize: 14, color: accentColors.success }} />
-                                <Typography variant="caption">{v.thumbs_up}</Typography>
-                                <ThumbDownIcon sx={{ fontSize: 14, color: accentColors.rose }} />
-                                <Typography variant="caption">{v.thumbs_down}</Typography>
-                              </Box>
-                            </Box>
-                          </Box>
-                        );
-                      })}
-
-                      {abTestSummary.winner && (
-                        <Alert severity="success" icon={<TrophyIcon />} sx={{ mt: 2 }}>
-                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                            Winner: {abTestSummary.winner_name}
-                          </Typography>
-                        </Alert>
-                      )}
-
-                      {!abTestSummary.has_enough_samples && abTestSummary.samples_needed && (
-                        <Alert severity="warning" sx={{ mt: 2 }}>
-                          Need {abTestSummary.samples_needed} more samples for statistical significance
-                        </Alert>
-                      )}
-                    </Box>
-                  )}
-                </Box>
-              ) : (
-                <Box sx={{ p: 4, textAlign: "center" }}>
-                  <ABTestIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-                  <Typography color="text.secondary">Select or create an A/B test to view metrics</Typography>
-                </Box>
-              )}
             </SectionCard>
           </Grid>
         </Grid>
-      )}
+      )
+      }
+
+      {/* A/B Testing Tab */}
+      {
+        activeTab === 2 && (
+          <Grid container spacing={3}>
+            <Grid item xs={12} md={5}>
+              <SectionCard title="Create A/B Test" icon={<ABTestIcon />} accentColor={accentColors.purple}>
+                <TextField
+                  label="Test Name"
+                  value={abTestName}
+                  onChange={(e) => setAbTestName(e.target.value)}
+                  placeholder="e.g., v1-vs-v2-test"
+                  fullWidth
+                  size="small"
+                  sx={{ mb: 2 }}
+                />
+
+                <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
+                  Variants
+                </Typography>
+                {abTestVariants.map((v, i) => (
+                  <Box key={i} sx={{ mb: 2, p: 2, bgcolor: "rgba(0, 0, 0, 0.2)", borderRadius: 2 }}>
+                    <TextField
+                      value={v.name}
+                      onChange={(e) => {
+                        const updated = [...abTestVariants];
+                        updated[i].name = e.target.value;
+                        setAbTestVariants(updated);
+                      }}
+                      placeholder="Variant name"
+                      fullWidth
+                      size="small"
+                      sx={{ mb: 1 }}
+                    />
+                    <FormControl fullWidth size="small" sx={{ mb: 1 }}>
+                      <InputLabel>Adapter</InputLabel>
+                      <Select
+                        value={v.adapterId}
+                        onChange={(e) => {
+                          const updated = [...abTestVariants];
+                          updated[i].adapterId = e.target.value;
+                          setAbTestVariants(updated);
+                        }}
+                        label="Adapter"
+                      >
+                        <MenuItem value="">Base Model</MenuItem>
+                        {completedJobs.map((j) => (
+                          <MenuItem key={j.id} value={j.id}>
+                            {j.name}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+                      <Typography variant="caption">Weight:</Typography>
+                      <Slider
+                        value={v.weight * 100}
+                        onChange={(_, value) => {
+                          const updated = [...abTestVariants];
+                          updated[i].weight = (value as number) / 100;
+                          setAbTestVariants(updated);
+                        }}
+                        min={0}
+                        max={100}
+                        size="small"
+                        sx={{ flex: 1 }}
+                      />
+                      <Typography variant="caption" sx={{ minWidth: 40 }}>
+                        {(v.weight * 100).toFixed(0)}%
+                      </Typography>
+                    </Box>
+                  </Box>
+                ))}
+
+                <Button
+                  size="small"
+                  startIcon={<AddIcon />}
+                  onClick={() => setAbTestVariants([...abTestVariants, { name: `Variant ${abTestVariants.length + 1}`, adapterId: "", weight: 0.5 }])}
+                  sx={{ mb: 2 }}
+                >
+                  Add Variant
+                </Button>
+
+                <Button
+                  variant="contained"
+                  fullWidth
+                  onClick={handleCreateAbTest}
+                  sx={{ background: `linear-gradient(135deg, ${accentColors.purple} 0%, ${accentColors.primary} 100%)` }}
+                >
+                  Create A/B Test
+                </Button>
+
+                <Divider sx={{ my: 3, borderColor: "rgba(255, 255, 255, 0.06)" }} />
+
+                <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
+                  Active Tests
+                </Typography>
+                {abTests.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    No A/B tests yet
+                  </Typography>
+                ) : (
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                    {abTests.map((t) => (
+                      <Box
+                        key={t.id}
+                        onClick={() => setSelectedAbTest(t)}
+                        sx={{
+                          p: 1.5,
+                          borderRadius: 2,
+                          bgcolor: selectedAbTest?.id === t.id ? alpha(accentColors.success, 0.1) : "rgba(255, 255, 255, 0.02)",
+                          border: `1px solid ${selectedAbTest?.id === t.id ? accentColors.success : "rgba(255, 255, 255, 0.06)"}`,
+                          cursor: "pointer",
+                        }}
+                      >
+                        <Box sx={{ display: "flex", justifyContent: "space-between" }}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                            {t.name}
+                          </Typography>
+                          <StatusChip status={t.status} />
+                        </Box>
+                        <Typography variant="caption" color="text.secondary">
+                          {t.variants.length} variants
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Box>
+                )}
+              </SectionCard>
+            </Grid>
+
+            <Grid item xs={12} md={7}>
+              <SectionCard
+                title={selectedAbTest ? selectedAbTest.name : "A/B Test Details"}
+                icon={<EvalIcon />}
+                accentColor={accentColors.info}
+                action={
+                  selectedAbTest && (
+                    <Box sx={{ display: "flex", gap: 1 }}>
+                      {selectedAbTest.status === "draft" && (
+                        <Button size="small" startIcon={<StartIcon />} onClick={() => handleStartAbTest(selectedAbTest.id)}>
+                          Start
+                        </Button>
+                      )}
+                      {selectedAbTest.status === "running" && (
+                        <Button size="small" color="warning" startIcon={<PauseIcon />} onClick={() => handlePauseAbTest(selectedAbTest.id)}>
+                          Pause
+                        </Button>
+                      )}
+                    </Box>
+                  )
+                }
+              >
+                {selectedAbTest ? (
+                  <Box>
+                    {selectedAbTest.status === "running" && (
+                      <Box sx={{ display: "flex", gap: 1.5, mb: 3 }}>
+                        <TextField
+                          value={abTestPrompt}
+                          onChange={(e) => setAbTestPrompt(e.target.value)}
+                          placeholder="Enter test prompt..."
+                          fullWidth
+                          size="small"
+                        />
+                        <Button variant="contained" onClick={handleAbTestRequest} disabled={!abTestPrompt}>
+                          Send
+                        </Button>
+                      </Box>
+                    )}
+
+                    {abTestSummary && (
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ mb: 2 }}>
+                          Performance Comparison
+                        </Typography>
+                        {abTestSummary.variants.map((v) => {
+                          const maxTps = Math.max(...abTestSummary.variants.map((x) => x.avg_tokens_per_second));
+                          const maxLatency = Math.max(...abTestSummary.variants.map((x) => x.p95_latency_ms));
+                          return (
+                            <Box key={v.variant_id} sx={{ mb: 2, p: 2, bgcolor: "rgba(0, 0, 0, 0.2)", borderRadius: 2 }}>
+                              <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1.5 }}>
+                                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                                  {v.name}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {v.total_requests} requests
+                                </Typography>
+                              </Box>
+
+                              <MetricBar label="Tokens/sec" value={v.avg_tokens_per_second} max={maxTps} unit=" t/s" color={accentColors.success} />
+                              <MetricBar label="Avg Latency" value={v.avg_latency_ms} max={maxLatency} unit=" ms" color={accentColors.info} />
+                              <MetricBar label="P95 Latency" value={v.p95_latency_ms} max={maxLatency} unit=" ms" color={accentColors.warning} />
+
+                              <Box sx={{ display: "flex", justifyContent: "space-between", mt: 1.5 }}>
+                                <Typography variant="caption" color="text.secondary">
+                                  Success: {v.success_rate}%
+                                </Typography>
+                                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                  <ThumbUpIcon sx={{ fontSize: 14, color: accentColors.success }} />
+                                  <Typography variant="caption">{v.thumbs_up}</Typography>
+                                  <ThumbDownIcon sx={{ fontSize: 14, color: accentColors.rose }} />
+                                  <Typography variant="caption">{v.thumbs_down}</Typography>
+                                </Box>
+                              </Box>
+                            </Box>
+                          );
+                        })}
+
+                        {abTestSummary.winner && (
+                          <Alert severity="success" icon={<TrophyIcon />} sx={{ mt: 2 }}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                              Winner: {abTestSummary.winner_name}
+                            </Typography>
+                          </Alert>
+                        )}
+
+                        {!abTestSummary.has_enough_samples && abTestSummary.samples_needed && (
+                          <Alert severity="warning" sx={{ mt: 2 }}>
+                            Need {abTestSummary.samples_needed} more samples for statistical significance
+                          </Alert>
+                        )}
+                      </Box>
+                    )}
+                  </Box>
+                ) : (
+                  <Box sx={{ p: 4, textAlign: "center" }}>
+                    <ABTestIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
+                    <Typography color="text.secondary">Select or create an A/B test to view metrics</Typography>
+                  </Box>
+                )}
+              </SectionCard>
+            </Grid>
+          </Grid>
+        )
+      }
 
       {/* LLM Judge Tab */}
-      {activeTab === 3 && (
-        <SectionCard title="LLM-as-Judge Evaluation" subtitle="Use AI to automatically evaluate responses" icon={<JudgeIcon />} accentColor={accentColors.warning}>
-          <Alert severity="info" icon={<MagicIcon />} sx={{ mb: 3 }}>
-            Use GPT-4 or Claude to automatically evaluate and compare responses. Go to the Side-by-Side tab, run comparisons, and click "LLM Judge" on any comparison.
-          </Alert>
+      {
+        activeTab === 3 && (
+          <SectionCard title="LLM-as-Judge Evaluation" subtitle="Use AI to automatically evaluate responses" icon={<JudgeIcon />} accentColor={accentColors.warning}>
+            <Alert severity="info" icon={<MagicIcon />} sx={{ mb: 3 }}>
+              Use GPT-4 or Claude to automatically evaluate and compare responses. Go to the Side-by-Side tab, run comparisons, and click "LLM Judge" on any comparison.
+            </Alert>
 
-          <Box sx={{ p: 3, bgcolor: "rgba(0, 0, 0, 0.2)", borderRadius: 2 }}>
-            <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 2 }}>
-              Evaluation Criteria
-            </Typography>
-            <Grid container spacing={2}>
-              {[
-                { label: "Relevance", desc: "How well does the response address the prompt?" },
-                { label: "Accuracy", desc: "Is the information correct and factual?" },
-                { label: "Coherence", desc: "Is the response logically structured?" },
-                { label: "Completeness", desc: "Does it fully answer the question?" },
-                { label: "Helpfulness", desc: "How useful is the response overall?" },
-              ].map((criteria) => (
-                <Grid item xs={12} sm={6} key={criteria.label}>
-                  <Box sx={{ p: 2, borderRadius: 1.5, bgcolor: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.06)" }}>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: accentColors.warning }}>
-                      {criteria.label}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {criteria.desc}
-                    </Typography>
-                  </Box>
-                </Grid>
-              ))}
-            </Grid>
-          </Box>
-        </SectionCard>
-      )}
-    </Box>
+            <Box sx={{ p: 3, bgcolor: "rgba(0, 0, 0, 0.2)", borderRadius: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 2 }}>
+                Evaluation Criteria
+              </Typography>
+              <Grid container spacing={2}>
+                {[
+                  { label: "Relevance", desc: "How well does the response address the prompt?" },
+                  { label: "Accuracy", desc: "Is the information correct and factual?" },
+                  { label: "Coherence", desc: "Is the response logically structured?" },
+                  { label: "Completeness", desc: "Does it fully answer the question?" },
+                  { label: "Helpfulness", desc: "How useful is the response overall?" },
+                ].map((criteria) => (
+                  <Grid item xs={12} sm={6} key={criteria.label}>
+                    <Box sx={{ p: 2, borderRadius: 1.5, bgcolor: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.06)" }}>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 600, color: accentColors.warning }}>
+                        {criteria.label}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {criteria.desc}
+                      </Typography>
+                    </Box>
+                  </Grid>
+                ))}
+              </Grid>
+            </Box>
+          </SectionCard>
+        )
+      }
+    </Box >
   );
 };
 

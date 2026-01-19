@@ -377,6 +377,48 @@ services:
       retries: 3
       start_period: 60s
 
+  # LM-Eval Worker - GPU-accelerated model evaluation
+  lm-eval-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.lm-eval
+    container_name: lm-eval-worker
+    profiles:
+      - eval  # Opt-in: start with 'docker compose --profile eval up -d'
+    hostname: lm-eval-worker
+    shm_size: '16gb'
+    volumes:
+      - gpt_oss_models:/home/llamacpp/models:ro
+      - backend_data:/data
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - MODELS_DIR=/home/llamacpp/models
+      - LM_EVAL_OUTPUT_DIR=/data/lm_eval_results
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - LLAMACPP_API_URL=http://llamacpp-api:8080
+      - LM_EVAL_API_KEY=placeholder-api-key
+      - OPENAI_API_KEY=placeholder-api-key
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "python3", "-c", "import redis; redis.from_url('redis://redis:6379/0').ping()" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
   # Training image builder (run with: docker compose build training-image)
   training-image:
     build:

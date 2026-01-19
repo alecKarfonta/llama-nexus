@@ -7,12 +7,16 @@ Current capabilities:
 - Register fine-tuning jobs in memory (stub)
 """
 
+
+import asyncio
+import json
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Response
+from starlette.requests import Request
 from pathlib import Path
 
 from typing import List, Dict
@@ -72,6 +76,17 @@ try:
         AdapterComparison,
         AdapterManager,
         get_adapter_manager,
+        # Book Dataset Generation
+        BookDatasetConfig,
+        BookDatasetGenerator,
+        BookGenerationMode,
+        estimate_dataset_size,
+        # Book Distillation
+        BookDistillationConfig,
+        BookDistillationGenerator,
+        BookDistillationManager,
+        BookDistillationJob,
+        DistillationJobStatus,
     )
 except ImportError:
     # Fallback for local execution without package prefix
@@ -121,6 +136,10 @@ except ImportError:
         AdapterComparison,
         AdapterManager,
         get_adapter_manager,
+        # Book Dataset Generation
+        BookDatasetConfig,
+        BookDatasetGenerator,
+        estimate_dataset_size,
     )
 
 
@@ -214,6 +233,23 @@ class CreateJobRequest(BaseModel):
 
 router = APIRouter(prefix="/api/v1/finetune", tags=["finetuning"])
 benchmark_runner = BenchmarkRunner()
+
+# Import and initialize lm-eval runner for standardized benchmarks
+try:
+    from modules.finetuning.lm_eval_runner import (
+        LMEvalRunner,
+        LMEvalJob,
+        LMEvalTask,
+        LMEvalStatus,
+        get_lm_eval_runner,
+        POPULAR_TASKS,
+    )
+    lm_eval_runner = get_lm_eval_runner()
+    LM_EVAL_AVAILABLE = True
+except ImportError:
+    LM_EVAL_AVAILABLE = False
+    lm_eval_runner = None
+
 ab_test_manager = ABTestManager()
 adapter_manager = get_adapter_manager()
 dataset_processor = DatasetProcessor()
@@ -387,6 +423,397 @@ def get_dataset_statistics(dataset_id: str, max_records: int = 5000):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to analyze dataset: {str(e)}")
+
+
+# ============================================================================
+# Book Dataset Generation
+# ============================================================================
+
+
+class BookDatasetRequest(BaseModel):
+    """Request model for generating a book dataset."""
+    name: str = Field(..., description="Name for the generated dataset")
+    description: str = Field(default="", description="Description of the dataset")
+    domain_id: str = Field(..., description="Source domain containing documents")
+    document_ids: Optional[List[str]] = Field(default=None, description="Specific document IDs (None = all in domain)")
+    context_chunks: int = Field(default=3, ge=1, le=20, description="Number of chunks for context")
+    output_chunks: int = Field(default=1, ge=1, le=5, description="Number of chunks to predict")
+    stride: int = Field(default=1, ge=1, le=10, description="Sliding window stride")
+    include_metadata: bool = Field(default=False, description="Include metadata in examples")
+    system_prompt: str = Field(default="", description="Optional system prompt prefix")
+    max_examples: Optional[int] = Field(default=None, ge=1, description="Limit total examples")
+
+
+class BookDatasetEstimateRequest(BaseModel):
+    """Request model for estimating book dataset size."""
+    domain_id: str
+    document_ids: Optional[List[str]] = None
+    context_chunks: int = Field(default=3, ge=1, le=20)
+    output_chunks: int = Field(default=1, ge=1, le=5)
+    stride: int = Field(default=1, ge=1, le=10)
+
+
+# Helper to get document manager from app state
+async def _get_app_document_manager(request: Request):
+    """Get document manager from app state (shared with RAG routes)."""
+    dm = getattr(request.app.state, 'document_manager', None)
+    if dm is None:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    return dm
+
+
+@router.get("/datasets/book/list")
+async def list_book_datasets():
+    """
+    List all generated book datasets.
+    
+    Book datasets have format="completion" and are auto-detected by their metadata.
+    """
+    all_datasets = dataset_store.list()
+    book_datasets = [
+        ds for ds in all_datasets
+        if ds.format == DatasetFormat.COMPLETION and ds.statistics and ds.statistics.get("source_domain")
+    ]
+    return {"datasets": book_datasets}
+
+
+@router.post("/datasets/book/estimate")
+async def estimate_book_dataset(request: BookDatasetEstimateRequest, http_request: Request):
+    """
+    Estimate the size of a book dataset without generating it.
+    
+    Returns estimated example count and document statistics.
+    """
+    dm = await _get_app_document_manager(http_request)
+    
+    config = BookDatasetConfig(
+        domain_id=request.domain_id,
+        document_ids=request.document_ids,
+        context_chunks=request.context_chunks,
+        output_chunks=request.output_chunks,
+        stride=request.stride,
+    )
+    
+    try:
+        estimate = await estimate_dataset_size(dm, config)
+        return estimate
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to estimate dataset size: {str(e)}")
+
+
+@router.post("/datasets/book/preview")
+async def preview_book_dataset(request: BookDatasetRequest, http_request: Request, num_examples: int = 3):
+    """
+    Preview examples from a book dataset before generating.
+    
+    Returns a small preview of what the generated examples will look like.
+    """
+    dm = await _get_app_document_manager(http_request)
+    
+    config = BookDatasetConfig(
+        domain_id=request.domain_id,
+        document_ids=request.document_ids,
+        context_chunks=request.context_chunks,
+        output_chunks=request.output_chunks,
+        stride=request.stride,
+        include_metadata=request.include_metadata,
+        system_prompt=request.system_prompt,
+    )
+    
+    generator = BookDatasetGenerator(dm)
+    
+    try:
+        examples = await generator.preview(config, num_examples=num_examples)
+        return {
+            "examples": [ex.to_dict() for ex in examples],
+            "count": len(examples),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate preview: {str(e)}")
+
+
+@router.post("/datasets/book/generate", status_code=201)
+async def generate_book_dataset(request: BookDatasetRequest, http_request: Request):
+    """
+    Generate a training dataset from book chunks.
+    
+    Creates prompt/completion pairs by sliding a window through document chunks.
+    The generated dataset is saved and registered like other datasets.
+    """
+    dm = await _get_app_document_manager(http_request)
+    
+    config = BookDatasetConfig(
+        domain_id=request.domain_id,
+        document_ids=request.document_ids,
+        context_chunks=request.context_chunks,
+        output_chunks=request.output_chunks,
+        stride=request.stride,
+        include_metadata=request.include_metadata,
+        system_prompt=request.system_prompt,
+        max_examples=request.max_examples,
+        name=request.name,
+        description=request.description,
+    )
+    
+    generator = BookDatasetGenerator(dm)
+    
+    try:
+        # Generate the dataset
+        examples, stats = await generator.generate(config)
+        
+        if not examples:
+            raise HTTPException(
+                status_code=400,
+                detail="No examples generated. Check that the domain has documents with enough chunks."
+            )
+        
+        # Create dataset file
+        dataset_id = str(uuid.uuid4())
+        target_path = dataset_store.dataset_path(dataset_id, f"{request.name}.jsonl")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Write JSONL
+        import json as json_module
+        with open(target_path, 'w', encoding='utf-8') as f:
+            for example in examples:
+                f.write(json_module.dumps(example.to_dict(), ensure_ascii=False) + '\n')
+        
+        # Register dataset
+        now = datetime.utcnow()
+        dataset = Dataset(
+            id=dataset_id,
+            name=request.name,
+            description=f"Book dataset from domain {request.domain_id}. {request.description}".strip(),
+            format=DatasetFormat.COMPLETION,
+            status=DatasetStatus.READY,
+            num_examples=len(examples),
+            total_tokens=0,  # Will be calculated on validation
+            file_path=str(target_path),
+            created_at=now,
+            updated_at=now,
+            validation_errors=None,
+            statistics={
+                "documents_processed": stats.get("documents_processed", 0),
+                "total_chunks": stats.get("total_chunks", 0),
+                "context_chunks": request.context_chunks,
+                "output_chunks": request.output_chunks,
+                "stride": request.stride,
+                "source_domain": request.domain_id,
+            },
+        )
+        dataset_store.upsert(dataset)
+        
+        return {
+            "dataset": dataset,
+            "statistics": stats,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate dataset: {str(e)}")
+
+
+# ============================================================================
+# Book Dataset Distillation (Q&A Generation)
+# ============================================================================
+
+
+class BookDistillationRequest(BaseModel):
+    """Request model for creating a book distillation job."""
+    name: str = Field(..., description="Name for the generated dataset")
+    description: str = Field(default="", description="Description of the dataset")
+    domain_id: str = Field(..., description="Source domain containing documents")
+    document_ids: Optional[List[str]] = Field(default=None, description="Specific document IDs (None = all in domain)")
+    generation_mode: str = Field(default="qa_generation", description="Generation mode: qa_generation, summarization, explanation, mixed")
+    teacher_provider: str = Field(default="openai", description="Teacher model provider: openai, anthropic, google, local")
+    teacher_model: str = Field(default="gpt-4o-mini", description="Teacher model name")
+    teacher_api_key: Optional[str] = Field(default=None, description="API key (uses env var if not provided)")
+    questions_per_chunk: int = Field(default=3, ge=1, le=10, description="Q&A pairs per chunk")
+    include_source_context: bool = Field(default=True, description="Include source text in examples")
+    max_chunks: Optional[int] = Field(default=None, ge=1, description="Limit chunks to process")
+    quality_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Quality filter threshold")
+
+
+class BookDistillationEstimateRequest(BaseModel):
+    """Request model for estimating distillation job size."""
+    domain_id: str
+    document_ids: Optional[List[str]] = None
+    generation_mode: str = Field(default="qa_generation")
+    teacher_model: str = Field(default="gpt-4o-mini")
+    questions_per_chunk: int = Field(default=3, ge=1, le=10)
+    max_chunks: Optional[int] = None
+
+
+# Lazy initialization of distillation manager
+_distillation_manager = None
+
+
+def _get_distillation_manager(document_manager):
+    """Get or create distillation manager."""
+    global _distillation_manager
+    if _distillation_manager is None:
+        _distillation_manager = BookDistillationManager(document_manager, dataset_store)
+    return _distillation_manager
+
+
+@router.post("/datasets/book/distill/estimate")
+async def estimate_book_distillation(request: BookDistillationEstimateRequest, http_request: Request):
+    """
+    Estimate the size and cost of a book distillation job.
+    
+    Returns estimated chunk count, example count, and API cost.
+    """
+    dm = await _get_app_document_manager(http_request)
+    
+    from modules.finetuning.book_dataset import BookGenerationMode
+    from modules.finetuning.distillation import TeacherProvider
+    
+    config = BookDistillationConfig(
+        domain_id=request.domain_id,
+        document_ids=request.document_ids,
+        generation_mode=BookGenerationMode(request.generation_mode),
+        teacher_model=request.teacher_model,
+        questions_per_chunk=request.questions_per_chunk,
+        max_chunks=request.max_chunks,
+    )
+    
+    manager = _get_distillation_manager(dm)
+    
+    try:
+        estimate = await manager.estimate_job(config)
+        return estimate
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to estimate distillation: {str(e)}")
+
+
+@router.post("/datasets/book/distill/preview")
+async def preview_book_distillation(request: BookDistillationRequest, http_request: Request, num_chunks: int = 1):
+    """
+    Preview distillation results for a few chunks before running the full job.
+    """
+    dm = await _get_app_document_manager(http_request)
+    
+    from modules.finetuning.book_dataset import BookGenerationMode
+    from modules.finetuning.distillation import TeacherProvider
+    
+    config = BookDistillationConfig(
+        domain_id=request.domain_id,
+        document_ids=request.document_ids,
+        generation_mode=BookGenerationMode(request.generation_mode),
+        teacher_provider=TeacherProvider(request.teacher_provider),
+        teacher_model=request.teacher_model,
+        teacher_api_key=request.teacher_api_key,
+        questions_per_chunk=request.questions_per_chunk,
+        include_source_context=request.include_source_context,
+        name=request.name,
+        description=request.description,
+    )
+    
+    manager = _get_distillation_manager(dm)
+    
+    try:
+        examples = await manager.preview_job(config, num_chunks=num_chunks)
+        return {
+            "examples": examples,
+            "count": len(examples),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to preview distillation: {str(e)}")
+
+
+@router.post("/datasets/book/distill", status_code=201)
+async def create_book_distillation_job(request: BookDistillationRequest, http_request: Request, background_tasks=None):
+    """
+    Create and start a book distillation job.
+    
+    The job runs in the background and generates Q&A/summary/explanation examples
+    from book chunks using a teacher model.
+    """
+    dm = await _get_app_document_manager(http_request)
+    
+    from modules.finetuning.book_dataset import BookGenerationMode
+    from modules.finetuning.distillation import TeacherProvider
+    
+    config = BookDistillationConfig(
+        domain_id=request.domain_id,
+        document_ids=request.document_ids,
+        generation_mode=BookGenerationMode(request.generation_mode),
+        teacher_provider=TeacherProvider(request.teacher_provider),
+        teacher_model=request.teacher_model,
+        teacher_api_key=request.teacher_api_key,
+        questions_per_chunk=request.questions_per_chunk,
+        include_source_context=request.include_source_context,
+        max_chunks=request.max_chunks,
+        quality_threshold=request.quality_threshold,
+        name=request.name,
+        description=request.description,
+    )
+    
+    manager = _get_distillation_manager(dm)
+    job = manager.create_job(config)
+    
+    # Run job asynchronously
+    async def run_job():
+        try:
+            await manager.start_job(job.id)
+        except Exception as e:
+            job.error = str(e)
+            job.status = DistillationJobStatus.FAILED
+    
+    # Start job in background
+    asyncio.create_task(run_job())
+    
+    return {
+        "job": job.to_dict(),
+        "message": "Distillation job started",
+    }
+
+
+@router.get("/datasets/book/distill/{job_id}")
+async def get_book_distillation_job(job_id: str, http_request: Request):
+    """
+    Get the status and progress of a book distillation job.
+    """
+    dm = await _get_app_document_manager(http_request)
+    manager = _get_distillation_manager(dm)
+    
+    job = manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    
+    return {"job": job.to_dict()}
+
+
+@router.get("/datasets/book/distill")
+async def list_book_distillation_jobs(http_request: Request):
+    """
+    List all book distillation jobs.
+    """
+    dm = await _get_app_document_manager(http_request)
+    manager = _get_distillation_manager(dm)
+    
+    jobs = manager.list_jobs()
+    return {"jobs": [j.to_dict() for j in jobs]}
+
+
+@router.post("/datasets/book/distill/{job_id}/cancel")
+async def cancel_book_distillation_job(job_id: str, http_request: Request):
+    """
+    Cancel a running book distillation job.
+    """
+    dm = await _get_app_document_manager(http_request)
+    manager = _get_distillation_manager(dm)
+    
+    success = manager.cancel_job(job_id)
+    if not success:
+        raise HTTPException(status_code=400, detail=f"Job not running or not found: {job_id}")
+    
+    return {"message": "Cancellation requested", "job_id": job_id}
+
+
+# ============================================================================
+# Training Jobs
+# ============================================================================
 
 
 @router.get("/jobs")
@@ -2239,4 +2666,346 @@ def update_adapter_benchmark_results(adapter_id: str, results: dict):
     return {
         "adapter_id": adapter_id,
         "benchmark_results": adapter.benchmark_results,
+    }
+
+
+# =============================================================================
+# LM Evaluation Harness Endpoints (Standardized Benchmarks)
+# =============================================================================
+
+# Public benchmark data from Open LLM Leaderboard (curated subset)
+# Source: https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard
+# Scores are percentages (0-100)
+PUBLIC_BENCHMARK_DATA = [
+    {
+        "model_name": "Llama-3-70B-Instruct",
+        "model_size": "70B",
+        "scores": {
+            "mmlu": 82.0,
+            "hellaswag": 87.5,
+            "arc_easy": 92.8,
+            "arc_challenge": 71.4,
+            "truthfulqa_mc2": 62.3,
+            "winogrande": 85.3,
+            "gsm8k": 76.9,
+        },
+        "source": "Open LLM Leaderboard",
+    },
+    {
+        "model_name": "Llama-3-8B-Instruct",
+        "model_size": "8B",
+        "scores": {
+            "mmlu": 68.4,
+            "hellaswag": 82.1,
+            "arc_easy": 85.2,
+            "arc_challenge": 60.8,
+            "truthfulqa_mc2": 51.7,
+            "winogrande": 78.4,
+            "gsm8k": 54.7,
+        },
+        "source": "Open LLM Leaderboard",
+    },
+    {
+        "model_name": "Mistral-7B-Instruct-v0.2",
+        "model_size": "7B",
+        "scores": {
+            "mmlu": 60.8,
+            "hellaswag": 84.9,
+            "arc_easy": 87.5,
+            "arc_challenge": 63.5,
+            "truthfulqa_mc2": 68.3,
+            "winogrande": 78.4,
+            "gsm8k": 40.0,
+        },
+        "source": "Open LLM Leaderboard",
+    },
+    {
+        "model_name": "Qwen2.5-7B-Instruct",
+        "model_size": "7B",
+        "scores": {
+            "mmlu": 74.2,
+            "hellaswag": 81.8,
+            "arc_easy": 82.3,
+            "arc_challenge": 58.6,
+            "truthfulqa_mc2": 57.9,
+            "winogrande": 74.3,
+            "gsm8k": 82.5,
+        },
+        "source": "Open LLM Leaderboard",
+    },
+    {
+        "model_name": "Phi-3-medium-4k-instruct",
+        "model_size": "14B",
+        "scores": {
+            "mmlu": 78.0,
+            "hellaswag": 84.6,
+            "arc_easy": 90.5,
+            "arc_challenge": 68.9,
+            "truthfulqa_mc2": 55.2,
+            "winogrande": 81.2,
+            "gsm8k": 85.7,
+        },
+        "source": "Open LLM Leaderboard",
+    },
+    {
+        "model_name": "Gemma-2-9B-it",
+        "model_size": "9B",
+        "scores": {
+            "mmlu": 72.3,
+            "hellaswag": 82.0,
+            "arc_easy": 87.1,
+            "arc_challenge": 64.2,
+            "truthfulqa_mc2": 51.9,
+            "winogrande": 76.8,
+            "gsm8k": 68.3,
+        },
+        "source": "Open LLM Leaderboard",
+    },
+]
+
+
+class LMEvalJobRequest(BaseModel):
+    """Request to create an lm-eval benchmark job."""
+    name: str = Field(description="Job name")
+    tasks: List[str] = Field(description="List of task names to run")
+    model_path: Optional[str] = Field(default=None, description="GGUF model filename to evaluate (e.g., 'small_test-merged-Q8_0.gguf')")
+    gpu_device: Optional[int] = Field(default=None, description="GPU device index to use for evaluation")
+    num_fewshot: int = Field(default=5, ge=0, le=50, description="Number of few-shot examples")
+    limit: Optional[int] = Field(default=None, ge=1, le=10000, description="Max samples per task")
+
+
+@router.get("/lm-eval/public-benchmarks")
+def get_public_benchmarks(
+    limit: int = 20,
+    model_size: Optional[str] = None,
+    organization: Optional[str] = None,
+    benchmark: Optional[str] = None,
+):
+    """
+    Get public benchmark scores for popular models.
+    
+    Use this to compare local model performance against established baselines.
+    Data sources: Open LLM Leaderboard, llm-stats.com
+    
+    Args:
+        limit: Maximum number of models to return (default 20)
+        model_size: Filter by model size (e.g., "7B", "70B")
+        organization: Filter by organization (e.g., "Meta", "Google")
+        benchmark: Filter to models with this specific benchmark
+    """
+    from modules.finetuning.benchmark_reference import (
+        get_cached_benchmark_data,
+        filter_benchmarks,
+        get_available_benchmarks,
+    )
+    
+    data = get_cached_benchmark_data()
+    
+    # Apply filters
+    data = filter_benchmarks(
+        data,
+        model_size=model_size,
+        organization=organization,
+        benchmark=benchmark,
+        limit=limit,
+    )
+    
+    return {
+        "benchmarks": data,
+        "available_benchmarks": get_available_benchmarks(),
+        "source": "Open LLM Leaderboard / llm-stats.com",
+        "note": "Scores are percentages (0-100). Use for relative comparison only.",
+    }
+
+
+@router.get("/lm-eval/status")
+def get_lm_eval_status():
+    """Check if lm-evaluation-harness is available."""
+    return {
+        "available": LM_EVAL_AVAILABLE,
+        "message": "lm-evaluation-harness is available" if LM_EVAL_AVAILABLE else "lm-evaluation-harness is not installed",
+    }
+
+
+@router.get("/lm-eval/tasks")
+def list_lm_eval_tasks():
+    """List available benchmark tasks from lm-evaluation-harness."""
+    if not LM_EVAL_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="lm-evaluation-harness is not available"
+        )
+    return {
+        "tasks": lm_eval_runner.get_available_tasks(),
+    }
+
+
+@router.get("/lm-eval/jobs")
+def list_lm_eval_jobs():
+    """List all lm-eval benchmark jobs."""
+    if not LM_EVAL_AVAILABLE:
+        raise HTTPException(status_code=503, detail="lm-evaluation-harness is not available")
+    
+    jobs = lm_eval_runner.list_jobs()
+    return {
+        "jobs": [
+            {
+                "id": j.id,
+                "tasks": [t.name for t in j.tasks],
+                "model_path": j.model_path,
+                "gpu_device": j.gpu_device,
+                "status": j.status.value,
+                "progress": j.progress,
+                "results": j.results,
+                "error": j.error,
+                "created_at": j.created_at.isoformat(),
+                "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+            }
+            for j in jobs
+        ],
+    }
+
+
+@router.post("/lm-eval/jobs")
+def create_lm_eval_job(request: LMEvalJobRequest):
+    """Create a new lm-eval benchmark job."""
+    if not LM_EVAL_AVAILABLE:
+        raise HTTPException(status_code=503, detail="lm-evaluation-harness is not available")
+    
+    # Validate tasks
+    valid_tasks = set(POPULAR_TASKS.keys())
+    for task in request.tasks:
+        if task not in valid_tasks:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown task: {task}. Valid tasks: {', '.join(valid_tasks)}"
+            )
+    
+    # Create job with model_path and gpu_device
+    job = LMEvalJob(
+        id=str(uuid.uuid4()),
+        tasks=[
+            LMEvalTask(
+                name=task,
+                num_fewshot=request.num_fewshot,
+                limit=request.limit,
+            )
+            for task in request.tasks
+        ],
+        model_path=request.model_path,
+        gpu_device=request.gpu_device,
+    )
+    
+    lm_eval_runner.create_job(job)
+    
+    return {
+        "id": job.id,
+        "tasks": [t.name for t in job.tasks],
+        "model_path": job.model_path,
+        "gpu_device": job.gpu_device,
+        "status": job.status.value,
+    }
+
+
+@router.get("/lm-eval/jobs/{job_id}")
+def get_lm_eval_job(job_id: str):
+    """Get a specific lm-eval job."""
+    if not LM_EVAL_AVAILABLE:
+        raise HTTPException(status_code=503, detail="lm-evaluation-harness is not available")
+    
+    job = lm_eval_runner.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return {
+        "id": job.id,
+        "tasks": [t.name for t in job.tasks],
+        "status": job.status.value,
+        "progress": job.progress,
+        "results": job.results,
+        "error": job.error,
+        "created_at": job.created_at.isoformat(),
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "log_output": job.log_output[-5000:] if job.log_output else "",  # Last 5KB of logs
+    }
+
+
+@router.delete("/lm-eval/jobs/{job_id}")
+def delete_lm_eval_job(job_id: str):
+    """Delete an lm-eval job."""
+    if not LM_EVAL_AVAILABLE:
+        raise HTTPException(status_code=503, detail="lm-evaluation-harness is not available")
+    
+    if not lm_eval_runner.delete_job(job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return {"deleted": True}
+
+
+@router.get("/lm-eval/jobs/{job_id}/start")
+async def start_lm_eval_job(job_id: str):
+    """Start running an lm-eval benchmark job (streaming)."""
+    from fastapi.responses import StreamingResponse
+    import asyncio
+    
+    if not LM_EVAL_AVAILABLE:
+        raise HTTPException(status_code=503, detail="lm-evaluation-harness is not available")
+    
+    job = lm_eval_runner.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if job.status != LMEvalStatus.PENDING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is already {job.status.value}"
+        )
+    
+    async def stream_results():
+        """Stream results as SSE."""
+        model_path = getattr(job, 'model_path', None)
+        gpu_device = getattr(job, 'gpu_device', None)
+        async for update in lm_eval_runner.run_benchmark(job, model_path=model_path, gpu_device=gpu_device):
+            yield f"data: {json.dumps(update)}\n\n"
+            await asyncio.sleep(0.1)  # Small delay for client to process
+    
+    return StreamingResponse(
+        stream_results(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+# Non-streaming version for simpler clients
+@router.post("/lm-eval/jobs/{job_id}/run")
+async def run_lm_eval_job_sync(job_id: str):
+    """Run an lm-eval benchmark job synchronously (returns when complete)."""
+    if not LM_EVAL_AVAILABLE:
+        raise HTTPException(status_code=503, detail="lm-evaluation-harness is not available")
+    
+    job = lm_eval_runner.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if job.status != LMEvalStatus.PENDING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is already {job.status.value}"
+        )
+    
+    # Run and collect all updates
+    updates = []
+    model_path = getattr(job, 'model_path', None)
+    gpu_device = getattr(job, 'gpu_device', None)
+    async for update in lm_eval_runner.run_benchmark(job, model_path=model_path, gpu_device=gpu_device):
+        updates.append(update)
+    
+    return {
+        "id": job.id,
+        "status": job.status.value,
+        "results": job.results,
+        "error": job.error,
     }
