@@ -135,6 +135,9 @@ class LMEvalRunner:
     deployed llama.cpp server via the OpenAI-compatible API.
     """
     
+    # Shared results directory with the lm-eval-worker
+    SHARED_RESULTS_DIR = Path("/data/lm_eval_results")
+    
     def __init__(
         self,
         endpoint_url: Optional[str] = None,
@@ -159,6 +162,97 @@ class LMEvalRunner:
         
         self.jobs: Dict[str, LMEvalJob] = {}
         self._running_processes: Dict[str, subprocess.Popen] = {}
+        
+        # Load historical results from shared filesystem on startup
+        self._load_historical_results()
+    
+    def _load_historical_results(self):
+        """
+        Load completed benchmark results from the shared filesystem.
+        
+        The lm-eval-worker saves results to /data/lm_eval_results/lm_eval_{job_id}/results.json
+        This allows results to persist across backend restarts.
+        """
+        if not self.SHARED_RESULTS_DIR.exists():
+            logger.info("Shared results directory not found, skipping historical load")
+            return
+        
+        loaded_count = 0
+        for job_dir in self.SHARED_RESULTS_DIR.iterdir():
+            if not job_dir.is_dir():
+                continue
+            
+            # Extract job ID from directory name (format: lm_eval_{uuid})
+            dir_name = job_dir.name
+            if dir_name.startswith("lm_eval_"):
+                job_id = dir_name[8:]  # Strip "lm_eval_" prefix
+            else:
+                continue
+            
+            results_file = job_dir / "results.json"
+            if not results_file.exists():
+                continue
+            
+            try:
+                with open(results_file) as f:
+                    raw_results = json.load(f)
+                
+                # Parse results into our format
+                parsed = self._parse_results(raw_results)
+                
+                # Try to extract model path from lm-eval config.model_args
+                # Format: "model_path=/path/to/model.gguf,n_ctx=2048,..."
+                model_path = None
+                config = raw_results.get("config", {})
+                model_args = config.get("model_args", "")
+                if model_args and "model_path=" in model_args:
+                    for arg in model_args.split(","):
+                        if arg.startswith("model_path="):
+                            full_path = arg.split("=", 1)[1]
+                            # Extract just the filename from the full path
+                            model_path = Path(full_path).name
+                            break
+                
+                # Fallback: try config.json file if exists
+                if not model_path:
+                    config_file = job_dir / "config.json"
+                    if config_file.exists():
+                        with open(config_file) as f:
+                            config_data = json.load(f)
+                            model_path = config_data.get("model_path")
+                
+                # Reconstruct job object
+                # Get task names from results
+                task_names = list(parsed.get("tasks", {}).keys())
+                tasks = [LMEvalTask(name=t) for t in task_names if t]
+                
+                # Get created time from file mtime
+                created_at = datetime.fromtimestamp(results_file.stat().st_mtime)
+                
+                job = LMEvalJob(
+                    id=job_id,
+                    tasks=tasks,
+                    model_path=model_path or parsed.get("model_name") or "unknown",
+                    status=LMEvalStatus.COMPLETED,
+                    progress=100.0,
+                    results=parsed,
+                    created_at=created_at,
+                    completed_at=created_at,
+                )
+                
+                self.jobs[job_id] = job
+                loaded_count += 1
+                
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load historical result {job_dir.name}: {e}"
+                )
+                continue
+        
+        if loaded_count > 0:
+            logger.info(
+                f"Loaded {loaded_count} historical benchmark results from filesystem"
+            )
     
     def get_available_tasks(self) -> List[Dict[str, Any]]:
         """Return list of available benchmark tasks."""
@@ -188,14 +282,30 @@ class LMEvalRunner:
         return list(self.jobs.values())
     
     def delete_job(self, job_id: str) -> bool:
-        """Delete a job and cancel if running."""
+        """Delete a job and cancel if running. Also removes persisted filesystem results."""
+        deleted_memory = False
+        deleted_fs = False
+        
+        # Delete from in-memory storage
         if job_id in self.jobs:
             if job_id in self._running_processes:
                 self._running_processes[job_id].terminate()
                 del self._running_processes[job_id]
             del self.jobs[job_id]
-            return True
-        return False
+            deleted_memory = True
+        
+        # Delete from filesystem (persisted results)
+        result_dir = self.SHARED_RESULTS_DIR / f"lm_eval_{job_id}"
+        if result_dir.exists() and result_dir.is_dir():
+            import shutil
+            try:
+                shutil.rmtree(result_dir)
+                logger.info(f"Deleted benchmark results directory: {result_dir}")
+                deleted_fs = True
+            except Exception as e:
+                logger.warning(f"Failed to delete results directory {result_dir}: {e}")
+        
+        return deleted_memory or deleted_fs
     
     async def run_benchmark(
         self,
