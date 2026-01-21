@@ -22,12 +22,17 @@ import {
     TextField,
     InputAdornment,
     alpha,
+    Grid,
+    Select,
+    MenuItem,
+    FormControl,
+    InputLabel,
+    Collapse,
 } from "@mui/material";
 import {
     ArrowBack as BackIcon,
     Refresh as RefreshIcon,
     Download as DownloadIcon,
-    Add as AddIcon,
     Search as SearchIcon,
     CheckCircle as CheckIcon,
     RadioButtonUnchecked as UncheckedIcon,
@@ -37,6 +42,11 @@ import {
     Public as PublicIcon,
     Storage as ModelIcon,
     TrendingUp as TrendIcon,
+    FilterList as FilterIcon,
+    ExpandMore as ExpandIcon,
+    ExpandLess as CollapseIcon,
+    Summarize as SummaryIcon,
+    Delete as DeleteIcon,
 } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 import {
@@ -79,12 +89,16 @@ const modelColors = [
     "#14b8a6", // Teal
 ];
 
-// Public model colors (muted)
+// Public model colors (using vibrant palette but distinct order)
 const publicModelColors = [
-    "#94a3b8",
-    "#a1a1aa",
-    "#9ca3af",
-    "#a3a3a3",
+    "#8b5cf6", // Purple
+    "#f43f5e", // Rose
+    "#06b6d4", // Cyan
+    "#f59e0b", // Amber
+    "#10b981", // Green
+    "#6366f1", // Indigo
+    "#ec4899", // Pink
+    "#14b8a6", // Teal
 ];
 
 // Types
@@ -109,19 +123,45 @@ interface PublicModel {
 
 type ViewMode = "radar" | "bar" | "table";
 
-// Custom tooltip
-const CustomTooltip: React.FC<{ active?: boolean; payload?: any[]; label?: string }> = ({
-    active, payload, label
-}) => {
-    if (active && payload?.length) {
+interface PresetConfig {
+    id: string;
+    label: string;
+    description: string;
+}
+
+const PRESETS: PresetConfig[] = [
+    { id: "core", label: "Core Summary", description: "High-level view with aggregated scores" },
+    { id: "mmlu", label: "MMLU Detailed", description: "Detailed breakdown of all MMLU subjects" },
+    { id: "arc", label: "ARC Detailed", description: "ARC Easy vs Challenge details" },
+    { id: "all", label: "All Benchmarks", description: "Everything available" },
+    { id: "custom", label: "Custom Selection", description: "Manually selected benchmarks" },
+];
+
+const AGGREGATION_GROUPS = [
+    { prefix: "mmlu_", name: "MMLU (Avg)", color: colors.primary, publicMatch: "mmlu" },
+    { prefix: "arc_", name: "ARC (Avg)", color: colors.warning, publicMatch: "arc_challenge" },
+    { prefix: "truthfulqa_", name: "TruthfulQA (Avg)", color: colors.success, publicMatch: "truthfulqa_mc2" },
+    // New metrics mapping
+    { prefix: "gpqa_", name: "GPQA", color: colors.purple, publicMatch: "gpqa" },
+    { prefix: "math_", name: "MATH", color: colors.rose, publicMatch: "math" },
+    { prefix: "humaneval_", name: "HumanEval", color: colors.info, publicMatch: "humaneval" },
+];
+
+
+// Custom Tooltip for Recharts
+const CustomTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
         return (
-            <Paper sx={{ p: 1.5, bgcolor: "rgba(15, 23, 42, 0.95)", border: "1px solid rgba(255,255,255,0.1)" }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>{label}</Typography>
-                {payload.map((entry: any, i: number) => (
-                    <Box key={i} sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.5 }}>
-                        <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: entry.color }} />
-                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                            {entry.name}: <strong style={{ color: "#fff" }}>{entry.value?.toFixed(1)}%</strong>
+            <Paper sx={{ p: 1.5, border: "1px solid rgba(255,255,255,0.1)", bgcolor: "rgba(0,0,0,0.9)" }}>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>{label}</Typography>
+                {payload.map((p: any) => (
+                    <Box key={p.name} sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
+                        <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: p.color }} />
+                        <Typography variant="caption" sx={{ color: "text.secondary", width: 140 }}>
+                            {p.name}:
+                        </Typography>
+                        <Typography variant="caption" fontWeight={600}>
+                            {Number(p.value).toFixed(1)}
                         </Typography>
                     </Box>
                 ))}
@@ -131,90 +171,176 @@ const CustomTooltip: React.FC<{ active?: boolean; payload?: any[]; label?: strin
     return null;
 };
 
-const BenchmarkComparisonPage: React.FC = () => {
+const BenchmarkComparisonPage = () => {
     const navigate = useNavigate();
 
-    // Data state
-    const [localResults, setLocalResults] = useState<BenchmarkResult[]>([]);
-    const [publicModels, setPublicModels] = useState<PublicModel[]>([]);
+    // State
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [localResults, setLocalResults] = useState<BenchmarkResult[]>([]);
+    const [publicModels, setPublicModels] = useState<PublicModel[]>([]);
 
-    // Selection state
+    // View Config
+    const [activePreset, setActivePreset] = useState("core");
+    const [useAggregates, setUseAggregates] = useState(true);
+    const [viewMode, setViewMode] = useState<ViewMode>("radar");
+    const [datasetSearchQuery, setDatasetSearchQuery] = useState("");
+
+    // Selection
     const [selectedLocalIds, setSelectedLocalIds] = useState<Set<string>>(new Set());
     const [selectedPublicNames, setSelectedPublicNames] = useState<Set<string>>(new Set());
-    const [showPublicModels, setShowPublicModels] = useState(false);
-
-    // View state
-    const [viewMode, setViewMode] = useState<ViewMode>("radar");
+    const [showPublicModels, setShowPublicModels] = useState(true);
     const [searchQuery, setSearchQuery] = useState("");
 
-    // Available benchmark tasks
-    const allTasks = useMemo(() => {
-        const tasks = new Set<string>();
-        localResults.forEach(r => Object.keys(r.tasks).forEach(t => tasks.add(t)));
-        publicModels.forEach(m => Object.keys(m.scores).forEach(t => tasks.add(t)));
-        return Array.from(tasks).sort();
-    }, [localResults, publicModels]);
-
-    const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set(allTasks));
-
-    // Update selected tasks when all tasks change
-    useEffect(() => {
-        if (allTasks.length > 0 && selectedTasks.size === 0) {
-            setSelectedTasks(new Set(allTasks));
-        }
-    }, [allTasks]);
-
-    // Fetch data
+    // Fetch Data
     useEffect(() => {
         const fetchData = async () => {
-            setLoading(true);
             try {
-                // Fetch local benchmark jobs
+                setLoading(true);
+
+                // 1. Fetch Local Jobs
                 const jobsRes = await fetch("/api/v1/finetune/lm-eval/jobs");
                 if (jobsRes.ok) {
-                    const data = await jobsRes.json();
-                    const jobs = data.jobs || [];
-                    const completed = jobs.filter((j: any) => j.status === "completed" && j.results?.tasks);
-                    setLocalResults(completed.map((j: any) => ({
+                    const jobsData = await jobsRes.json();
+                    // API returns {jobs: [...]} - extract the array
+                    const rawJobs = jobsData?.jobs || jobsData;
+                    const jobsArray = Array.isArray(rawJobs) ? rawJobs : [];
+                    const completedJobs = jobsArray.filter((j: any) => j.status === "completed" && j.results);
+
+                    const parsedResults: BenchmarkResult[] = completedJobs.map((j: any) => ({
                         id: j.id,
-                        model_name: j.model_path || j.results?.model_name || `Job ${j.id.slice(0, 8)}`,
+                        model_name: j.model_path.split("/").pop() || "Unknown Model",
                         model_path: j.model_path,
                         created_at: j.created_at,
-                        tasks: j.results?.tasks || {},
-                    })));
+                        // API returns {tasks: {...}, model_name, date} - extract just the tasks map
+                        tasks: j.results?.tasks || j.results || {},
+                        isPublic: false
+                    }));
+                    setLocalResults(parsedResults);
 
-                    // Auto-select first 3
-                    const autoSelect = new Set<string>();
-                    completed.slice(0, 3).forEach((j: any) => autoSelect.add(j.id));
-                    setSelectedLocalIds(autoSelect);
+                    // Default select most recent local job
+                    if (parsedResults.length > 0) {
+                        // Sort by date desc
+                        parsedResults.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+                        setSelectedLocalIds(new Set([parsedResults[0].id]));
+                    }
                 }
 
-                // Fetch public benchmarks
-                const publicRes = await fetch("/api/v1/finetune/lm-eval/public-benchmarks?limit=10");
+                // 2. Fetch Public Benchmarks
+                const publicRes = await fetch("/api/v1/finetune/lm-eval/public-benchmarks?limit=50");
                 if (publicRes.ok) {
-                    const data = await publicRes.json();
-                    setPublicModels(data.benchmarks || []);
+                    const publicData = await publicRes.json();
+                    // API returns {benchmarks: [...]} - extract the array
+                    const rawModels = publicData?.benchmarks || publicData;
+                    const modelsArray = Array.isArray(rawModels) ? rawModels : [];
+                    setPublicModels(modelsArray);
+
+                    // Default select top 3 public models
+                    if (modelsArray.length > 0) {
+                        const defaults = modelsArray.slice(0, 3).map((m: any) => m.model_name);
+                        setSelectedPublicNames(new Set(defaults));
+                    }
                 }
-            } catch (e) {
-                setError("Failed to load benchmark data");
+
+            } catch (err) {
+                console.error("Failed to fetch benchmark data:", err);
+                setError(err instanceof Error ? err.message : "Failed to load benchmark data");
+            } finally {
+                setLoading(false);
             }
-            setLoading(false);
         };
+
         fetchData();
     }, []);
 
-    // Prepare chart data
+    // Derived Lists
+    const aggregatedTasks = useMemo(() => AGGREGATION_GROUPS.map(g => g.name), []);
+
+    const allRawTasks = useMemo(() => {
+        const tasks = new Set<string>();
+        localResults.forEach(r => {
+            if (r.tasks) Object.keys(r.tasks).forEach(t => tasks.add(t));
+        });
+        publicModels.forEach(m => {
+            if (m.scores) Object.keys(m.scores).forEach(t => tasks.add(t));
+        });
+        return Array.from(tasks).sort();
+    }, [localResults, publicModels]);
+
+    // Determine tasks to show based on preset
+    const displayedTasks = useMemo(() => {
+        if (activePreset === "all") return useAggregates ? aggregatedTasks : allRawTasks;
+
+        if (activePreset === "core") {
+            // Core shows generic benchmarks + aggregated averages
+            const core = ["hellaswag", "gsm8k", "winogrande", "piqa"];
+            if (useAggregates) {
+                // Add the averages
+                AGGREGATION_GROUPS.forEach(g => core.push(g.name));
+            }
+            // Filter to include only what's available
+            return core.filter(t => aggregatedTasks.includes(t) || allRawTasks.includes(t));
+        }
+
+        if (activePreset === "mmlu") {
+            // Show all MMLU tasks
+            return allRawTasks.filter(t => t.startsWith("mmlu_"));
+        }
+
+        if (activePreset === "arc") {
+            // Show all ARC tasks
+            return allRawTasks.filter(t => t.startsWith("arc_"));
+        }
+
+        // Custom or fallback
+        return useAggregates ? aggregatedTasks : allRawTasks;
+    }, [activePreset, useAggregates, aggregatedTasks, allRawTasks]);
+
+    // Calculate chart data points
     const chartData = useMemo(() => {
-        const tasks = Array.from(selectedTasks);
-        return tasks.map(task => {
+        return displayedTasks.map(task => {
             const point: Record<string, string | number> = { task };
+
+            // Helper to get score for a model (handling aggregation)
+            const getScore = (tasksMap: Record<string, any>) => {
+                // Check direct match first
+                if (tasksMap[task]?.score !== undefined) return tasksMap[task].score;
+                if (tasksMap[task] !== undefined && typeof tasksMap[task] === 'number') return tasksMap[task];
+
+                // Check aggregation
+                if (useAggregates) {
+                    const group = AGGREGATION_GROUPS.find(g => g.name === task);
+                    if (group) {
+                        // 1. Try public match key (e.g. "mmlu" for "MMLU (Avg)")
+                        if (group.publicMatch && tasksMap[group.publicMatch] !== undefined) {
+                            return typeof tasksMap[group.publicMatch] === 'object'
+                                ? tasksMap[group.publicMatch].score
+                                : tasksMap[group.publicMatch];
+                        }
+
+                        // 2. Calculate average of all tasks starting with prefix (local results)
+                        const subtasks = Object.keys(tasksMap).filter(t => t.startsWith(group.prefix));
+                        if (subtasks.length === 0) return 0;
+
+                        let sum = 0;
+                        let count = 0;
+                        subtasks.forEach(t => {
+                            const val = typeof tasksMap[t] === 'object' ? tasksMap[t].score : tasksMap[t];
+                            if (val !== undefined) {
+                                sum += val;
+                                count++;
+                            }
+                        });
+                        return count > 0 ? sum / count : 0;
+                    }
+                }
+                return 0;
+            };
 
             // Add local models
             localResults.forEach((result, idx) => {
                 if (selectedLocalIds.has(result.id)) {
-                    point[result.model_name] = result.tasks[task]?.score || 0;
+                    point[result.model_name] = getScore(result.tasks);
                 }
             });
 
@@ -222,14 +348,14 @@ const BenchmarkComparisonPage: React.FC = () => {
             if (showPublicModels) {
                 publicModels.forEach(model => {
                     if (selectedPublicNames.has(model.model_name)) {
-                        point[model.model_name] = model.scores[task] || 0;
+                        point[model.model_name] = getScore(model.scores);
                     }
                 });
             }
 
             return point;
         });
-    }, [selectedTasks, localResults, selectedLocalIds, publicModels, selectedPublicNames, showPublicModels]);
+    }, [displayedTasks, localResults, selectedLocalIds, publicModels, selectedPublicNames, showPublicModels, useAggregates]);
 
     // Data keys for charts
     const dataKeys = useMemo(() => {
@@ -251,14 +377,14 @@ const BenchmarkComparisonPage: React.FC = () => {
 
     // Export to CSV
     const exportCSV = () => {
-        const headers = ["Model", ...Array.from(selectedTasks), "Average"];
+        const headers = ["Model", ...displayedTasks, "Average"];
         const rows = dataKeys.map(dk => {
-            const scores = Array.from(selectedTasks).map(task => {
+            const scores = displayedTasks.map(task => {
                 const dataPoint = chartData.find(d => d.task === task);
                 return dataPoint?.[dk.name] || 0;
             });
             const avg = scores.reduce((a, b) => Number(a) + Number(b), 0) / scores.length;
-            return [dk.name, ...scores.map(s => s.toFixed(1)), avg.toFixed(1)];
+            return [dk.name, ...scores.map(s => Number(s).toFixed(1)), avg.toFixed(1)];
         });
 
         const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
@@ -270,7 +396,7 @@ const BenchmarkComparisonPage: React.FC = () => {
         a.click();
     };
 
-    // Toggle model selection
+    // Toggles
     const toggleLocal = (id: string) => {
         setSelectedLocalIds(prev => {
             const next = new Set(prev);
@@ -289,22 +415,73 @@ const BenchmarkComparisonPage: React.FC = () => {
         });
     };
 
-    const toggleTask = (task: string) => {
-        setSelectedTasks(prev => {
-            const next = new Set(prev);
-            if (next.has(task)) next.delete(task);
-            else next.add(task);
-            return next;
-        });
+    const handleDeleteLocal = async (id: string, e: React.MouseEvent) => {
+        e.stopPropagation(); // Prevent row selection
+        if (!window.confirm('Are you sure you want to delete this benchmark result? This cannot be undone.')) {
+            return;
+        }
+        try {
+            const res = await fetch(`/api/v1/finetune/lm-eval/jobs/${id}`, { method: 'DELETE' });
+            if (res.ok) {
+                // Remove from local state
+                setLocalResults(prev => prev.filter(r => r.id !== id));
+                setSelectedLocalIds(prev => {
+                    const next = new Set(prev);
+                    next.delete(id);
+                    return next;
+                });
+            } else {
+                console.error('Failed to delete benchmark:', await res.text());
+            }
+        } catch (err) {
+            console.error('Delete error:', err);
+        }
     };
 
-    // Filter models by search
+    // Filter models
     const filteredLocal = localResults.filter(r =>
         r.model_name.toLowerCase().includes(searchQuery.toLowerCase())
     );
     const filteredPublic = publicModels.filter(m =>
         m.model_name.toLowerCase().includes(searchQuery.toLowerCase())
     );
+
+    // Group public models by organization, sorted by benchmark coverage
+    const groupedPublicModels = useMemo(() => {
+        // Priority order for organizations (top orgs first)
+        const orgPriority: Record<string, number> = {
+            'OpenAI': 1,
+            'Anthropic': 2,
+            'Google': 3,
+            'Meta': 4,
+            'Mistral AI': 5,
+            'Alibaba Cloud / Qwen Team': 6,
+            'Microsoft': 7,
+        };
+
+        // Group models by organization
+        const groups: Record<string, typeof filteredPublic> = {};
+        filteredPublic.forEach(m => {
+            const org = m.organization || 'Other';
+            if (!groups[org]) groups[org] = [];
+            groups[org].push(m);
+        });
+
+        // Sort models within each group by benchmark coverage (descending)
+        Object.values(groups).forEach(models => {
+            models.sort((a, b) => Object.keys(b.scores || {}).length - Object.keys(a.scores || {}).length);
+        });
+
+        // Sort groups by priority (known orgs first, then alphabetically)
+        const sortedOrgs = Object.keys(groups).sort((a, b) => {
+            const aPri = orgPriority[a] || 100;
+            const bPri = orgPriority[b] || 100;
+            if (aPri !== bPri) return aPri - bPri;
+            return a.localeCompare(b);
+        });
+
+        return sortedOrgs.map(org => ({ org, models: groups[org] }));
+    }, [filteredPublic]);
 
     if (loading) {
         return (
@@ -315,28 +492,53 @@ const BenchmarkComparisonPage: React.FC = () => {
     }
 
     return (
-        <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
+        <Box sx={{ p: 3, maxWidth: 1800, mx: "auto", display: "flex", flexDirection: "column", height: "calc(100vh - 100px)", overflow: "hidden" }}>
+
             {/* Header */}
-            <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3 }}>
+            <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2 }}>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
                     <IconButton onClick={() => navigate("/evaluation")} sx={{ color: "text.secondary" }}>
                         <BackIcon />
                     </IconButton>
                     <Box>
-                        <Typography variant="h4" sx={{ fontWeight: 700, background: "linear-gradient(135deg, #fff 0%, #94a3b8 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                        <Typography variant="h5" sx={{ fontWeight: 700 }}>
                             Benchmark Comparison
                         </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                            Compare LLM performance across standardized benchmarks
+                        <Typography variant="caption" color="text.secondary">
+                            {dataKeys.length} models • {displayedTasks.length} benchmarks
                         </Typography>
                     </Box>
                 </Box>
 
-                <Box sx={{ display: "flex", gap: 1 }}>
+                <Box sx={{ display: "flex", gap: 2, alignItems: "center" }}>
+
+                    {/* View Toggles */}
+                    <Box sx={{ display: "flex", bgcolor: "rgba(255,255,255,0.05)", borderRadius: 1, p: 0.5 }}>
+                        {[
+                            { mode: "radar" as ViewMode, icon: <RadarIcon />, label: "Radar" },
+                            { mode: "bar" as ViewMode, icon: <BarChartIcon />, label: "Bar" },
+                            { mode: "table" as ViewMode, icon: <TableIcon />, label: "Table" },
+                        ].map(({ mode, icon, label }) => (
+                            <Tooltip key={mode} title={label}>
+                                <IconButton
+                                    size="small"
+                                    onClick={() => setViewMode(mode)}
+                                    sx={{
+                                        color: viewMode === mode ? colors.primary : "text.secondary",
+                                        bgcolor: viewMode === mode ? alpha(colors.primary, 0.1) : "transparent",
+                                    }}
+                                >
+                                    {icon}
+                                </IconButton>
+                            </Tooltip>
+                        ))}
+                    </Box>
+
                     <Button
                         variant="outlined"
                         startIcon={<RefreshIcon />}
                         onClick={() => window.location.reload()}
+                        size="small"
                         sx={{ borderColor: alpha(colors.slate, 0.3) }}
                     >
                         Refresh
@@ -346,209 +548,45 @@ const BenchmarkComparisonPage: React.FC = () => {
                         startIcon={<DownloadIcon />}
                         onClick={exportCSV}
                         disabled={dataKeys.length === 0}
+                        size="small"
                         sx={{ bgcolor: colors.primary }}
                     >
-                        Export CSV
+                        Export
                     </Button>
                 </Box>
             </Box>
 
             {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
-            {/* Main Layout */}
-            <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "280px 1fr" }, gap: 3 }}>
-
-                {/* Sidebar - Model Selection */}
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-
-                    {/* Search */}
-                    <TextField
-                        size="small"
-                        placeholder="Search models..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        InputProps={{
-                            startAdornment: <InputAdornment position="start"><SearchIcon sx={{ color: "text.secondary" }} /></InputAdornment>,
-                        }}
-                        sx={{
-                            "& .MuiOutlinedInput-root": {
-                                bgcolor: "rgba(0,0,0,0.2)",
-                                "&:hover": { bgcolor: "rgba(0,0,0,0.3)" },
-                            }
-                        }}
-                    />
-
-                    {/* Local Models */}
-                    <Paper sx={{ p: 2, bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}>
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
-                            <ModelIcon sx={{ color: colors.success, fontSize: 18 }} />
-                            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                                Your Models ({localResults.length})
-                            </Typography>
-                        </Box>
-
-                        {localResults.length === 0 ? (
-                            <Typography variant="caption" color="text.secondary">
-                                No benchmark results yet. Run benchmarks from the Evaluation page.
-                            </Typography>
-                        ) : (
-                            <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, maxHeight: 200, overflowY: "auto" }}>
-                                {filteredLocal.map((result, idx) => (
-                                    <Box
-                                        key={result.id}
-                                        onClick={() => toggleLocal(result.id)}
-                                        sx={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            gap: 1,
-                                            p: 1,
-                                            borderRadius: 1,
-                                            cursor: "pointer",
-                                            bgcolor: selectedLocalIds.has(result.id) ? alpha(colors.success, 0.1) : "transparent",
-                                            border: selectedLocalIds.has(result.id) ? `1px solid ${alpha(colors.success, 0.3)}` : "1px solid transparent",
-                                            "&:hover": { bgcolor: alpha(colors.success, 0.05) },
-                                        }}
-                                    >
-                                        <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: modelColors[idx % modelColors.length] }} />
-                                        {selectedLocalIds.has(result.id) ?
-                                            <CheckIcon sx={{ fontSize: 16, color: colors.success }} /> :
-                                            <UncheckedIcon sx={{ fontSize: 16, color: "text.secondary" }} />
-                                        }
-                                        <Typography variant="caption" sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                            {result.model_name}
-                                        </Typography>
-                                    </Box>
-                                ))}
-                            </Box>
-                        )}
-                    </Paper>
-
-                    {/* Public Models Toggle */}
-                    <Paper sx={{ p: 2, bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}>
-                        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1.5 }}>
-                            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                                <PublicIcon sx={{ color: colors.purple, fontSize: 18 }} />
-                                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                                    Reference Models
-                                </Typography>
-                            </Box>
-                            <Switch
-                                size="small"
-                                checked={showPublicModels}
-                                onChange={(e) => setShowPublicModels(e.target.checked)}
-                                sx={{ "& .Mui-checked": { color: colors.purple } }}
-                            />
-                        </Box>
-
-                        {showPublicModels && (
-                            <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, maxHeight: 180, overflowY: "auto" }}>
-                                {filteredPublic.map((model, idx) => (
-                                    <Box
-                                        key={model.model_name}
-                                        onClick={() => togglePublic(model.model_name)}
-                                        sx={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            gap: 1,
-                                            p: 1,
-                                            borderRadius: 1,
-                                            cursor: "pointer",
-                                            bgcolor: selectedPublicNames.has(model.model_name) ? alpha(colors.purple, 0.1) : "transparent",
-                                            border: selectedPublicNames.has(model.model_name) ? `1px solid ${alpha(colors.purple, 0.3)}` : "1px solid transparent",
-                                            "&:hover": { bgcolor: alpha(colors.purple, 0.05) },
-                                        }}
-                                    >
-                                        <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: publicModelColors[idx % publicModelColors.length] }} />
-                                        {selectedPublicNames.has(model.model_name) ?
-                                            <CheckIcon sx={{ fontSize: 16, color: colors.purple }} /> :
-                                            <UncheckedIcon sx={{ fontSize: 16, color: "text.secondary" }} />
-                                        }
-                                        <Typography variant="caption" sx={{ flex: 1 }}>
-                                            {model.model_name}
-                                        </Typography>
-                                        {model.model_size && (
-                                            <Chip label={model.model_size} size="small" sx={{ height: 18, fontSize: "0.65rem" }} />
-                                        )}
-                                    </Box>
-                                ))}
-                            </Box>
-                        )}
-                    </Paper>
-
-                    {/* Task Filter */}
-                    <Paper sx={{ p: 2, bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.5 }}>
-                            Benchmarks ({allTasks.length})
-                        </Typography>
-                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-                            {allTasks.map(task => (
-                                <Chip
-                                    key={task}
-                                    label={task}
-                                    size="small"
-                                    onClick={() => toggleTask(task)}
-                                    sx={{
-                                        bgcolor: selectedTasks.has(task) ? alpha(colors.info, 0.2) : "transparent",
-                                        border: `1px solid ${selectedTasks.has(task) ? alpha(colors.info, 0.4) : "rgba(255,255,255,0.1)"}`,
-                                        color: selectedTasks.has(task) ? colors.info : "text.secondary",
-                                        cursor: "pointer",
-                                        "&:hover": { bgcolor: alpha(colors.info, 0.1) },
-                                    }}
-                                />
-                            ))}
-                        </Box>
-                    </Paper>
-                </Box>
-
-                {/* Main Content - Visualizations */}
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-
-                    {/* View Mode Toggle */}
-                    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                            <TrendIcon sx={{ color: colors.success }} />
-                            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                                {dataKeys.length} model{dataKeys.length !== 1 ? "s" : ""} selected
-                            </Typography>
-                        </Box>
-
-                        <Box sx={{ display: "flex", gap: 0.5 }}>
-                            {[
-                                { mode: "radar" as ViewMode, icon: <RadarIcon />, label: "Radar" },
-                                { mode: "bar" as ViewMode, icon: <BarChartIcon />, label: "Bar" },
-                                { mode: "table" as ViewMode, icon: <TableIcon />, label: "Table" },
-                            ].map(({ mode, icon, label }) => (
-                                <Tooltip key={mode} title={label}>
-                                    <IconButton
-                                        onClick={() => setViewMode(mode)}
-                                        sx={{
-                                            bgcolor: viewMode === mode ? alpha(colors.primary, 0.2) : "transparent",
-                                            border: `1px solid ${viewMode === mode ? alpha(colors.primary, 0.4) : "rgba(255,255,255,0.1)"}`,
-                                            color: viewMode === mode ? colors.primary : "text.secondary",
-                                        }}
-                                    >
-                                        {icon}
-                                    </IconButton>
-                                </Tooltip>
-                            ))}
-                        </Box>
+            {/* Top Section - Chart */}
+            <Paper
+                sx={{
+                    p: 3,
+                    mb: 3,
+                    bgcolor: "rgba(0,0,0,0.2)",
+                    border: "1px solid rgba(255,255,255,0.06)",
+                    flex: 1,
+                    minHeight: 400,
+                    display: "flex",
+                    flexDirection: "column",
+                    overflow: "hidden"
+                }}
+            >
+                {dataKeys.length === 0 ? (
+                    <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5 }}>
+                        <TrendIcon sx={{ fontSize: 64, mb: 2 }} />
+                        <Typography>Select models below to begin comparison</Typography>
                     </Box>
-
-                    {/* Chart Area */}
-                    {dataKeys.length === 0 ? (
-                        <Paper sx={{ p: 6, textAlign: "center", bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}>
-                            <TrendIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-                            <Typography color="text.secondary">Select models to compare</Typography>
-                            <Typography variant="caption" color="text.secondary">
-                                Choose models from the sidebar to see comparison charts
-                            </Typography>
-                        </Paper>
-                    ) : viewMode === "radar" ? (
-                        <Paper sx={{ p: 3, bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}>
-                            <ResponsiveContainer width="100%" height={450}>
+                ) : (
+                    <Box sx={{ flex: 1, minHeight: 0 }}>
+                        <ResponsiveContainer width="100%" height="100%">
+                            {viewMode === "radar" ? (
                                 <RadarChart data={chartData} margin={{ top: 20, right: 30, bottom: 20, left: 30 }}>
                                     <PolarGrid stroke="rgba(255,255,255,0.1)" />
-                                    <PolarAngleAxis dataKey="task" tick={{ fill: "#94a3b8", fontSize: 12 }} />
+                                    <PolarAngleAxis
+                                        dataKey="task"
+                                        tick={{ fill: "#94a3b8", fontSize: 12 }}
+                                    />
                                     <PolarRadiusAxis angle={30} domain={[0, 100]} tick={{ fill: "#64748b", fontSize: 10 }} />
                                     {dataKeys.map((dk, idx) => (
                                         <Radar
@@ -562,90 +600,289 @@ const BenchmarkComparisonPage: React.FC = () => {
                                             strokeDasharray={dk.isPublic ? "5 5" : undefined}
                                         />
                                     ))}
-                                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                                    <Legend wrapperStyle={{ fontSize: 12, paddingTop: 20 }} />
                                     <RechartsTooltip content={<CustomTooltip />} />
                                 </RadarChart>
-                            </ResponsiveContainer>
-                        </Paper>
-                    ) : viewMode === "bar" ? (
-                        <Paper sx={{ p: 3, bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}>
-                            <ResponsiveContainer width="100%" height={Math.max(300, chartData.length * 50)}>
-                                <BarChart data={chartData} layout="vertical" margin={{ left: 100, right: 20 }}>
+                            ) : viewMode === "bar" ? (
+                                <BarChart data={chartData} margin={{ top: 20, right: 30, bottom: 20, left: 30 }}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                                    <XAxis type="number" domain={[0, 100]} tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                                    <YAxis type="category" dataKey="task" tick={{ fill: "#94a3b8", fontSize: 11 }} width={100} />
+                                    <XAxis dataKey="task" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                                    <YAxis domain={[0, 100]} tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                                    <RechartsTooltip content={<CustomTooltip />} />
+                                    <Legend wrapperStyle={{ fontSize: 12, paddingTop: 20 }} />
                                     {dataKeys.map((dk, idx) => (
                                         <Bar
                                             key={dk.name}
                                             dataKey={dk.name}
                                             fill={dk.isPublic ? publicModelColors[idx % publicModelColors.length] : modelColors[idx % modelColors.length]}
                                             fillOpacity={dk.isPublic ? 0.6 : 0.9}
-                                            radius={[0, 4, 4, 0]}
+                                            radius={[4, 4, 0, 0]}
                                         />
                                     ))}
-                                    <Legend wrapperStyle={{ fontSize: 12 }} />
-                                    <RechartsTooltip content={<CustomTooltip />} />
                                 </BarChart>
-                            </ResponsiveContainer>
-                        </Paper>
-                    ) : (
-                        /* Table View */
-                        <Paper sx={{ bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)", overflow: "hidden" }}>
-                            <Box sx={{ overflowX: "auto" }}>
-                                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                                    <thead>
-                                        <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-                                            <th style={{ padding: "12px 16px", textAlign: "left", fontWeight: 600 }}>Model</th>
-                                            {Array.from(selectedTasks).map(task => (
-                                                <th key={task} style={{ padding: "12px 16px", textAlign: "right", fontWeight: 500, color: "#94a3b8" }}>{task}</th>
-                                            ))}
-                                            <th style={{ padding: "12px 16px", textAlign: "right", fontWeight: 600, color: colors.success }}>Average</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {dataKeys.map((dk, idx) => {
-                                            const scores = Array.from(selectedTasks).map(task => {
-                                                const point = chartData.find(d => d.task === task);
-                                                return Number(point?.[dk.name]) || 0;
-                                            });
-                                            const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
-
-                                            return (
-                                                <tr key={dk.name} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                                                    <td style={{ padding: "12px 16px" }}>
-                                                        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                                                            <Box sx={{
-                                                                width: 10, height: 10, borderRadius: "50%",
-                                                                bgcolor: dk.isPublic ? publicModelColors[idx % publicModelColors.length] : modelColors[idx % modelColors.length]
-                                                            }} />
-                                                            <Typography variant="body2" sx={{ fontWeight: 500 }}>{dk.name}</Typography>
-                                                            {dk.isPublic && <Chip label="Reference" size="small" sx={{ height: 18, fontSize: "0.6rem" }} />}
-                                                        </Box>
-                                                    </td>
-                                                    {scores.map((score, i) => (
-                                                        <td key={i} style={{ padding: "12px 16px", textAlign: "right" }}>
-                                                            <Typography variant="body2" sx={{
-                                                                fontWeight: 500,
-                                                                color: score >= 70 ? colors.success : score >= 50 ? colors.warning : colors.rose,
-                                                            }}>
-                                                                {score.toFixed(1)}%
-                                                            </Typography>
+                            ) : (
+                                // Table view is handled separately or could be embedded here
+                                <Box sx={{ height: "100%", overflow: "auto" }}>
+                                    {/* Simplified inline table for this view */}
+                                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                                        <thead>
+                                            <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                                                <th style={{ padding: 8, textAlign: "left" }}>Task</th>
+                                                {dataKeys.map(dk => <th key={dk.name} style={{ padding: 8, textAlign: "right" }}>{dk.name}</th>)}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {chartData.map((d: any) => (
+                                                <tr key={d.task} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                                                    <td style={{ padding: 8 }}>{d.task}</td>
+                                                    {dataKeys.map(dk => (
+                                                        <td key={dk.name} style={{ padding: 8, textAlign: "right", color: alpha("#fff", 0.7) }}>
+                                                            {Number(d[dk.name]).toFixed(1)}%
                                                         </td>
                                                     ))}
-                                                    <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                                                        <Typography variant="body2" sx={{ fontWeight: 700, color: colors.success }}>
-                                                            {avg.toFixed(1)}%
-                                                        </Typography>
-                                                    </td>
                                                 </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </Box>
+                            )}
+                        </ResponsiveContainer>
+                    </Box>
+                )}
+            </Paper>
+
+            {/* Bottom Controls Section */}
+            <Box
+                sx={{
+                    height: 380,
+                    display: "flex",
+                    gap: 3,
+                    overflow: "hidden"
+                }}
+            >
+                {/* 1. Model Selection */}
+                <Paper sx={{ width: "25%", display: "flex", flexDirection: "column", bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                    <Box sx={{ p: 2, borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 1 }}>
+                            <ModelIcon fontSize="small" color="primary" /> Result Selection
+                        </Typography>
+                        <TextField
+                            placeholder="Filter..."
+                            size="small"
+                            fullWidth
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            sx={{ mt: 1, "& .MuiInputBase-root": { fontSize: "0.85rem" } }}
+                        />
+                    </Box>
+                    <Box sx={{ flex: 1, overflowY: "auto", p: 1 }}>
+                        {filteredLocal.map((result, idx) => (
+                            <Box
+                                key={result.id}
+                                onClick={() => toggleLocal(result.id)}
+                                sx={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 1,
+                                    p: 1,
+                                    borderRadius: 1,
+                                    cursor: "pointer",
+                                    bgcolor: selectedLocalIds.has(result.id) ? alpha(colors.success, 0.1) : "transparent",
+                                    border: `1px solid ${selectedLocalIds.has(result.id) ? alpha(colors.success, 0.3) : "transparent"}`,
+                                    mb: 0.5,
+                                    "&:hover": { bgcolor: alpha(colors.success, 0.05) },
+                                }}
+                            >
+                                <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: modelColors[idx % modelColors.length] }} />
+                                <Typography variant="caption" sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {result.model_name}
+                                </Typography>
+                                {selectedLocalIds.has(result.id) && <CheckIcon sx={{ fontSize: 14, color: colors.success }} />}
+                                <IconButton
+                                    size="small"
+                                    onClick={(e) => handleDeleteLocal(result.id, e)}
+                                    sx={{
+                                        p: 0.25,
+                                        ml: 0.5,
+                                        opacity: 0.5,
+                                        '&:hover': { opacity: 1, color: 'error.main' }
+                                    }}
+                                >
+                                    <DeleteIcon sx={{ fontSize: 14 }} />
+                                </IconButton>
                             </Box>
+                        ))}
+                    </Box>
+                </Paper>
+
+                {/* 2. Public References */}
+                <Paper sx={{ width: "25%", display: "flex", flexDirection: "column", bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                    <Box sx={{ p: 2, borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 1 }}>
+                            <PublicIcon fontSize="small" color="secondary" /> Reference Items
+                        </Typography>
+                        <Switch
+                            size="small"
+                            checked={showPublicModels}
+                            onChange={(e) => setShowPublicModels(e.target.checked)}
+                        />
+                    </Box>
+                    <Box sx={{ flex: 1, overflowY: "auto", p: 1, opacity: showPublicModels ? 1 : 0.5, pointerEvents: showPublicModels ? "auto" : "none" }}>
+                        {groupedPublicModels.map((group, gIdx) => (
+                            <Box key={group.org} sx={{ mb: 1 }}>
+                                {/* Organization Header */}
+                                <Typography
+                                    variant="caption"
+                                    sx={{
+                                        display: 'block',
+                                        px: 1,
+                                        py: 0.5,
+                                        mb: 0.5,
+                                        fontWeight: 600,
+                                        color: 'text.secondary',
+                                        fontSize: '0.7rem',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: 0.5,
+                                        borderBottom: '1px solid rgba(255,255,255,0.05)',
+                                    }}
+                                >
+                                    {group.org} ({group.models.length})
+                                </Typography>
+                                {/* Models in this organization */}
+                                {group.models.map((model, idx) => (
+                                    <Box
+                                        key={model.model_name}
+                                        onClick={() => togglePublic(model.model_name)}
+                                        sx={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 1,
+                                            p: 0.75,
+                                            pl: 2,
+                                            borderRadius: 1,
+                                            cursor: "pointer",
+                                            bgcolor: selectedPublicNames.has(model.model_name) ? alpha(colors.purple, 0.1) : "transparent",
+                                            border: `1px solid ${selectedPublicNames.has(model.model_name) ? alpha(colors.purple, 0.3) : "transparent"}`,
+                                            mb: 0.25,
+                                            "&:hover": { bgcolor: alpha(colors.purple, 0.05) },
+                                        }}
+                                    >
+                                        <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: publicModelColors[(gIdx * 5 + idx) % publicModelColors.length] }} />
+                                        <Typography variant="caption" sx={{ flex: 1, fontSize: '0.75rem' }}>
+                                            {model.model_name}
+                                        </Typography>
+                                        <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: '0.65rem' }}>
+                                            {Object.keys(model.scores || {}).length}
+                                        </Typography>
+                                        {selectedPublicNames.has(model.model_name) && <CheckIcon sx={{ fontSize: 12, color: colors.purple }} />}
+                                    </Box>
+                                ))}
+                            </Box>
+                        ))}
+                    </Box>
+                </Paper>
+
+                {/* 3. Benchmark Config (Presets & Aggregation) */}
+                <Paper sx={{ width: "25%", display: "flex", flexDirection: "column", bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                    <Box sx={{ p: 2, borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 1 }}>
+                            <FilterIcon fontSize="small" sx={{ color: colors.info }} /> Benchmark View
+                        </Typography>
+                    </Box>
+
+                    <Box sx={{ p: 2, display: "flex", flexDirection: "column", gap: 3 }}>
+                        <FormControl size="small" fullWidth>
+                            <InputLabel>Preset View</InputLabel>
+                            <Select
+                                value={activePreset}
+                                label="Preset View"
+                                onChange={(e) => setActivePreset(e.target.value)}
+                            >
+                                {PRESETS.map(p => (
+                                    <MenuItem key={p.id} value={p.id}>
+                                        <Box>
+                                            <Typography variant="body2">{p.label}</Typography>
+                                            <Typography variant="caption" color="text.secondary">{p.description}</Typography>
+                                        </Box>
+                                    </MenuItem>
+                                ))}
+                            </Select>
+                        </FormControl>
+
+                        <Paper variant="outlined" sx={{ p: 2, bgcolor: alpha(colors.slate, 0.1) }}>
+                            <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1 }}>
+                                <Typography variant="body2" fontWeight={600}>Smart Aggregation</Typography>
+                                <Switch
+                                    size="small"
+                                    checked={useAggregates}
+                                    onChange={(e) => setUseAggregates(e.target.checked)}
+                                />
+                            </Box>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                                Example: Combines "mmlu_humanities", "mmlu_stem", etc. into a single "MMLU (Avg)" score.
+                            </Typography>
+
+                            {useAggregates && (
+                                <Box sx={{ mt: 2, display: "flex", gap: 1, flexWrap: "wrap" }}>
+                                    {AGGREGATION_GROUPS.map(g => (
+                                        <Chip
+                                            key={g.name}
+                                            label={g.name}
+                                            size="small"
+                                            icon={<SummaryIcon sx={{ fontSize: "14px !important" }} />}
+                                            sx={{ borderColor: alpha(g.color, 0.3), height: 24 }}
+                                            variant="outlined"
+                                        />
+                                    ))}
+                                </Box>
+                            )}
                         </Paper>
-                    )}
-                </Box>
+
+                        <Box>
+                            <Typography variant="caption" color="text.secondary">
+                                Currently showing <strong>{displayedTasks.length}</strong> benchmarks.
+                            </Typography>
+                        </Box>
+                    </Box>
+                </Paper>
+
+                {/* 4. Active Benchmarks List */}
+                <Paper sx={{ width: "25%", display: "flex", flexDirection: "column", bgcolor: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                    <Box sx={{ p: 2, borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 1 }}>
+                            <TableIcon fontSize="small" sx={{ color: colors.warning }} /> Active Metrics
+                        </Typography>
+                        <TextField
+                            placeholder="Filter metrics..."
+                            size="small"
+                            fullWidth
+                            value={datasetSearchQuery}
+                            onChange={(e) => setDatasetSearchQuery(e.target.value)}
+                            sx={{ mt: 1 }}
+                        />
+                    </Box>
+                    <Box sx={{ flex: 1, overflowY: "auto", p: 1 }}>
+                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                            {displayedTasks
+                                .filter(t => t.toLowerCase().includes(datasetSearchQuery.toLowerCase()))
+                                .map(task => (
+                                    <Chip
+                                        key={task}
+                                        label={task}
+                                        size="small"
+                                        sx={{
+                                            height: 20,
+                                            fontSize: "0.7rem",
+                                            bgcolor: AGGREGATION_GROUPS.some(g => g.name === task) ? alpha(colors.success, 0.1) : alpha(colors.slate, 0.1),
+                                            color: AGGREGATION_GROUPS.some(g => g.name === task) ? colors.success : "text.secondary"
+                                        }}
+                                    />
+                                ))
+                            }
+                        </Box>
+                    </Box>
+                </Paper>
+
             </Box>
         </Box>
     );
