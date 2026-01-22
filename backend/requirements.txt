@@ -23,6 +23,7 @@ beautifulsoup4==4.12.2
 numpy>=1.24.0
 PyPDF2==3.0.1  # PDF text extraction
 PyMuPDF==1.24.0  # PDF image extraction
+EbookLib>=0.18   # EPUB text extraction
 
 # Testing
 pytest==7.4.3

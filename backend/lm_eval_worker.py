@@ -8,6 +8,7 @@ GGUF model loading. Reports progress and results back via Redis pub/sub.
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import time
 from datetime import datetime
@@ -21,6 +22,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 MODELS_DIR = os.getenv("MODELS_DIR", "/home/llamacpp/models")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "2"))
 OUTPUT_DIR = os.getenv("LM_EVAL_OUTPUT_DIR", "/data/lm_eval_results")
+DB_PATH = Path("/app/data/benchmarks.db") if os.path.exists("/app") else Path("/data/benchmarks.db")
 
 
 def connect_redis() -> redis.Redis:
@@ -74,6 +76,76 @@ def publish_log(client: redis.Redis, job_id: str, message: str):
         "timestamp": datetime.utcnow().isoformat(),
     }
     client.publish(f"lm_eval:logs:{job_id}", json.dumps(payload))
+
+
+def save_to_db(
+    job_id: str,
+    model_path: str,
+    tasks: list,
+    results: Dict[str, Any],
+    gpu_device: Optional[int] = None,
+    num_fewshot: int = 5,
+    limit: Optional[int] = None,
+):
+    """Save lm-eval benchmark results to SQLite database."""
+    try:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        
+        # Ensure table exists (same schema as routes/benchmark.py)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS benchmark_results (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                type TEXT NOT NULL,
+                endpoint TEXT,
+                model_name TEXT,
+                config TEXT,
+                metrics TEXT,
+                runs TEXT,
+                status TEXT DEFAULT 'completed',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+        """)
+        
+        # Extract model name from path
+        model_name = Path(model_path).stem if model_path else "unknown"
+        
+        # Build result record
+        now = datetime.utcnow().isoformat()
+        config = {
+            "tasks": tasks,
+            "num_fewshot": num_fewshot,
+            "limit": limit,
+            "gpu_device": gpu_device,
+            "model_path": model_path,
+        }
+        
+        cursor.execute("""
+            INSERT OR REPLACE INTO benchmark_results 
+            (id, name, type, endpoint, model_name, config, metrics, runs, status, created_at, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            job_id,
+            f"LM-Eval: {model_name}",
+            "lm_eval",
+            None,
+            model_name,
+            json.dumps(config),
+            json.dumps(results),
+            json.dumps([]),  # Individual runs not tracked for lm-eval
+            "completed",
+            now,
+            now,
+        ))
+        
+        conn.commit()
+        conn.close()
+        print(f"[LM-Eval Worker] Saved results to database: {job_id}")
+    except Exception as e:
+        print(f"[LM-Eval Worker] Failed to save to database: {e}")
 
 
 def find_model_path(model_name: str) -> Optional[str]:
@@ -282,6 +354,18 @@ def process_job(client: redis.Redis, job_data: str) -> None:
     try:
         results = run_evaluation(client, job_id, model_path, tasks, num_fewshot, limit)
         print(f"[LM-Eval Worker] Job {job_id} completed with results: {results}")
+        
+        # Save results to database if evaluation succeeded
+        if "error" not in results:
+            save_to_db(
+                job_id=job_id,
+                model_path=model_path,
+                tasks=tasks,
+                results=results,
+                gpu_device=gpu_device,
+                num_fewshot=num_fewshot,
+                limit=limit,
+            )
     except Exception as e:
         error_msg = f"Evaluation failed: {str(e)}"
         print(f"[LM-Eval Worker] {error_msg}")

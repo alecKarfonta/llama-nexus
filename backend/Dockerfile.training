@@ -22,7 +22,8 @@ RUN pip3 install --no-cache-dir \
     pydantic \
     fastapi \
     redis \
-    uvloop
+    uvloop \
+    einops
 
 # Install unsloth from PyPI (optional, speeds up training)
 RUN pip3 install --no-cache-dir unsloth || \

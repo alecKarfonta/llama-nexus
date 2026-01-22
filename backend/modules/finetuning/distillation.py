@@ -189,6 +189,13 @@ class DistillationConfig(BaseModel):
     create_managed_dataset: bool = Field(True, description="Create a managed dataset from the output")
     dataset_name: Optional[str] = Field(None, description="Name for the created dataset (defaults to job name)")
     dataset_description: Optional[str] = Field(None, description="Description for the created dataset")
+    
+    # Topic-based generation (alternative to manual prompts)
+    use_topic_generation: bool = Field(False, description="Generate prompts from a topic instead of manual input")
+    topic_config: Optional[Any] = Field(None, description="TopicConfig for topic-based generation")
+    
+    # Appending to existing dataset
+    append_to_dataset_id: Optional[str] = Field(None, description="ID of existing dataset to append to")
 
 
 class PromptTemplate(BaseModel):
@@ -1804,9 +1811,10 @@ class DistillationManager:
                         extra={"job_id": job_id, "dataset_id": dataset.id, "dataset_name": dataset.name}
                     )
                 except Exception as e:
+                    import traceback
                     logger.warning(
-                        "Failed to create managed dataset from distillation output",
-                        extra={"job_id": job_id, "error": str(e)}
+                        f"Failed to create managed dataset from distillation output: {str(e)}",
+                        extra={"job_id": job_id, "error": str(e), "traceback": traceback.format_exc()}
                     )
 
             # Finalize
@@ -1840,6 +1848,37 @@ class DistillationManager:
     async def _load_prompts(self, job: DistillationJob) -> List[str]:
         """Load prompts from all configured sources."""
         prompts = list(job.prompts)
+        
+        # Topic-based generation (generate prompts from topic config)
+        if job.config.use_topic_generation and job.config.topic_config:
+            try:
+                from .topic_generator import TopicGenerator, TopicConfig
+                
+                topic_generator = TopicGenerator()
+                client = create_teacher_client(job.config)
+                
+                # Parse topic config if it's a dict
+                if isinstance(job.config.topic_config, dict):
+                    topic_config = TopicConfig(**job.config.topic_config)
+                else:
+                    topic_config = job.config.topic_config
+                
+                logger.info(
+                    "Generating prompts from topic",
+                    extra={"topic": topic_config.topic, "target": topic_config.target_examples}
+                )
+                
+                generated_prompts = await topic_generator.generate_prompts(
+                    topic_config, client
+                )
+                prompts.extend(generated_prompts)
+                
+                logger.info(
+                    "Generated prompts from topic",
+                    extra={"count": len(generated_prompts)}
+                )
+            except Exception as e:
+                logger.warning(f"Failed to generate prompts from topic: {e}")
         
         # Load from file
         if job.prompts_file and Path(job.prompts_file).exists():
@@ -2235,7 +2274,50 @@ class DistillationManager:
         if not job.output_file or not Path(job.output_file).exists():
             raise ValueError("Job output file not found")
         
-        # Determine dataset name and description
+        # Handle appending to existing dataset
+        if job.config.append_to_dataset_id:
+            logger.info(f"Appending job {job.id} output to dataset {job.config.append_to_dataset_id}")
+            existing_dataset = self.dataset_store.get(job.config.append_to_dataset_id)
+            if not existing_dataset:
+                raise ValueError(f"Dataset {job.config.append_to_dataset_id} not found")
+            
+            target_path = Path(existing_dataset.file_path)
+            if not target_path.exists():
+                raise ValueError(f"Original file for dataset {existing_dataset.name} not found at {target_path}")
+            
+            # Append content
+            # Ensure we start on a new line if not already
+            has_newline = False
+            if target_path.stat().st_size > 0:
+                with open(target_path, "rb") as f:
+                    f.seek(-1, 2)
+                    if f.read(1) == b"\n":
+                        has_newline = True
+            
+            with open(target_path, "a") as f_out, open(job.output_file, "r") as f_in:
+                if target_path.stat().st_size > 0 and not has_newline:
+                    f_out.write("\n")
+                f_out.write(f_in.read())
+            
+            # Update dataset metadata
+            existing_dataset.num_examples += job.metrics.generated_count
+            existing_dataset.size_bytes = target_path.stat().st_size
+            
+            # Update lineage metadata
+            if "append_history" not in existing_dataset.metadata:
+                existing_dataset.metadata["append_history"] = []
+                
+            existing_dataset.metadata["append_history"].append({
+                "job_id": job.id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "added_examples": job.metrics.generated_count,
+                "teacher_model": job.config.teacher_model,
+                "topic": job.config.topic_config.topic if job.config.topic_config else None
+            })
+            
+            return self.dataset_store.upsert(existing_dataset)
+
+        # Create new dataset logic
         dataset_name = job.config.dataset_name or f"{job.name} (Distilled)"
         dataset_description = (
             job.config.dataset_description or 
@@ -2259,12 +2341,12 @@ class DistillationManager:
             description=dataset_description,
             format=dataset_format,
             status=DatasetStatus.READY,
-            file_path="",  # Will be set by dataset store
-            original_name=f"{job.id}.jsonl",
-            size_bytes=Path(job.output_file).stat().st_size,
+            file_path="",  # Will be set after copying
             num_examples=job.metrics.generated_count,
+            total_tokens=0,  # Will be calculated during training
             created_at=datetime.utcnow(),
-            metadata={
+            updated_at=datetime.utcnow(),
+            statistics={
                 "source": "distillation",
                 "distillation_job_id": job.id,
                 "teacher_model": job.config.teacher_model,
@@ -2282,7 +2364,7 @@ class DistillationManager:
         )
         
         # Copy the output file to the dataset store location
-        target_path = self.dataset_store.dataset_path(dataset.id, dataset.original_name)
+        target_path = self.dataset_store.dataset_path(dataset.id, f"{job.id}.jsonl")
         target_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Copy file content

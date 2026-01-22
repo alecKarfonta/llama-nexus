@@ -845,9 +845,19 @@ def create_job(request: CreateJobRequest):
         for ds in datasets_to_use:
             try:
                 with open(ds.file_path, 'r') as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        combined_data.extend(data)
+                    # Try to detect if it's JSONL or JSON format
+                    content = f.read().strip()
+                    if content.startswith('['):
+                        # JSON array format
+                        data = json.loads(content)
+                        if isinstance(data, list):
+                            combined_data.extend(data)
+                    else:
+                        # JSONL format (one JSON object per line)
+                        for line in content.split('\n'):
+                            line = line.strip()
+                            if line:
+                                combined_data.append(json.loads(line))
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to load dataset {ds.id}: {e}")
         
@@ -1709,6 +1719,162 @@ async def export_distillation_dataset(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+
+# ============================================================================
+# Topic-Based Generation
+# ============================================================================
+
+
+@router.get("/distillation/topics/modes")
+def list_topic_generation_modes():
+    """List available topic generation modes with descriptions."""
+    try:
+        from modules.finetuning.topic_generator import get_mode_descriptions
+        return {"modes": get_mode_descriptions()}
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Topic generator module not available")
+
+
+@router.get("/distillation/topics/templates")
+def list_topic_templates():
+    """List pre-built topic templates for common use cases."""
+    try:
+        from modules.finetuning.topic_generator import get_topic_templates
+        return {"templates": get_topic_templates()}
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Topic generator module not available")
+
+
+class TopicExpandRequest(BaseModel):
+    topic: str
+    count: int = 5
+    teacher_provider: str = "openai"
+    teacher_model: str = "gpt-4o"
+    teacher_api_key: Optional[str] = None
+
+
+@router.post("/distillation/topics/expand")
+async def expand_topic_subtopics(request: TopicExpandRequest):
+    """Use LLM to expand a topic into subtopics."""
+    try:
+        from modules.finetuning.topic_generator import TopicGenerator
+        from modules.finetuning.distillation import create_teacher_client, DistillationConfig, TeacherProvider
+        
+        # Create teacher client
+        config = DistillationConfig(
+            teacher_provider=TeacherProvider(request.teacher_provider),
+            teacher_model=request.teacher_model,
+            teacher_api_key=request.teacher_api_key,
+        )
+        client = create_teacher_client(config)
+        
+        generator = TopicGenerator()
+        subtopics = await generator.expand_subtopics(
+            topic=request.topic,
+            count=request.count,
+            teacher_client=client,
+        )
+        
+        return {
+            "topic": request.topic,
+            "subtopics": subtopics,
+            "count": len(subtopics),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to expand topic: {str(e)}")
+
+
+class TopicPreviewRequest(BaseModel):
+    topic: str
+    subtopics: Optional[List[str]] = None
+    mode: str = "qa_pairs"
+    difficulty_levels: List[str] = ["beginner", "intermediate", "advanced"]
+    num_prompts: int = 10
+    teacher_provider: str = "openai"
+    teacher_model: str = "gpt-4o"
+    teacher_api_key: Optional[str] = None
+
+
+@router.post("/distillation/topics/preview")
+async def preview_topic_prompts(request: TopicPreviewRequest):
+    """Generate a preview of prompts for a topic configuration."""
+    try:
+        from modules.finetuning.topic_generator import (
+            TopicGenerator, 
+            TopicConfig, 
+            TopicGenerationMode,
+            RefinementConfig,
+        )
+        from modules.finetuning.distillation import create_teacher_client, DistillationConfig, TeacherProvider
+        
+        # Create teacher client
+        dist_config = DistillationConfig(
+            teacher_provider=TeacherProvider(request.teacher_provider),
+            teacher_model=request.teacher_model,
+            teacher_api_key=request.teacher_api_key,
+        )
+        client = create_teacher_client(dist_config)
+        
+        # Create topic config for preview
+        topic_config = TopicConfig(
+            topic=request.topic,
+            subtopics=request.subtopics,
+            mode=TopicGenerationMode(request.mode),
+            target_examples=request.num_prompts,
+            difficulty_levels=request.difficulty_levels,
+            refinement=RefinementConfig(enabled=False),  # Skip refinement for preview
+            auto_expand_subtopics=not bool(request.subtopics),
+            subtopics_count=3,  # Fewer subtopics for preview
+        )
+        
+        generator = TopicGenerator()
+        prompts = await generator.generate_prompts(topic_config, client)
+        
+        return {
+            "topic": request.topic,
+            "mode": request.mode,
+            "prompts": prompts[:request.num_prompts],
+            "count": len(prompts),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate preview: {str(e)}")
+
+
+class TopicCostEstimateRequest(BaseModel):
+    topic: str
+    mode: str = "qa_pairs"
+    target_examples: int = 100
+    refinement_enabled: bool = True
+    refinement_passes: int = 2
+    teacher_model: str = "gpt-4o"
+
+
+@router.post("/distillation/topics/estimate-cost")
+def estimate_topic_generation_cost(request: TopicCostEstimateRequest):
+    """Estimate API cost for topic-based generation."""
+    try:
+        from modules.finetuning.topic_generator import (
+            estimate_cost,
+            TopicConfig,
+            TopicGenerationMode,
+            RefinementConfig,
+        )
+        
+        topic_config = TopicConfig(
+            topic=request.topic,
+            mode=TopicGenerationMode(request.mode),
+            target_examples=request.target_examples,
+            refinement=RefinementConfig(
+                enabled=request.refinement_enabled,
+                max_passes=request.refinement_passes,
+            ),
+        )
+        
+        estimate = estimate_cost(topic_config, request.teacher_model)
+        return estimate
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to estimate cost: {str(e)}")
 
 
 @router.post("/distillation/jobs/{job_id}/create-training-job")
@@ -2775,7 +2941,7 @@ class LMEvalJobRequest(BaseModel):
 
 
 @router.get("/lm-eval/public-benchmarks")
-def get_public_benchmarks(
+async def get_public_benchmarks(
     limit: int = 20,
     model_size: Optional[str] = None,
     organization: Optional[str] = None,
@@ -2799,10 +2965,10 @@ def get_public_benchmarks(
         get_available_benchmarks,
     )
     
-    data = get_cached_benchmark_data()
+    data = await get_cached_benchmark_data()
     
     # Apply filters
-    data = filter_benchmarks(
+    filtered_data = filter_benchmarks(
         data,
         model_size=model_size,
         organization=organization,
@@ -2811,8 +2977,8 @@ def get_public_benchmarks(
     )
     
     return {
-        "benchmarks": data,
-        "available_benchmarks": get_available_benchmarks(),
+        "benchmarks": filtered_data,
+        "available_benchmarks": get_available_benchmarks(data),
         "source": "Open LLM Leaderboard / llm-stats.com",
         "note": "Scores are percentages (0-100). Use for relative comparison only.",
     }

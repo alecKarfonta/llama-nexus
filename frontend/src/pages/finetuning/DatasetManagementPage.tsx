@@ -52,7 +52,7 @@ type Dataset = {
   name: string;
   format: string;
   status: string;
-  num_records?: number;
+  num_examples?: number;
   file_size_bytes?: number;
   created_at?: string;
   validation_errors?: string[];
@@ -491,7 +491,7 @@ export const DatasetManagementPage: React.FC = () => {
     }
     fetch(`/api/v1/finetune/datasets/${selectedDataset.id}/preview?limit=10`)
       .then((res) => res.json())
-      .then((data) => setPreview({ records: data.preview || [], total: selectedDataset.num_records || data.preview?.length || 0 }))
+      .then((data) => setPreview({ records: data.preview || [], total: selectedDataset.num_examples || data.preview?.length || 0 }))
       .catch(() => setPreview(null));
   }, [selectedDataset]);
 
@@ -824,7 +824,7 @@ export const DatasetManagementPage: React.FC = () => {
                       </Box>
                       <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                         <ListIcon sx={{ fontSize: 14 }} />
-                        {ds.num_records ?? "?"} records
+                        {ds.num_examples ?? "?"} records
                       </Box>
                       <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                         <FileIcon sx={{ fontSize: 14 }} />
@@ -888,7 +888,7 @@ export const DatasetManagementPage: React.FC = () => {
                   <Grid item xs={4}>
                     <StatBox
                       label="Records"
-                      value={selectedDataset.num_records ?? "-"}
+                      value={selectedDataset.num_examples ?? "-"}
                       icon={<ListIcon />}
                       color={accentColors.primary}
                     />

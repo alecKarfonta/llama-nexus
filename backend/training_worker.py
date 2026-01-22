@@ -239,6 +239,13 @@ def load_dataset_for_job(job: Dict[str, Any], tokenizer=None) -> Any:
             return "\n".join(parts)
         
         if fmt == "completion":
+            # Support both "text" field and "prompt"+"completion" pair
+            if "text" in rec and rec.get("text"):
+                return rec["text"]
+            elif "prompt" in rec and "completion" in rec:
+                return rec["prompt"] + rec["completion"]
+            elif "input" in rec and "output" in rec:
+                return rec["input"] + rec["output"]
             return rec.get("text", "")
         return json.dumps(rec)
 
@@ -248,12 +255,17 @@ def load_dataset_for_job(job: Dict[str, Any], tokenizer=None) -> Any:
 
 def tokenize_function(tokenizer, max_length: int):
     def _tok(batch):
-        return tokenizer(
+        tokenized = tokenizer(
             batch["text"] if "text" in batch else batch,
             truncation=True,
             max_length=max_length,
             padding="max_length",
         )
+        # For causal LM, labels should be the same as input_ids
+        # The model will shift internally to predict next token
+        # Use list() to properly copy the list of lists in batched mode
+        tokenized["labels"] = list(tokenized["input_ids"])
+        return tokenized
 
     return _tok
 

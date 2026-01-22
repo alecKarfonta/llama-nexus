@@ -95,11 +95,34 @@ type QualityAssessment = {
   }>;
 };
 
+type Dataset = {
+  id: string;
+  name: string;
+  num_examples: number;
+  format: string;
+};
+
 const TEACHER_PROVIDERS = [
   { value: "openai", label: "OpenAI (GPT-4, GPT-3.5)", icon: <ApiIcon /> },
   { value: "anthropic", label: "Anthropic (Claude)", icon: <AutoIcon /> },
   { value: "local", label: "Local Llama Nexus Model", icon: <SpeedIcon /> },
 ];
+
+// Model presets per provider
+const MODEL_PRESETS: Record<string, { value: string; label: string }[]> = {
+  openai: [
+    { value: "gpt-4o", label: "GPT-4o (Recommended)" },
+    { value: "gpt-4-turbo", label: "GPT-4 Turbo" },
+    { value: "gpt-3.5-turbo", label: "GPT-3.5 Turbo (Faster)" },
+  ],
+  anthropic: [
+    { value: "claude-sonnet-4-20250514", label: "Claude Sonnet 4 (Recommended)" },
+    { value: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku (Faster)" },
+  ],
+  local: [
+    { value: "auto", label: "Active Model (Auto-detect)" },
+  ],
+};
 
 // Accent colors
 const accentColors = {
@@ -219,43 +242,6 @@ const StatusChip: React.FC<{ status: string }> = ({ status }) => {
   );
 };
 
-// Workflow Step Component
-const WorkflowStep: React.FC<{
-  number: number;
-  label: string;
-  active: boolean;
-  completed: boolean;
-}> = ({ number, label, active, completed }) => (
-  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-    <Box
-      sx={{
-        width: 28,
-        height: 28,
-        borderRadius: "50%",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        bgcolor: completed ? accentColors.success : active ? accentColors.info : "rgba(255, 255, 255, 0.1)",
-        color: completed || active ? "#fff" : "text.secondary",
-        fontSize: "0.75rem",
-        fontWeight: 700,
-        transition: "all 0.3s",
-      }}
-    >
-      {completed ? <SuccessIcon sx={{ fontSize: 16 }} /> : number}
-    </Box>
-    <Typography
-      variant="body2"
-      sx={{
-        fontWeight: 600,
-        color: completed ? accentColors.success : active ? "text.primary" : "text.secondary",
-        fontSize: "0.8rem",
-      }}
-    >
-      {label}
-    </Typography>
-  </Box>
-);
 
 export const DistillationPage: React.FC = () => {
   const navigate = useNavigate();
@@ -263,6 +249,8 @@ export const DistillationPage: React.FC = () => {
   const [jobs, setJobs] = useState<DistillationJob[]>([]);
   const [selectedJob, setSelectedJob] = useState<DistillationJob | null>(null);
   const [generatedExamples, setGeneratedExamples] = useState<GeneratedExample[]>([]);
+  const [loadingExamples, setLoadingExamples] = useState(false);
+  const [examplesSearch, setExamplesSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [qualityAssessment, setQualityAssessment] = useState<QualityAssessment | null>(null);
@@ -277,7 +265,25 @@ export const DistillationPage: React.FC = () => {
   const [prompts, setPrompts] = useState<string>("");
   const [createManagedDataset, setCreateManagedDataset] = useState(true);
   const [datasetName, setDatasetName] = useState("");
+  const [toolDefinitions, setToolDefinitions] = useState("");
+
   const [datasetDescription, setDatasetDescription] = useState("");
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [datasetMode, setDatasetMode] = useState<"create" | "append">("create");
+  const [appendDatasetId, setAppendDatasetId] = useState("");
+
+  // Topic-based generation state
+  const [inputMode, setInputMode] = useState<"manual" | "topic">("manual");
+  const [topic, setTopic] = useState("");
+  const [subtopics, setSubtopics] = useState<string[]>([]);
+  const [generationMode, setGenerationMode] = useState("qa_pairs");
+  const [targetExamples, setTargetExamples] = useState(100);
+  const [refinementEnabled, setRefinementEnabled] = useState(true);
+  const [refinementPasses, setRefinementPasses] = useState(2);
+  const [previewPrompts, setPreviewPrompts] = useState<string[]>([]);
+  const [costEstimate, setCostEstimate] = useState<any>(null);
+  const [expandingTopic, setExpandingTopic] = useState(false);
+  const [generatingPreview, setGeneratingPreview] = useState(false);
 
   const fetchTemplates = useCallback(async () => {
     try {
@@ -303,12 +309,35 @@ export const DistillationPage: React.FC = () => {
     }
   }, []);
 
+  const fetchDatasets = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/finetune/datasets");
+      if (res.ok) {
+        const data = await res.json();
+        // API returns array directly, not {datasets: []}
+        setDatasets(Array.isArray(data) ? data : (data.datasets || []));
+      }
+    } catch {
+      console.error("Failed to load datasets");
+    }
+  }, []);
+
+
   useEffect(() => {
     fetchTemplates();
     fetchJobs();
+    fetchDatasets();
     const interval = setInterval(fetchJobs, 5000);
     return () => clearInterval(interval);
-  }, [fetchTemplates, fetchJobs]);
+  }, [fetchTemplates, fetchJobs, fetchDatasets]);
+
+  // Auto-set default model when provider changes
+  useEffect(() => {
+    const presets = MODEL_PRESETS[teacherProvider];
+    if (presets && presets.length > 0) {
+      setTeacherModel(presets[0].value);
+    }
+  }, [teacherProvider]);
 
   useEffect(() => {
     if (!selectedJob) {
@@ -317,10 +346,28 @@ export const DistillationPage: React.FC = () => {
       return;
     }
 
-    fetch(`/api/v1/finetune/distillation/jobs/${selectedJob.id}/preview?limit=20`)
-      .then((res) => res.json())
-      .then((data) => setGeneratedExamples(data.examples || []))
-      .catch(() => setGeneratedExamples([]));
+    const fetchExamples = () => {
+      setLoadingExamples(true);
+      fetch(`/api/v1/finetune/distillation/jobs/${selectedJob.id}/preview?limit=50`)
+        .then((res) => res.json())
+        .then((data) => {
+          console.log("Examples response:", data);
+          setGeneratedExamples(data.examples || []);
+        })
+        .catch((err) => {
+          console.error("Failed to fetch examples:", err);
+          setGeneratedExamples([]);
+        })
+        .finally(() => setLoadingExamples(false));
+    };
+
+    fetchExamples();
+
+    // Auto-refresh while job is running
+    let interval: NodeJS.Timeout | null = null;
+    if (selectedJob.status === "running") {
+      interval = setInterval(fetchExamples, 3000);
+    }
 
     if (selectedJob.status === "completed") {
       fetch(`/api/v1/finetune/distillation/jobs/${selectedJob.id}/quality-assessment`)
@@ -328,7 +375,11 @@ export const DistillationPage: React.FC = () => {
         .then((data) => setQualityAssessment(data))
         .catch(() => setQualityAssessment(null));
     }
-  }, [selectedJob]);
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [selectedJob, selectedJob?.status]);
 
   const handleTemplateSelect = (templateId: string) => {
     setSelectedTemplate(templateId);
@@ -339,32 +390,64 @@ export const DistillationPage: React.FC = () => {
   };
 
   const handleCreateJob = async () => {
-    if (!jobName || !prompts.trim()) {
+    // Validate based on input mode
+    if (inputMode === "manual" && (!jobName || !prompts.trim())) {
       setError("Please provide a job name and prompts");
+      return;
+    }
+    if (inputMode === "topic" && (!jobName || !topic)) {
+      setError("Please provide a job name and topic");
+      return;
+    }
+    if (datasetMode === "append" && !appendDatasetId) {
+      setError("Please select a dataset to append to");
       return;
     }
     setError(null);
     setActionStatus("Creating distillation job...");
 
-    const promptList = prompts.split("\n").filter((p) => p.trim());
+    const promptList = inputMode === "manual"
+      ? prompts.split("\n").filter((p) => p.trim())
+      : [];
+
+    // Build request body based on mode
+    const requestBody: any = {
+      name: jobName,
+      config: {
+        teacher_provider: teacherProvider,
+        teacher_model: teacherModel,
+        teacher_api_key: apiKey || undefined,
+        system_prompt: customSystemPrompt || undefined,
+        create_managed_dataset: datasetMode === "create" ? createManagedDataset : false,
+        dataset_name: datasetMode === "create" ? (datasetName || undefined) : undefined,
+        dataset_description: datasetMode === "create" ? (datasetDescription || undefined) : undefined,
+        append_to_dataset_id: datasetMode === "append" ? appendDatasetId : undefined,
+      },
+      prompts: promptList,
+    };
+
+    // Add topic configuration if in topic mode
+    if (inputMode === "topic") {
+      requestBody.config.use_topic_generation = true;
+      requestBody.config.topic_config = {
+        topic,
+        mode: generationMode,
+        target_examples: targetExamples,
+        difficulty_levels: ["beginner", "intermediate", "advanced"],
+        tool_definitions: generationMode === "tool_calling" ? toolDefinitions : undefined,
+        refinement: {
+          enabled: refinementEnabled,
+          max_passes: refinementPasses,
+        },
+      };
+      requestBody.target_examples = targetExamples;
+    }
 
     try {
       const res = await fetch("/api/v1/finetune/distillation/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: jobName,
-          config: {
-            teacher_provider: teacherProvider,
-            teacher_model: teacherModel,
-            api_key: apiKey || undefined,
-            system_prompt: customSystemPrompt || undefined,
-            create_managed_dataset: createManagedDataset,
-            dataset_name: datasetName || undefined,
-            dataset_description: datasetDescription || undefined,
-          },
-          prompts: promptList,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (res.ok) {
@@ -374,6 +457,9 @@ export const DistillationPage: React.FC = () => {
         setActionStatus("Distillation started successfully");
         setJobName("");
         setPrompts("");
+        setTopic("");
+        setPreviewPrompts([]);
+        setCostEstimate(null);
         fetchJobs();
       } else {
         const data = await res.json();
@@ -582,15 +668,22 @@ export const DistillationPage: React.FC = () => {
                   </FormControl>
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField
-                    label="Model"
-                    value={teacherModel}
-                    onChange={(e) => setTeacherModel(e.target.value)}
-                    placeholder="e.g., gpt-4"
-                    fullWidth
-                    size="small"
-                  />
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Model</InputLabel>
+                    <Select
+                      value={teacherModel}
+                      onChange={(e) => setTeacherModel(e.target.value)}
+                      label="Model"
+                    >
+                      {(MODEL_PRESETS[teacherProvider] || []).map((m) => (
+                        <MenuItem key={m.value} value={m.value}>
+                          {m.label}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
                 </Grid>
+
               </Grid>
 
               {teacherProvider !== "local" && (
@@ -632,6 +725,248 @@ export const DistillationPage: React.FC = () => {
                 size="small"
               />
 
+              {/* Input Mode Toggle */}
+              <Box
+                sx={{
+                  display: "flex",
+                  gap: 1,
+                  p: 0.5,
+                  borderRadius: 2,
+                  bgcolor: "rgba(0, 0, 0, 0.2)",
+                  border: "1px solid rgba(255, 255, 255, 0.06)",
+                }}
+              >
+                <Button
+                  size="small"
+                  variant={inputMode === "manual" ? "contained" : "text"}
+                  onClick={() => setInputMode("manual")}
+                  sx={{
+                    flex: 1,
+                    bgcolor: inputMode === "manual" ? alpha(accentColors.primary, 0.2) : "transparent",
+                    color: inputMode === "manual" ? accentColors.primary : "text.secondary",
+                    "&:hover": { bgcolor: alpha(accentColors.primary, 0.15) },
+                  }}
+                >
+                  Manual Prompts
+                </Button>
+                <Button
+                  size="small"
+                  variant={inputMode === "topic" ? "contained" : "text"}
+                  onClick={() => setInputMode("topic")}
+                  sx={{
+                    flex: 1,
+                    bgcolor: inputMode === "topic" ? alpha(accentColors.purple, 0.2) : "transparent",
+                    color: inputMode === "topic" ? accentColors.purple : "text.secondary",
+                    "&:hover": { bgcolor: alpha(accentColors.purple, 0.15) },
+                  }}
+                >
+                  Topic-Based
+                </Button>
+              </Box>
+
+              {/* Topic-Based Configuration */}
+              {inputMode === "topic" && (
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 2,
+                    bgcolor: "rgba(0, 0, 0, 0.2)",
+                    border: `1px solid ${alpha(accentColors.purple, 0.2)}`,
+                  }}
+                >
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2, color: accentColors.purple }}>
+                    Topic Configuration
+                  </Typography>
+
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <TextField
+                      label="Topic"
+                      value={topic}
+                      onChange={(e) => setTopic(e.target.value)}
+                      placeholder="e.g., Car diagnostics, Python async programming, Warhammer 40K lore"
+                      fullWidth
+                      size="small"
+                    />
+
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Generation Mode</InputLabel>
+                      <Select
+                        value={generationMode}
+                        onChange={(e) => setGenerationMode(e.target.value)}
+                        label="Generation Mode"
+                      >
+                        <MenuItem value="qa_pairs">Question & Answer Pairs</MenuItem>
+                        <MenuItem value="instructions">Instruction Following</MenuItem>
+                        <MenuItem value="trivia">Trivia & Facts</MenuItem>
+                        <MenuItem value="troubleshooting">Troubleshooting & Diagnostics</MenuItem>
+                        <MenuItem value="code_examples">Code Examples</MenuItem>
+                        <MenuItem value="explanations">Concept Explanations</MenuItem>
+                        <MenuItem value="conversations">Multi-turn Conversations</MenuItem>
+                        <MenuItem value="tool_calling">Tool Calling / Function Use</MenuItem>
+                        <MenuItem value="mixed">Mixed Formats</MenuItem>
+                      </Select>
+                    </FormControl>
+
+                    {generationMode === "tool_calling" && (
+                      <TextField
+                        label="Tool Definitions (JSON Schema)"
+                        value={toolDefinitions}
+                        onChange={(e) => setToolDefinitions(e.target.value)}
+                        placeholder='[{"name": "get_weather", "description": "Get weather", "parameters": {...}}]'
+                        multiline
+                        rows={6}
+                        fullWidth
+                        size="small"
+                        sx={{ "& textarea": { fontFamily: "monospace", fontSize: "0.85rem" } }}
+                      />
+                    )}
+
+                    <Box>
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                        Target Examples: {targetExamples}
+                      </Typography>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+                        <Typography variant="caption">50</Typography>
+                        <input
+                          type="range"
+                          min={50}
+                          max={500}
+                          step={10}
+                          value={targetExamples}
+                          onChange={(e) => setTargetExamples(Number(e.target.value))}
+                          style={{ flex: 1 }}
+                        />
+                        <Typography variant="caption">500</Typography>
+                      </Box>
+                    </Box>
+
+                    <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <FormControlLabel
+                        control={
+                          <Switch
+                            checked={refinementEnabled}
+                            onChange={(e) => setRefinementEnabled(e.target.checked)}
+                            size="small"
+                          />
+                        }
+                        label={
+                          <Typography variant="body2">Multi-pass refinement</Typography>
+                        }
+                      />
+                      {refinementEnabled && (
+                        <FormControl size="small" sx={{ minWidth: 100 }}>
+                          <InputLabel>Passes</InputLabel>
+                          <Select
+                            value={refinementPasses}
+                            onChange={(e) => setRefinementPasses(Number(e.target.value))}
+                            label="Passes"
+                          >
+                            <MenuItem value={1}>1 pass</MenuItem>
+                            <MenuItem value={2}>2 passes</MenuItem>
+                            <MenuItem value={3}>3 passes</MenuItem>
+                          </Select>
+                        </FormControl>
+                      )}
+                    </Box>
+
+                    {costEstimate && (
+                      <Alert severity="info" sx={{ py: 0.5 }}>
+                        Estimated cost: ${costEstimate.estimated_cost_usd} ({costEstimate.estimated_tokens?.toLocaleString()} tokens)
+                      </Alert>
+                    )}
+
+                    {previewPrompts.length > 0 && (
+                      <Box
+                        sx={{
+                          maxHeight: 120,
+                          overflow: "auto",
+                          p: 1.5,
+                          borderRadius: 1,
+                          bgcolor: "rgba(0, 0, 0, 0.3)",
+                          fontFamily: "monospace",
+                          fontSize: "0.75rem",
+                        }}
+                      >
+                        <Typography variant="caption" sx={{ fontWeight: 600, mb: 1, display: "block" }}>
+                          Preview Prompts:
+                        </Typography>
+                        {previewPrompts.slice(0, 5).map((p, i) => (
+                          <Box key={i} sx={{ mb: 0.5, color: "text.secondary" }}>
+                            {i + 1}. {p.slice(0, 100)}{p.length > 100 ? "..." : ""}
+                          </Box>
+                        ))}
+                      </Box>
+                    )}
+
+                    <Box sx={{ display: "flex", gap: 1 }}>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={async () => {
+                          if (!topic || !apiKey) return;
+                          setGeneratingPreview(true);
+                          try {
+                            const res = await fetch("/api/v1/finetune/distillation/topics/preview", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                topic,
+                                mode: generationMode,
+                                num_prompts: 5,
+                                teacher_provider: teacherProvider,
+                                teacher_model: teacherModel,
+                                teacher_api_key: apiKey,
+                              }),
+                            });
+                            if (res.ok) {
+                              const data = await res.json();
+                              setPreviewPrompts(data.prompts || []);
+                            }
+                          } catch (e) {
+                            console.error(e);
+                          }
+                          setGeneratingPreview(false);
+                        }}
+                        disabled={!topic || !apiKey || generatingPreview}
+                        sx={{ flex: 1 }}
+                      >
+                        {generatingPreview ? "Generating..." : "Preview"}
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={async () => {
+                          try {
+                            const res = await fetch("/api/v1/finetune/distillation/topics/estimate-cost", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                topic,
+                                mode: generationMode,
+                                target_examples: targetExamples,
+                                refinement_enabled: refinementEnabled,
+                                refinement_passes: refinementPasses,
+                                teacher_model: teacherModel,
+                              }),
+                            });
+                            if (res.ok) {
+                              const data = await res.json();
+                              setCostEstimate(data);
+                            }
+                          } catch (e) {
+                            console.error(e);
+                          }
+                        }}
+                        disabled={!topic}
+                        sx={{ flex: 1 }}
+                      >
+                        Estimate Cost
+                      </Button>
+                    </Box>
+                  </Box>
+                </Box>
+              )}
+
               {/* Dataset Options */}
               <Box
                 sx={{
@@ -644,71 +979,112 @@ export const DistillationPage: React.FC = () => {
                 <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2 }}>
                   Output Options
                 </Typography>
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={createManagedDataset}
-                      onChange={(e) => setCreateManagedDataset(e.target.checked)}
-                      color="primary"
+                <Box sx={{ display: "flex", gap: 1, mb: 2 }}>
+                  <Button
+                    size="small"
+                    variant={datasetMode === "create" ? "contained" : "outlined"}
+                    onClick={() => setDatasetMode("create")}
+                    sx={{ flex: 1 }}
+                  >
+                    Create New Dataset
+                  </Button>
+                  <Button
+                    size="small"
+                    variant={datasetMode === "append" ? "contained" : "outlined"}
+                    onClick={() => setDatasetMode("append")}
+                    sx={{ flex: 1 }}
+                  >
+                    Append to Existing
+                  </Button>
+                </Box>
+
+                {datasetMode === "create" ? (
+                  <>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={createManagedDataset}
+                          onChange={(e) => setCreateManagedDataset(e.target.checked)}
+                          color="primary"
+                        />
+                      }
+                      label={
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            Create managed dataset
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Automatically create a dataset for training
+                          </Typography>
+                        </Box>
+                      }
                     />
-                  }
-                  label={
-                    <Box>
-                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        Create managed dataset
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        Automatically create a dataset for training
-                      </Typography>
-                    </Box>
-                  }
-                />
-                {createManagedDataset && (
-                  <Box sx={{ mt: 2, display: "flex", flexDirection: "column", gap: 1.5 }}>
-                    <TextField
-                      label="Dataset Name (optional)"
-                      value={datasetName}
-                      onChange={(e) => setDatasetName(e.target.value)}
-                      placeholder="Leave empty to use job name"
-                      fullWidth
-                      size="small"
-                    />
-                    <TextField
-                      label="Description (optional)"
-                      value={datasetDescription}
-                      onChange={(e) => setDatasetDescription(e.target.value)}
-                      placeholder="Describe the dataset purpose"
-                      multiline
-                      rows={2}
-                      fullWidth
-                      size="small"
-                    />
-                  </Box>
+                    {createManagedDataset && (
+                      <Box sx={{ mt: 2, display: "flex", flexDirection: "column", gap: 1.5 }}>
+                        <TextField
+                          label="Dataset Name (optional)"
+                          value={datasetName}
+                          onChange={(e) => setDatasetName(e.target.value)}
+                          placeholder="Leave empty to use job name"
+                          fullWidth
+                          size="small"
+                        />
+                        <TextField
+                          label="Description (optional)"
+                          value={datasetDescription}
+                          onChange={(e) => setDatasetDescription(e.target.value)}
+                          placeholder="Describe the dataset purpose"
+                          multiline
+                          rows={2}
+                          fullWidth
+                          size="small"
+                        />
+                      </Box>
+                    )}
+                  </>
+                ) : (
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Select Dataset to Append To</InputLabel>
+                    <Select
+                      value={appendDatasetId}
+                      onChange={(e) => setAppendDatasetId(e.target.value)}
+                      label="Select Dataset to Append To"
+                    >
+                      {datasets.map((ds) => (
+                        <MenuItem key={ds.id} value={ds.id}>
+                          {ds.name} ({ds.num_examples} examples)
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
                 )}
               </Box>
 
-              <Box>
-                <TextField
-                  label="Prompts (one per line)"
-                  value={prompts}
-                  onChange={(e) => setPrompts(e.target.value)}
-                  placeholder={"Write a Python function to sort a list\nExplain quantum computing\nHow do I optimize database queries?"}
-                  multiline
-                  rows={5}
-                  fullWidth
-                  size="small"
-                  sx={{ "& textarea": { fontFamily: "monospace", fontSize: "0.85rem" } }}
-                />
-                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
-                  {promptCount} prompt{promptCount !== 1 ? "s" : ""} to process
-                </Typography>
-              </Box>
+              {/* Manual Prompts - only shown in manual mode */}
+              {inputMode === "manual" && (
+                <Box>
+                  <TextField
+                    label="Prompts (one per line)"
+                    value={prompts}
+                    onChange={(e) => setPrompts(e.target.value)}
+                    placeholder={"Write a Python function to sort a list\nExplain quantum computing\nHow do I optimize database queries?"}
+                    multiline
+                    rows={5}
+                    fullWidth
+                    size="small"
+                    sx={{ "& textarea": { fontFamily: "monospace", fontSize: "0.85rem" } }}
+                  />
+                  <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+                    {promptCount} prompt{promptCount !== 1 ? "s" : ""} to process
+                  </Typography>
+                </Box>
+              )}
 
               <Button
                 variant="contained"
                 startIcon={<StartIcon />}
                 onClick={handleCreateJob}
-                disabled={!jobName || promptCount === 0}
+                disabled={!jobName || (inputMode === "manual" ? promptCount === 0 : !topic)}
                 sx={{
                   background: `linear-gradient(135deg, ${accentColors.purple} 0%, ${accentColors.primary} 100%)`,
                 }}
@@ -838,59 +1214,6 @@ export const DistillationPage: React.FC = () => {
           </SectionCard>
         </Grid>
 
-        {/* Workflow Progress */}
-        {selectedJob && (
-          <Grid item xs={12}>
-            <SectionCard
-              title={`Workflow Progress - ${selectedJob.name}`}
-              icon={<TimerIcon />}
-              accentColor={accentColors.warning}
-            >
-              <Box sx={{ display: "flex", alignItems: "center", gap: 4, mb: 3, flexWrap: "wrap" }}>
-                <WorkflowStep
-                  number={1}
-                  label="Distillation"
-                  active={selectedJob.status === "running"}
-                  completed={selectedJob.status === "completed"}
-                />
-                <Box sx={{ color: "text.secondary", fontSize: "1.2rem" }}>→</Box>
-                <WorkflowStep
-                  number={2}
-                  label="Dataset Ready"
-                  active={selectedJob.status === "completed" && !selectedJob.output_dataset_id}
-                  completed={!!selectedJob.output_dataset_id}
-                />
-                <Box sx={{ color: "text.secondary", fontSize: "1.2rem" }}>→</Box>
-                <WorkflowStep number={3} label="Fine-Tuning" active={false} completed={false} />
-                <Box sx={{ color: "text.secondary", fontSize: "1.2rem" }}>→</Box>
-                <WorkflowStep number={4} label="Deploy Model" active={false} completed={false} />
-              </Box>
-
-              <Alert
-                severity={
-                  selectedJob.status === "completed" && selectedJob.output_dataset_id
-                    ? "success"
-                    : selectedJob.status === "running"
-                    ? "info"
-                    : "warning"
-                }
-                icon={<TipIcon />}
-              >
-                <Typography variant="body2">
-                  {selectedJob.status === "running"
-                    ? `Generating examples (${selectedJob.generated_count}/${selectedJob.total_prompts})`
-                    : selectedJob.status === "completed" && selectedJob.output_dataset_id
-                    ? 'Ready for training! Click "Start Training" above to begin fine-tuning your model.'
-                    : selectedJob.status === "completed"
-                    ? "Completed but no dataset created"
-                    : selectedJob.status === "failed"
-                    ? "Distillation failed"
-                    : "Waiting to start"}
-                </Typography>
-              </Alert>
-            </SectionCard>
-          </Grid>
-        )}
 
         {/* Quality Assessment */}
         {selectedJob && selectedJob.status === "completed" && qualityAssessment && (
@@ -982,59 +1305,93 @@ export const DistillationPage: React.FC = () => {
           <Grid item xs={12} lg={selectedJob.status === "completed" && qualityAssessment ? 7 : 12}>
             <SectionCard
               title="Generated Examples"
-              subtitle={`${selectedJob.generated_count} of ${selectedJob.total_prompts} examples`}
+              subtitle={`${selectedJob.generated_count} of ${selectedJob.total_prompts} examples${selectedJob.status === "running" ? " (auto-refreshing)" : ""}`}
               icon={<DatasetIcon />}
               accentColor={accentColors.primary}
+              action={
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => window.open(`/api/v1/finetune/distillation/jobs/${selectedJob.id}/download`, "_blank")}
+                  sx={{ fontSize: "0.7rem" }}
+                >
+                  Export JSONL
+                </Button>
+              }
             >
-              {generatedExamples.length === 0 ? (
+              {/* Search Filter */}
+              <TextField
+                placeholder="Search examples..."
+                value={examplesSearch}
+                onChange={(e) => setExamplesSearch(e.target.value)}
+                size="small"
+                fullWidth
+                sx={{ mb: 2 }}
+              />
+
+              {loadingExamples && generatedExamples.length === 0 ? (
+                <Box sx={{ p: 4, textAlign: "center" }}>
+                  <LinearProgress sx={{ mb: 2 }} />
+                  <Typography color="text.secondary">Loading examples...</Typography>
+                </Box>
+              ) : generatedExamples.length === 0 ? (
                 <Box sx={{ p: 4, textAlign: "center" }}>
                   <DatasetIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
                   <Typography color="text.secondary">No examples generated yet</Typography>
                 </Box>
               ) : (
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxHeight: 400, overflow: "auto" }}>
-                  {generatedExamples.map((ex, i) => (
-                    <Box
-                      key={i}
-                      sx={{
-                        p: 2,
-                        borderRadius: 2,
-                        bgcolor: "rgba(0, 0, 0, 0.2)",
-                        border: "1px solid rgba(255, 255, 255, 0.06)",
-                      }}
-                    >
-                      <Box sx={{ mb: 1.5 }}>
-                        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-                          Prompt:
-                        </Typography>
-                        <Typography variant="body2" sx={{ mt: 0.5 }}>
-                          {ex.prompt}
-                        </Typography>
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxHeight: 500, overflow: "auto" }}>
+                  {generatedExamples
+                    .filter((ex) =>
+                      !examplesSearch ||
+                      ex.prompt.toLowerCase().includes(examplesSearch.toLowerCase()) ||
+                      ex.response.toLowerCase().includes(examplesSearch.toLowerCase())
+                    )
+                    .map((ex, i) => (
+                      <Box
+                        key={i}
+                        sx={{
+                          p: 2,
+                          borderRadius: 2,
+                          bgcolor: "rgba(0, 0, 0, 0.2)",
+                          border: "1px solid rgba(255, 255, 255, 0.06)",
+                        }}
+                      >
+                        <Box sx={{ mb: 1.5 }}>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                            Prompt:
+                          </Typography>
+                          <Typography variant="body2" sx={{ mt: 0.5 }}>
+                            {ex.prompt}
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                            Response:
+                          </Typography>
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              mt: 0.5,
+                              whiteSpace: "pre-wrap",
+                              color: accentColors.success,
+                              fontFamily: "monospace",
+                              fontSize: "0.8rem",
+                              maxHeight: 200,
+                              overflow: "auto",
+                            }}
+                          >
+                            {ex.response}
+                          </Typography>
+                        </Box>
                       </Box>
-                      <Box>
-                        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-                          Response:
-                        </Typography>
-                        <Typography
-                          variant="body2"
-                          sx={{
-                            mt: 0.5,
-                            whiteSpace: "pre-wrap",
-                            color: accentColors.success,
-                            fontFamily: "monospace",
-                            fontSize: "0.8rem",
-                          }}
-                        >
-                          {ex.response}
-                        </Typography>
-                      </Box>
-                    </Box>
-                  ))}
+                    ))}
                 </Box>
               )}
             </SectionCard>
           </Grid>
         )}
+
       </Grid>
     </Box>
   );

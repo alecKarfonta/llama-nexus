@@ -240,6 +240,43 @@ def extract_pdf_text(content: str) -> str:
         return content
 
 
+def extract_epub_text(content: str) -> str:
+    """Extract text from EPUB content (base64 encoded)."""
+    import io
+    import base64
+    try:
+        import ebooklib
+        from ebooklib import epub
+        from bs4 import BeautifulSoup
+    except ImportError:
+        logger.warning("ebooklib not installed, cannot extract EPUB text")
+        return content
+    
+    try:
+        # Decode base64 content
+        epub_bytes = base64.b64decode(content)
+        
+        # Read EPUB from bytes
+        book = epub.read_epub(io.BytesIO(epub_bytes))
+        
+        # Extract text from all document items
+        text_parts = []
+        for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+            html_content = item.get_content()
+            soup = BeautifulSoup(html_content, 'html.parser')
+            # Get text from paragraphs and other text elements
+            text = soup.get_text(separator='\n', strip=True)
+            if text:
+                text_parts.append(text)
+        
+        extracted_text = '\n\n'.join(text_parts)
+        logger.info(f"Extracted {len(extracted_text)} chars from EPUB")
+        return extracted_text
+    except Exception as e:
+        logger.error(f"Failed to extract EPUB text: {e}")
+        return content
+
+
 def extract_pdf_images(
     content: str,
     document_id: str,
@@ -583,6 +620,14 @@ async def create_rag_document(request: Request, background_tasks: BackgroundTask
             raise HTTPException(
                 status_code=400, 
                 detail="Failed to extract text from PDF. This may be a scanned document."
+            )
+    elif content and doc_type == 'epub':
+        original_content = content
+        content = extract_epub_text(content)
+        if not content or content == original_content:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to extract text from EPUB."
             )
     
     if content:
@@ -2056,8 +2101,8 @@ async def get_rag_statistics(request: Request):
 # Memory API - External memory management for services like Chatter
 # =============================================================================
 
-# Allowed memory collections
-ALLOWED_MEMORY_COLLECTIONS = ["chatter_stm", "chatter_core", "chatter_user"]
+# Default memory collections (for backwards compatibility, but any collection name is allowed)
+DEFAULT_MEMORY_COLLECTIONS = ["chatter_stm", "chatter_core", "chatter_user", "chatter_chat"]
 
 # Memory domain metadata
 MEMORY_DOMAIN_INFO = {
@@ -2129,11 +2174,12 @@ async def memory_upsert(request: Request):
     if not content:
         raise HTTPException(status_code=400, detail="content is required")
     
-    # Validate collection name
-    if collection not in ALLOWED_MEMORY_COLLECTIONS:
+    # Validate collection name format (alphanumeric, underscores, hyphens only)
+    import re
+    if not re.match(r'^[a-zA-Z][a-zA-Z0-9_-]*$', collection):
         raise HTTPException(
             status_code=400, 
-            detail=f"Invalid collection. Allowed: {ALLOWED_MEMORY_COLLECTIONS}"
+            detail="Collection name must start with a letter and contain only alphanumeric characters, underscores, or hyphens"
         )
     
     # Generate embedding
@@ -2197,7 +2243,7 @@ async def memory_search(request: Request):
     data = await request.json()
     
     query = data.get('query')
-    collections = data.get('collections', ALLOWED_MEMORY_COLLECTIONS)
+    collections = data.get('collections', DEFAULT_MEMORY_COLLECTIONS)
     top_k = data.get('top_k', 5)
     min_score = data.get('min_score', 0.0)
     embedding_model = data.get('embedding_model', 'all-MiniLM-L6-v2')
@@ -2205,12 +2251,13 @@ async def memory_search(request: Request):
     if not query:
         raise HTTPException(status_code=400, detail="query is required")
     
-    # Validate collections
-    invalid_collections = [c for c in collections if c not in ALLOWED_MEMORY_COLLECTIONS]
+    # Validate collection name formats
+    import re
+    invalid_collections = [c for c in collections if not re.match(r'^[a-zA-Z][a-zA-Z0-9_-]*$', c)]
     if invalid_collections:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid collections: {invalid_collections}. Allowed: {ALLOWED_MEMORY_COLLECTIONS}"
+            detail=f"Invalid collection names: {invalid_collections}. Names must start with a letter and contain only alphanumeric characters, underscores, or hyphens"
         )
     
     # Generate query embedding
@@ -2275,11 +2322,12 @@ async def memory_delete(request: Request, collection: str, memory_id: str):
     if not rag['vector_store']:
         raise HTTPException(status_code=503, detail="Vector store not initialized")
     
-    # Validate collection
-    if collection not in ALLOWED_MEMORY_COLLECTIONS:
+    # Validate collection name format
+    import re
+    if not re.match(r'^[a-zA-Z][a-zA-Z0-9_-]*$', collection):
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid collection. Allowed: {ALLOWED_MEMORY_COLLECTIONS}"
+            detail="Collection name must start with a letter and contain only alphanumeric characters, underscores, or hyphens"
         )
     
     # Check if collection exists
@@ -2311,7 +2359,7 @@ async def memory_list_collections(request: Request):
     
     collections_info = []
     
-    for coll in ALLOWED_MEMORY_COLLECTIONS:
+    for coll in DEFAULT_MEMORY_COLLECTIONS:
         exists = await rag['vector_store'].collection_exists(coll)
         info = {"name": coll, "exists": exists}
         

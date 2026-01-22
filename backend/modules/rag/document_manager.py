@@ -46,6 +46,7 @@ class DocumentType(str, Enum):
     CSV = "csv"
     JSON = "json"
     URL = "url"
+    EPUB = "epub"
 
 
 @dataclass

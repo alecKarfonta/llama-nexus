@@ -986,9 +986,7 @@ export const FineTuningPage: React.FC = () => {
                             setForm({ ...form, base_model: newValue.value });
                           }
                         }}
-                        onInputChange={(_, newInputValue) => {
-                          setForm({ ...form, base_model: newInputValue });
-                        }}
+
                         renderInput={(params) => (
                           <TextField
                             {...params}
