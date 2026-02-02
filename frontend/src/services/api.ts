@@ -42,14 +42,14 @@ class ApiService {
     // In development, use empty string to let the dev server proxy handle it
     // In production, use the environment variable or default to the current origin
     const isDevelopment = import.meta.env.DEV === true;
-    
+
     // Try to get the API base URL from various sources
     let apiBaseUrl = '';
-    
+
     // 1. Try import.meta.env (Vite's way of exposing env vars)
     if (import.meta.env?.VITE_API_BASE_URL) {
       apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
-    } 
+    }
     // 2. Try window.__ENV__ (sometimes used for runtime env injection)
     else if ((window as any).__ENV__?.VITE_API_BASE_URL) {
       apiBaseUrl = (window as any).__ENV__.VITE_API_BASE_URL;
@@ -58,7 +58,7 @@ class ApiService {
     else if (!isDevelopment) {
       apiBaseUrl = window.location.origin;
     }
-    
+
     this.baseURL = isDevelopment ? '' : apiBaseUrl;
     // Backend base URL (management API)
     let backendBaseUrl = '';
@@ -144,23 +144,28 @@ class ApiService {
 
   // Generic HTTP methods for flexibility
   async get(url: string, config?: any): Promise<any> {
-    return await this.backendClient.get(url, config);
+    const response = await this.backendClient.get(url, config);
+    return response.data;
   }
 
   async post(url: string, data?: any, config?: any): Promise<any> {
-    return await this.backendClient.post(url, data, config);
+    const response = await this.backendClient.post(url, data, config);
+    return response.data;
   }
 
   async put(url: string, data?: any, config?: any): Promise<any> {
-    return await this.backendClient.put(url, data, config);
+    const response = await this.backendClient.put(url, data, config);
+    return response.data;
   }
 
   async delete(url: string, config?: any): Promise<any> {
-    return await this.backendClient.delete(url, config);
+    const response = await this.backendClient.delete(url, config);
+    return response.data;
   }
 
   async patch(url: string, data?: any, config?: any): Promise<any> {
-    return await this.backendClient.patch(url, data, config);
+    const response = await this.backendClient.patch(url, data, config);
+    return response.data;
   }
 
   // Normalize backend download record (snake_case) to frontend ModelDownload (camelCase)
@@ -235,7 +240,7 @@ class ApiService {
   async getModels(): Promise<ModelInfo[]> {
     const response = await this.backendClient.get('/v1/models');
     const apiData = response.data;
-    
+
     // Check if we have data in the expected format from our backend
     if (apiData && Array.isArray(apiData.data)) {
       // Transform the API response to match ModelInfo structure
@@ -260,7 +265,7 @@ class ApiService {
         };
       });
     }
-    
+
     // Fallback to empty array if data format is unexpected
     return [];
   }
@@ -288,18 +293,18 @@ class ApiService {
     const response = await this.backendClient.post('/v1/templates', { filename, content });
     return (response.data as any).data;
   }
-  
+
   // Helper to extract parameter count from model name
   private extractParameters(name: string): number | undefined {
     if (!name) return undefined;
-    
+
     // Try to extract parameter count from model name (e.g., "30B", "7B", "1.5B")
     const match = name.match(/(\d+\.?\d*)[Bb]/);
     if (match) {
       const value = parseFloat(match[1]);
       return value * 1000000000; // Convert to actual parameter count
     }
-    
+
     return undefined;
   }
 
@@ -309,7 +314,7 @@ class ApiService {
     const billions = params / 1000000000;
     return billions >= 1 ? `${Math.round(billions)}B` : `${Math.round(params / 1000000)}M`;
   }
-  
+
 
 
   async getCurrentModel(): Promise<any> {
@@ -397,7 +402,7 @@ class ApiService {
       // Use the real backend service status endpoint through nginx proxy
       const statusResponse = await this.client.get('/v1/service/status');
       const data = statusResponse.data;
-      
+
       // Transform backend response to frontend format
       return {
         health: data.running ? 'healthy' : 'stopped',
@@ -419,7 +424,7 @@ class ApiService {
         // health endpoint is proxied in dev via '/api/health' -> backend '/health'
         const healthResponse = await this.client.get('/health');
         const isHealthy = healthResponse.status === 200;
-        
+
         return {
           health: isHealthy ? 'healthy' : 'unhealthy',
           uptime: 0,
@@ -462,7 +467,7 @@ class ApiService {
       // Use real backend metrics endpoint
       const response = await this.client.get('/v1/resources');
       const data = response.data;
-      
+
       // Transform backend response to frontend format
       return {
         cpuUsage: data.cpu?.percent || 0,
@@ -490,13 +495,13 @@ class ApiService {
     // In the future, this should be replaced with real historical data from the backend
     try {
       const currentMetrics = await this.getResourceMetrics();
-      
+
       // Generate a few historical points based on current metrics for now
       const now = new Date();
       const data: ResourceMetrics[] = [];
       const points = duration === '5m' ? 10 : duration === '15m' ? 15 : duration === '1h' ? 12 : 24;
       const intervalMs = duration === '5m' ? 30000 : duration === '15m' ? 60000 : duration === '1h' ? 300000 : 900000;
-      
+
       for (let i = points; i >= 0; i--) {
         const timestamp = new Date(now.getTime() - (i * intervalMs));
         // Add small variations to current metrics to simulate history
@@ -510,7 +515,7 @@ class ApiService {
           vramUsage: Math.max(0, Math.min(100, currentMetrics.vramUsage + variation * 0.3)),
         });
       }
-      
+
       return data;
     } catch (error) {
       console.error('Failed to get metrics history:', error);
@@ -615,11 +620,11 @@ class ApiService {
               controller.close();
               return;
             }
-            
+
             // Parse SSE data
             const chunk = decoder.decode(value, { stream: true });
             const lines = chunk.split('\n');
-            
+
             for (const line of lines) {
               const trimmedLine = line.trim();
               if (trimmedLine.startsWith('data: ')) {
@@ -637,7 +642,7 @@ class ApiService {
                 }
               }
             }
-            
+
             return pump();
           }).catch((error) => {
             controller.error(error);
@@ -747,19 +752,19 @@ class ApiService {
     // In the future, we can track benchmark IDs properly
     const response = await this.backendClient.get('/api/v1/benchmark/bfcl');
     const benchmarks = response.data;
-    
+
     // Get the most recent benchmark
     const benchmarkIds = Object.keys(benchmarks);
     if (benchmarkIds.length === 0) {
       return { status: 'starting' };
     }
-    
+
     const mostRecent = benchmarkIds.reduce((latest, current) => {
       const latestTime = new Date(benchmarks[latest].started_at || 0);
       const currentTime = new Date(benchmarks[current].started_at || 0);
       return currentTime > latestTime ? current : latest;
     });
-    
+
     return benchmarks[mostRecent];
   }
 
@@ -2007,7 +2012,7 @@ class ApiService {
     if (domain) {
       formData.append('domain', domain);
     }
-    
+
     const response = await this.backendClient.post('/api/v1/graphrag/hybrid/process', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',

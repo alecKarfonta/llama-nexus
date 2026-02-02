@@ -87,7 +87,7 @@ export const ServiceStatusDisplay: React.FC = () => {
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 2000);
+    const interval = setInterval(fetchStatus, 10000);
     return () => clearInterval(interval);
   }, []);
 
@@ -138,8 +138,8 @@ export const ServiceStatusDisplay: React.FC = () => {
 
   if (error && !status) {
     return (
-      <Alert 
-        severity="error" 
+      <Alert
+        severity="error"
         onClose={() => setError(null)}
         sx={{
           bgcolor: alpha('#ef4444', 0.1),
@@ -173,7 +173,7 @@ export const ServiceStatusDisplay: React.FC = () => {
             }}
           />
         </Box>
-        
+
         <Box display="flex" gap={1}>
           <Button
             variant="contained"
@@ -221,10 +221,10 @@ export const ServiceStatusDisplay: React.FC = () => {
       </Box>
 
       {error && (
-        <Alert 
-          severity="error" 
-          onClose={() => setError(null)} 
-          sx={{ 
+        <Alert
+          severity="error"
+          onClose={() => setError(null)}
+          sx={{
             mb: 2,
             bgcolor: alpha('#ef4444', 0.1),
             border: `1px solid ${alpha('#ef4444', 0.2)}`,
@@ -238,10 +238,10 @@ export const ServiceStatusDisplay: React.FC = () => {
       <Grid container spacing={3}>
         {/* Service Info */}
         <Grid item xs={12} md={6}>
-          <Box 
-            sx={{ 
-              p: 2, 
-              borderRadius: 2, 
+          <Box
+            sx={{
+              p: 2,
+              borderRadius: 2,
               bgcolor: 'rgba(255, 255, 255, 0.02)',
               border: '1px solid rgba(255, 255, 255, 0.04)',
             }}
@@ -267,10 +267,10 @@ export const ServiceStatusDisplay: React.FC = () => {
 
         {/* Model Info */}
         <Grid item xs={12} md={6}>
-          <Box 
-            sx={{ 
-              p: 2, 
-              borderRadius: 2, 
+          <Box
+            sx={{
+              p: 2,
+              borderRadius: 2,
               bgcolor: 'rgba(255, 255, 255, 0.02)',
               border: '1px solid rgba(255, 255, 255, 0.04)',
             }}
@@ -294,10 +294,10 @@ export const ServiceStatusDisplay: React.FC = () => {
         {status?.running && (
           <>
             <Grid item xs={12} md={6}>
-              <Box 
-                sx={{ 
-                  p: 2, 
-                  borderRadius: 2, 
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 2,
                   bgcolor: 'rgba(255, 255, 255, 0.02)',
                   border: '1px solid rgba(255, 255, 255, 0.04)',
                 }}
@@ -310,16 +310,16 @@ export const ServiceStatusDisplay: React.FC = () => {
                 </Box>
                 {status.resources && (
                   <Box display="flex" flexDirection="column" gap={2}>
-                    <ResourceBar 
-                      label="CPU Usage" 
-                      value={status.resources.cpu_percent} 
+                    <ResourceBar
+                      label="CPU Usage"
+                      value={status.resources.cpu_percent}
                       max={100}
                       unit="%"
                       color="#6366f1"
                     />
-                    <ResourceBar 
-                      label="Memory" 
-                      value={status.resources.memory_mb / 1024} 
+                    <ResourceBar
+                      label="Memory"
+                      value={status.resources.memory_mb / 1024}
                       max={100}
                       displayValue={`${(status.resources.memory_mb / 1024).toFixed(1)} GB (${status.resources.memory_percent?.toFixed(1)}%)`}
                       color="#8b5cf6"
@@ -331,10 +331,10 @@ export const ServiceStatusDisplay: React.FC = () => {
             </Grid>
 
             <Grid item xs={12} md={6}>
-              <Box 
-                sx={{ 
-                  p: 2, 
-                  borderRadius: 2, 
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 2,
                   bgcolor: 'rgba(255, 255, 255, 0.02)',
                   border: '1px solid rgba(255, 255, 255, 0.04)',
                 }}
@@ -347,55 +347,55 @@ export const ServiceStatusDisplay: React.FC = () => {
                 </Box>
                 {status.gpu ? (
                   <Box display="flex" flexDirection="column" gap={2}>
-                    <ResourceBar 
-                      label="GPU Usage" 
-                      value={status.gpu.gpu_usage_percent} 
+                    <ResourceBar
+                      label="GPU Usage"
+                      value={status.gpu.gpu_usage_percent}
                       max={100}
                       unit="%"
                       color="#10b981"
                     />
-                    <ResourceBar 
-                      label="VRAM" 
-                      value={(status.gpu.vram_used_mb / status.gpu.vram_total_mb) * 100} 
+                    <ResourceBar
+                      label="VRAM"
+                      value={(status.gpu.vram_used_mb / status.gpu.vram_total_mb) * 100}
                       max={100}
                       displayValue={`${(status.gpu.vram_used_mb / 1024).toFixed(1)} / ${(status.gpu.vram_total_mb / 1024).toFixed(1)} GB`}
                       color="#14b8a6"
                     />
                     <Box display="flex" alignItems="center" gap={1.5}>
-                      <TempIcon 
-                        sx={{ 
+                      <TempIcon
+                        sx={{
                           fontSize: 18,
-                          color: status.gpu.temperature_c > 85 ? '#ef4444' : 
-                                 status.gpu.temperature_c > 75 ? '#f59e0b' : '#10b981'
-                        }} 
+                          color: status.gpu.temperature_c > 85 ? '#ef4444' :
+                            status.gpu.temperature_c > 75 ? '#f59e0b' : '#10b981'
+                        }}
                       />
                       <Typography variant="body2" sx={{ color: 'text.secondary' }}>
                         Temperature: <strong>{status.gpu.temperature_c?.toFixed(0)}°C</strong>
                       </Typography>
                       {status.gpu.temperature_c > 85 && (
-                        <Chip 
-                          label="Critical" 
-                          size="small" 
-                          sx={{ 
+                        <Chip
+                          label="Critical"
+                          size="small"
+                          sx={{
                             height: 20,
                             bgcolor: alpha('#ef4444', 0.1),
                             border: `1px solid ${alpha('#ef4444', 0.3)}`,
                             color: '#f87171',
                             fontSize: '0.625rem',
-                          }} 
+                          }}
                         />
                       )}
                       {status.gpu.temperature_c > 75 && status.gpu.temperature_c <= 85 && (
-                        <Chip 
-                          label="Warning" 
-                          size="small" 
-                          sx={{ 
+                        <Chip
+                          label="Warning"
+                          size="small"
+                          sx={{
                             height: 20,
                             bgcolor: alpha('#f59e0b', 0.1),
                             border: `1px solid ${alpha('#f59e0b', 0.3)}`,
                             color: '#fbbf24',
                             fontSize: '0.625rem',
-                          }} 
+                          }}
                         />
                       )}
                     </Box>
@@ -420,10 +420,10 @@ const InfoRow: React.FC<{ label: string; value: string; color?: string }> = ({ l
     <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
       {label}
     </Typography>
-    <Typography 
-      variant="body2" 
-      sx={{ 
-        fontWeight: 600, 
+    <Typography
+      variant="body2"
+      sx={{
+        fontWeight: 600,
         fontSize: '0.8125rem',
         color: color || 'text.primary',
       }}
@@ -434,9 +434,9 @@ const InfoRow: React.FC<{ label: string; value: string; color?: string }> = ({ l
 );
 
 // Helper component for resource bars
-const ResourceBar: React.FC<{ 
-  label: string; 
-  value: number; 
+const ResourceBar: React.FC<{
+  label: string;
+  value: number;
   max: number;
   unit?: string;
   displayValue?: string;
@@ -446,7 +446,7 @@ const ResourceBar: React.FC<{
   const percentage = progress ?? Math.min((value / max) * 100, 100);
   const isHigh = percentage > 80;
   const barColor = isHigh ? '#ef4444' : color;
-  
+
   return (
     <Box>
       <Box display="flex" justifyContent="space-between" mb={0.5}>

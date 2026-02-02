@@ -6,6 +6,7 @@ from pathlib import Path
 from dataclasses import asdict
 import os
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,41 @@ async def list_local_model_files():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/mmproj-files")
+async def list_mmproj_files():
+    """List all available mmproj (multimodal projector) files for VL models."""
+    try:
+        models_dir = Path("/home/llamacpp/models")
+        if not models_dir.exists():
+            return {"success": True, "data": {"files": []}, "timestamp": datetime.now().isoformat()}
+        
+        files = []
+        
+        for item in models_dir.rglob('*'):
+            if item.is_file() and 'mmproj' in item.name.lower() and item.suffix.lower() == '.gguf':
+                stat = item.stat()
+                files.append({
+                    "name": item.name,
+                    "path": str(item.relative_to(models_dir)),
+                    "full_path": str(item),
+                    "size": stat.st_size,
+                    "size_mb": round(stat.st_size / (1024**2), 1),
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+                })
+        
+        files.sort(key=lambda x: x['name'])
+        
+        logger.info(f"Found {len(files)} mmproj files")
+        return {
+            "success": True, 
+            "data": {"files": files}, 
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error listing mmproj files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/local-files")
 async def delete_local_model_file(file_path: str):
     """Delete a model file from the local filesystem."""
@@ -171,7 +207,20 @@ async def list_repo_files(repo_id: str, revision: str = "main"):
             logger.info(f"Listing repo files for {repo_id}")
             files = api.list_repo_files(repo_id=repo_id, revision=revision, repo_type="model")
             model_extensions = ('.gguf', '.safetensors', '.bin', '.pth', '.pt')
-            model_files = [f for f in files if f.lower().endswith(model_extensions)]
+            
+            def is_model_file(filename: str) -> bool:
+                """Check if a file is a model file, including split GGUF parts."""
+                lower = filename.lower()
+                # Check standard extensions
+                if lower.endswith(model_extensions):
+                    return True
+                # Check for split GGUF files (e.g., model.gguf.part1of2, model.gguf.part2of2)
+                # Also handles patterns like model-00001-of-00003.gguf used by some repos
+                if '.gguf' in lower and re.search(r'\.part\d+of\d+$', lower):
+                    return True
+                return False
+            
+            model_files = [f for f in files if is_model_file(f)]
             logger.info(f"Found {len(model_files)} model files in repo {repo_id}")
             return {"success": True, "data": {"files": model_files}, "timestamp": datetime.now().isoformat()}
         except Exception as e:
@@ -197,8 +246,9 @@ async def download_model(request: Request, payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="'repositoryId' and 'filename' are required")
     
     supported_extensions = ('.gguf', '.safetensors', '.bin', '.pth', '.pt')
-    if not str(filename).lower().endswith(supported_extensions):
-        raise HTTPException(status_code=400, detail=f"Only files with extensions {supported_extensions} are supported")
+    is_split_gguf = '.gguf' in str(filename).lower() and re.search(r'\.part\d+of\d+$', str(filename).lower())
+    if not is_split_gguf and not str(filename).lower().endswith(supported_extensions):
+        raise HTTPException(status_code=400, detail=f"Only files with extensions {supported_extensions} or split GGUF parts (.gguf.partXofY) are supported")
     
     try:
         rec = await download_manager.start_download(repo_id=repo_id, filename=filename)

@@ -16,13 +16,34 @@ logger = logging.getLogger(__name__)
 
 
 # API model configurations
+# Note: nomic models require task-specific prefixes for optimal performance
+# See: https://huggingface.co/nomic-ai/nomic-embed-text-v1.5
 API_MODEL_CONFIGS = {
     # Local llama.cpp embedding service
     "nomic-embed-text-v1.5": {
         "provider": "llamacpp",
         "dimensions": 768,
         "max_tokens": 8192,
-        "description": "Nomic AI long context embedding (local)"
+        "description": "Nomic AI long context embedding (local)",
+        "prefix_document": "search_document: ",
+        "prefix_query": "search_query: "
+    },
+    # Alias without version
+    "nomic-embed-text": {
+        "provider": "llamacpp",
+        "dimensions": 768,
+        "max_tokens": 8192,
+        "description": "Nomic AI long context embedding (local)",
+        "prefix_document": "search_document: ",
+        "prefix_query": "search_query: "
+    },
+    "nomic-embed-text-v1": {
+        "provider": "llamacpp",
+        "dimensions": 768,
+        "max_tokens": 8192,
+        "description": "Nomic AI long context embedding v1 (local)",
+        "prefix_document": "search_document: ",
+        "prefix_query": "search_query: "
     },
     "e5-mistral-7b": {
         "provider": "llamacpp",
@@ -252,9 +273,20 @@ class APIEmbedder(Embedder):
         self,
         texts: List[str],
         batch_size: int = 100,
-        show_progress: bool = False
+        show_progress: bool = False,
+        is_query: bool = False
     ) -> EmbeddingResult:
-        """Embed texts using API"""
+        """Embed texts using API
+        
+        Args:
+            texts: List of texts to embed
+            batch_size: Batch size for API calls
+            show_progress: Show progress (not implemented for API)
+            is_query: If True, use query prefix (for search queries).
+                     If False, use document prefix (for indexing documents).
+                     This is important for models like nomic-embed-text that
+                     require different prefixes for documents vs queries.
+        """
         if not texts:
             return EmbeddingResult(
                 embeddings=[],
@@ -266,13 +298,24 @@ class APIEmbedder(Embedder):
         start_time = time.time()
         all_embeddings = []
         
+        # Get task-specific prefix (for models like nomic that require it)
+        prefix = ""
+        if is_query:
+            prefix = self._config.get("prefix_query", "")
+        else:
+            prefix = self._config.get("prefix_document", "")
+        
+        # Log prefix usage for debugging
+        if prefix:
+            logger.debug(f"Using prefix '{prefix.strip()}' for {'query' if is_query else 'document'} embedding")
+        
         # Process in batches
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             
-            # Preprocess
+            # Preprocess with prefix
             processed = [
-                self._truncate_text(
+                prefix + self._truncate_text(
                     self._preprocess_text(t),
                     self._config["max_tokens"]
                 )
@@ -289,9 +332,11 @@ class APIEmbedder(Embedder):
             elif self._provider == "openai":
                 embeddings = await self._embed_openai(processed)
             elif self._provider == "cohere":
-                embeddings = await self._embed_cohere(processed)
+                input_type = "search_query" if is_query else "search_document"
+                embeddings = await self._embed_cohere(processed, input_type)
             elif self._provider == "voyage":
-                embeddings = await self._embed_voyage(processed)
+                input_type = "query" if is_query else "document"
+                embeddings = await self._embed_voyage(processed, input_type)
             else:
                 # Custom endpoint - assume OpenAI-compatible
                 embeddings = await self._embed_openai(processed)
@@ -310,13 +355,22 @@ class APIEmbedder(Embedder):
             batch_size=len(texts)
         )
     
+    async def embed_documents(self, texts: List[str], batch_size: int = 100) -> EmbeddingResult:
+        """Embed documents for indexing (uses document prefix for models that support it)"""
+        return await self.embed(texts, batch_size=batch_size, is_query=False)
+    
     async def embed_query(self, text: str) -> List[float]:
-        """Embed a single query"""
-        # Some providers use different input types for queries vs documents
-        processed = self._truncate_text(
+        """Embed a single query (uses query prefix for models that support it)"""
+        # Get prefix for query embedding
+        prefix = self._config.get("prefix_query", "")
+        
+        processed = prefix + self._truncate_text(
             self._preprocess_text(text),
             self._config["max_tokens"]
         )
+        
+        if prefix:
+            logger.debug(f"Using query prefix '{prefix.strip()}' for embed_query")
         
         if self._provider == "cohere":
             embeddings = await self._embed_cohere([processed], "search_query")

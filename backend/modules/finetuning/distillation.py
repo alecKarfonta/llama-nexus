@@ -2124,6 +2124,29 @@ class DistillationManager:
         
         task = asyncio.create_task(self.run_job(job_id))
         self._running_jobs[job_id] = task
+        
+        # Add callback to handle exceptions in background task
+        def _handle_task_result(t: asyncio.Task):
+            try:
+                exc = t.exception()
+                if exc:
+                    import traceback
+                    logger.error(
+                        f"Distillation job {job_id} background task failed",
+                        extra={"error": str(exc), "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))}
+                    )
+                    # Update job status if not already updated
+                    if job_id in self.jobs and self.jobs[job_id].status == DistillationStatus.RUNNING:
+                        self.jobs[job_id].status = DistillationStatus.FAILED
+                        self.jobs[job_id].error = str(exc)
+                        self._save_jobs()
+            except asyncio.CancelledError:
+                pass
+            finally:
+                if job_id in self._running_jobs:
+                    del self._running_jobs[job_id]
+        
+        task.add_done_callback(_handle_task_result)
 
     def pause_job(self, job_id: str) -> bool:
         """Pause a running job (can be resumed)."""

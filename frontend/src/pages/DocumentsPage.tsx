@@ -139,6 +139,7 @@ const DOC_TYPE_ICONS: Record<string, React.ReactNode> = {
   json: <JsonIcon />,
   csv: <CsvIcon />,
   url: <LinkIcon />,
+  epub: <ArticleIcon />,
 };
 
 // Status colors and icons
@@ -203,10 +204,10 @@ const DomainTree: React.FC<{
             pl: 2 + level * 2,
             borderRadius: 1,
             mb: 0.5,
-            bgcolor: isDragOver 
-              ? alpha('#10B981', 0.3) 
-              : isSelected 
-                ? alpha('#6366F1', 0.15) 
+            bgcolor: isDragOver
+              ? alpha('#10B981', 0.3)
+              : isSelected
+                ? alpha('#6366F1', 0.15)
                 : 'transparent',
             border: isDragOver ? '2px dashed #10B981' : '2px solid transparent',
             transition: 'all 0.2s ease',
@@ -245,8 +246,8 @@ const DomainTree: React.FC<{
             <Chip
               label={domain.document_count}
               size="small"
-              sx={{ 
-                height: 20, 
+              sx={{
+                height: 20,
                 bgcolor: alpha('#6366F1', 0.2),
                 '& .MuiChip-label': { px: 1, fontSize: 11 },
               }}
@@ -350,16 +351,16 @@ const DocumentsPage: React.FC = () => {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [totalDocuments, setTotalDocuments] = useState(0);
-  
+
   // Batch operations
   const [selectedDocuments, setSelectedDocuments] = useState<Set<string>>(new Set());
   const [batchProcessing, setBatchProcessing] = useState(false);
-  
+
   // Drag and drop
   const [dragOverDomain, setDragOverDomain] = useState<string | null>(null);
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const [globalDragOver, setGlobalDragOver] = useState(false);
-  
+
   // Processing queue
   const [processingQueue, setProcessingQueue] = useState<any>(null);
 
@@ -405,13 +406,13 @@ const DocumentsPage: React.FC = () => {
     try {
       const res = await api.get('/api/v1/rag/domains');
       const flatDomains = res.data.domains || [];
-      
+
       // Build tree structure
       const domainMap = new Map<string, Domain>();
       flatDomains.forEach((d: Domain) => {
         domainMap.set(d.id, { ...d, children: [] });
       });
-      
+
       const rootDomains: Domain[] = [];
       domainMap.forEach(domain => {
         if (domain.parent_id && domainMap.has(domain.parent_id)) {
@@ -420,7 +421,7 @@ const DocumentsPage: React.FC = () => {
           rootDomains.push(domain);
         }
       });
-      
+
       setDomains(rootDomains);
     } catch (err) {
       console.error('Failed to load domains:', err);
@@ -513,9 +514,9 @@ const DocumentsPage: React.FC = () => {
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    
+
     setSelectedFile(file);
-    
+
     // Auto-detect document type from file extension
     const ext = file.name.split('.').pop()?.toLowerCase();
     let docType = 'txt';
@@ -525,11 +526,12 @@ const DocumentsPage: React.FC = () => {
     else if (ext === 'html') docType = 'html';
     else if (ext === 'json') docType = 'json';
     else if (ext === 'csv') docType = 'csv';
-    
+    else if (ext === 'epub') docType = 'epub';
+
     // Read file content - use base64 for binary files (PDF, DOCX)
     try {
       let content: string;
-      if (docType === 'pdf' || docType === 'docx') {
+      if (docType === 'pdf' || docType === 'docx' || docType === 'epub') {
         // Read binary files as base64
         const arrayBuffer = await file.arrayBuffer();
         const bytes = new Uint8Array(arrayBuffer);
@@ -556,16 +558,16 @@ const DocumentsPage: React.FC = () => {
   // Handle drag and drop files onto a domain
   const handleFileDrop = async (domain: Domain, files: FileList) => {
     if (files.length === 0) return;
-    
+
     setUploadingFiles(true);
     setSuccess(`Uploading ${files.length} file(s) to "${domain.name}"...`);
-    
+
     let successCount = 0;
     let errorCount = 0;
-    
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      
+
       try {
         // Auto-detect document type from file extension
         const ext = file.name.split('.').pop()?.toLowerCase();
@@ -576,10 +578,11 @@ const DocumentsPage: React.FC = () => {
         else if (ext === 'html' || ext === 'htm') docType = 'html';
         else if (ext === 'json') docType = 'json';
         else if (ext === 'csv') docType = 'csv';
-        
+        else if (ext === 'epub') docType = 'epub';
+
         // Read file content
         let content: string;
-        if (docType === 'pdf' || docType === 'docx') {
+        if (docType === 'pdf' || docType === 'docx' || docType === 'epub') {
           // Read binary files as base64
           const arrayBuffer = await file.arrayBuffer();
           const bytes = new Uint8Array(arrayBuffer);
@@ -592,7 +595,7 @@ const DocumentsPage: React.FC = () => {
           // Read text files as text
           content = await file.text();
         }
-        
+
         // Upload document
         await api.post('/api/v1/rag/documents', {
           name: file.name,
@@ -600,24 +603,24 @@ const DocumentsPage: React.FC = () => {
           content: content,
           domain_id: domain.id,
         });
-        
+
         successCount++;
       } catch (err) {
         console.error(`Failed to upload ${file.name}:`, err);
         errorCount++;
       }
     }
-    
+
     setUploadingFiles(false);
-    
+
     if (errorCount === 0) {
       setSuccess(`Successfully uploaded ${successCount} file(s) to "${domain.name}"`);
     } else {
       setError(`Uploaded ${successCount} file(s), ${errorCount} failed`);
     }
-    
+
     setTimeout(() => setSuccess(null), 3000);
-    
+
     // Refresh data
     loadDocuments();
     loadDomains();
@@ -628,13 +631,13 @@ const DocumentsPage: React.FC = () => {
       setError('Please select a domain first');
       return;
     }
-    
+
     // Handle GraphRAG upload
     if (uploadDestination === 'graphrag' && selectedFile) {
       await handleGraphRAGUpload();
       return;
     }
-    
+
     // Handle local RAG upload
     try {
       await api.post('/api/v1/rag/documents', {
@@ -652,27 +655,27 @@ const DocumentsPage: React.FC = () => {
       setError('Failed to create document');
     }
   };
-  
+
   const handleGraphRAGUpload = async () => {
     if (!selectedFile) {
       setError('Please select a file to upload');
       return;
     }
-    
+
     try {
       setGraphragUploading(true);
       setGraphragResult(null);
-      
+
       const result = await api.uploadToGraphRAG(selectedFile, {
         domain: selectedDomain?.name || 'general',
         useSemanticChunking: true,
         buildKnowledgeGraph: true
       });
-      
+
       setGraphragResult(result);
       setSuccess(`Document processed: ${result.total_chunks} chunks, ${result.knowledge_graph?.entities || 0} entities extracted`);
       setTimeout(() => setSuccess(null), 5000);
-      
+
       // Don't close dialog immediately - show results
     } catch (err: any) {
       setError(err.message || 'Failed to upload to GraphRAG');
@@ -694,7 +697,7 @@ const DocumentsPage: React.FC = () => {
       setError('Failed to delete document');
     }
   };
-  
+
   // Batch operations handlers
   const toggleDocumentSelection = (docId: string) => {
     const newSelection = new Set(selectedDocuments);
@@ -705,19 +708,19 @@ const DocumentsPage: React.FC = () => {
     }
     setSelectedDocuments(newSelection);
   };
-  
+
   const selectAllDocuments = () => {
     const allIds = new Set(documents.map(d => d.id));
     setSelectedDocuments(allIds);
   };
-  
+
   const clearSelection = () => {
     setSelectedDocuments(new Set());
   };
-  
+
   const handleBatchProcess = async () => {
     if (selectedDocuments.size === 0) return;
-    
+
     try {
       setBatchProcessing(true);
       const response = await fetch('/api/v1/rag/documents/batch-process', {
@@ -729,9 +732,9 @@ const DocumentsPage: React.FC = () => {
           embedding_model: selectedDomain?.embedding_model || 'all-MiniLM-L6-v2'
         })
       });
-      
+
       if (!response.ok) throw new Error('Batch processing failed');
-      
+
       const result = await response.json();
       setSuccess(result.message);
       setTimeout(() => setSuccess(null), 3000);
@@ -743,7 +746,7 @@ const DocumentsPage: React.FC = () => {
       setBatchProcessing(false);
     }
   };
-  
+
   const handleProcessAllPending = async () => {
     try {
       setBatchProcessing(true);
@@ -756,9 +759,9 @@ const DocumentsPage: React.FC = () => {
           embedding_model: selectedDomain?.embedding_model || 'all-MiniLM-L6-v2'
         })
       });
-      
+
       if (!response.ok) throw new Error('Failed to process pending documents');
-      
+
       const result = await response.json();
       setSuccess(result.message);
       setTimeout(() => setSuccess(null), 3000);
@@ -769,7 +772,7 @@ const DocumentsPage: React.FC = () => {
       setBatchProcessing(false);
     }
   };
-  
+
   const handleReprocessDocument = async (docId: string) => {
     try {
       const response = await fetch(`/api/v1/rag/documents/${docId}/reprocess`, {
@@ -780,9 +783,9 @@ const DocumentsPage: React.FC = () => {
           embedding_model: selectedDomain?.embedding_model || 'all-MiniLM-L6-v2'
         })
       });
-      
+
       if (!response.ok) throw new Error('Reprocessing failed');
-      
+
       const result = await response.json();
       setSuccess(result.message);
       setTimeout(() => setSuccess(null), 3000);
@@ -791,17 +794,17 @@ const DocumentsPage: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Failed to reprocess document');
     }
   };
-  
+
   const handleRemoveFromVectorStore = async (docId: string) => {
     if (!confirm('Remove this document from the vector store? The document will remain in the database.')) return;
-    
+
     try {
       const response = await fetch(`/api/v1/rag/documents/${docId}/vectors`, {
         method: 'DELETE'
       });
-      
+
       if (!response.ok) throw new Error('Failed to remove from vector store');
-      
+
       const result = await response.json();
       setSuccess(`Removed ${result.vectors_deleted} vectors from vector store`);
       setTimeout(() => setSuccess(null), 3000);
@@ -810,11 +813,11 @@ const DocumentsPage: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Failed to remove from vector store');
     }
   };
-  
+
   const handleReindexDomain = async () => {
     if (!selectedDomain) return;
     if (!confirm(`Reindex entire domain "${selectedDomain.name}"? This will reprocess all documents.`)) return;
-    
+
     try {
       setBatchProcessing(true);
       const response = await fetch(`/api/v1/rag/domains/${selectedDomain.id}/reindex`, {
@@ -826,9 +829,9 @@ const DocumentsPage: React.FC = () => {
           recreate_collection: false
         })
       });
-      
+
       if (!response.ok) throw new Error('Domain reindex failed');
-      
+
       const result = await response.json();
       setSuccess(result.message);
       setTimeout(() => setSuccess(null), 3000);
@@ -839,7 +842,31 @@ const DocumentsPage: React.FC = () => {
       setBatchProcessing(false);
     }
   };
-  
+
+  const handleClearCollection = async () => {
+    if (!selectedDomain) return;
+    if (!confirm(`Clear all vectors from "${selectedDomain.name}"? This deletes all embeddings but keeps documents. You'll need to reindex afterwards.`)) return;
+
+    try {
+      setBatchProcessing(true);
+      const response = await fetch(`/api/v1/rag/domains/${selectedDomain.id}/collection`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) throw new Error('Failed to clear collection');
+
+      const result = await response.json();
+      setSuccess(`Cleared ${result.vectors_deleted} vectors from collection`);
+      setTimeout(() => setSuccess(null), 3000);
+      loadDocuments();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to clear collection');
+    } finally {
+      setBatchProcessing(false);
+    }
+  };
+
+
   // Knowledge Graph extraction handlers
   const handleExtractKnowledge = async (docId: string) => {
     try {
@@ -853,10 +880,10 @@ const DocumentsPage: React.FC = () => {
       setLoading(false);
     }
   };
-  
+
   const handleBatchExtractKnowledge = async () => {
     if (selectedDocuments.size === 0) return;
-    
+
     try {
       setBatchProcessing(true);
       const result = await api.batchExtractDocumentKnowledge(Array.from(selectedDocuments));
@@ -869,7 +896,7 @@ const DocumentsPage: React.FC = () => {
       setBatchProcessing(false);
     }
   };
-  
+
   // Load processing queue
   const loadProcessingQueue = useCallback(async () => {
     try {
@@ -882,7 +909,7 @@ const DocumentsPage: React.FC = () => {
       console.error('Failed to load processing queue:', err);
     }
   }, []);
-  
+
   useEffect(() => {
     const interval = setInterval(loadProcessingQueue, 5000);
     loadProcessingQueue();
@@ -921,8 +948,8 @@ const DocumentsPage: React.FC = () => {
       {/* Header */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Box>
-          <Typography variant="h4" sx={{ 
-            fontWeight: 700, 
+          <Typography variant="h4" sx={{
+            fontWeight: 700,
             mb: 0.5,
             background: 'linear-gradient(135deg, #10B981 0%, #06B6D4 100%)',
             WebkitBackgroundClip: 'text',
@@ -959,16 +986,16 @@ const DocumentsPage: React.FC = () => {
           {error}
         </Alert>
       )}
-      
+
       {success && (
         <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccess(null)}>
           {success}
         </Alert>
       )}
-      
+
       {uploadingFiles && (
-        <Alert 
-          severity="info" 
+        <Alert
+          severity="info"
           sx={{ mb: 2 }}
           icon={<CircularProgress size={20} />}
         >
@@ -994,9 +1021,9 @@ const DocumentsPage: React.FC = () => {
           e.stopPropagation();
           setGlobalDragOver(false);
           if (!selectedDomain) return;
-          const files = Array.from(e.dataTransfer.files);
+          const files = e.dataTransfer.files;
           if (files.length > 0) {
-            handleFileDrop(files, selectedDomain);
+            handleFileDrop(selectedDomain, files);
           }
         }}
         sx={{
@@ -1004,13 +1031,13 @@ const DocumentsPage: React.FC = () => {
           p: 3,
           borderRadius: 2,
           border: '2px dashed',
-          borderColor: globalDragOver 
-            ? '#10B981' 
-            : selectedDomain 
-              ? alpha('#10B981', 0.3) 
+          borderColor: globalDragOver
+            ? '#10B981'
+            : selectedDomain
+              ? alpha('#10B981', 0.3)
               : alpha('#fff', 0.1),
-          bgcolor: globalDragOver 
-            ? alpha('#10B981', 0.08) 
+          bgcolor: globalDragOver
+            ? alpha('#10B981', 0.08)
             : 'transparent',
           transition: 'all 0.2s ease',
           cursor: selectedDomain ? 'pointer' : 'default',
@@ -1026,29 +1053,29 @@ const DocumentsPage: React.FC = () => {
           }
         }}
       >
-        <CloudUploadIcon sx={{ 
-          fontSize: 40, 
-          color: globalDragOver ? '#10B981' : selectedDomain ? alpha('#10B981', 0.6) : 'text.disabled' 
+        <CloudUploadIcon sx={{
+          fontSize: 40,
+          color: globalDragOver ? '#10B981' : selectedDomain ? alpha('#10B981', 0.6) : 'text.disabled'
         }} />
-        <Typography 
-          variant="body1" 
-          sx={{ 
-            fontWeight: 600, 
-            color: globalDragOver ? '#10B981' : selectedDomain ? 'text.primary' : 'text.disabled' 
+        <Typography
+          variant="body1"
+          sx={{
+            fontWeight: 600,
+            color: globalDragOver ? '#10B981' : selectedDomain ? 'text.primary' : 'text.disabled'
           }}
         >
-          {globalDragOver 
-            ? `Drop files to upload to "${selectedDomain.name}"` 
-            : selectedDomain 
+          {globalDragOver
+            ? `Drop files to upload to "${selectedDomain.name}"`
+            : selectedDomain
               ? `Drag files here to upload to "${selectedDomain.name}"`
               : 'Select a domain to upload documents'}
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          Supports TXT, PDF, DOCX, MD, HTML, JSON, CSV
+          Supports TXT, PDF, DOCX, MD, HTML, JSON, CSV, EPUB
         </Typography>
         {selectedDomain && !globalDragOver && (
-          <Button 
-            size="small" 
+          <Button
+            size="small"
             startIcon={<UploadIcon />}
             sx={{ mt: 1, textTransform: 'none' }}
           >
@@ -1060,8 +1087,8 @@ const DocumentsPage: React.FC = () => {
       <Grid container spacing={3}>
         {/* Domain Tree Sidebar */}
         <Grid item xs={3}>
-          <Paper sx={{ 
-            p: 2, 
+          <Paper sx={{
+            p: 2,
             height: 'calc(100vh - 200px)',
             overflow: 'auto',
             background: 'linear-gradient(135deg, rgba(26, 26, 46, 0.9) 0%, rgba(15, 15, 26, 0.9) 100%)',
@@ -1076,7 +1103,7 @@ const DocumentsPage: React.FC = () => {
                 <RefreshIcon fontSize="small" />
               </IconButton>
             </Box>
-            
+
             <Button
               fullWidth
               variant="outlined"
@@ -1089,7 +1116,7 @@ const DocumentsPage: React.FC = () => {
             >
               All Documents
             </Button>
-            
+
             {domains.length > 0 && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1, textAlign: 'center' }}>
                 Drag & drop files onto a domain to upload
@@ -1122,7 +1149,7 @@ const DocumentsPage: React.FC = () => {
                   setPage(0);
                 }}
                 onToggle={toggleDomain}
-                onEdit={() => {}}
+                onEdit={() => { }}
                 onDelete={handleDeleteDomain}
                 onDragOver={setDragOverDomain}
                 onFileDrop={handleFileDrop}
@@ -1133,7 +1160,7 @@ const DocumentsPage: React.FC = () => {
 
         {/* Document List */}
         <Grid item xs={selectedDocument ? 5 : 9}>
-          <Paper sx={{ 
+          <Paper sx={{
             p: 2,
             background: 'linear-gradient(135deg, rgba(26, 26, 46, 0.9) 0%, rgba(15, 15, 26, 0.9) 100%)',
             border: '1px solid rgba(16, 185, 129, 0.2)',
@@ -1216,7 +1243,7 @@ const DocumentsPage: React.FC = () => {
                 </Box>
               </Paper>
             )}
-            
+
             {/* Quick Actions */}
             <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
               <Button
@@ -1249,13 +1276,23 @@ const DocumentsPage: React.FC = () => {
               <Button
                 variant="outlined"
                 size="small"
+                color="warning"
+                startIcon={<StorageIcon />}
+                onClick={handleClearCollection}
+                disabled={!selectedDomain || batchProcessing}
+              >
+                Clear Vectors
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
                 startIcon={selectedDocuments.size === documents.length ? <DeselectIcon /> : <SelectAllIcon />}
                 onClick={selectedDocuments.size === documents.length ? clearSelection : selectAllDocuments}
               >
                 {selectedDocuments.size === documents.length ? 'Deselect All' : 'Select All'}
               </Button>
             </Box>
-            
+
             {/* Processing Queue Status */}
             {processingQueue && (processingQueue.processing.count > 0 || processingQueue.pending.count > 0) && (
               <Alert severity="info" sx={{ mb: 2 }}>
@@ -1469,7 +1506,7 @@ const DocumentsPage: React.FC = () => {
         {/* Document Details Panel */}
         {selectedDocument && (
           <Grid item xs={4}>
-            <Paper sx={{ 
+            <Paper sx={{
               p: 2,
               height: 'calc(100vh - 200px)',
               overflow: 'auto',
@@ -1630,14 +1667,14 @@ const DocumentsPage: React.FC = () => {
               />
             </Box>
           </Box>
-          
+
           {uploadDestination === 'graphrag' && (
             <Alert severity="info" sx={{ mb: 2 }}>
               Documents will be processed through GraphRAG with automatic entity extraction and knowledge graph building.
               Only file upload is supported for GraphRAG.
             </Alert>
           )}
-          
+
           {graphragResult && (
             <Alert severity="success" sx={{ mb: 2 }}>
               <Typography variant="body2" fontWeight={600}>
@@ -1658,7 +1695,7 @@ const DocumentsPage: React.FC = () => {
               )}
             </Alert>
           )}
-          
+
           <TextField
             fullWidth
             label="Document Name"
@@ -1666,7 +1703,7 @@ const DocumentsPage: React.FC = () => {
             onChange={(e) => setDocumentForm(prev => ({ ...prev, name: e.target.value }))}
             sx={{ mb: 2 }}
           />
-          
+
           {uploadDestination === 'local' && (
             <Grid container spacing={2} sx={{ mb: 2 }}>
               <Grid item xs={6}>
@@ -1695,15 +1732,15 @@ const DocumentsPage: React.FC = () => {
           )}
 
           {/* Input Method Tabs */}
-          <Tabs 
-            value={uploadMode} 
+          <Tabs
+            value={uploadMode}
             onChange={(_, newValue) => setUploadMode(newValue)}
             sx={{ mb: 2 }}
           >
-            <Tab 
-              icon={<CloudUploadIcon />} 
-              label="Upload File" 
-              value="file" 
+            <Tab
+              icon={<CloudUploadIcon />}
+              label="Upload File"
+              value="file"
             />
             {uploadDestination === 'local' && (
               <>
@@ -1811,12 +1848,12 @@ const DocumentsPage: React.FC = () => {
             {graphragResult ? 'Close' : 'Cancel'}
           </Button>
           {!graphragResult && (
-            <Button 
-              onClick={handleCreateDocument} 
-              variant="contained" 
+            <Button
+              onClick={handleCreateDocument}
+              variant="contained"
               disabled={
                 graphragUploading ||
-                !documentForm.name || 
+                !documentForm.name ||
                 (uploadDestination === 'graphrag' && !selectedFile) ||
                 (uploadDestination === 'local' && !documentForm.content && uploadMode !== 'url')
               }

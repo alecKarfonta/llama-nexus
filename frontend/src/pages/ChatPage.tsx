@@ -64,12 +64,12 @@ import {
 import { useVoiceInput } from '@/hooks/useVoiceInput'
 import { useTTS } from '@/hooks/useTTS'
 import { apiService } from '@/services/api'
-import { ToolsService } from '@/services/tools'
+import { ToolsService, ExtendedTool } from '@/services/tools'
 import { MarkdownRenderer } from '@/components/chat'
 import { ConversationSidebar } from '@/components/chat/ConversationSidebar'
 import type { ChatMessage, ChatCompletionRequest, Tool, ToolCall, ConversationListItem } from '@/types/api'
 
-interface ChatPageProps {}
+interface ChatPageProps { }
 
 interface ChatSettings {
   // Connection settings
@@ -182,27 +182,28 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const [settings, setSettings] = useState(loadSettings)
   const [showSettings, setShowSettings] = useState(false)
   const [error, setError] = useState(null)
-  const [availableTools] = useState(ToolsService.getAvailableTools())
-  
+  const [availableTools, setAvailableTools] = useState<ExtendedTool[]>(ToolsService.getBuiltInToolsExtended())
+  const [mcpToolsLoading, setMcpToolsLoading] = useState(false)
+
   // Conversation management state
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
   const [conversationTitle, setConversationTitle] = useState<string>('New Conversation')
   const [isSaving, setIsSaving] = useState(false)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
-  
+
   // Context window tracking state
   const [tokenCount, setTokenCount] = useState({ prompt: 0, total: 0 })
   const maxContextTokens = 128000 // Default, can be made configurable
-  
+
   // Performance metrics tracking
   const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetrics>(initialPerformanceMetrics)
   const performanceRef = useRef<PerformanceMetrics>(initialPerformanceMetrics)
-  
+
   // Multi-modal inputs state
   const [uploadedImages, setUploadedImages] = useState<Array<{ file: File; preview: string; base64: string }>>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
-  
+
   // Audio recording state (legacy manual recording)
   const [isRecording, setIsRecording] = useState(false)
   const [isTranscribing, setIsTranscribing] = useState(false)
@@ -222,7 +223,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   // Message editing state
   const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
   const [editingContent, setEditingContent] = useState<string>('')
-  
+
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -263,7 +264,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       } catch {
         setSttServiceAvailable(false)
       }
-      
+
       try {
         const ttsStatus = await apiService.getTTSStatus()
         setTtsServiceAvailable(ttsStatus.running)
@@ -271,11 +272,27 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         setTtsServiceAvailable(false)
       }
     }
-    
+
     checkServices()
     // Check periodically
     const interval = setInterval(checkServices, 30000)
     return () => clearInterval(interval)
+  }, [])
+
+  // Load MCP tools from connected servers
+  useEffect(() => {
+    const loadMCPTools = async () => {
+      setMcpToolsLoading(true)
+      try {
+        const mcpTools = await ToolsService.getMCPTools()
+        setAvailableTools([...ToolsService.getBuiltInToolsExtended(), ...mcpTools])
+      } catch (error) {
+        console.warn('Failed to load MCP tools:', error)
+      } finally {
+        setMcpToolsLoading(false)
+      }
+    }
+    loadMCPTools()
   }, [])
 
   // Start TTS service
@@ -347,7 +364,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       // Handle string content
       if (typeof msg.content === 'string') {
         totalChars += msg.content.length;
-      } 
+      }
       // Handle array content (multi-modal)
       else if (Array.isArray(msg.content)) {
         msg.content.forEach((part: any) => {
@@ -370,7 +387,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   // Save conversation to backend
   const saveConversation = useCallback(async (forceNew: boolean = false) => {
     if (messages.length <= 1) return; // Don't save empty conversations
-    
+
     setIsSaving(true);
     try {
       const conversationData = {
@@ -413,7 +430,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           conversationData.title = titleText.slice(0, 50) + (titleText.length > 50 ? '...' : '');
           setConversationTitle(conversationData.title);
         }
-        
+
         const newConversation = await apiService.createConversation(conversationData);
         setCurrentConversationId(newConversation.id);
       }
@@ -465,7 +482,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   useEffect(() => {
     const count = estimateTokenCount(messages);
     setTokenCount({ prompt: count, total: count });
-    
+
     // Mark as having unsaved changes when messages change (except initial load)
     if (messages.length > 1) {
       setHasUnsavedChanges(true);
@@ -523,12 +540,12 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
     // Construct message content with images if present
     let messageContent: any = input.trim()
-    
+
     // If images are uploaded, format the content for multi-modal models (OpenAI format)
     if (uploadedImages.length > 0) {
       // OpenAI multi-modal format: content is an array of parts
       const contentParts: any[] = []
-      
+
       // Add text if present
       if (input.trim()) {
         contentParts.push({
@@ -536,7 +553,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           text: input.trim()
         })
       }
-      
+
       // Add images
       uploadedImages.forEach(img => {
         contentParts.push({
@@ -546,7 +563,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           }
         })
       })
-      
+
       messageContent = contentParts
     }
 
@@ -557,42 +574,42 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
     setMessages((prev: ChatMessage[]) => [...prev, userMessage])
     setInput('')
-    
+
     // Clear uploaded images after sending
     uploadedImages.forEach(img => URL.revokeObjectURL(img.preview))
     setUploadedImages([])
-    
+
     setIsLoading(true)
     setError(null)
-    
+
     // Reset performance metrics for new generation
     performanceRef.current = initialPerformanceMetrics
     setPerformanceMetrics(initialPerformanceMetrics)
 
     try {
-      const selectedToolsForRequest = settings.enableTools 
+      const selectedToolsForRequest = settings.enableTools
         ? availableTools.filter((tool: Tool) => settings.selectedTools.includes(tool.function.name))
         : []
 
       // Prepare messages with reasoning level system prompt if needed
       let requestMessages = [...messages, userMessage]
-      
+
       // Add or update system message with reasoning level for GPT-OSS models
       if (settings.reasoningLevel !== 'none') {
         const systemMessage = {
           role: 'system' as const,
           content: `You are a helpful AI assistant. Reasoning: ${settings.reasoningLevel}`
         }
-        
+
         // Check if first message is already a system message
         if (requestMessages.length > 0 && requestMessages[0].role === 'system') {
           // Update existing system message to include reasoning level
-          const existingContent = typeof requestMessages[0].content === 'string' 
-            ? requestMessages[0].content 
+          const existingContent = typeof requestMessages[0].content === 'string'
+            ? requestMessages[0].content
             : ''
           requestMessages[0] = {
             ...requestMessages[0],
-            content: existingContent.includes('Reasoning:') 
+            content: existingContent.includes('Reasoning:')
               ? existingContent.replace(/Reasoning: \w+/, `Reasoning: ${settings.reasoningLevel}`)
               : `${existingContent}\nReasoning: ${settings.reasoningLevel}`
           }
@@ -668,11 +685,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               controller.close();
               return;
             }
-            
+
             // Parse SSE data
             const chunk = decoder.decode(value, { stream: true });
             const lines = chunk.split('\n');
-            
+
             for (const line of lines) {
               const trimmedLine = line.trim();
               if (trimmedLine.startsWith('data: ')) {
@@ -690,7 +707,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 }
               }
             }
-            
+
             return pump();
           }).catch((error) => {
             controller.error(error);
@@ -745,24 +762,24 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         let accumulatedToolCalls: ToolCall[] = []
         let tokenCount = 0
         let firstTokenReceived = false
-        
+
         let fullResponseText = ''
-        
+
         // TTS sentence chunking - send sentences as they complete for lower latency
         let ttsSentenceBuffer = ''
         const shouldStreamTTS = settings.voiceModeEnabled && settings.ttsEnabled && ttsServiceAvailable
-        
+
         // Function to extract and speak complete sentences
         const processTTSBuffer = (forceFlush: boolean = false) => {
           if (!shouldStreamTTS || !ttsSentenceBuffer.trim()) return
-          
+
           // Look for sentence boundaries: . ! ? followed by space or end
           // Also split on newlines for code/list responses
           const sentenceBreakRegex = /([.!?])\s+|(\n\n)/g
-          
+
           let lastIndex = 0
           let match
-          
+
           while ((match = sentenceBreakRegex.exec(ttsSentenceBuffer)) !== null) {
             // Extract the complete sentence including the punctuation
             const sentence = ttsSentenceBuffer.slice(lastIndex, match.index + 1).trim()
@@ -771,17 +788,17 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             }
             lastIndex = match.index + match[0].length
           }
-          
+
           // Keep the remainder (incomplete sentence) in the buffer
           ttsSentenceBuffer = ttsSentenceBuffer.slice(lastIndex)
-          
+
           // If forcing flush (end of stream), speak any remaining content
           if (forceFlush && ttsSentenceBuffer.trim().length > 0) {
             tts.speak(ttsSentenceBuffer.trim())
             ttsSentenceBuffer = ''
           }
         }
-        
+
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
@@ -795,7 +812,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               tokensPerSecond: tokenCount > 0 ? tokenCount / totalTime : null,
             }
             setPerformanceMetrics({ ...performanceRef.current })
-            
+
             // Flush any remaining TTS content
             processTTSBuffer(true)
             break
@@ -807,15 +824,15 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           // Check for content in multiple locations
           // content: actual response content
           // __verbose.content: llama.cpp verbose output
-          const contentDelta = value.choices?.[0]?.delta?.content || 
-                              value.__verbose?.content ||
-                              ''
-          
+          const contentDelta = value.choices?.[0]?.delta?.content ||
+            value.__verbose?.content ||
+            ''
+
           // Debug: log if we're getting reasoning_content
           if (value.choices?.[0]?.delta?.reasoning_content) {
             console.log('Reasoning content received:', value.choices[0].delta.reasoning_content)
           }
-          
+
           if (contentDelta) {
             // Track first token time
             if (!firstTokenReceived) {
@@ -828,20 +845,20 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               }
               setPerformanceMetrics({ ...performanceRef.current })
             }
-            
+
             // Count tokens (rough estimate: split by whitespace and punctuation)
             const newTokens = contentDelta.split(/[\s\n]+/).filter((t: string) => t.length > 0).length
             tokenCount += Math.max(1, newTokens) // At least 1 token per chunk
-            
+
             // Accumulate for full response tracking
             fullResponseText += contentDelta
-            
+
             // Feed TTS buffer and process any complete sentences
             if (shouldStreamTTS) {
               ttsSentenceBuffer += contentDelta
               processTTSBuffer(false)
             }
-            
+
             // Update metrics periodically
             const currentTime = performance.now()
             const elapsedTime = (currentTime - startTime) / 1000
@@ -851,7 +868,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               tokensPerSecond: tokenCount / elapsedTime,
             }
             setPerformanceMetrics({ ...performanceRef.current })
-            
+
             setMessages((prev: ChatMessage[]) => {
               const newMessages = [...prev]
               const lastMessage = newMessages[newMessages.length - 1]
@@ -870,7 +887,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               tokensPerSecond: timings.predicted_per_second,
             }
             setPerformanceMetrics({ ...performanceRef.current })
-            
+
             setMessages((prev: ChatMessage[]) => {
               const newMessages = [...prev]
               const lastMessage = newMessages[newMessages.length - 1]
@@ -880,7 +897,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               return newMessages
             })
           }
-          
+
           // Extract prompt processing info if available
           if (timings?.prompt_per_second) {
             performanceRef.current = {
@@ -903,7 +920,29 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           }
 
           if (value.choices?.[0]?.delta?.tool_calls) {
-            accumulatedToolCalls.push(...value.choices[0].delta.tool_calls)
+            // Tool calls arrive as deltas - need to accumulate by index
+            for (const delta of value.choices[0].delta.tool_calls) {
+              const index = delta.index ?? 0
+              if (!accumulatedToolCalls[index]) {
+                // First delta for this tool call - initialize it
+                accumulatedToolCalls[index] = {
+                  id: delta.id || `call_${index}`,
+                  type: 'function',
+                  function: {
+                    name: delta.function?.name || '',
+                    arguments: delta.function?.arguments || ''
+                  }
+                }
+              } else {
+                // Subsequent delta - accumulate the arguments
+                if (delta.function?.name) {
+                  accumulatedToolCalls[index].function.name += delta.function.name
+                }
+                if (delta.function?.arguments) {
+                  accumulatedToolCalls[index].function.arguments += delta.function.arguments
+                }
+              }
+            }
           }
 
           if (value.choices?.[0]?.finish_reason === 'tool_calls') {
@@ -1051,7 +1090,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     setError(null)
   }
 
-  const copyToClipboard = (content: string | Array<{type: string; text?: string; image_url?: {url: string}}>) => {
+  const copyToClipboard = (content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>) => {
     let text = '';
     if (typeof content === 'string') {
       text = content;
@@ -1089,48 +1128,48 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   // Save edited message and regenerate response
   const saveEditedMessage = async (index: number) => {
     if (!editingContent.trim()) return
-    
+
     // Update the message at the given index
     const updatedMessages = messages.slice(0, index + 1)
     updatedMessages[index] = {
       ...updatedMessages[index],
       content: editingContent.trim()
     }
-    
+
     // Remove all messages after the edited one (will regenerate)
     setMessages(updatedMessages)
     setEditingMessageIndex(null)
     setEditingContent('')
     setHasUnsavedChanges(true)
-    
+
     // Regenerate the response
     setIsLoading(true)
     setError(null)
-    
+
     try {
-      const selectedToolsForRequest = settings.enableTools 
+      const selectedToolsForRequest = settings.enableTools
         ? availableTools.filter((tool: Tool) => settings.selectedTools.includes(tool.function.name))
         : []
 
       // Prepare messages with reasoning level system prompt if needed
       let requestMessages = updatedMessages
-      
+
       // Add or update system message with reasoning level for GPT-OSS models
       if (settings.reasoningLevel !== 'none') {
         const systemMessage = {
           role: 'system' as const,
           content: `You are a helpful AI assistant. Reasoning: ${settings.reasoningLevel}`
         }
-        
+
         // Check if first message is already a system message
         if (requestMessages.length > 0 && requestMessages[0].role === 'system') {
           // Update existing system message to include reasoning level
-          const existingContent = typeof requestMessages[0].content === 'string' 
-            ? requestMessages[0].content 
+          const existingContent = typeof requestMessages[0].content === 'string'
+            ? requestMessages[0].content
             : ''
           requestMessages[0] = {
             ...requestMessages[0],
-            content: existingContent.includes('Reasoning:') 
+            content: existingContent.includes('Reasoning:')
               ? existingContent.replace(/Reasoning: \w+/, `Reasoning: ${settings.reasoningLevel}`)
               : `${existingContent}\nReasoning: ${settings.reasoningLevel}`
           }
@@ -1196,7 +1235,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     const newSelectedTools = settings.selectedTools.includes(toolName)
       ? settings.selectedTools.filter((name: string) => name !== toolName)
       : [...settings.selectedTools, toolName];
-    
+
     saveSettings({ ...settings, selectedTools: newSelectedTools });
   }
 
@@ -1209,7 +1248,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
-      
+
       // Validate file type
       if (!file.type.startsWith('image/')) {
         setError(`File ${file.name} is not an image`)
@@ -1237,7 +1276,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     }
 
     setUploadedImages((prev) => [...prev, ...newImages])
-    
+
     // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
@@ -1259,7 +1298,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     try {
       setAudioError(null)
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      
+
       const mediaRecorder = new MediaRecorder(stream)
       mediaRecorderRef.current = mediaRecorder
       audioChunksRef.current = []
@@ -1273,7 +1312,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
         await transcribeAudio(audioBlob)
-        
+
         // Stop all tracks
         stream.getTracks().forEach((track) => track.stop())
       }
@@ -1314,7 +1353,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
       // Get OpenAI API key from settings
       const apiKey = settings.openaiApiKey || localStorage.getItem('openai-api-key') || ''
-      
+
       if (!apiKey) {
         throw new Error('OpenAI API key not configured. Please add it in Chat Settings.')
       }
@@ -1348,9 +1387,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   }
 
   return (
-    <Box sx={{ 
-      height: 'calc(100vh - 120px)', 
-      display: 'flex', 
+    <Box sx={{
+      height: 'calc(100vh - 120px)',
+      display: 'flex',
       flexDirection: 'column',
       p: { xs: 2, sm: 3, md: 4 },
       maxWidth: '100%',
@@ -1360,7 +1399,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
           <Tooltip title="Conversation History">
-            <IconButton 
+            <IconButton
               onClick={() => setSidebarOpen(true)}
               size="small"
               sx={{
@@ -1374,10 +1413,10 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             </IconButton>
           </Tooltip>
           <Box>
-            <Typography 
-              variant="h1" 
-              sx={{ 
-                fontWeight: 700, 
+            <Typography
+              variant="h1"
+              sx={{
+                fontWeight: 700,
                 color: 'text.primary',
                 mb: 0.5,
                 fontSize: { xs: '1.25rem', sm: '1.5rem' },
@@ -1386,10 +1425,10 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             >
               {conversationTitle}
             </Typography>
-            <Typography 
-              variant="body2" 
-              color="text.secondary" 
-              sx={{ 
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{
                 fontSize: '0.8125rem',
               }}
             >
@@ -1408,9 +1447,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   onClick={handleStartTTS}
                   disabled={ttsStarting}
                   startIcon={ttsStarting ? <CircularProgress size={14} /> : <VolumeUpIcon />}
-                  sx={{ 
-                    fontSize: '0.7rem', 
-                    textTransform: 'none', 
+                  sx={{
+                    fontSize: '0.7rem',
+                    textTransform: 'none',
                     py: 0.25,
                     px: 1,
                     minWidth: 'auto',
@@ -1425,10 +1464,10 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           )}
           {/* Voice Mode Toggle */}
           <Tooltip title={
-            !sttServiceAvailable 
-              ? "STT service not running - deploy from STT page first" 
-              : settings.voiceModeEnabled 
-                ? "Voice Mode Active - Click to disable" 
+            !sttServiceAvailable
+              ? "STT service not running - deploy from STT page first"
+              : settings.voiceModeEnabled
+                ? "Voice Mode Active - Click to disable"
                 : "Enable Voice Mode"
           }>
             <span>
@@ -1465,16 +1504,16 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           {/* Context window progress bar */}
           <Tooltip title={`Context: ${tokenCount.prompt.toLocaleString()} / ${maxContextTokens.toLocaleString()} tokens (${((tokenCount.prompt / maxContextTokens) * 100).toFixed(1)}%)`}>
             <Box sx={{ width: 100, mr: 1 }}>
-              <LinearProgress 
-                variant="determinate" 
+              <LinearProgress
+                variant="determinate"
                 value={Math.min((tokenCount.prompt / maxContextTokens) * 100, 100)}
                 sx={{
                   height: 6,
                   borderRadius: 3,
                   bgcolor: 'action.hover',
                   '& .MuiLinearProgress-bar': {
-                    bgcolor: tokenCount.prompt > maxContextTokens * 0.9 ? 'error.main' : 
-                             tokenCount.prompt > maxContextTokens * 0.7 ? 'warning.main' : 'primary.main'
+                    bgcolor: tokenCount.prompt > maxContextTokens * 0.9 ? 'error.main' :
+                      tokenCount.prompt > maxContextTokens * 0.7 ? 'warning.main' : 'primary.main'
                   }
                 }}
               />
@@ -1482,7 +1521,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           </Tooltip>
           <Tooltip title={hasUnsavedChanges ? "Save Conversation" : "Conversation Saved"}>
             <span>
-              <IconButton 
+              <IconButton
                 onClick={() => saveConversation()}
                 size="small"
                 disabled={isSaving || !hasUnsavedChanges}
@@ -1495,7 +1534,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             </span>
           </Tooltip>
           <Tooltip title="New Conversation">
-            <IconButton 
+            <IconButton
               onClick={handleNewConversation}
               size="small"
               sx={{
@@ -1506,7 +1545,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             </IconButton>
           </Tooltip>
           <Tooltip title={settings.showPerformanceMetrics ? "Hide Performance Metrics" : "Show Performance Metrics"}>
-            <IconButton 
+            <IconButton
               onClick={() => saveSettings({ ...settings, showPerformanceMetrics: !settings.showPerformanceMetrics })}
               size="small"
               sx={{
@@ -1518,7 +1557,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             </IconButton>
           </Tooltip>
           <Tooltip title="Chat Settings">
-            <IconButton 
+            <IconButton
               onClick={() => setShowSettings(!showSettings)}
               size="small"
               sx={{
@@ -1530,7 +1569,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             </IconButton>
           </Tooltip>
           <Tooltip title="Clear Chat">
-            <IconButton 
+            <IconButton
               onClick={clearChat}
               size="small"
               sx={{
@@ -1545,11 +1584,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
       {/* Performance Metrics Display */}
       <Collapse in={settings.showPerformanceMetrics}>
-        <Paper 
-          sx={{ 
-            mb: 2, 
-            p: 1.5, 
-            borderRadius: 1, 
+        <Paper
+          sx={{
+            mb: 2,
+            p: 1.5,
+            borderRadius: 1,
             bgcolor: 'background.paper',
             border: '1px solid rgba(255, 255, 255, 0.1)'
           }}
@@ -1561,59 +1600,59 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 Performance Metrics
               </Typography>
             </Box>
-            
+
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
               <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
                 Generation:
               </Typography>
-              <Chip 
-                size="small" 
-                label={performanceMetrics.tokensPerSecond 
-                  ? `${performanceMetrics.tokensPerSecond.toFixed(1)} tok/s` 
+              <Chip
+                size="small"
+                label={performanceMetrics.tokensPerSecond
+                  ? `${performanceMetrics.tokensPerSecond.toFixed(1)} tok/s`
                   : '--'
                 }
                 color={performanceMetrics.tokensPerSecond && performanceMetrics.tokensPerSecond > 20 ? 'success' : 'default'}
                 sx={{ height: 20, fontSize: '0.7rem' }}
               />
             </Box>
-            
+
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
               <TimerIcon fontSize="small" sx={{ color: 'text.secondary', width: 16, height: 16 }} />
               <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
                 TTFT:
               </Typography>
-              <Chip 
-                size="small" 
-                label={performanceMetrics.timeToFirstToken 
-                  ? `${performanceMetrics.timeToFirstToken.toFixed(0)} ms` 
+              <Chip
+                size="small"
+                label={performanceMetrics.timeToFirstToken
+                  ? `${performanceMetrics.timeToFirstToken.toFixed(0)} ms`
                   : '--'
                 }
                 color={performanceMetrics.timeToFirstToken && performanceMetrics.timeToFirstToken < 500 ? 'success' : 'default'}
                 sx={{ height: 20, fontSize: '0.7rem' }}
               />
             </Box>
-            
+
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
               <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
                 Tokens:
               </Typography>
-              <Chip 
-                size="small" 
-                label={performanceMetrics.tokensGenerated > 0 
-                  ? performanceMetrics.tokensGenerated.toString() 
+              <Chip
+                size="small"
+                label={performanceMetrics.tokensGenerated > 0
+                  ? performanceMetrics.tokensGenerated.toString()
                   : '--'
                 }
                 variant="outlined"
                 sx={{ height: 20, fontSize: '0.7rem' }}
               />
             </Box>
-            
+
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
               <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
                 Total Time:
               </Typography>
-              <Chip 
-                size="small" 
+              <Chip
+                size="small"
                 label={performanceMetrics.startTime && performanceMetrics.endTime
                   ? `${((performanceMetrics.endTime - performanceMetrics.startTime) / 1000).toFixed(2)}s`
                   : performanceMetrics.startTime && !performanceMetrics.endTime
@@ -1624,7 +1663,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 sx={{ height: 20, fontSize: '0.7rem' }}
               />
             </Box>
-            
+
             {isLoading && (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, ml: 'auto' }}>
                 <CircularProgress size={14} />
@@ -1640,8 +1679,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       {/* Settings Panel */}
       <Collapse in={showSettings}>
         <Card sx={{ mb: 2, borderRadius: 1, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)' }}>
-          <CardContent sx={{ 
-            maxHeight: 'calc(100vh - 300px)', 
+          <CardContent sx={{
+            maxHeight: 'calc(100vh - 300px)',
             overflowY: 'auto',
             '&::-webkit-scrollbar': {
               width: '8px',
@@ -1660,7 +1699,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             <Typography variant="h6" gutterBottom>
               Chat Settings
             </Typography>
-            
+
             {/* Connection Settings */}
             <Typography variant="h6" gutterBottom sx={{ mt: 2, mb: 1 }}>
               Connection Settings
@@ -1674,7 +1713,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   onChange={(e) => saveSettings({ ...settings, baseUrl: e.target.value })}
                   placeholder="https://api.openai.com (leave empty for current domain)"
                   helperText="Base URL for the API service (optional)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -1694,7 +1733,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   onChange={(e) => saveSettings({ ...settings, endpoint: e.target.value })}
                   placeholder="/v1/chat/completions"
                   helperText="API endpoint path"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -1714,7 +1753,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   onChange={(e) => saveSettings({ ...settings, model: e.target.value })}
                   placeholder="e.g. gpt-4o-mini or llama-3.1-8b-instruct"
                   helperText="Sent as the model parameter to the chat completions endpoint"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -1735,7 +1774,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   onChange={(e) => saveSettings({ ...settings, apiKey: e.target.value })}
                   placeholder="Enter your API key (optional)"
                   helperText="API key for authentication (leave empty if not required)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -1756,7 +1795,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   onChange={(e) => saveSettings({ ...settings, openaiApiKey: e.target.value })}
                   placeholder="Enter OpenAI API key for transcription"
                   helperText="Required for voice input transcription"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -1768,7 +1807,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   }}
                 />
               </Grid>
-              
+
               {/* Quick Presets */}
               <Grid item xs={12}>
                 <Typography variant="body2" color="text.secondary" gutterBottom>
@@ -1812,11 +1851,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
               {/* URL Preview */}
               <Grid item xs={12}>
-                <Box sx={{ 
-                  p: 2, 
-                  backgroundColor: 'rgba(0, 0, 0, 0.1)', 
-                  borderRadius: 1, 
-                  border: '1px solid rgba(255, 255, 255, 0.1)' 
+                <Box sx={{
+                  p: 2,
+                  backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                  borderRadius: 1,
+                  border: '1px solid rgba(255, 255, 255, 0.1)'
                 }}>
                   <Typography variant="body2" color="text.secondary" gutterBottom>
                     Full URL Preview:
@@ -1832,7 +1871,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             <Typography variant="h6" gutterBottom sx={{ mt: 2, mb: 1 }}>
               Model Parameters
             </Typography>
-            
+
             {/* Reasoning Level Control */}
             <Grid container spacing={3} sx={{ mb: 3 }}>
               <Grid item xs={12} sm={6}>
@@ -1841,7 +1880,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   fullWidth
                   value={settings.reasoningLevel}
                   onChange={(e) => saveSettings({ ...settings, reasoningLevel: e.target.value as 'low' | 'medium' | 'high' | 'none' })}
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -1862,7 +1901,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 </Typography>
               </Grid>
             </Grid>
-            
+
             <Grid container spacing={3}>
               <Grid item xs={12} sm={6} md={3}>
                 <Typography gutterBottom>Temperature: {settings.temperature}</Typography>
@@ -1948,15 +1987,28 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             {settings.enableTools && (
               <Grid container spacing={2}>
                 <Grid item xs={12}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Available Tools (select which tools the model can use):
-                  </Typography>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Available Tools (select which tools the model can use):
+                    </Typography>
+                    {mcpToolsLoading && (
+                      <Chip label="Loading MCP tools..." size="small" variant="outlined" />
+                    )}
+                  </Box>
                 </Grid>
-                {availableTools.map((tool: Tool) => (
+                {/* Group built-in tools */}
+                {availableTools.filter((t: ExtendedTool) => t._source !== 'mcp').length > 0 && (
+                  <Grid item xs={12}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 'bold' }}>
+                      📋 Built-in Tools
+                    </Typography>
+                  </Grid>
+                )}
+                {availableTools.filter((t: ExtendedTool) => t._source !== 'mcp').map((tool: ExtendedTool) => (
                   <Grid item xs={12} sm={6} md={4} key={tool.function.name}>
-                    <Card 
-                      variant="outlined" 
-                      sx={{ 
+                    <Card
+                      variant="outlined"
+                      sx={{
                         cursor: 'pointer',
                         bgcolor: settings.selectedTools.includes(tool.function.name) ? 'action.selected' : 'background.paper',
                         '&:hover': { bgcolor: 'action.hover' }
@@ -1966,8 +2018,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                       <CardContent sx={{ py: 1.5 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
                           <IconButton size="small" sx={{ mr: 1 }}>
-                            {settings.selectedTools.includes(tool.function.name) ? 
-                              <CheckBoxIcon color="primary" /> : 
+                            {settings.selectedTools.includes(tool.function.name) ?
+                              <CheckBoxIcon color="primary" /> :
                               <CheckBoxOutlineBlankIcon />
                             }
                           </IconButton>
@@ -1982,9 +2034,60 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     </Card>
                   </Grid>
                 ))}
+                {/* Group MCP tools by server */}
+                {availableTools.filter((t: ExtendedTool) => t._source === 'mcp').length > 0 && (
+                  <Grid item xs={12}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 'bold', mt: 2 }}>
+                      🔌 MCP Tools
+                    </Typography>
+                  </Grid>
+                )}
+                {availableTools.filter((t: ExtendedTool) => t._source === 'mcp').map((tool: ExtendedTool) => (
+                  <Grid item xs={12} sm={6} md={4} key={tool.function.name}>
+                    <Card
+                      variant="outlined"
+                      sx={{
+                        cursor: 'pointer',
+                        bgcolor: settings.selectedTools.includes(tool.function.name) ? 'action.selected' : 'background.paper',
+                        '&:hover': { bgcolor: 'action.hover' },
+                        borderColor: 'primary.light',
+                      }}
+                      onClick={() => toggleToolSelection(tool.function.name)}
+                    >
+                      <CardContent sx={{ py: 1.5 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', mb: 1, justifyContent: 'space-between' }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                            <IconButton size="small" sx={{ mr: 1 }}>
+                              {settings.selectedTools.includes(tool.function.name) ?
+                                <CheckBoxIcon color="primary" /> :
+                                <CheckBoxOutlineBlankIcon />
+                              }
+                            </IconButton>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>
+                              {tool.function.name.replace(/^mcp_[^_]+_/, '')}
+                            </Typography>
+                          </Box>
+                          <Chip
+                            label={tool._serverName || 'MCP'}
+                            size="small"
+                            variant="outlined"
+                            color="primary"
+                            sx={{ fontSize: '0.65rem', height: 18 }}
+                          />
+                        </Box>
+                        <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem' }}>
+                          {tool.function.description}
+                        </Typography>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                ))}
                 <Grid item xs={12}>
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                     Selected tools: {settings.selectedTools.length} / {availableTools.length}
+                    {availableTools.filter((t: ExtendedTool) => t._source === 'mcp').length > 0 && (
+                      <span> ({availableTools.filter((t: ExtendedTool) => t._source === 'mcp').length} from MCP servers)</span>
+                    )}
                   </Typography>
                 </Grid>
               </Grid>
@@ -1996,7 +2099,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             <Typography variant="h6" gutterBottom>
               Voice Settings (STT/TTS)
             </Typography>
-            
+
             {/* Service Status */}
             <Box sx={{ mb: 3, display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
               <Chip
@@ -2065,7 +2168,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   <MenuItem value="shimmer">Shimmer</MenuItem>
                 </Select>
               </Grid>
-              
+
               <Grid item xs={12} sm={6} md={4}>
                 <Typography gutterBottom>TTS Speed: {settings.ttsSpeed}x</Typography>
                 <Slider
@@ -2082,7 +2185,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   disabled={!ttsServiceAvailable}
                 />
               </Grid>
-              
+
               <Grid item xs={12} sm={6} md={4}>
                 <FormControlLabel
                   control={
@@ -2095,7 +2198,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   label="Auto-play TTS for responses"
                 />
               </Grid>
-              
+
               {/* STT Settings */}
               <Grid item xs={12} sm={6} md={4}>
                 <Typography gutterBottom>STT Model</Typography>
@@ -2114,7 +2217,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   <MenuItem value="distil-large-v3.5-ct2">Distil-Large-v3.5 (fast & high quality)</MenuItem>
                 </Select>
               </Grid>
-              
+
               <Grid item xs={12} sm={6} md={4}>
                 <Typography gutterBottom>STT Language</Typography>
                 <Select
@@ -2137,7 +2240,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   <MenuItem value="zh">Chinese</MenuItem>
                 </Select>
               </Grid>
-              
+
               {/* VAD Settings */}
               <Grid item xs={12} sm={6} md={4}>
                 <Typography gutterBottom>Silence Duration: {settings.vadSilenceDuration}ms</Typography>
@@ -2158,7 +2261,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   How long to wait after you stop speaking before sending
                 </Typography>
               </Grid>
-              
+
               <Grid item xs={12} sm={6} md={4}>
                 <Typography gutterBottom>Silence Threshold: {(settings.vadSilenceThreshold * 100).toFixed(0)}%</Typography>
                 <Slider
@@ -2219,10 +2322,10 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
       {/* Error Display */}
       {error && (
-        <Paper sx={{ 
-          p: 2, 
-          mb: 2, 
-          bgcolor: 'error.dark', 
+        <Paper sx={{
+          p: 2,
+          mb: 2,
+          bgcolor: 'error.dark',
           color: 'error.contrastText',
           borderRadius: 1,
           border: '1px solid',
@@ -2235,9 +2338,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       )}
 
       {/* Messages */}
-      <Box sx={{ 
-        flexGrow: 1, 
-        overflow: 'auto', 
+      <Box sx={{
+        flexGrow: 1,
+        overflow: 'auto',
         mb: 2,
         borderRadius: 1,
         bgcolor: 'background.paper',
@@ -2253,7 +2356,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start',
               }}
             >
-                              <Paper
+              <Paper
                 sx={{
                   p: 2,
                   maxWidth: '80%',
@@ -2378,7 +2481,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     if (Array.isArray(message.content)) {
                       const textParts: string[] = []
                       const imageParts: any[] = []
-                      
+
                       // Separate text and images
                       message.content.forEach((part: any) => {
                         if (part.type === 'text') {
@@ -2387,7 +2490,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                           imageParts.push(part.image_url.url)
                         }
                       })
-                      
+
                       return (
                         <Box>
                           {/* Render images */}
@@ -2418,19 +2521,19 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                           )}
                           {/* Render text */}
                           {textParts.length > 0 && (
-                            <MarkdownRenderer 
-                              content={textParts.join('\n')} 
+                            <MarkdownRenderer
+                              content={textParts.join('\n')}
                               reasoning_content={message.reasoning_content}
                             />
                           )}
                         </Box>
                       )
                     }
-                    
+
                     // String content - render normally
                     return (
-                      <MarkdownRenderer 
-                        content={message.content} 
+                      <MarkdownRenderer
+                        content={message.content}
                         reasoning_content={message.reasoning_content}
                       />
                     )
@@ -2441,8 +2544,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           ))}
           {isLoading && (
             <Box sx={{ display: 'flex', justifyContent: 'flex-start' }}>
-              <Paper sx={{ 
-                p: 2, 
+              <Paper sx={{
+                p: 2,
                 bgcolor: 'background.paper',
                 border: '1px solid rgba(255, 255, 255, 0.1)',
                 borderRadius: 1
@@ -2464,9 +2567,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       {settings.voiceModeEnabled && (
         <Box sx={{ mb: 2 }}>
           {/* Compact Badge - Always Visible */}
-          <Paper 
+          <Paper
             onClick={() => setVoicePanelExpanded(!voicePanelExpanded)}
-            sx={{ 
+            sx={{
               p: 1,
               px: 1.5,
               borderRadius: 2,
@@ -2485,7 +2588,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             }}
           >
             {/* Left: Animated mic icon */}
-            <Box sx={{ 
+            <Box sx={{
               position: 'relative',
               width: 32,
               height: 32,
@@ -2505,37 +2608,37 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 transform: `scale(${1 + voiceInput.volume * 1.5})`,
                 transition: 'transform 0.05s ease',
               }} />
-              <MicIcon sx={{ 
-                fontSize: 18, 
+              <MicIcon sx={{
+                fontSize: 18,
                 color: voiceInput.isRecording ? 'error.main' : voiceInput.isListening ? 'success.main' : 'grey.500',
                 zIndex: 1,
               }} />
             </Box>
-            
+
             {/* Status text - fixed width */}
-            <Typography 
-              variant="body2" 
-              sx={{ 
-                fontWeight: 600, 
-                fontSize: '0.8rem', 
+            <Typography
+              variant="body2"
+              sx={{
+                fontWeight: 600,
+                fontSize: '0.8rem',
                 width: 100, // Fixed width
                 flexShrink: 0,
                 whiteSpace: 'nowrap',
               }}
             >
-              {voiceInput.isTranscribing 
-                ? 'Processing...' 
-                : voiceInput.isRecording 
+              {voiceInput.isTranscribing
+                ? 'Processing...'
+                : voiceInput.isRecording
                   ? `Rec ${(voiceInput.recordingTime / 1000).toFixed(1)}s`
-                  : voiceInput.isListening 
-                    ? 'Listening' 
+                  : voiceInput.isListening
+                    ? 'Listening'
                     : 'Paused'}
             </Typography>
-            
+
             {/* Volume display */}
-            <Typography 
-              variant="caption" 
-              sx={{ 
+            <Typography
+              variant="caption"
+              sx={{
                 fontFamily: 'monospace',
                 fontSize: '0.7rem',
                 color: voiceInput.volume > settings.vadSilenceThreshold ? 'success.main' : 'text.secondary',
@@ -2546,13 +2649,13 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             >
               {(voiceInput.volume * 100).toFixed(0)}%
             </Typography>
-            
+
             {/* Center: Volume bar - always visible, opacity changes */}
-            <Box sx={{ 
-              flex: 1, 
-              height: 8, 
-              bgcolor: 'rgba(0,0,0,0.3)', 
-              borderRadius: 1, 
+            <Box sx={{
+              flex: 1,
+              height: 8,
+              bgcolor: 'rgba(0,0,0,0.3)',
+              borderRadius: 1,
               overflow: 'hidden',
               position: 'relative',
               opacity: voiceInput.isListening ? 1 : 0.3,
@@ -2564,7 +2667,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 top: 0,
                 bottom: 0,
                 width: `${Math.min(voiceInput.volume * 200, 100)}%`,
-                bgcolor: voiceInput.volume > settings.vadSilenceThreshold 
+                bgcolor: voiceInput.volume > settings.vadSilenceThreshold
                   ? voiceInput.isRecording ? 'error.main' : 'success.main'
                   : 'grey.600',
                 borderRadius: 1,
@@ -2579,11 +2682,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 bgcolor: 'warning.main',
               }} />
             </Box>
-            
+
             {/* Countdown indicator - single element, only color changes */}
-            <Typography 
-              variant="caption" 
-              sx={{ 
+            <Typography
+              variant="caption"
+              sx={{
                 width: 36,
                 flexShrink: 0,
                 textAlign: 'right',
@@ -2593,12 +2696,12 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 color: voiceInput.isRecording && voiceInput.silenceTime > 0 ? 'warning.main' : 'text.secondary',
               }}
             >
-              {(voiceInput.isRecording && voiceInput.silenceTime > 0 
+              {(voiceInput.isRecording && voiceInput.silenceTime > 0
                 ? (settings.vadSilenceDuration - voiceInput.silenceTime) / 1000
                 : settings.vadSilenceDuration / 1000
               ).toFixed(1)}s
             </Typography>
-            
+
             {/* Right: Controls */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
               {/* TTS toggle */}
@@ -2607,16 +2710,16 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   <IconButton
                     onClick={() => saveSettings({ ...settings, ttsEnabled: !settings.ttsEnabled })}
                     size="small"
-                    sx={{ 
+                    sx={{
                       p: 0.5,
-                      color: settings.ttsEnabled ? 'success.main' : 'grey.500' 
+                      color: settings.ttsEnabled ? 'success.main' : 'grey.500'
                     }}
                   >
                     {settings.ttsEnabled ? <VolumeUpIcon fontSize="small" /> : <VolumeOffIcon fontSize="small" />}
                   </IconButton>
                 </Tooltip>
               )}
-              
+
               {/* Listen toggle */}
               <Tooltip title={voiceInput.isListening ? "Stop" : "Start"}>
                 <IconButton
@@ -2634,10 +2737,10 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   {voiceInput.isListening ? <StopIcon fontSize="small" /> : <MicIcon fontSize="small" />}
                 </IconButton>
               </Tooltip>
-              
+
               {/* Expand button */}
-              <IconButton 
-                size="small" 
+              <IconButton
+                size="small"
                 sx={{ p: 0.5, ml: 0.5 }}
                 onClick={() => setVoicePanelExpanded(!voicePanelExpanded)}
               >
@@ -2645,10 +2748,10 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               </IconButton>
             </Box>
           </Paper>
-          
+
           {/* Expanded Panel */}
           <Collapse in={voicePanelExpanded}>
-            <Paper sx={{ 
+            <Paper sx={{
               mt: 0.5,
               p: 1.5,
               borderRadius: 1,
@@ -2664,13 +2767,13 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   top: 4,
                   bottom: 4,
                   width: `${Math.min(voiceInput.volume * 200, 100)}%`,
-                  bgcolor: voiceInput.volume > settings.vadSilenceThreshold 
+                  bgcolor: voiceInput.volume > settings.vadSilenceThreshold
                     ? voiceInput.isRecording ? 'error.main' : 'success.main'
                     : 'grey.600',
                   borderRadius: 1,
                   transition: 'width 0.05s ease-out',
                 }} />
-                
+
                 {/* Threshold line */}
                 <Box sx={{
                   position: 'absolute',
@@ -2681,19 +2784,19 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   bgcolor: 'warning.main',
                   zIndex: 2,
                 }} />
-                
+
                 {/* Volume % and status */}
-                <Box sx={{ 
-                  position: 'absolute', 
-                  inset: 0, 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
+                <Box sx={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: 'flex',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
                   px: 1,
                   zIndex: 3,
                 }}>
                   <Typography variant="caption" sx={{ color: 'white', fontSize: '0.7rem' }}>
-                    {voiceInput.volume > settings.vadSilenceThreshold 
+                    {voiceInput.volume > settings.vadSilenceThreshold
                       ? voiceInput.isRecording ? 'SPEAKING' : 'VOICE'
                       : 'SILENCE'}
                   </Typography>
@@ -2702,7 +2805,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   </Typography>
                 </Box>
               </Box>
-              
+
               {/* Settings Grid */}
               <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'flex-start' }}>
                 {/* Voice Threshold */}
@@ -2725,7 +2828,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     sx={{ py: 0.5 }}
                   />
                 </Box>
-                
+
                 {/* Silence Duration */}
                 <Box sx={{ minWidth: 140, flex: 1 }}>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2746,7 +2849,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     sx={{ py: 0.5 }}
                   />
                 </Box>
-                
+
                 {/* Speech Filter */}
                 <Box sx={{ minWidth: 140, flex: 1 }}>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2772,7 +2875,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     sx={{ py: 0.5 }}
                   />
                 </Box>
-                
+
                 {/* STT Model */}
                 <Box sx={{ minWidth: 100 }}>
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontSize: '0.7rem' }}>
@@ -2782,7 +2885,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     size="small"
                     value={settings.sttModel}
                     onChange={(e) => saveSettings({ ...settings, sttModel: e.target.value })}
-                    sx={{ 
+                    sx={{
                       fontSize: '0.7rem',
                       height: 26,
                       '& .MuiSelect-select': { py: 0.3, px: 1 }
@@ -2797,7 +2900,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   </Select>
                 </Box>
               </Box>
-              
+
               {/* Error display */}
               {voiceInput.error && (
                 <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
@@ -2810,7 +2913,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       )}
 
       {/* Input */}
-      <Paper sx={{ 
+      <Paper sx={{
         p: 2,
         borderRadius: 1,
         bgcolor: 'background.paper',
@@ -2872,7 +2975,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             style={{ display: 'none' }}
             onChange={handleImageUpload}
           />
-          
+
           {/* Attachment button */}
           <Tooltip title="Attach images">
             <IconButton
@@ -2918,7 +3021,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             onKeyPress={handleKeyPress}
             placeholder="Type your message... (Press Enter to send, Shift+Enter for new line)"
             disabled={isLoading}
-            sx={{ 
+            sx={{
               flexGrow: 1,
               '& .MuiOutlinedInput-root': {
                 fontSize: '0.875rem',
@@ -2934,7 +3037,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             variant="contained"
             onClick={handleSendMessage}
             disabled={(!input.trim() && uploadedImages.length === 0) || isLoading}
-            sx={{ 
+            sx={{
               minWidth: 100,
               borderRadius: 1,
               fontWeight: 500,
@@ -2953,8 +3056,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       </Paper>
 
       {/* Audio Recording Dialog */}
-      <Dialog 
-        open={showAudioDialog} 
+      <Dialog
+        open={showAudioDialog}
         onClose={cancelRecording}
         maxWidth="sm"
         fullWidth
@@ -3015,9 +3118,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             Cancel
           </Button>
           {isRecording && (
-            <Button 
-              onClick={stopRecording} 
-              variant="contained" 
+            <Button
+              onClick={stopRecording}
+              variant="contained"
               color="error"
               startIcon={<StopIcon />}
             >

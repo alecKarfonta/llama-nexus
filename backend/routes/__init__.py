@@ -22,6 +22,7 @@ from .tools import router as tools_router
 from .finetuning import router as finetuning_router
 from .quantization import router as quantization_router
 from .reddit import router as reddit_router
+from .mcp import router as mcp_router
 
 __all__ = [
     'workflows_router',
@@ -43,4 +44,5 @@ __all__ = [
     'finetuning_router',
     'quantization_router',
     'reddit_router',
+    'mcp_router',
 ]

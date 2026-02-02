@@ -690,7 +690,11 @@ class TopicGenerator:
                     if ex.get("instruction")
                 ]
         except Exception as e:
-            logger.warning(f"Failed to generate prompts: {e}")
+            import traceback
+            logger.warning(
+                f"Failed to generate prompts for subtopic '{subtopic}' at {difficulty} difficulty: {e}",
+                extra={"traceback": traceback.format_exc()}
+            )
         
         return []
     

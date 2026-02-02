@@ -350,11 +350,26 @@ class QdrantStore(VectorStore):
         limit: int = 10,
         filter: Optional[Dict[str, Any]] = None,
         with_vectors: bool = False,
-        score_threshold: Optional[float] = None
+        score_threshold: Optional[float] = None,
+        exclude_payload_fields: Optional[List[str]] = None
     ) -> List[SearchResult]:
-        """Perform similarity search"""
+        """
+        Perform similarity search.
+        
+        Args:
+            exclude_payload_fields: Fields to exclude from returned payload.
+                                   Defaults to ['metadata'] to avoid bloated payloads.
+        """
         try:
             qdrant_filter = build_qdrant_filter(filter)
+            
+            # Build payload selector - exclude large fields by default
+            # The metadata field can be 9MB+ and causes massive slowdowns
+            excluded = exclude_payload_fields if exclude_payload_fields is not None else ['metadata']
+            if excluded:
+                with_payload = models.PayloadSelectorExclude(exclude=excluded)
+            else:
+                with_payload = True
             
             results = await self._client.search(
                 collection_name=collection,
@@ -362,6 +377,7 @@ class QdrantStore(VectorStore):
                 limit=limit,
                 query_filter=qdrant_filter,
                 with_vectors=with_vectors,
+                with_payload=with_payload,
                 score_threshold=score_threshold
             )
             
@@ -383,18 +399,26 @@ class QdrantStore(VectorStore):
         collection: str,
         query_vectors: List[List[float]],
         limit: int = 10,
-        filter: Optional[Dict[str, Any]] = None
+        filter: Optional[Dict[str, Any]] = None,
+        exclude_payload_fields: Optional[List[str]] = None
     ) -> List[List[SearchResult]]:
-        """Batch similarity search"""
+        """Batch similarity search with payload exclusion to avoid bloat."""
         try:
             qdrant_filter = build_qdrant_filter(filter)
+            
+            # Exclude large fields by default (metadata can be 9MB+)
+            excluded = exclude_payload_fields if exclude_payload_fields is not None else ['metadata']
+            if excluded:
+                with_payload = models.PayloadSelectorExclude(exclude=excluded)
+            else:
+                with_payload = True
             
             requests = [
                 SearchRequest(
                     vector=vector,
                     limit=limit,
                     filter=qdrant_filter,
-                    with_payload=True
+                    with_payload=with_payload
                 )
                 for vector in query_vectors
             ]

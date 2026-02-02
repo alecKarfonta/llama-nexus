@@ -42,6 +42,7 @@ import {
   TableChart as DatasetSidebarIcon,
   Science as DistillationIcon,
   Assessment as EvaluationIcon,
+  Extension as ExtensionIcon,
 } from '@mui/icons-material'
 import type { NavigationSection } from '@/types'
 
@@ -59,7 +60,6 @@ const navigationSections: NavigationSection[] = [
       { id: 'dashboard', label: 'Dashboard', path: '/dashboard', icon: 'dashboard', color: '#6366f1' },
       { id: 'models', label: 'Models', path: '/models', icon: 'models', color: '#8b5cf6' },
       { id: 'registry', label: 'Registry', path: '/registry', icon: 'registry', color: '#a855f7' },
-      { id: 'quantization', label: 'Quantization', path: '/quantization', icon: 'quantization', color: '#10b981' },
     ],
   },
   {
@@ -73,9 +73,10 @@ const navigationSections: NavigationSection[] = [
     ],
   },
   {
-    id: 'benchmarking',
-    title: 'Benchmarks',
+    id: 'testing',
+    title: 'Testing',
     items: [
+      { id: 'chat', label: 'Chat', path: '/chat', icon: 'chat', color: '#06b6d4' },
       { id: 'benchmark', label: 'Inference Performance', path: '/benchmark', icon: 'benchmark', color: '#ef4444' },
       { id: 'evaluation', label: 'Model Evaluation', path: '/evaluation', icon: 'evaluation', color: '#ec4899' },
       { id: 'benchmark-results', label: 'Comparison Dashboard', path: '/benchmark-comparison', icon: 'compare', color: '#8b5cf6' },
@@ -85,12 +86,12 @@ const navigationSections: NavigationSection[] = [
     id: 'development',
     title: 'Development',
     items: [
-      { id: 'chat', label: 'Chat', path: '/chat', icon: 'chat', color: '#06b6d4' },
       { id: 'prompts', label: 'Prompt Library', path: '/prompts', icon: 'prompts', color: '#14b8a6' },
       { id: 'templates', label: 'Chat Templates', path: '/templates', icon: 'templates', color: '#10b981' },
       { id: 'workflows', label: 'Workflows', path: '/workflows', icon: 'workflow', color: '#a855f7' },
       { id: 'datasets', label: 'Datasets', path: '/datasets', icon: 'datasets', color: '#f59e0b' },
       { id: 'distillation', label: 'Distillation', path: '/distillation', icon: 'distillation', color: '#06b6d4' },
+      { id: 'quantization', label: 'Quantization', path: '/quantization', icon: 'quantization', color: '#10b981' },
       {
         id: 'finetuning',
         label: 'Fine-Tuning',
@@ -103,9 +104,7 @@ const navigationSections: NavigationSection[] = [
           { id: 'finetuning-compare', label: 'Compare Adapters', path: '/finetuning/compare' },
         ]
       },
-      { id: 'testing', label: 'Testing', path: '/testing', icon: 'testing', color: '#f97316' },
-      { id: 'batch', label: 'Batch Processing', path: '/batch', icon: 'batch', color: '#ec4899' },
-      { id: 'compare', label: 'Compare Models', path: '/compare', icon: 'compare', color: '#f43f5e' },
+      { id: 'mcp-servers', label: 'MCP Servers', path: '/mcp', icon: 'mcp', color: '#ec4899' },
     ],
   },
   {
@@ -156,6 +155,7 @@ const iconMap: Record<string, React.ElementType> = {
   datasets: DatasetSidebarIcon,
   distillation: DistillationIcon,
   evaluation: EvaluationIcon,
+  mcp: ExtensionIcon,
 }
 
 const getIcon = (iconName: string) => {

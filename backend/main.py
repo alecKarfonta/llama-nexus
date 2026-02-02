@@ -159,6 +159,7 @@ try:
         finetuning_router,
         quantization_router,
         reddit_router,
+        mcp_router,
     )
     from routes.rag import init_rag_config
     ROUTES_AVAILABLE = True
@@ -184,23 +185,41 @@ except ImportError as e:
     finetuning_router = None  # type: ignore
     quantization_router = None  # type: ignore
     reddit_router = None  # type: ignore
+    mcp_router = None  # type: ignore
     logger.warning(f"Route modules not available: {e}")
+
+# MCP (Model Context Protocol) imports
+try:
+    from modules.mcp import MCPClientManager, MCPConfigStore
+    MCP_AVAILABLE = True
+    logger.info("MCP module loaded successfully")
+except ImportError as e:
+    MCP_AVAILABLE = False
+    MCPClientManager = None  # type: ignore
+    MCPConfigStore = None  # type: ignore
+    logger.warning(f"MCP module not available: {e}")
 
 # RAG Embedding Configuration
 USE_DEPLOYED_EMBEDDINGS = os.getenv("USE_DEPLOYED_EMBEDDINGS", "false").lower() == "true"
 # Use Docker network name for inter-container communication
 EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "http://llamacpp-embed:8080/v1")
-DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "nomic-embed-text-v1.5")
 
 # GraphRAG Service Configuration (external graphrag microservice)
 # In Docker: http://graphrag-api-1:8000, on host: http://localhost:18000
 GRAPHRAG_URL = os.getenv("GRAPHRAG_URL", "http://graphrag-api-1:8000")
 GRAPHRAG_ENABLED = os.getenv("GRAPHRAG_ENABLED", "true").lower() == "true"
 
+# Embedder cache - keeps models warm between requests to avoid cold start penalty
+_embedder_cache: Dict[str, Any] = {}
+
 
 def create_embedder(model_name: Optional[str] = None, use_deployed: Optional[bool] = None):
     """
-    Factory function to create an embedder instance.
+    Factory function to create or retrieve a cached embedder instance.
+    
+    Caches LocalEmbedder instances to avoid 4-5s cold start on each request.
+    APIEmbedder instances are also cached for consistency.
     
     Args:
         model_name: Name of the embedding model to use
@@ -210,27 +229,51 @@ def create_embedder(model_name: Optional[str] = None, use_deployed: Optional[boo
     Returns:
         An Embedder instance (LocalEmbedder or APIEmbedder)
     """
+    global _embedder_cache
+    
     if not RAG_AVAILABLE:
         raise RuntimeError("RAG system not available")
     
+    # Model name aliases for backward compatibility
+    EMBEDDING_MODEL_ALIASES = {
+        "nomic-embed-text": "nomic-embed-text-v1.5",
+        "bge-large": "bge-large-en-v1.5",
+    }
+    
     model_name = model_name or DEFAULT_EMBEDDING_MODEL
+    # Resolve aliases (e.g., "nomic-embed-text" -> "nomic-embed-text-v1.5")
+    model_name = EMBEDDING_MODEL_ALIASES.get(model_name, model_name)
+    
     use_deployed = USE_DEPLOYED_EMBEDDINGS if use_deployed is None else use_deployed
     
     # Check if the requested model is one supported by the deployed service
-    deployed_models = ["nomic-embed-text-v1.5", "e5-mistral-7b", "bge-m3", "gte-Qwen2-1.5B"]
+    deployed_models = ["nomic-embed-text-v1.5", "nomic-embed-text", "e5-mistral-7b", "bge-m3", "gte-Qwen2-1.5B"]
     
-    if use_deployed and model_name in deployed_models:
-        logger.info(f"Using deployed embedding service for model: {model_name} at {EMBEDDING_SERVICE_URL}")
-        # Use APIEmbedder with llama.cpp provider
-        return APIEmbedder(
+    # Create cache key based on model and deployment mode
+    use_api = use_deployed and model_name in deployed_models
+    cache_key = f"{'api' if use_api else 'local'}:{model_name}"
+    
+    # Return cached embedder if available
+    if cache_key in _embedder_cache:
+        logger.debug(f"Using cached embedder for {cache_key}")
+        return _embedder_cache[cache_key]
+    
+    # Create new embedder and cache it
+    if use_api:
+        logger.info(f"Creating and caching API embedder for model: {model_name} at {EMBEDDING_SERVICE_URL}")
+        embedder = APIEmbedder(
             model_name=model_name,
             api_key="llamacpp-embed",  # Match the API key from embedding service
             base_url=EMBEDDING_SERVICE_URL,
             timeout=300  # Longer timeout for large documents
         )
     else:
-        logger.info(f"Using local sentence-transformers embedder for model: {model_name}")
-        return LocalEmbedder(model_name=model_name)
+        # Auto-detect CUDA - sentence-transformers will use GPU if available
+        logger.info(f"Creating and caching local embedder for model: {model_name} (device=auto)")
+        embedder = LocalEmbedder(model_name=model_name, device=None)  # None = auto-detect
+    
+    _embedder_cache[cache_key] = embedder
+    return embedder
 
 # Try to import docker, fallback to subprocess if not available
 try:
@@ -2397,13 +2440,26 @@ class EmbeddingManager:
             
             # Add GPU runtime only for GPU mode
             if execution_mode == "gpu":
-                container_config["device_requests"] = [
-                    docker.types.DeviceRequest(
-                        driver='nvidia',
-                        count=-1,
-                        capabilities=[['gpu', 'compute', 'utility']]
-                    )
-                ]
+                # Use specific GPU(s) if cuda_devices is set to something other than "all"
+                if cuda_devices and cuda_devices != "all":
+                    # Use device_ids for specific GPU targeting
+                    device_ids = [cuda_devices] if ',' not in cuda_devices else cuda_devices.split(',')
+                    container_config["device_requests"] = [
+                        docker.types.DeviceRequest(
+                            driver='nvidia',
+                            device_ids=device_ids,
+                            capabilities=[['gpu', 'compute', 'utility']]
+                        )
+                    ]
+                else:
+                    # Use all GPUs
+                    container_config["device_requests"] = [
+                        docker.types.DeviceRequest(
+                            driver='nvidia',
+                            count=-1,
+                            capabilities=[['gpu', 'compute', 'utility']]
+                        )
+                    ]
             
             # Create and start container
             self.docker_container = docker_client.containers.run(**container_config)
@@ -2470,7 +2526,12 @@ class EmbeddingManager:
             
             # Add GPU runtime only for GPU mode
             if execution_mode == "gpu":
-                docker_cmd.insert(2, "all")
+                # Use specific GPU(s) if cuda_devices is set to something other than "all"
+                if cuda_devices and cuda_devices != "all":
+                    # Format: --gpus "device=2" or --gpus "device=0,1"
+                    docker_cmd.insert(2, f'"device={cuda_devices}"')
+                else:
+                    docker_cmd.insert(2, "all")
                 docker_cmd.insert(2, "--gpus")
             
             # Add image and command arguments - start.sh will download model then exec our command
@@ -3229,7 +3290,7 @@ def _merge_and_persist_config(new_config: Dict[str, Any]) -> Dict[str, Any]:
         "server": ["host", "port", "api_key"]
     }
     
-    for category in ["model", "sampling", "performance", "context_extension", "server", "template"]:
+    for category in ["model", "sampling", "performance", "context_extension", "server", "template", "execution"]:
         if category in config_data:
             if category not in base:
                 base[category] = {}
@@ -3309,6 +3370,17 @@ async def lifespan(app: FastAPI):
 
             # Set up background processing function reference (defined later in this file)
             # This will be set after app creation since the function needs app reference
+            
+            # Pre-warm the default embedding model to avoid cold start on first request
+            # This loads the model into memory during startup (~4-5s) instead of first query
+            try:
+                logger.info(f"Pre-warming embedding model: {DEFAULT_EMBEDDING_MODEL}")
+                warmup_embedder = create_embedder(model_name=DEFAULT_EMBEDDING_MODEL)
+                # Trigger model load by embedding a dummy query
+                await warmup_embedder.embed(["warmup query"])
+                logger.info(f"Embedding model pre-warmed and cached: {DEFAULT_EMBEDDING_MODEL}")
+            except Exception as warmup_error:
+                logger.warning(f"Failed to pre-warm embedding model: {warmup_error}")
             
             logger.info("RAG system initialized successfully")
         except Exception as e:
@@ -3449,7 +3521,19 @@ if ROUTES_AVAILABLE:
     app.include_router(quantization_router)
     if reddit_router:
         app.include_router(reddit_router)
-    logger.info("Route modules included: rag, graphrag, workflows, conversations, registry, prompts, benchmark, batch, models, templates, tokens, service, stt, tts, tools, finetuning, quantization")
+    if mcp_router:
+        app.include_router(mcp_router)
+    logger.info("Route modules included: rag, graphrag, workflows, conversations, registry, prompts, benchmark, batch, models, templates, tokens, service, stt, tts, tools, finetuning, quantization, mcp")
+
+# Initialize MCP Client Manager
+if MCP_AVAILABLE:
+    try:
+        mcp_config_store = MCPConfigStore()
+        mcp_client_manager = MCPClientManager(config_store=mcp_config_store)
+        app.state.mcp_client_manager = mcp_client_manager
+        logger.info("MCP Client Manager initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize MCP Client Manager: {e}")
 
 # Health check endpoint
 @app.get("/health")
@@ -4326,24 +4410,88 @@ async def process_document_background(
         # Get domain settings
         domain = await rag['document_manager'].get_domain(doc.domain_id)
         
-        # Select chunker
-        config = ChunkingConfig(
-            chunk_size=chunk_size or (domain.chunk_size if domain else 512),
-            chunk_overlap=chunk_overlap or (domain.chunk_overlap if domain else 50)
-        )
+        # Check for GraphRAG options in metadata
+        graphrag_options = doc.metadata.get('graphrag_options', {})
+        use_semantic_chunking = graphrag_options.get('use_semantic_chunking', False)
+        build_knowledge_graph = graphrag_options.get('build_knowledge_graph', False)
         
-        if chunking_strategy == 'fixed':
-            chunker = FixedChunker(config)
-        elif chunking_strategy == 'recursive':
-            chunker = RecursiveChunker(config)
-        else:
-            chunker = SemanticChunker(config)
+        # Try to use GraphRAG semantic chunking if requested
+        graphrag_chunking_used = False
+        raw_chunks = None
         
-        # Chunk document
-        raw_chunks = chunker.chunk(doc.content)
+        if use_semantic_chunking:
+            try:
+                from modules.graphrag_wrapper import is_graphrag_available, GraphRAGWrapper
+                if is_graphrag_available():
+                    logger.info(f"Using GraphRAG semantic chunking for document {document_id}")
+                    wrapper = GraphRAGWrapper()
+                    graphrag_chunks = wrapper.semantic_chunk(doc.content)
+                    
+                    # Convert GraphRAG chunks to our ChunkResult format
+                    from modules.rag.chunking import ChunkResult
+                    raw_chunks = []
+                    start_pos = 0
+                    for i, chunk_text in enumerate(graphrag_chunks):
+                        end_pos = start_pos + len(chunk_text)
+                        raw_chunks.append(ChunkResult(
+                            content=chunk_text,
+                            index=i,
+                            start_char=start_pos,
+                            end_char=end_pos
+                        ))
+                        start_pos = end_pos + 1  # +1 for separator
+                    graphrag_chunking_used = True
+                    logger.info(f"GraphRAG created {len(raw_chunks)} semantic chunks")
+                else:
+                    logger.warning("GraphRAG requested but submodule not available, falling back to standard chunking")
+            except Exception as e:
+                logger.warning(f"GraphRAG semantic chunking failed: {e}, falling back to standard chunking")
         
-        # Create embedder
+        # Fallback to standard chunking if GraphRAG not used
+        if raw_chunks is None:
+            config = ChunkingConfig(
+                chunk_size=chunk_size or (domain.chunk_size if domain else 512),
+                chunk_overlap=chunk_overlap or (domain.chunk_overlap if domain else 50)
+            )
+            
+            if chunking_strategy == 'fixed':
+                chunker = FixedChunker(config)
+            elif chunking_strategy == 'recursive':
+                chunker = RecursiveChunker(config)
+            else:
+                chunker = SemanticChunker(config)
+            
+            raw_chunks = chunker.chunk(doc.content)
+        
+        # Extract entities and build knowledge graph if requested
+        if build_knowledge_graph:
+            try:
+                from modules.graphrag_wrapper import is_graphrag_available, GraphRAGWrapper
+                if is_graphrag_available():
+                    neo4j_uri = os.getenv('NEO4J_URI')
+                    if neo4j_uri:
+                        logger.info(f"Extracting entities for document {document_id}")
+                        wrapper = GraphRAGWrapper(neo4j_uri=neo4j_uri)
+                        extraction = wrapper.extract_entities(doc.content, domain.name if domain else 'general')
+                        
+                        if extraction.entities:
+                            wrapper.build_knowledge_graph(
+                                extraction.entities, 
+                                extraction.relationships, 
+                                domain.name if domain else 'general'
+                            )
+                            logger.info(f"Added {len(extraction.entities)} entities to knowledge graph")
+                    else:
+                        logger.warning("NEO4J_URI not configured, skipping knowledge graph building")
+                else:
+                    logger.warning("GraphRAG submodule not available, skipping knowledge graph building")
+            except Exception as e:
+                logger.warning(f"Knowledge graph building failed (non-fatal): {e}")
+        
+        # Create embedder - use domain's configured model if not overridden
+        # KEY FIX: Use domain.embedding_model when embedding_model is None
         model_name = embedding_model or (domain.embedding_model if domain else 'all-MiniLM-L6-v2')
+        logger.info(f"Using embedding model: {model_name} for document {document_id}")
         embedder = create_embedder(model_name=model_name)
         
         # ==========================================

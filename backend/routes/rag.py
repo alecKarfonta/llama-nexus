@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/v1/rag", tags=["rag"])
 RAG_AVAILABLE = False
 USE_DEPLOYED_EMBEDDINGS = False
 EMBEDDING_SERVICE_URL = "http://llamacpp-embed:8080/v1"
-DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+DEFAULT_EMBEDDING_MODEL = "nomic-embed-text-v1.5"
 GRAPHRAG_URL = "http://graphrag-api-1:8000"
 GRAPHRAG_ENABLED = True
 
@@ -551,6 +551,45 @@ async def reindex_domain(request: Request, domain_id: str, background_tasks: Bac
     }
 
 
+@router.delete("/domains/{domain_id}/collection")
+async def clear_domain_collection(request: Request, domain_id: str):
+    """Clear all vectors from a domain's collection.
+    
+    This deletes the entire vector store collection for the domain,
+    but keeps the documents in SQLite. Useful for completely resetting
+    a domain's vector index.
+    """
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    domain = await rag['document_manager'].get_domain(domain_id)
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain not found")
+    
+    collection_name = get_collection_name(domain) if domain else f"domain_{domain_id}"
+    
+    vectors_deleted = 0
+    if await rag['vector_store'].collection_exists(collection_name):
+        # Get collection info before deleting to report count
+        try:
+            info = await rag['vector_store'].get_collection_info(collection_name)
+            vectors_deleted = info.get('vectors_count', 0) if info else 0
+        except Exception:
+            pass
+        
+        await rag['vector_store'].delete_collection(collection_name)
+        logger.info(f"Cleared collection {collection_name} for domain {domain_id}")
+    
+    return {
+        "status": "cleared",
+        "domain_id": domain_id,
+        "collection_name": collection_name,
+        "vectors_deleted": vectors_deleted,
+        "message": f"Collection '{collection_name}' has been cleared"
+    }
+
+
 # Document Management
 @router.get("/documents")
 async def list_rag_documents(
@@ -630,15 +669,29 @@ async def create_rag_document(request: Request, background_tasks: BackgroundTask
                 detail="Failed to extract text from EPUB."
             )
     
-    if content:
-        existing = await rag['document_manager'].check_duplicate(content)
+    # Check for duplicates within the target domain only
+    domain_id = data.get('domain_id')
+    if content and domain_id:
+        existing = await rag['document_manager'].check_duplicate(content, domain_id)
         if existing:
-            raise HTTPException(status_code=409, detail=f"Duplicate content, existing document: {existing}")
+            raise HTTPException(status_code=409, detail=f"Duplicate content in this domain, existing document: {existing}")
 
-    # Prepare metadata - include original PDF content for VLM image extraction
+    # Prepare metadata
+    # NOTE: Storing original PDF content in vector store payload is disabled by default
+    # to avoid massive payload bloat (can be 9MB+ per chunk). Enable with store_original_content=true
+    # if VLM image extraction from original PDF is needed.
     metadata = data.get('metadata', {})
-    if original_pdf_content:
+    store_original_content = data.get('store_original_content', False)
+    if store_original_content and original_pdf_content:
         metadata['original_pdf_content'] = original_pdf_content
+    
+    # GraphRAG options (optional - only used if submodule available)
+    graphrag_options = {
+        'use_semantic_chunking': data.get('use_semantic_chunking', False),
+        'build_knowledge_graph': data.get('build_knowledge_graph', False)
+    }
+    if graphrag_options['use_semantic_chunking'] or graphrag_options['build_knowledge_graph']:
+        metadata['graphrag_options'] = graphrag_options
 
     doc = Document(
         id=str(uuid.uuid4()),
@@ -669,6 +722,109 @@ async def create_rag_document(request: Request, background_tasks: BackgroundTask
     return {"document": result.to_dict(), "auto_processing": auto_process}
 
 
+@router.post("/documents/upload")
+async def upload_rag_document(request: Request, background_tasks: BackgroundTasks):
+    """Upload a document file (FormData-based upload for batch ingestion)."""
+    from fastapi import UploadFile
+    import base64
+    
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    # Parse multipart form data
+    form = await request.form()
+    file = form.get('file')
+    if not file:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    chunk_size = int(form.get('chunk_size', 512))
+    chunk_overlap = int(form.get('chunk_overlap', 50))
+    domain_id = form.get('domain_id')
+    
+    # If no domain_id provided, get default/first domain
+    if not domain_id:
+        general_domain = await rag['document_manager'].get_general_domain()
+        if general_domain:
+            domain_id = general_domain.id
+        else:
+            raise HTTPException(status_code=400, detail="No domain found. Please create a domain first.")
+    
+    from modules.rag.document_manager import Document, DocumentType, DocumentStatus
+    
+    # Read file content
+    file_content = await file.read()
+    filename = file.filename
+    
+    # Detect document type from extension
+    ext = filename.split('.')[-1].lower() if '.' in filename else 'txt'
+    doc_type_map = {
+        'pdf': 'pdf', 'docx': 'docx', 'doc': 'docx', 'txt': 'txt',
+        'md': 'md', 'html': 'html', 'htm': 'html', 'json': 'json',
+        'csv': 'csv', 'xml': 'html', 'epub': 'epub'
+    }
+    doc_type = doc_type_map.get(ext, 'txt')
+    
+    # Process binary files (PDF, DOCX, EPUB)
+    if doc_type in ['pdf', 'docx', 'epub']:
+        content_b64 = base64.b64encode(file_content).decode('utf-8')
+        
+        if doc_type == 'pdf':
+            content = extract_pdf_text(content_b64)
+            if not content or content.startswith('%PDF'):
+                raise HTTPException(status_code=400, detail="Failed to extract text from PDF")
+        elif doc_type == 'epub':
+            content = extract_epub_text(content_b64)
+            if not content or content == content_b64:
+                raise HTTPException(status_code=400, detail="Failed to extract text from EPUB")
+        else:
+            # For DOCX, store as base64 for now
+            content = content_b64
+    else:
+        # Text-based files
+        try:
+            content = file_content.decode('utf-8')
+        except UnicodeDecodeError:
+            content = file_content.decode('latin-1')
+    
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file content")
+    
+    # Check for duplicates within the target domain only
+    existing = await rag['document_manager'].check_duplicate(content, domain_id)
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Duplicate content in this domain, existing document: {existing}")
+    
+    # Create document
+    doc = Document(
+        id=str(uuid.uuid4()),
+        domain_id=domain_id,
+        name=filename,
+        doc_type=DocumentType(doc_type),
+        content=content,
+        source_url=None,
+        status=DocumentStatus.PENDING,
+        metadata={'upload_method': 'file_upload', 'original_filename': filename}
+    )
+    
+    result = await rag['document_manager'].create_document(doc)
+    
+    # Auto-process
+    process_func = getattr(request.app.state, 'process_document_background', None)
+    if process_func:
+        background_tasks.add_task(
+            process_func,
+            result.id,
+            'semantic',
+            chunk_size,
+            chunk_overlap,
+            None
+        )
+        logger.info(f"Queued uploaded document {result.id} for background processing")
+    
+    return {"success": True, "document": result.to_dict(), "message": f"Uploaded {filename}"}
+
+
 @router.get("/documents/{document_id}")
 async def get_rag_document(request: Request, document_id: str):
     """Get document details."""
@@ -684,15 +840,41 @@ async def get_rag_document(request: Request, document_id: str):
 
 @router.delete("/documents/{document_id}")
 async def delete_rag_document(request: Request, document_id: str):
-    """Delete a document."""
+    """Delete a document and its vectors from the vector store."""
     rag = get_rag_components(request)
     if not rag['document_manager']:
         raise HTTPException(status_code=503, detail="Document manager not initialized")
     
+    # Get document first to access domain info
+    doc = await rag['document_manager'].get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    vectors_deleted = 0
+    
+    # Delete vectors from vector store if available
+    if rag['vector_store']:
+        domain = await rag['document_manager'].get_domain(doc.domain_id)
+        collection_name = get_collection_name(domain) if domain else f"domain_{doc.domain_id}"
+        
+        if await rag['vector_store'].collection_exists(collection_name):
+            chunks = await rag['document_manager'].get_chunks(document_id)
+            vector_ids = [chunk.vector_id for chunk in chunks if chunk.vector_id]
+            
+            if vector_ids:
+                try:
+                    await rag['vector_store'].delete_vectors(collection_name, vector_ids)
+                    vectors_deleted = len(vector_ids)
+                    logger.info(f"Deleted {vectors_deleted} vectors for document {document_id}")
+                except Exception as e:
+                    logger.warning(f"Error deleting vectors for document {document_id}: {e}")
+    
+    # Delete from SQLite (document + chunks)
     deleted = await rag['document_manager'].delete_document(document_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Document not found")
-    return {"status": "deleted"}
+        raise HTTPException(status_code=500, detail="Failed to delete document from database")
+    
+    return {"status": "deleted", "vectors_deleted": vectors_deleted}
 
 
 @router.get("/documents/{document_id}/chunks")
@@ -1110,6 +1292,114 @@ async def process_all_pending(request: Request, background_tasks: BackgroundTask
         "message": f"{len(docs)} pending documents queued for processing"
     }
 
+
+@router.post("/reindex-all")
+async def reindex_all_documents(request: Request, background_tasks: BackgroundTasks):
+    """
+    Clear existing vectors and reprocess all documents with a new embedding model.
+    
+    This is used when changing embedding models/dimensions and needing to rebuild
+    the entire vector store.
+    
+    Body params:
+        - domain_id: Optional domain to reindex (if not provided, reindexes all domains)
+        - embedding_model: The new embedding model to use
+        - chunking_strategy: Chunking strategy (default: semantic)
+        - clear_vectors: Whether to delete existing vectors first (default: true)
+    """
+    rag = get_rag_components(request)
+    if not rag['document_manager'] or not rag['vector_store']:
+        raise HTTPException(status_code=503, detail="RAG components not initialized")
+    
+    data = await request.json()
+    domain_id = data.get('domain_id')
+    embedding_model = data.get('embedding_model')
+    chunking_strategy = data.get('chunking_strategy', 'semantic')
+    clear_vectors = data.get('clear_vectors', True)
+    
+    if not embedding_model:
+        raise HTTPException(status_code=400, detail="embedding_model is required")
+    
+    from modules.rag.document_manager import DocumentStatus
+    
+    # Get all documents to reprocess
+    if domain_id:
+        # Single domain reindex
+        docs, total = await rag['document_manager'].list_documents(
+            domain_id=domain_id,
+            limit=10000
+        )
+        domains_to_clear = [domain_id]
+    else:
+        # Global reindex - get all documents
+        docs, total = await rag['document_manager'].list_documents(limit=10000)
+        # Get unique domain IDs
+        domains_to_clear = list(set(doc.domain_id for doc in docs if doc.domain_id))
+    
+    if not docs:
+        return {
+            "status": "complete",
+            "document_count": 0,
+            "vectors_cleared": 0,
+            "message": "No documents found to reindex"
+        }
+    
+    vectors_cleared = 0
+    
+    # Clear existing vectors if requested
+    if clear_vectors:
+        for did in domains_to_clear:
+            try:
+                # Get domain to find collection name
+                domain = await rag['document_manager'].get_domain(did)
+                if domain:
+                    collection_name = get_collection_name(domain)
+                    # Delete the collection entirely
+                    if await rag['vector_store'].collection_exists(collection_name):
+                        # Get count before deleting
+                        info = await rag['vector_store'].get_collection_info(collection_name)
+                        if info:
+                            vectors_cleared += info.get('vectors_count', 0)
+                        await rag['vector_store'].delete_collection(collection_name)
+                        logger.info(f"Cleared collection {collection_name} for reindex")
+            except Exception as e:
+                logger.warning(f"Failed to clear vectors for domain {did}: {e}")
+    
+    # Reset document status to pending for reprocessing
+    docs_reset = 0
+    for doc in docs:
+        try:
+            await rag['document_manager'].update_document(
+                doc.id,
+                status=DocumentStatus.PENDING,
+                chunk_count=0,
+                error_message=None
+            )
+            docs_reset += 1
+        except Exception as e:
+            logger.warning(f"Failed to reset document {doc.id}: {e}")
+    
+    # Queue documents for reprocessing
+    process_func = getattr(request.app.state, 'process_document_background', None)
+    if process_func:
+        for doc in docs:
+            background_tasks.add_task(
+                process_func,
+                doc.id,
+                chunking_strategy,
+                None,  # chunk_size
+                None,  # chunk_overlap  
+                embedding_model
+            )
+    
+    return {
+        "status": "queued",
+        "document_count": len(docs),
+        "documents_reset": docs_reset,
+        "vectors_cleared": vectors_cleared,
+        "embedding_model": embedding_model,
+        "message": f"Cleared {vectors_cleared} vectors and queued {len(docs)} documents for reindexing with {embedding_model}"
+    }
 
 @router.post("/documents/batch-extract-knowledge")
 async def batch_extract_document_knowledge(request: Request, background_tasks: BackgroundTasks):

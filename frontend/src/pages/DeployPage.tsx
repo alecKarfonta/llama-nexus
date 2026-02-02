@@ -39,10 +39,10 @@ import { settingsManager } from '@/utils/settings'
 
 // Local Config type mirrors backend snake_case fields to avoid camelCase/casing drift
 interface Config {
-  model: { 
-    name: string; 
-    variant: string; 
-    context_size: number; 
+  model: {
+    name: string;
+    variant: string;
+    context_size: number;
     gpu_layers: number;
     lora?: string;
     lora_base?: string;
@@ -53,25 +53,25 @@ interface Config {
     n_cpu_moe?: number;
   };
   sampling: {
-    temperature: number; 
-    top_p: number; 
-    top_k: number; 
+    temperature: number;
+    top_p: number;
+    top_k: number;
     min_p: number;
-    repeat_penalty: number; 
-    repeat_last_n: number; 
-    frequency_penalty: number; 
+    repeat_penalty: number;
+    repeat_last_n: number;
+    frequency_penalty: number;
     presence_penalty: number;
-    dry_multiplier: number; 
-    dry_base: number; 
-    dry_allowed_length: number; 
+    dry_multiplier: number;
+    dry_base: number;
+    dry_allowed_length: number;
     dry_penalty_last_n: number;
   };
-  performance: { 
-    threads: number; 
+  performance: {
+    threads: number;
     threads_batch?: number;
-    batch_size: number; 
-    ubatch_size: number; 
-    num_keep: number; 
+    batch_size: number;
+    ubatch_size: number;
+    num_keep: number;
     num_predict: number;
     memory_f32?: boolean;
     mlock?: boolean;
@@ -97,9 +97,9 @@ interface Config {
     group_attn_n?: number;
     group_attn_w?: number;
   };
-  server: { 
-    host: string; 
-    port: number; 
+  server: {
+    host: string;
+    port: number;
     api_key: string;
     timeout?: number;
     embedding?: boolean;
@@ -340,7 +340,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
 }) => {
   const isEmpty = value === '' || value === null || value === undefined;
   const isDefault = value === defaultValue || (isEmpty && defaultValue === '');
-  
+
   return (
     <Box sx={{ position: 'relative' }}>
       {type === 'select' ? (
@@ -352,7 +352,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
                 size="small"
                 onClick={() => onReset(path)}
                 disabled={isDefault}
-                sx={{ 
+                sx={{
                   opacity: isDefault ? 0.3 : 1,
                   transition: 'opacity 0.2s',
                   '&:hover': { opacity: isDefault ? 0.3 : 0.7 }
@@ -366,7 +366,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
             fullWidth
             value={value || ''}
             onChange={(e) => onChange(path, e.target.value === '' ? undefined : e.target.value)}
-            sx={{ 
+            sx={{
               fontSize: '0.875rem',
               '& .MuiOutlinedInput-root': {
                 borderRadius: 1,
@@ -409,7 +409,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
                 <IconButton
                   size="small"
                   onClick={() => onChange(path, undefined)}
-                  sx={{ 
+                  sx={{
                     opacity: 1,
                     transition: 'opacity 0.2s',
                     '&:hover': { opacity: 0.7 }
@@ -420,7 +420,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
               </Tooltip>
             ),
           }}
-          sx={{ 
+          sx={{
             '& .MuiOutlinedInput-root': {
               fontSize: '0.875rem',
               borderRadius: 1,
@@ -472,18 +472,18 @@ export const DeployPage: React.FC = () => {
   const [selectedTemplate, setSelectedTemplate] = useState<string>('')
   const [templatesDir, setTemplatesDir] = useState<string>('')
   const [templatesLoading, setTemplatesLoading] = useState<boolean>(false)
-  
+
   // API Key management
   const [selectedApiKey, setSelectedApiKey] = useState<string>('')
   const [availableApiKeys, setAvailableApiKeys] = useState<string[]>([])
   const [newApiKey, setNewApiKey] = useState<string>('')
-  
+
   // Ref for LogViewer to control logs
   const logViewerRef = useRef<LogViewerRef>(null)
-  
+
   // Parameter preset selection
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null)
-  
+
   // Log component mount
   useEffect(() => {
     deployLog('mount', 'DeployPage component mounted')
@@ -491,7 +491,7 @@ export const DeployPage: React.FC = () => {
       deployLog('mount', 'DeployPage component unmounted')
     }
   }, [])
-  
+
   // VRAM estimation state
   const [vramEstimate, setVramEstimate] = useState<{
     model_weights_mb: number
@@ -506,7 +506,7 @@ export const DeployPage: React.FC = () => {
     warnings: string[]
   } | null>(null)
   const [vramLoading, setVramLoading] = useState(false)
-  
+
   // GPU list state
   const [gpuList, setGpuList] = useState<Array<{
     index: number
@@ -518,7 +518,15 @@ export const DeployPage: React.FC = () => {
     temperature_c: number
   }>>([])
   const [gpusAvailable, setGpusAvailable] = useState(false)
-  
+
+  // mmproj files for VL models
+  const [mmprojFiles, setMmprojFiles] = useState<Array<{
+    name: string
+    path: string
+    size_mb: number
+  }>>([])
+  const [mmprojLoading, setMmprojLoading] = useState(false)
+
   // Apply a parameter preset
   const applyPreset = (preset: ParameterPreset) => {
     deployLog('preset', `Applying preset: ${preset.name}`, { sampling: preset.sampling })
@@ -526,7 +534,7 @@ export const DeployPage: React.FC = () => {
       deployLog('preset', 'ABORT: config is null')
       return;
     }
-    
+
     setConfig({
       ...config,
       sampling: {
@@ -543,17 +551,17 @@ export const DeployPage: React.FC = () => {
     setSelectedPreset(preset.name);
     deployLog('preset', 'Preset applied successfully')
   }
-  
+
   // Fetch VRAM estimation when config changes
   const fetchVramEstimate = async () => {
     if (!config?.model?.name) return;
-    
+
     setVramLoading(true);
     try {
-      const modelName = config.model.variant 
-        ? `${config.model.name}-${config.model.variant}` 
+      const modelName = config.model.variant
+        ? `${config.model.name}-${config.model.variant}`
         : config.model.name;
-      
+
       const response = await fetch('/api/v1/vram/estimate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -565,7 +573,7 @@ export const DeployPage: React.FC = () => {
           available_vram_gb: 24, // Default, could be detected
         }),
       });
-      
+
       if (response.ok) {
         const data = await response.json();
         setVramEstimate(data);
@@ -576,13 +584,13 @@ export const DeployPage: React.FC = () => {
       setVramLoading(false);
     }
   };
-  
+
   // Debounced VRAM estimation update
   useEffect(() => {
     const timer = setTimeout(() => {
       fetchVramEstimate();
     }, 500); // Debounce 500ms
-    
+
     return () => clearTimeout(timer);
   }, [
     config?.model?.name,
@@ -598,17 +606,17 @@ export const DeployPage: React.FC = () => {
       deployLog('init', 'Starting DeployPage initialization')
       try {
         setLoading(true)
-        
+
         // Load persisted settings first
         const persistedSettings = loadDeploySettings()
         deployLog('init', 'Loaded persisted settings:', persistedSettings)
-        
+
         // Load available local models
         deployLog('init', 'Fetching available models...')
         const list = await apiService.getModels()
         deployLog('init', 'Loaded models:', { count: list.length, models: list.map(m => `${m.name}/${m.variant}`) })
         setModels(list)
-        
+
         // Load available GPUs
         try {
           deployLog('init', 'Fetching available GPUs...')
@@ -622,7 +630,24 @@ export const DeployPage: React.FC = () => {
         } catch (e) {
           deployLog('init', 'Failed to fetch GPU list (non-fatal):', e)
         }
-        
+
+        // Load available mmproj files
+        try {
+          deployLog('init', 'Fetching mmproj files...')
+          setMmprojLoading(true)
+          const mmRes = await fetch('/v1/models/mmproj-files')
+          if (mmRes.ok) {
+            const mmData = await mmRes.json()
+            if (mmData.success && mmData.data?.files) {
+              setMmprojFiles(mmData.data.files)
+            }
+          }
+        } catch (e) {
+          deployLog('init', 'Failed to fetch mmproj files (non-fatal):', e)
+        } finally {
+          setMmprojLoading(false)
+        }
+
         // Load current service config + generated command
         deployLog('init', 'Fetching service config...')
         const cfgRes = await fetch(`/api/v1/service/config`)
@@ -632,16 +657,16 @@ export const DeployPage: React.FC = () => {
         }
         const cfgJson = await cfgRes.json()
         deployLog('init', 'Loaded service config:', cfgJson)
-        
+
         // Use persisted config if available, otherwise use server config
         const configToUse = persistedSettings.config || cfgJson.config
         deployLog('init', 'Using config:', { source: persistedSettings.config ? 'persisted' : 'server', config: configToUse })
-        
+
         // Ensure execution settings exist with defaults
         if (!configToUse.execution) {
           configToUse.execution = { mode: 'gpu', cuda_devices: 'all' }
         }
-        
+
         setConfig(configToUse)
         setOriginalConfig(JSON.parse(JSON.stringify(cfgJson.config)))
         setCommandLine(cfgJson.command || '')
@@ -668,14 +693,14 @@ export const DeployPage: React.FC = () => {
         } finally {
           setTemplatesLoading(false)
         }
-        
+
         // Initialize API key management
         const currentApiKey = settingsManager.getApiKey()
         const storedKeys = getStoredApiKeys()
         setAvailableApiKeys(storedKeys)
         setSelectedApiKey(persistedSettings.selectedApiKey || currentApiKey || '')
         deployLog('init', 'Initialization complete')
-        
+
       } catch (e) {
         deployLog('init', 'Initialization error:', e)
         setError(e instanceof Error ? e.message : 'Failed to initialize deploy page')
@@ -691,7 +716,7 @@ export const DeployPage: React.FC = () => {
     deployLog('models', 'Computed available model names:', { count: names.length, names })
     return names
   }, [models])
-  
+
   const availableVariantsForSelected = useMemo(() => {
     if (!config) {
       deployLog('variants', 'No config, returning empty variants')
@@ -716,7 +741,7 @@ export const DeployPage: React.FC = () => {
       const configForPreview = JSON.parse(JSON.stringify(configToPreview, (key, value) => {
         return value === undefined ? null : value
       }))
-      
+
       // Send the config to backend to get command preview without saving
       deployLog('commandPreview', 'Sending preview request to backend')
       const response = await fetch('/api/v1/service/config/preview', {
@@ -829,12 +854,12 @@ export const DeployPage: React.FC = () => {
       setValidating(true)
       setValidateErrors(null)
       setValidateWarnings(null)
-      
+
       // Convert undefined values to null for proper backend handling
       const configForValidation = JSON.parse(JSON.stringify(config, (key, value) => {
         return value === undefined ? null : value
       }))
-      
+
       deployLog('validate', 'Sending validation request')
       const data = await apiService.validateServiceConfig(configForValidation as any)
       deployLog('validate', 'Validation result:', data)
@@ -857,12 +882,12 @@ export const DeployPage: React.FC = () => {
     }
     try {
       setSaving(true)
-      
+
       // Convert undefined values to null for proper backend handling
       const configForSave = JSON.parse(JSON.stringify(config, (key, value) => {
         return value === undefined ? null : value
       }))
-      
+
       deployLog('save', 'Sending save request', { model: configForSave.model })
       const data = await (async () => {
         const updated = await apiService.updateServiceConfig({ config: configForSave as any })
@@ -892,22 +917,22 @@ export const DeployPage: React.FC = () => {
     }
     try {
       setActionLoading(action)
-      
+
       // Clear logs when restarting
       if (action === 'restart' && logViewerRef.current) {
         deployLog('action', 'Clearing logs for restart')
         logViewerRef.current.clearLogs()
       }
-      
+
       // Convert undefined values to null for proper backend handling
       const configForAction = config ? JSON.parse(JSON.stringify(config, (key, value) => {
         return value === undefined ? null : value
       })) : null
-      
+
       deployLog('action', 'Sending action to backend', { action, config: configForAction?.model })
       await apiService.performServiceAction(action === 'stop' ? { action } : { action, config: configForAction as any })
       deployLog('action', 'Action completed successfully')
-      
+
       // Refresh current model info after action
       try {
         deployLog('action', 'Refreshing current model info')
@@ -933,12 +958,12 @@ export const DeployPage: React.FC = () => {
   if (loading) {
     deployLog('render', 'Rendering loading state')
     return (
-      <Box 
+      <Box
         sx={{
           p: { xs: 2, sm: 3, md: 4 },
-          display: "flex", 
-          justifyContent: "center", 
-          alignItems: "center", 
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
           minHeight: 400
         }}
       >
@@ -951,9 +976,9 @@ export const DeployPage: React.FC = () => {
     deployLog('render', 'Rendering error state: config is null')
     return (
       <Box sx={{ p: { xs: 2, sm: 3, md: 4 } }}>
-        <Alert 
-          severity="error" 
-          sx={{ 
+        <Alert
+          severity="error"
+          sx={{
             borderRadius: 1,
             border: '1px solid',
             borderColor: 'error.main'
@@ -964,25 +989,25 @@ export const DeployPage: React.FC = () => {
       </Box>
     )
   }
-  
-  deployLog('render', 'Rendering main content', { 
-    modelName: config.model?.name, 
-    modelCount: models.length, 
-    hasCurrentModel: !!currentModel 
+
+  deployLog('render', 'Rendering main content', {
+    modelName: config.model?.name,
+    modelCount: models.length,
+    hasCurrentModel: !!currentModel
   })
 
   return (
-    <Box sx={{ 
+    <Box sx={{
       p: { xs: 2, sm: 3, md: 4 },
       maxWidth: '100%',
       overflow: 'hidden'
     }}>
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
         <Box>
-          <Typography 
-            variant="h1" 
-            sx={{ 
-              fontWeight: 700, 
+          <Typography
+            variant="h1"
+            sx={{
+              fontWeight: 700,
               color: 'text.primary',
               mb: 0.5,
               fontSize: { xs: '1.25rem', sm: '1.5rem' },
@@ -991,10 +1016,10 @@ export const DeployPage: React.FC = () => {
           >
             Deploy
           </Typography>
-          <Typography 
-            variant="body2" 
-            color="text.secondary" 
-            sx={{ 
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{
               fontSize: '0.8125rem',
               mb: { xs: 1, sm: 2 }
             }}
@@ -1014,7 +1039,7 @@ export const DeployPage: React.FC = () => {
               }
               const sections = ['model', 'sampling', 'performance', 'context_extension', 'server'];
               const resetConfig = JSON.parse(JSON.stringify(config));
-              
+
               sections.forEach(section => {
                 const sectionDefaults = DEFAULT_VALUES[section as keyof typeof DEFAULT_VALUES];
                 if (sectionDefaults && resetConfig[section as keyof Config]) {
@@ -1024,15 +1049,15 @@ export const DeployPage: React.FC = () => {
                   });
                 }
               });
-              
+
               deployLog('reset', 'Config reset to defaults', { modelName: resetConfig.model?.name })
               setConfig(resetConfig);
               saveDeploySettings(resetConfig, selectedApiKey);
-              
+
               // Update command line preview
               updateCommandPreview(resetConfig);
             }}
-            sx={{ 
+            sx={{
               borderRadius: 1,
               fontWeight: 500,
               fontSize: '0.8125rem',
@@ -1048,7 +1073,7 @@ export const DeployPage: React.FC = () => {
             startIcon={<ValidateIcon />}
             onClick={handleValidate}
             disabled={validating}
-            sx={{ 
+            sx={{
               borderRadius: 1,
               fontWeight: 500,
               fontSize: '0.8125rem',
@@ -1064,7 +1089,7 @@ export const DeployPage: React.FC = () => {
             startIcon={saving ? <CircularProgress size={20} /> : <SaveIcon />}
             onClick={handleSave}
             disabled={saving || !hasChanges}
-            sx={{ 
+            sx={{
               borderRadius: 1,
               fontWeight: 500,
               fontSize: '0.8125rem',
@@ -1081,7 +1106,7 @@ export const DeployPage: React.FC = () => {
             startIcon={actionLoading === 'start' ? <CircularProgress size={20} /> : <StartIcon />}
             onClick={() => runAction('start')}
             disabled={actionLoading !== null}
-            sx={{ 
+            sx={{
               borderRadius: 1,
               fontWeight: 500,
               fontSize: '0.8125rem',
@@ -1098,7 +1123,7 @@ export const DeployPage: React.FC = () => {
             startIcon={actionLoading === 'restart' ? <CircularProgress size={20} /> : <RestartIcon />}
             onClick={() => runAction('restart')}
             disabled={actionLoading !== null}
-            sx={{ 
+            sx={{
               borderRadius: 1,
               fontWeight: 500,
               fontSize: '0.8125rem',
@@ -1115,7 +1140,7 @@ export const DeployPage: React.FC = () => {
             startIcon={actionLoading === 'stop' ? <CircularProgress size={20} /> : <StopIcon />}
             onClick={() => runAction('stop')}
             disabled={actionLoading !== null}
-            sx={{ 
+            sx={{
               borderRadius: 1,
               fontWeight: 500,
               fontSize: '0.8125rem',
@@ -1130,23 +1155,23 @@ export const DeployPage: React.FC = () => {
       </Box>
 
       {error && (
-        <Alert 
-          severity="error" 
-          sx={{ 
-            mb: 2, 
+        <Alert
+          severity="error"
+          sx={{
+            mb: 2,
             borderRadius: 1,
             border: '1px solid',
             borderColor: 'error.main'
-          }} 
+          }}
           onClose={() => setError(null)}
         >
           {error}
         </Alert>
       )}
       {validateWarnings && validateWarnings.length > 0 && (
-        <Alert 
-          severity="warning" 
-          sx={{ 
+        <Alert
+          severity="warning"
+          sx={{
             mb: 2,
             borderRadius: 1,
             border: '1px solid',
@@ -1159,9 +1184,9 @@ export const DeployPage: React.FC = () => {
         </Alert>
       )}
       {validateErrors && validateErrors.length > 0 && (
-        <Alert 
-          severity="error" 
-          sx={{ 
+        <Alert
+          severity="error"
+          sx={{
             mb: 2,
             borderRadius: 1,
             border: '1px solid',
@@ -1175,23 +1200,23 @@ export const DeployPage: React.FC = () => {
       )}
 
       {/* Model selection */}
-      <Card sx={{ 
-        mb: 3, 
-        borderRadius: 1, 
+      <Card sx={{
+        mb: 3,
+        borderRadius: 1,
         boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
         border: '1px solid rgba(255, 255, 255, 0.1)',
         bgcolor: 'background.paper'
       }}>
-                  <CardHeader
+        <CardHeader
           title={<Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 600 }}>Currently Deployed</Typography>}
           subheader={<Typography variant="body2" sx={{ fontSize: '0.8125rem', color: 'text.secondary' }}>
             {currentModel ? `${currentModel.name} • ${currentModel.variant} • ${currentModel.status}` : 'No model information available'}
           </Typography>}
           action={currentModel?.file_path ? (
-            <Chip 
-              label={currentModel.file_path} 
-              variant="outlined" 
-              sx={{ 
+            <Chip
+              label={currentModel.file_path}
+              variant="outlined"
+              sx={{
                 borderRadius: '4px',
                 fontWeight: 500,
                 fontSize: '0.6875rem',
@@ -1221,38 +1246,38 @@ export const DeployPage: React.FC = () => {
                   console.log('==== MODEL ONCHANGE FIRED ====')
                   console.log('New value:', e.target.value)
                   const newName = e.target.value as string
-                  
+
                   // Calculate variants for the NEW model name
                   const newModelVariants = models.filter((m) => m.name === newName).map((m) => m.variant)
                   const uniqueNewVariants = Array.from(new Set(newModelVariants.filter(Boolean)))
-                  
+
                   // Always set the first available variant for the new model
                   const nextVariant = uniqueNewVariants[0] || 'Q4_K_M'
-                  
-                  deployLog('modelSelect', `Model changed to ${newName} with variant ${nextVariant}`, { 
-                    availableVariants: uniqueNewVariants 
+
+                  deployLog('modelSelect', `Model changed to ${newName} with variant ${nextVariant}`, {
+                    availableVariants: uniqueNewVariants
                   })
-                  
+
                   // Update both name and variant atomically to avoid race conditions
                   if (!config) {
                     deployLog('modelSelect', 'ABORT: config is null')
                     return;
                   }
-                  
+
                   const nextConfig = JSON.parse(JSON.stringify(config))
                   nextConfig.model.name = newName
                   nextConfig.model.variant = nextVariant
-                  
+
                   console.log('📝 Calling setConfig with atomic update:', { name: newName, variant: nextVariant })
                   setConfig(nextConfig)
-                  
+
                   // Save to localStorage for persistence
                   saveDeploySettings(nextConfig, selectedApiKey)
-                  
+
                   // Update command line preview (single call)
                   updateCommandPreview(nextConfig)
                 }}
-                sx={{ 
+                sx={{
                   fontSize: '0.875rem',
                   '& .MuiOutlinedInput-root': {
                     borderRadius: 1,
@@ -1272,14 +1297,14 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.model.variant}
                   onChange={(e) => {
-                    deployLog('variantSelect', 'Variant selection changed', { 
-                      newVariant: e.target.value, 
+                    deployLog('variantSelect', 'Variant selection changed', {
+                      newVariant: e.target.value,
                       previousVariant: config.model.variant,
                       modelName: config.model.name
                     })
                     updateConfig('model.variant', e.target.value)
                   }}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
@@ -1296,9 +1321,9 @@ export const DeployPage: React.FC = () => {
             {availableVariantsForSelected.length <= 1 && (
               <Grid item xs={12} md={6}>
                 <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Variant</Typography>
-                <Typography 
-                  sx={{ 
-                    fontSize: '0.875rem', 
+                <Typography
+                  sx={{
+                    fontSize: '0.875rem',
                     color: 'text.secondary',
                     fontStyle: 'italic',
                     py: 1.5,
@@ -1320,9 +1345,9 @@ export const DeployPage: React.FC = () => {
                 disabled={templatesLoading}
                 onChange={async (e) => {
                   const filename = e.target.value as string
-                  deployLog('templateSelect', 'Template selection changed', { 
-                    newTemplate: filename, 
-                    previousTemplate: selectedTemplate 
+                  deployLog('templateSelect', 'Template selection changed', {
+                    newTemplate: filename,
+                    previousTemplate: selectedTemplate
                   })
                   setSelectedTemplate(filename)
                   try {
@@ -1344,7 +1369,7 @@ export const DeployPage: React.FC = () => {
                     setError(err instanceof Error ? err.message : 'Failed to select template')
                   }
                 }}
-                sx={{ 
+                sx={{
                   fontSize: '0.875rem',
                   '& .MuiOutlinedInput-root': {
                     borderRadius: 1
@@ -1365,11 +1390,11 @@ export const DeployPage: React.FC = () => {
                 )}
               </Select>
               <Box mt={1}>
-                <Chip 
+                <Chip
                   label="Manage templates"
                   variant="outlined"
                   onClick={() => window.location.assign('/templates')}
-                  sx={{ 
+                  sx={{
                     borderRadius: '4px',
                     fontWeight: 500,
                     fontSize: '0.6875rem',
@@ -1386,7 +1411,7 @@ export const DeployPage: React.FC = () => {
                 startIcon={actionLoading === 'restart' ? <CircularProgress size={20} /> : <RestartIcon />}
                 onClick={() => runAction('restart')}
                 disabled={actionLoading !== null}
-                sx={{ 
+                sx={{
                   borderRadius: 1,
                   fontWeight: 500,
                   fontSize: '0.8125rem',
@@ -1400,12 +1425,12 @@ export const DeployPage: React.FC = () => {
             </Grid>
           </Grid>
           <Box mt={1}>
-            <Chip 
-              icon={<DownloadIcon />} 
-              label="Download more models" 
-              variant="outlined" 
-              onClick={() => window.location.assign('/models')} 
-              sx={{ 
+            <Chip
+              icon={<DownloadIcon />}
+              label="Download more models"
+              variant="outlined"
+              onClick={() => window.location.assign('/models')}
+              sx={{
                 borderRadius: '4px',
                 fontWeight: 500,
                 fontSize: '0.6875rem',
@@ -1419,12 +1444,12 @@ export const DeployPage: React.FC = () => {
 
       {/* VRAM Estimation Display */}
       {vramEstimate && (
-        <Card sx={{ 
-          mb: 3, 
-          borderRadius: 1, 
+        <Card sx={{
+          mb: 3,
+          borderRadius: 1,
           boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
-          border: vramEstimate.fits_in_vram 
-            ? '1px solid rgba(76, 175, 80, 0.3)' 
+          border: vramEstimate.fits_in_vram
+            ? '1px solid rgba(76, 175, 80, 0.3)'
             : '1px solid rgba(244, 67, 54, 0.3)',
           bgcolor: 'background.paper'
         }}>
@@ -1436,14 +1461,14 @@ export const DeployPage: React.FC = () => {
                 </Typography>
                 {vramLoading && <CircularProgress size={16} />}
               </Box>
-              <Chip 
-                label={vramEstimate.fits_in_vram ? 'Fits in VRAM' : 'Exceeds VRAM'} 
+              <Chip
+                label={vramEstimate.fits_in_vram ? 'Fits in VRAM' : 'Exceeds VRAM'}
                 color={vramEstimate.fits_in_vram ? 'success' : 'error'}
                 size="small"
                 sx={{ fontWeight: 500 }}
               />
             </Box>
-            
+
             <Grid container spacing={2}>
               <Grid item xs={6} sm={3}>
                 <Typography variant="caption" color="text.secondary">Model Weights</Typography>
@@ -1470,31 +1495,31 @@ export const DeployPage: React.FC = () => {
                 </Typography>
               </Grid>
             </Grid>
-            
+
             {/* VRAM Usage Bar */}
             <Box sx={{ mt: 2 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
                 <Typography variant="caption" color="text.secondary">VRAM Utilization</Typography>
                 <Typography variant="caption" color="text.secondary">{vramEstimate.utilization_percent}%</Typography>
               </Box>
-              <Box sx={{ 
-                width: '100%', 
-                height: 8, 
-                bgcolor: 'rgba(255,255,255,0.1)', 
+              <Box sx={{
+                width: '100%',
+                height: 8,
+                bgcolor: 'rgba(255,255,255,0.1)',
                 borderRadius: 1,
                 overflow: 'hidden'
               }}>
-                <Box sx={{ 
-                  width: `${Math.min(vramEstimate.utilization_percent, 100)}%`, 
-                  height: '100%', 
-                  bgcolor: vramEstimate.utilization_percent > 95 ? 'error.main' : 
-                           vramEstimate.utilization_percent > 85 ? 'warning.main' : 'success.main',
+                <Box sx={{
+                  width: `${Math.min(vramEstimate.utilization_percent, 100)}%`,
+                  height: '100%',
+                  bgcolor: vramEstimate.utilization_percent > 95 ? 'error.main' :
+                    vramEstimate.utilization_percent > 85 ? 'warning.main' : 'success.main',
                   borderRadius: 1,
                   transition: 'width 0.3s ease'
                 }} />
               </Box>
             </Box>
-            
+
             {/* Warnings */}
             {vramEstimate.warnings.length > 0 && (
               <Box sx={{ mt: 2 }}>
@@ -1510,12 +1535,12 @@ export const DeployPage: React.FC = () => {
       )}
 
       {/* Tabs for settings */}
-      <Tabs 
-        value={tab} 
-        onChange={(_, v) => setTab(v)} 
+      <Tabs
+        value={tab}
+        onChange={(_, v) => setTab(v)}
         variant="scrollable"
         scrollButtons="auto"
-        sx={{ 
+        sx={{
           mb: 3,
           '& .MuiTabs-indicator': {
             height: 3,
@@ -1539,9 +1564,9 @@ export const DeployPage: React.FC = () => {
       </Tabs>
 
       {tab === 0 && (
-        <Card sx={{ 
-          mb: 3, 
-          borderRadius: 1, 
+        <Card sx={{
+          mb: 3,
+          borderRadius: 1,
           boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
           border: '1px solid rgba(255, 255, 255, 0.1)',
           bgcolor: 'background.paper'
@@ -1577,11 +1602,11 @@ export const DeployPage: React.FC = () => {
                   onReset={resetToDefault}
                 />
               </Grid>
-              
+
               <Grid item xs={12}>
                 <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600, mt: 2 }}>Execution Settings</Typography>
               </Grid>
-              
+
               <Grid item xs={12} md={6}>
                 <Box sx={{ mb: 1 }}>
                   <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Execution Mode</Typography>
@@ -1589,7 +1614,7 @@ export const DeployPage: React.FC = () => {
                     fullWidth
                     value={config.execution?.mode || 'gpu'}
                     onChange={(e) => updateConfig('execution.mode', e.target.value)}
-                    sx={{ 
+                    sx={{
                       fontSize: '0.875rem',
                       '& .MuiOutlinedInput-root': {
                         borderRadius: 1,
@@ -1605,7 +1630,7 @@ export const DeployPage: React.FC = () => {
                   </FormHelperText>
                 </Box>
               </Grid>
-              
+
               <Grid item xs={12} md={6}>
                 <Box sx={{ mb: 1 }}>
                   <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>CUDA Devices</Typography>
@@ -1621,7 +1646,7 @@ export const DeployPage: React.FC = () => {
                         }
                       }}
                       disabled={config.execution?.mode === 'cpu'}
-                      sx={{ 
+                      sx={{
                         fontSize: '0.875rem',
                         '& .MuiOutlinedInput-root': {
                           borderRadius: 1,
@@ -1658,7 +1683,7 @@ export const DeployPage: React.FC = () => {
                           </Tooltip>
                         ),
                       }}
-                      sx={{ 
+                      sx={{
                         '& .MuiOutlinedInput-root': {
                           fontSize: '0.875rem',
                           borderRadius: 1,
@@ -1668,20 +1693,20 @@ export const DeployPage: React.FC = () => {
                     />
                   )}
                   <FormHelperText sx={{ mt: 0.5, fontSize: '0.75rem', color: 'text.secondary' }}>
-                    {config.execution?.mode === 'cpu' 
+                    {config.execution?.mode === 'cpu'
                       ? 'GPU selection is disabled in CPU mode'
-                      : gpusAvailable 
+                      : gpusAvailable
                         ? `Select which GPU(s) to use. Separate multiple GPUs with commas (e.g., 0,1). Found ${gpuList.length} GPU(s).`
                         : 'No GPUs detected. Using CPU mode.'}
                   </FormHelperText>
                 </Box>
               </Grid>
-              
+
               {gpusAvailable && gpuList.length > 0 && config.execution?.mode === 'gpu' && (
                 <Grid item xs={12}>
-                  <Box sx={{ 
-                    p: 2, 
-                    bgcolor: 'rgba(255,255,255,0.02)', 
+                  <Box sx={{
+                    p: 2,
+                    bgcolor: 'rgba(255,255,255,0.02)',
                     borderRadius: 1,
                     border: '1px solid rgba(255,255,255,0.1)'
                   }}>
@@ -1691,9 +1716,9 @@ export const DeployPage: React.FC = () => {
                     <Grid container spacing={1}>
                       {gpuList.map((gpu) => (
                         <Grid item xs={12} md={6} key={gpu.index}>
-                          <Box sx={{ 
-                            p: 1.5, 
-                            bgcolor: 'rgba(255,255,255,0.03)', 
+                          <Box sx={{
+                            p: 1.5,
+                            bgcolor: 'rgba(255,255,255,0.03)',
                             borderRadius: 1,
                             border: '1px solid rgba(255,255,255,0.05)'
                           }}>
@@ -1701,7 +1726,7 @@ export const DeployPage: React.FC = () => {
                               GPU {gpu.index}: {gpu.name}
                             </Typography>
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                              VRAM: {(gpu.vram_used_mb / 1024).toFixed(1)} GB / {(gpu.vram_total_mb / 1024).toFixed(1)} GB 
+                              VRAM: {(gpu.vram_used_mb / 1024).toFixed(1)} GB / {(gpu.vram_total_mb / 1024).toFixed(1)} GB
                               ({((gpu.vram_used_mb / gpu.vram_total_mb) * 100).toFixed(0)}% used)
                             </Typography>
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
@@ -1714,7 +1739,7 @@ export const DeployPage: React.FC = () => {
                   </Box>
                 </Grid>
               )}
-              
+
               <Grid item xs={12} md={6}>
                 <ParameterField
                   label="LoRA Adapter"
@@ -1746,7 +1771,13 @@ export const DeployPage: React.FC = () => {
                   path="model.mmproj"
                   value={config.model.mmproj || ''}
                   defaultValue={getDefaultValue('model.mmproj')}
-                  type="text"
+                  type="select"
+                  options={[
+                    ...mmprojFiles.map(f => ({
+                      value: f.name,
+                      label: `${f.name} (${f.size_mb} MB)`
+                    }))
+                  ]}
                   onChange={updateConfig}
                   onReset={resetToDefault}
                 />
@@ -1815,9 +1846,9 @@ export const DeployPage: React.FC = () => {
       )}
 
       {tab === 1 && (
-        <Card sx={{ 
-          mb: 3, 
-          borderRadius: 1, 
+        <Card sx={{
+          mb: 3,
+          borderRadius: 1,
           boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
           border: '1px solid rgba(255, 255, 255, 0.1)',
           bgcolor: 'background.paper'
@@ -1838,11 +1869,11 @@ export const DeployPage: React.FC = () => {
                         variant={selectedPreset === preset.name ? 'filled' : 'outlined'}
                         color={
                           preset.category === 'coding' ? 'info' :
-                          preset.category === 'creative' ? 'secondary' :
-                          preset.category === 'precise' ? 'success' : 'primary'
+                            preset.category === 'creative' ? 'secondary' :
+                              preset.category === 'precise' ? 'success' : 'primary'
                         }
                         onClick={() => applyPreset(preset)}
-                        sx={{ 
+                        sx={{
                           cursor: 'pointer',
                           fontWeight: selectedPreset === preset.name ? 600 : 400,
                           '&:hover': { opacity: 0.8 }
@@ -2039,9 +2070,9 @@ export const DeployPage: React.FC = () => {
       )}
 
       {tab === 2 && (
-        <Card sx={{ 
-          mb: 3, 
-          borderRadius: 1, 
+        <Card sx={{
+          mb: 3,
+          borderRadius: 1,
           boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
           border: '1px solid rgba(255, 255, 255, 0.1)',
           bgcolor: 'background.paper'
@@ -2050,14 +2081,14 @@ export const DeployPage: React.FC = () => {
             <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Performance Configuration</Typography>
             <Grid container spacing={2}>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="Threads" 
-                  type="number" 
-                  fullWidth 
-                  value={config.performance.threads} 
-                  onChange={(e) => updateConfig('performance.threads', parseInt(e.target.value))} 
+                <TextField
+                  label="Threads"
+                  type="number"
+                  fullWidth
+                  value={config.performance.threads}
+                  onChange={(e) => updateConfig('performance.threads', parseInt(e.target.value))}
                   helperText="Number of threads for computation (--threads)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2073,14 +2104,14 @@ export const DeployPage: React.FC = () => {
                 />
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="Threads Batch" 
-                  type="number" 
-                  fullWidth 
-                  value={config.performance.threads_batch || config.performance.threads} 
-                  onChange={(e) => updateConfig('performance.threads_batch', parseInt(e.target.value))} 
+                <TextField
+                  label="Threads Batch"
+                  type="number"
+                  fullWidth
+                  value={config.performance.threads_batch || config.performance.threads}
+                  onChange={(e) => updateConfig('performance.threads_batch', parseInt(e.target.value))}
                   helperText="Threads for batch processing (--threads-batch)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2096,14 +2127,14 @@ export const DeployPage: React.FC = () => {
                 />
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="Batch Size" 
-                  type="number" 
-                  fullWidth 
-                  value={config.performance.batch_size} 
-                  onChange={(e) => updateConfig('performance.batch_size', parseInt(e.target.value))} 
+                <TextField
+                  label="Batch Size"
+                  type="number"
+                  fullWidth
+                  value={config.performance.batch_size}
+                  onChange={(e) => updateConfig('performance.batch_size', parseInt(e.target.value))}
                   helperText="Batch size for prompt processing (--batch-size)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2119,14 +2150,14 @@ export const DeployPage: React.FC = () => {
                 />
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="uBatch Size" 
-                  type="number" 
-                  fullWidth 
-                  value={config.performance.ubatch_size} 
-                  onChange={(e) => updateConfig('performance.ubatch_size', parseInt(e.target.value))} 
+                <TextField
+                  label="uBatch Size"
+                  type="number"
+                  fullWidth
+                  value={config.performance.ubatch_size}
+                  onChange={(e) => updateConfig('performance.ubatch_size', parseInt(e.target.value))}
                   helperText="Micro batch size"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2142,14 +2173,14 @@ export const DeployPage: React.FC = () => {
                 />
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="Num Keep" 
-                  type="number" 
-                  fullWidth 
-                  value={config.performance.num_keep} 
-                  onChange={(e) => updateConfig('performance.num_keep', parseInt(e.target.value))} 
+                <TextField
+                  label="Num Keep"
+                  type="number"
+                  fullWidth
+                  value={config.performance.num_keep}
+                  onChange={(e) => updateConfig('performance.num_keep', parseInt(e.target.value))}
                   helperText="Number of tokens to keep from initial prompt"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2165,14 +2196,14 @@ export const DeployPage: React.FC = () => {
                 />
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="Max Tokens (n-predict)" 
-                  type="number" 
-                  fullWidth 
-                  value={config.performance.num_predict} 
-                  onChange={(e) => updateConfig('performance.num_predict', parseInt(e.target.value))} 
+                <TextField
+                  label="Max Tokens (n-predict)"
+                  type="number"
+                  fullWidth
+                  value={config.performance.num_predict}
+                  onChange={(e) => updateConfig('performance.num_predict', parseInt(e.target.value))}
                   helperText="Maximum tokens to predict (--n-predict)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2188,14 +2219,14 @@ export const DeployPage: React.FC = () => {
                 />
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="Parallel Slots" 
-                  type="number" 
-                  fullWidth 
-                  value={config.performance.parallel_slots || 1} 
-                  onChange={(e) => updateConfig('performance.parallel_slots', parseInt(e.target.value))} 
+                <TextField
+                  label="Parallel Slots"
+                  type="number"
+                  fullWidth
+                  value={config.performance.parallel_slots || 1}
+                  onChange={(e) => updateConfig('performance.parallel_slots', parseInt(e.target.value))}
                   helperText="Number of slots for processing requests (--parallel)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2216,7 +2247,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.performance.split_mode || 'none'}
                   onChange={(e) => updateConfig('performance.split_mode', e.target.value)}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2229,14 +2260,14 @@ export const DeployPage: React.FC = () => {
                 </Select>
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="Tensor Split" 
-                  type="text" 
-                  fullWidth 
-                  value={config.performance.tensor_split || ''} 
-                  onChange={(e) => updateConfig('performance.tensor_split', e.target.value)} 
+                <TextField
+                  label="Tensor Split"
+                  type="text"
+                  fullWidth
+                  value={config.performance.tensor_split || ''}
+                  onChange={(e) => updateConfig('performance.tensor_split', e.target.value)}
                   helperText="Tensor split across GPUs (e.g., '3,1')"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2252,14 +2283,14 @@ export const DeployPage: React.FC = () => {
                 />
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="Main GPU" 
-                  type="number" 
-                  fullWidth 
-                  value={config.performance.main_gpu || 0} 
-                  onChange={(e) => updateConfig('performance.main_gpu', parseInt(e.target.value))} 
+                <TextField
+                  label="Main GPU"
+                  type="number"
+                  fullWidth
+                  value={config.performance.main_gpu || 0}
+                  onChange={(e) => updateConfig('performance.main_gpu', parseInt(e.target.value))}
                   helperText="Main GPU index (--main-gpu)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2283,7 +2314,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.performance.memory_f32 ? 'true' : 'false'}
                   onChange={(e) => updateConfig('performance.memory_f32', e.target.value === 'true')}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2300,7 +2331,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.performance.mlock ? 'true' : 'false'}
                   onChange={(e) => updateConfig('performance.mlock', e.target.value === 'true')}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2317,7 +2348,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.performance.no_mmap ? 'true' : 'false'}
                   onChange={(e) => updateConfig('performance.no_mmap', e.target.value === 'true')}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2334,7 +2365,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.performance.continuous_batching ? 'true' : 'false'}
                   onChange={(e) => updateConfig('performance.continuous_batching', e.target.value === 'true')}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2351,7 +2382,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.performance.numa || ''}
                   onChange={(e) => updateConfig('performance.numa', e.target.value)}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2365,14 +2396,14 @@ export const DeployPage: React.FC = () => {
                 </Select>
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="Cache Type K" 
-                  type="text" 
-                  fullWidth 
-                  value={config.performance.cache_type_k || 'q4_0'} 
-                  onChange={(e) => updateConfig('performance.cache_type_k', e.target.value)} 
+                <TextField
+                  label="Cache Type K"
+                  type="text"
+                  fullWidth
+                  value={config.performance.cache_type_k || 'q4_0'}
+                  onChange={(e) => updateConfig('performance.cache_type_k', e.target.value)}
                   helperText="KV cache data type for K (--cache-type-k)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2388,14 +2419,14 @@ export const DeployPage: React.FC = () => {
                 />
               </Grid>
               <Grid item xs={12} md={3}>
-                <TextField 
-                  label="Cache Type V" 
-                  type="text" 
-                  fullWidth 
-                  value={config.performance.cache_type_v || 'q4_0'} 
-                  onChange={(e) => updateConfig('performance.cache_type_v', e.target.value)} 
+                <TextField
+                  label="Cache Type V"
+                  type="text"
+                  fullWidth
+                  value={config.performance.cache_type_v || 'q4_0'}
+                  onChange={(e) => updateConfig('performance.cache_type_v', e.target.value)}
                   helperText="KV cache data type for V (--cache-type-v)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2416,9 +2447,9 @@ export const DeployPage: React.FC = () => {
       )}
 
       {tab === 3 && (
-        <Card sx={{ 
-          mb: 3, 
-          borderRadius: 1, 
+        <Card sx={{
+          mb: 3,
+          borderRadius: 1,
           boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
           border: '1px solid rgba(255, 255, 255, 0.1)',
           bgcolor: 'background.paper'
@@ -2430,18 +2461,18 @@ export const DeployPage: React.FC = () => {
                 <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 600, mt: 2 }}>YaRN Parameters</Typography>
                 <Grid container spacing={2}>
                   <Grid item xs={12} md={6}>
-                    <TextField 
-                      label="YaRN Ext Factor" 
-                      type="number" 
-                      fullWidth 
-                      value={config.context_extension?.yarn_ext_factor || 1.0} 
+                    <TextField
+                      label="YaRN Ext Factor"
+                      type="number"
+                      fullWidth
+                      value={config.context_extension?.yarn_ext_factor || 1.0}
                       onChange={(e) => {
                         const value = parseFloat(e.target.value);
-                        const next = {...(config.context_extension || {}), yarn_ext_factor: value};
+                        const next = { ...(config.context_extension || {}), yarn_ext_factor: value };
                         updateConfig('context_extension', next);
-                      }} 
+                      }}
                       helperText="YaRN extrapolation mix factor (--yarn-ext-factor)"
-                      sx={{ 
+                      sx={{
                         '& .MuiOutlinedInput-root': {
                           fontSize: '0.875rem',
                           borderRadius: 1,
@@ -2457,18 +2488,18 @@ export const DeployPage: React.FC = () => {
                     />
                   </Grid>
                   <Grid item xs={12} md={6}>
-                    <TextField 
-                      label="YaRN Attn Factor" 
-                      type="number" 
-                      fullWidth 
-                      value={config.context_extension?.yarn_attn_factor || 1.0} 
+                    <TextField
+                      label="YaRN Attn Factor"
+                      type="number"
+                      fullWidth
+                      value={config.context_extension?.yarn_attn_factor || 1.0}
                       onChange={(e) => {
                         const value = parseFloat(e.target.value);
-                        const next = {...(config.context_extension || {}), yarn_attn_factor: value};
+                        const next = { ...(config.context_extension || {}), yarn_attn_factor: value };
                         updateConfig('context_extension', next);
-                      }} 
+                      }}
                       helperText="YaRN attention scaling factor (--yarn-attn-factor)"
-                      sx={{ 
+                      sx={{
                         '& .MuiOutlinedInput-root': {
                           fontSize: '0.875rem',
                           borderRadius: 1,
@@ -2484,18 +2515,18 @@ export const DeployPage: React.FC = () => {
                     />
                   </Grid>
                   <Grid item xs={12} md={6}>
-                    <TextField 
-                      label="YaRN Beta Slow" 
-                      type="number" 
-                      fullWidth 
-                      value={config.context_extension?.yarn_beta_slow || 1.0} 
+                    <TextField
+                      label="YaRN Beta Slow"
+                      type="number"
+                      fullWidth
+                      value={config.context_extension?.yarn_beta_slow || 1.0}
                       onChange={(e) => {
                         const value = parseFloat(e.target.value);
-                        const next = {...(config.context_extension || {}), yarn_beta_slow: value};
+                        const next = { ...(config.context_extension || {}), yarn_beta_slow: value };
                         updateConfig('context_extension', next);
-                      }} 
+                      }}
                       helperText="YaRN high correction dimension (--yarn-beta-slow)"
-                      sx={{ 
+                      sx={{
                         '& .MuiOutlinedInput-root': {
                           fontSize: '0.875rem',
                           borderRadius: 1,
@@ -2511,18 +2542,18 @@ export const DeployPage: React.FC = () => {
                     />
                   </Grid>
                   <Grid item xs={12} md={6}>
-                    <TextField 
-                      label="YaRN Beta Fast" 
-                      type="number" 
-                      fullWidth 
-                      value={config.context_extension?.yarn_beta_fast || 32.0} 
+                    <TextField
+                      label="YaRN Beta Fast"
+                      type="number"
+                      fullWidth
+                      value={config.context_extension?.yarn_beta_fast || 32.0}
                       onChange={(e) => {
                         const value = parseFloat(e.target.value);
-                        const next = {...(config.context_extension || {}), yarn_beta_fast: value};
+                        const next = { ...(config.context_extension || {}), yarn_beta_fast: value };
                         updateConfig('context_extension', next);
-                      }} 
+                      }}
                       helperText="YaRN low correction dimension (--yarn-beta-fast)"
-                      sx={{ 
+                      sx={{
                         '& .MuiOutlinedInput-root': {
                           fontSize: '0.875rem',
                           borderRadius: 1,
@@ -2543,18 +2574,18 @@ export const DeployPage: React.FC = () => {
                 <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 600, mt: 2 }}>Group Attention</Typography>
                 <Grid container spacing={2}>
                   <Grid item xs={12} md={6}>
-                    <TextField 
-                      label="Group Attention Factor" 
-                      type="number" 
-                      fullWidth 
-                      value={config.context_extension?.group_attn_n || 1} 
+                    <TextField
+                      label="Group Attention Factor"
+                      type="number"
+                      fullWidth
+                      value={config.context_extension?.group_attn_n || 1}
                       onChange={(e) => {
                         const value = parseInt(e.target.value);
-                        const next = {...(config.context_extension || {}), group_attn_n: value};
+                        const next = { ...(config.context_extension || {}), group_attn_n: value };
                         updateConfig('context_extension', next);
-                      }} 
+                      }}
                       helperText="Group attention factor (--grp-attn-n)"
-                      sx={{ 
+                      sx={{
                         '& .MuiOutlinedInput-root': {
                           fontSize: '0.875rem',
                           borderRadius: 1,
@@ -2570,18 +2601,18 @@ export const DeployPage: React.FC = () => {
                     />
                   </Grid>
                   <Grid item xs={12} md={6}>
-                    <TextField 
-                      label="Group Attention Width" 
-                      type="number" 
-                      fullWidth 
-                      value={config.context_extension?.group_attn_w || 512} 
+                    <TextField
+                      label="Group Attention Width"
+                      type="number"
+                      fullWidth
+                      value={config.context_extension?.group_attn_w || 512}
                       onChange={(e) => {
                         const value = parseInt(e.target.value);
-                        const next = {...(config.context_extension || {}), group_attn_w: value};
+                        const next = { ...(config.context_extension || {}), group_attn_w: value };
                         updateConfig('context_extension', next);
-                      }} 
+                      }}
                       helperText="Group attention width (--grp-attn-w)"
-                      sx={{ 
+                      sx={{
                         '& .MuiOutlinedInput-root': {
                           fontSize: '0.875rem',
                           borderRadius: 1,
@@ -2604,9 +2635,9 @@ export const DeployPage: React.FC = () => {
       )}
 
       {tab === 4 && (
-        <Card sx={{ 
-          mb: 3, 
-          borderRadius: 1, 
+        <Card sx={{
+          mb: 3,
+          borderRadius: 1,
           boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
           border: '1px solid rgba(255, 255, 255, 0.1)',
           bgcolor: 'background.paper'
@@ -2622,7 +2653,7 @@ export const DeployPage: React.FC = () => {
                   value={config.server.host}
                   onChange={(e) => updateConfig('server.host', e.target.value)}
                   helperText="IP address to listen on (--host)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2645,7 +2676,7 @@ export const DeployPage: React.FC = () => {
                   value={config.server.port}
                   onChange={(e) => updateConfig('server.port', parseInt(e.target.value))}
                   helperText="Port to listen on (--port)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2673,7 +2704,7 @@ export const DeployPage: React.FC = () => {
                         handleApiKeyChange(newKey)
                         updateConfig('server.api_key', newKey)
                       }}
-                      sx={{ 
+                      sx={{
                         fontSize: '0.875rem',
                         '& .MuiOutlinedInput-root': {
                           borderRadius: 1
@@ -2701,7 +2732,7 @@ export const DeployPage: React.FC = () => {
                         value={newApiKey}
                         onChange={(e) => setNewApiKey(e.target.value)}
                         onKeyPress={(e) => e.key === 'Enter' && handleAddApiKey()}
-                        sx={{ 
+                        sx={{
                           flex: 1,
                           '& .MuiOutlinedInput-root': {
                             fontSize: '0.875rem',
@@ -2714,7 +2745,7 @@ export const DeployPage: React.FC = () => {
                         variant="outlined"
                         onClick={handleAddApiKey}
                         disabled={!newApiKey.trim()}
-                        sx={{ 
+                        sx={{
                           borderRadius: 1,
                           fontSize: '0.8125rem',
                           textTransform: 'none',
@@ -2731,10 +2762,10 @@ export const DeployPage: React.FC = () => {
                   {selectedApiKey && (
                     <Grid item xs={12}>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Chip 
+                        <Chip
                           label={`Current: ${selectedApiKey.length > 30 ? `${selectedApiKey.substring(0, 30)}...` : selectedApiKey}`}
                           variant="outlined"
-                          sx={{ 
+                          sx={{
                             borderRadius: '4px',
                             fontWeight: 500,
                             fontSize: '0.6875rem',
@@ -2747,7 +2778,7 @@ export const DeployPage: React.FC = () => {
                           color="error"
                           variant="outlined"
                           onClick={() => handleRemoveApiKey(selectedApiKey)}
-                          sx={{ 
+                          sx={{
                             borderRadius: 1,
                             fontSize: '0.75rem',
                             textTransform: 'none',
@@ -2770,7 +2801,7 @@ export const DeployPage: React.FC = () => {
                   value={config.server.timeout || 600}
                   onChange={(e) => updateConfig('server.timeout', parseInt(e.target.value))}
                   helperText="Server read/write timeout in seconds (--timeout)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2793,7 +2824,7 @@ export const DeployPage: React.FC = () => {
                   value={config.server.system_prompt_file || ''}
                   onChange={(e) => updateConfig('server.system_prompt_file', e.target.value)}
                   helperText="File to load system prompt (--system-prompt-file)"
-                  sx={{ 
+                  sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',
                       borderRadius: 1,
@@ -2814,7 +2845,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.server.embedding ? 'true' : 'false'}
                   onChange={(e) => updateConfig('server.embedding', e.target.value === 'true')}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2831,7 +2862,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.server.metrics ? 'true' : 'false'}
                   onChange={(e) => updateConfig('server.metrics', e.target.value === 'true')}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2848,7 +2879,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.server.log_format || 'json'}
                   onChange={(e) => updateConfig('server.log_format', e.target.value)}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2865,7 +2896,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.server.log_disable ? 'true' : 'false'}
                   onChange={(e) => updateConfig('server.log_disable', e.target.value === 'true')}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2882,7 +2913,7 @@ export const DeployPage: React.FC = () => {
                   fullWidth
                   value={config.server.slots_endpoint_disable ? 'true' : 'false'}
                   onChange={(e) => updateConfig('server.slots_endpoint_disable', e.target.value === 'true')}
-                  sx={{ 
+                  sx={{
                     fontSize: '0.875rem',
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1
@@ -2900,7 +2931,7 @@ export const DeployPage: React.FC = () => {
 
       {tab === 5 && (
         <Box sx={{ mb: 3 }}>
-          <LlamaCppCommitSelector 
+          <LlamaCppCommitSelector
             onCommitChanged={(commit) => {
               console.log('LlamaCPP commit changed to:', commit);
               // Optionally refresh configuration or show notification
@@ -2936,7 +2967,7 @@ export const DeployPage: React.FC = () => {
 
       {/* Container Logs Section */}
       {currentModel && currentModel.status === 'loaded' && (
-        <Card sx={{ 
+        <Card sx={{
           borderRadius: 1,
           boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1)',
           bgcolor: 'background.paper',
@@ -2944,18 +2975,18 @@ export const DeployPage: React.FC = () => {
         }}>
           <CardHeader
             title="Container Logs"
-            titleTypographyProps={{ 
-              variant: 'h6', 
-              sx: { fontSize: '0.9375rem', fontWeight: 600 } 
+            titleTypographyProps={{
+              variant: 'h6',
+              sx: { fontSize: '0.9375rem', fontWeight: 600 }
             }}
             subheader="Real-time logs from the deployed container"
-            subheaderTypographyProps={{ 
-              variant: 'caption', 
-              sx: { fontSize: '0.75rem' } 
+            subheaderTypographyProps={{
+              variant: 'caption',
+              sx: { fontSize: '0.75rem' }
             }}
           />
           <CardContent sx={{ pt: 0 }}>
-            <LogViewer 
+            <LogViewer
               ref={logViewerRef}
               containerName="llamacpp-api"
               maxLines={500}
@@ -2965,19 +2996,19 @@ export const DeployPage: React.FC = () => {
         </Card>
       )}
 
-      <Snackbar 
-        open={!!success} 
-        autoHideDuration={6000} 
-        onClose={() => setSuccess(null)} 
+      <Snackbar
+        open={!!success}
+        autoHideDuration={6000}
+        onClose={() => setSuccess(null)}
         message={success || ''}
-        sx={{ 
+        sx={{
           '& .MuiSnackbarContent-root': {
             backgroundColor: 'success.dark',
             color: 'success.contrastText',
             fontSize: '0.8125rem',
             borderRadius: 1
           }
-        }} 
+        }}
       />
     </Box>
   )

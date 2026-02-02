@@ -81,7 +81,7 @@ interface ProcessingOptions {
 }
 
 const defaultEntityLabels = [
-  'person', 'organization', 'location', 'date', 'product', 
+  'person', 'organization', 'location', 'date', 'product',
   'technology', 'concept', 'event', 'metric', 'requirement'
 ];
 
@@ -97,7 +97,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
   const [currentFile, setCurrentFile] = useState<string>('');
   const [results, setResults] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
-  
+
   const [options, setOptions] = useState<ProcessingOptions>({
     useSemanticChunking: true,
     chunkSize: 1000,
@@ -154,12 +154,12 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
         files.forEach(item => {
           formData.append('files', item.file);
         });
-        
+
         // Add processing options
         if (options.useSemanticChunking) {
           formData.append('use_semantic_chunking', 'true');
         }
-        
+
         const response = await fetch('/api/v1/graphrag/ingest/batch', {
           method: 'POST',
           body: formData,
@@ -171,7 +171,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
         }
 
         const result = await response.json();
-        
+
         // Update file statuses based on results
         setFiles(prev => prev.map((file, index) => ({
           ...file,
@@ -182,11 +182,11 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
         })));
 
         setResults(result.results || []);
-        
+
         if (result.knowledge_graph_stats) {
           console.log('Knowledge graph updated:', result.knowledge_graph_stats);
         }
-        
+
         if (onSuccess) {
           onSuccess();
         }
@@ -195,9 +195,9 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
         for (let i = 0; i < files.length; i++) {
           const fileItem = files[i];
           setCurrentFile(fileItem.file.name);
-          
+
           // Update status to processing
-          setFiles(prev => prev.map((f, idx) => 
+          setFiles(prev => prev.map((f, idx) =>
             idx === i ? { ...f, status: 'processing', progress: 50 } : f
           ));
 
@@ -206,7 +206,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
             formData.append('file', fileItem.file);
             formData.append('chunk_size', options.chunkSize.toString());
             formData.append('chunk_overlap', options.chunkOverlap.toString());
-            
+
             const response = await fetch('/api/v1/rag/documents/upload', {
               method: 'POST',
               body: formData
@@ -217,28 +217,28 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
             }
 
             const result = await response.json();
-            
+
             // Update status to completed
-            setFiles(prev => prev.map((f, idx) => 
+            setFiles(prev => prev.map((f, idx) =>
               idx === i ? { ...f, status: 'completed', progress: 100, result } : f
             ));
-            
+
             setResults(prev => [...prev, result]);
           } catch (err) {
             // Update status to error
-            setFiles(prev => prev.map((f, idx) => 
-              idx === i ? { 
-                ...f, 
-                status: 'error', 
-                progress: 100, 
-                message: err instanceof Error ? err.message : 'Upload failed' 
+            setFiles(prev => prev.map((f, idx) =>
+              idx === i ? {
+                ...f,
+                status: 'error',
+                progress: 100,
+                message: err instanceof Error ? err.message : 'Upload failed'
               } : f
             ));
           }
-          
+
           setUploadProgress(((i + 1) / files.length) * 100);
         }
-        
+
         if (onSuccess) {
           onSuccess();
         }
@@ -277,15 +277,15 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <UploadIcon />
           Batch Document Ingestion
-          <Chip 
-            label={destination === 'graphrag' ? 'GraphRAG' : 'Local RAG'} 
-            size="small" 
+          <Chip
+            label={destination === 'graphrag' ? 'GraphRAG' : 'Local RAG'}
+            size="small"
             color={destination === 'graphrag' ? 'primary' : 'default'}
             sx={{ ml: 'auto' }}
           />
         </Box>
       </DialogTitle>
-      
+
       <DialogContent>
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -315,7 +315,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
           <input
             type="file"
             multiple
-            accept=".txt,.md,.pdf,.json,.csv,.html,.xml,.doc,.docx"
+            accept=".txt,.md,.pdf,.json,.csv,.html,.xml,.doc,.docx,.epub"
             onChange={handleFileSelect}
             style={{ display: 'none' }}
             id="batch-file-input"
@@ -326,7 +326,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
               Drop files here or click to browse
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Supports: TXT, MD, PDF, JSON, CSV, HTML, XML, DOC, DOCX
+              Supports: TXT, MD, PDF, JSON, CSV, HTML, XML, DOC, DOCX, EPUB
             </Typography>
             <Typography variant="caption" color="text.secondary">
               Max 100 files per batch
@@ -354,8 +354,8 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
                           {getFileSize(item.file.size)}
                         </Typography>
                         {item.message && (
-                          <Typography 
-                            variant="caption" 
+                          <Typography
+                            variant="caption"
                             color={item.status === 'error' ? 'error' : 'success.main'}
                             sx={{ ml: 1 }}
                           >
@@ -366,15 +366,15 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
                     }
                   />
                   {item.status === 'processing' && (
-                    <LinearProgress 
-                      variant="determinate" 
-                      value={item.progress} 
+                    <LinearProgress
+                      variant="determinate"
+                      value={item.progress}
                       sx={{ width: 100, mr: 2 }}
                     />
                   )}
                   <ListItemSecondaryAction>
-                    <IconButton 
-                      edge="end" 
+                    <IconButton
+                      edge="end"
                       size="small"
                       onClick={() => removeFile(index)}
                       disabled={processing}
@@ -402,7 +402,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
                     control={
                       <Checkbox
                         checked={options.useSemanticChunking}
-                        onChange={(e) => setOptions({...options, useSemanticChunking: e.target.checked})}
+                        onChange={(e) => setOptions({ ...options, useSemanticChunking: e.target.checked })}
                       />
                     }
                     label="Use Semantic Chunking"
@@ -417,7 +417,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
                     control={
                       <Checkbox
                         checked={options.extractEntities}
-                        onChange={(e) => setOptions({...options, extractEntities: e.target.checked})}
+                        onChange={(e) => setOptions({ ...options, extractEntities: e.target.checked })}
                       />
                     }
                     label="Extract Entities (GLiNER)"
@@ -429,7 +429,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
                     control={
                       <Checkbox
                         checked={options.extractRelationships}
-                        onChange={(e) => setOptions({...options, extractRelationships: e.target.checked})}
+                        onChange={(e) => setOptions({ ...options, extractRelationships: e.target.checked })}
                       />
                     }
                     label="Extract Relationships"
@@ -441,7 +441,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
                     control={
                       <Checkbox
                         checked={options.buildKnowledgeGraph}
-                        onChange={(e) => setOptions({...options, buildKnowledgeGraph: e.target.checked})}
+                        onChange={(e) => setOptions({ ...options, buildKnowledgeGraph: e.target.checked })}
                       />
                     }
                     label="Build Knowledge Graph"
@@ -453,7 +453,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
                     control={
                       <Checkbox
                         checked={options.detectCode}
-                        onChange={(e) => setOptions({...options, detectCode: e.target.checked})}
+                        onChange={(e) => setOptions({ ...options, detectCode: e.target.checked })}
                       />
                     }
                     label="Detect Code Blocks"
@@ -465,7 +465,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
                     control={
                       <Checkbox
                         checked={options.enableHybridProcessing}
-                        onChange={(e) => setOptions({...options, enableHybridProcessing: e.target.checked})}
+                        onChange={(e) => setOptions({ ...options, enableHybridProcessing: e.target.checked })}
                       />
                     }
                     label="Enable Hybrid Processing"
@@ -480,7 +480,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
                     <InputLabel>Processing Method</InputLabel>
                     <Select
                       value={options.processingMethod}
-                      onChange={(e) => setOptions({...options, processingMethod: e.target.value as any})}
+                      onChange={(e) => setOptions({ ...options, processingMethod: e.target.value as any })}
                       label="Processing Method"
                     >
                       <MenuItem value="fast">Fast (Basic extraction)</MenuItem>

@@ -15,12 +15,9 @@ import TTSDeployPage from '@/pages/TTSDeployPage'
 import { ChatPage } from '@/pages/ChatPage'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { TemplatesPage } from '@/pages/TemplatesPage'
-import { TestingPage } from '@/pages/TestingPage'
 import PromptLibraryPage from '@/pages/PromptLibraryPage'
 import ModelRegistryPage from '@/pages/ModelRegistryPage'
 import BenchmarkPage from '@/pages/BenchmarkPage'
-import BatchProcessingPage from '@/pages/BatchProcessingPage'
-import ModelComparisonPage from '@/pages/ModelComparisonPage'
 import MonitoringPage from '@/pages/MonitoringPage'
 import ApiDocsPage from '@/pages/ApiDocsPage'
 import WorkflowBuilderPage from '@/pages/WorkflowBuilderPage'
@@ -30,6 +27,7 @@ import DocumentsPage from '@/pages/DocumentsPage'
 import DiscoveryPage from '@/pages/DiscoveryPage'
 import { QuantizationPage } from '@/pages/QuantizationPage'
 import FineTuningPage from '@/pages/FineTuningPage'
+import MCPServersPage from '@/pages/MCPServersPage'
 import { DatasetManagementPage, DistillationPage, ModelEvaluationPage, WorkflowTemplatesPage, AdapterComparisonPage, BookDatasetPage, BenchmarkComparisonPage } from '@/pages/finetuning'
 
 function App() {
@@ -113,10 +111,7 @@ function App() {
                 <Route path="/templates" element={<TemplatesPage />} />
                 <Route path="/prompts" element={<PromptLibraryPage />} />
                 <Route path="/registry" element={<ModelRegistryPage />} />
-                <Route path="/testing" element={<TestingPage />} />
                 <Route path="/benchmark" element={<BenchmarkPage />} />
-                <Route path="/batch" element={<BatchProcessingPage />} />
-                <Route path="/compare" element={<ModelComparisonPage />} />
                 <Route path="/workflows" element={<WorkflowBuilderPage />} />
                 <Route path="/knowledge" element={<Navigate to="/documents" replace />} />
                 <Route path="/knowledge-graph" element={<KnowledgeGraphPage />} />
@@ -134,6 +129,7 @@ function App() {
                 <Route path="/finetuning/compare" element={<AdapterComparisonPage />} />
                 <Route path="/finetuning/book-datasets" element={<BookDatasetPage />} />
                 <Route path="/benchmark-comparison" element={<BenchmarkComparisonPage />} />
+                <Route path="/mcp" element={<MCPServersPage />} />
                 <Route path="/monitoring" element={<MonitoringPage />} />
                 <Route path="/api-docs" element={<ApiDocsPage />} />
                 <Route path="/configuration" element={<ConfigurationPage />} />

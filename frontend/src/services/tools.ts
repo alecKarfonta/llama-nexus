@@ -2,10 +2,19 @@
  * Tools Service for Function Calling
  * Handles execution of built-in tools and function definitions
  * Supports research agents with web search, RAG, and data gathering
+ * Extended to support MCP (Model Context Protocol) tools
  */
 
 import type { Tool, ToolCall, WeatherQuery, CalculatorQuery, CodeExecutionQuery } from '@/types/api';
 import { apiService } from './api';
+import { mcpService } from './mcp';
+
+// Extended tool type with source tracking
+export interface ExtendedTool extends Tool {
+  _source?: 'builtin' | 'mcp';
+  _serverName?: string;  // For MCP tools, the server name
+}
+
 
 // Web search result type
 interface WebSearchResult {
@@ -257,6 +266,44 @@ export class ToolsService {
     return this.getAvailableTools().filter(t => researchToolNames.includes(t.function.name));
   }
 
+  // Get built-in tools with source marking
+  static getBuiltInToolsExtended(): ExtendedTool[] {
+    return this.getAvailableTools().map(tool => ({
+      ...tool,
+      _source: 'builtin' as const,
+    }));
+  }
+
+  // Fetch MCP tools from all connected servers
+  static async getMCPTools(): Promise<ExtendedTool[]> {
+    try {
+      const response = await mcpService.listAllTools();
+      // Handle potential response structure variations
+      const tools = response?.tools ?? [];
+      if (!Array.isArray(tools)) {
+        console.warn('getMCPTools: response.tools is not an array', response);
+        return [];
+      }
+      return tools.map(tool => ({
+        type: 'function' as const,
+        function: tool.function,
+        _source: 'mcp' as const,
+        _serverName: tool.function.name.split('_')[1], // Extract server name from mcp_servername_toolname
+      }));
+    } catch (error) {
+      console.warn('Failed to fetch MCP tools:', error);
+      return [];
+    }
+  }
+
+  // Get all tools (built-in + MCP) - async because MCP tools need to be fetched
+  static async getAllTools(): Promise<ExtendedTool[]> {
+    const builtIn = this.getBuiltInToolsExtended();
+    const mcpTools = await this.getMCPTools();
+    return [...builtIn, ...mcpTools];
+  }
+
+
   // Research notes storage (in-memory for session)
   private static researchNotes: Array<{
     id: string;
@@ -280,43 +327,48 @@ export class ToolsService {
   // Execute a tool call and return the result
   static async executeToolCall(toolCall: ToolCall): Promise<string> {
     const { name, arguments: args } = toolCall.function;
-    
+
     try {
       const parsedArgs = JSON.parse(args);
-      
+
+      // Check if this is an MCP tool (namespaced with mcp_)
+      if (name.startsWith('mcp_')) {
+        return await this.executeMCPTool(name, parsedArgs);
+      }
+
       switch (name) {
         // Research tools
         case 'web_search':
           return await this.executeWebSearchTool(parsedArgs);
-        
+
         case 'knowledge_search':
           return await this.executeKnowledgeSearchTool(parsedArgs);
-        
+
         case 'fetch_url':
           return await this.executeFetchUrlTool(parsedArgs);
-        
+
         case 'save_research_note':
           return this.executeSaveNoteTool(parsedArgs);
-        
+
         // Utility tools
         case 'get_weather':
           return this.executeWeatherTool(parsedArgs as WeatherQuery);
-        
+
         case 'calculate':
           return this.executeCalculatorTool(parsedArgs as CalculatorQuery);
-        
+
         case 'execute_code':
           return this.executeCodeTool(parsedArgs as CodeExecutionQuery);
-        
+
         case 'get_system_info':
           return this.executeSystemInfoTool(parsedArgs);
-        
+
         case 'generate_uuid':
           return this.executeUUIDTool(parsedArgs);
-        
+
         case 'get_current_time':
           return this.executeTimeTool(parsedArgs);
-        
+
         default:
           return `Error: Unknown tool "${name}"`;
       }
@@ -325,18 +377,37 @@ export class ToolsService {
     }
   }
 
+  // Execute an MCP tool via the MCP service
+  private static async executeMCPTool(toolName: string, args: Record<string, unknown>): Promise<string> {
+    try {
+      const result = await mcpService.executeToolByName(toolName, args);
+      if (result.success) {
+        // Format the result nicely
+        if (typeof result.result === 'string') {
+          return result.result;
+        }
+        return JSON.stringify(result.result, null, 2);
+      } else {
+        return `MCP Tool Error: ${result.result}`;
+      }
+    } catch (error) {
+      return `Error executing MCP tool ${toolName}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    }
+  }
+
+
   // === RESEARCH TOOL IMPLEMENTATIONS ===
 
   private static async executeWebSearchTool(query: { query: string; num_results?: number }): Promise<string> {
     const { query: searchQuery, num_results = 5 } = query;
-    
+
     try {
       // Try to use backend web search endpoint if available
       const response = await apiService.post('/api/v1/tools/web-search', {
         query: searchQuery,
         num_results: Math.min(num_results, 10)
       });
-      
+
       if (response.data?.results) {
         return JSON.stringify({
           query: searchQuery,
@@ -382,7 +453,7 @@ export class ToolsService {
 
   private static async executeKnowledgeSearchTool(query: { query: string; domain?: string; top_k?: number }): Promise<string> {
     const { query: searchQuery, domain, top_k = 5 } = query;
-    
+
     try {
       // Use RAG search endpoint
       const response = await apiService.post('/api/v1/rag/search', {
@@ -390,7 +461,7 @@ export class ToolsService {
         domain_id: domain,
         top_k
       });
-      
+
       if (response.data?.results) {
         return JSON.stringify({
           query: searchQuery,
@@ -421,14 +492,14 @@ export class ToolsService {
 
   private static async executeFetchUrlTool(query: { url: string; extract_type?: string }): Promise<string> {
     const { url, extract_type = 'text' } = query;
-    
+
     try {
       // Try backend URL fetch endpoint
       const response = await apiService.post('/api/v1/tools/fetch-url', {
         url,
         extract_type
       });
-      
+
       if (response.data?.content) {
         return JSON.stringify({
           url,
@@ -454,7 +525,7 @@ export class ToolsService {
 
   private static executeSaveNoteTool(query: { title: string; content: string; sources?: string[]; tags?: string[] }): string {
     const { title, content, sources = [], tags = [] } = query;
-    
+
     const note = {
       id: crypto.randomUUID(),
       title,
@@ -463,9 +534,9 @@ export class ToolsService {
       tags,
       timestamp: new Date().toISOString()
     };
-    
+
     this.researchNotes.push(note);
-    
+
     return JSON.stringify({
       status: 'saved',
       note_id: note.id,
@@ -478,10 +549,10 @@ export class ToolsService {
 
   private static executeTimeTool(query: { timezone?: string; format?: string }): string {
     const { timezone = 'UTC', format = 'human' } = query;
-    
+
     const now = new Date();
     let timeString: string;
-    
+
     try {
       switch (format) {
         case 'iso':
@@ -492,7 +563,7 @@ export class ToolsService {
           break;
         case 'human':
         default:
-          timeString = now.toLocaleString('en-US', { 
+          timeString = now.toLocaleString('en-US', {
             timeZone: timezone,
             weekday: 'long',
             year: 'numeric',
@@ -507,7 +578,7 @@ export class ToolsService {
     } catch {
       timeString = now.toISOString();
     }
-    
+
     return JSON.stringify({
       timezone,
       format,
@@ -522,7 +593,7 @@ export class ToolsService {
     const { location, unit = 'celsius' } = query;
     const temp = unit === 'celsius' ? '22°C' : '72°F';
     const conditions = ['Sunny', 'Cloudy', 'Rainy', 'Partly Cloudy'][Math.floor(Math.random() * 4)];
-    
+
     return JSON.stringify({
       location,
       temperature: temp,
@@ -535,13 +606,13 @@ export class ToolsService {
 
   private static executeCalculatorTool(query: CalculatorQuery): string {
     const { expression } = query;
-    
+
     try {
       // Basic math evaluation (in real implementation, use a safe evaluator)
       // This is a simplified demo - in production, use a proper math library
       const safeExpression = expression.replace(/[^0-9+\-*/().\s]/g, '');
       const result = eval(safeExpression);
-      
+
       return JSON.stringify({
         expression,
         result,
@@ -558,14 +629,14 @@ export class ToolsService {
 
   private static executeCodeTool(query: CodeExecutionQuery): string {
     const { language, code } = query;
-    
+
     // Simulate code execution (in real implementation, use sandboxed execution)
     const outputs = {
       python: `# Simulated Python execution\n# Code: ${code}\n# Output: This would execute in a Python interpreter`,
       javascript: `// Simulated JavaScript execution\n// Code: ${code}\n// Output: This would execute in a JS runtime`,
       bash: `# Simulated Bash execution\n# Command: ${code}\n# Output: This would execute in a shell`
     };
-    
+
     return JSON.stringify({
       language,
       code,
@@ -577,7 +648,7 @@ export class ToolsService {
 
   private static executeSystemInfoTool(query: { metric: string }): string {
     const { metric } = query;
-    
+
     const systemInfo = {
       cpu: { usage: '45%', cores: 8, model: 'Intel Core i7' },
       memory: { usage: '8.2GB', total: '16GB', percentage: '51%' },
@@ -590,26 +661,26 @@ export class ToolsService {
         timestamp: new Date().toISOString()
       }
     };
-    
+
     return JSON.stringify(systemInfo[metric as keyof typeof systemInfo] || systemInfo.all, null, 2);
   }
 
   private static executeUUIDTool(query: { version?: string }): string {
     const { version = 'v4' } = query;
-    
+
     // Generate a simple UUID (in real implementation, use a proper UUID library)
-    const uuid = version === 'v4' 
-      ? 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-          const r = Math.random() * 16 | 0;
-          const v = c === 'x' ? r : (r & 0x3 | 0x8);
-          return v.toString(16);
-        })
-      : 'xxxxxxxx-xxxx-1xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-          const r = Math.random() * 16 | 0;
-          const v = c === 'x' ? r : (r & 0x3 | 0x8);
-          return v.toString(16);
-        });
-    
+    const uuid = version === 'v4'
+      ? 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      })
+      : 'xxxxxxxx-xxxx-1xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+
     return JSON.stringify({
       uuid,
       version,
@@ -621,11 +692,11 @@ export class ToolsService {
   static validateToolCall(toolCall: ToolCall): boolean {
     const availableTools = this.getAvailableTools();
     const tool = availableTools.find(t => t.function.name === toolCall.function.name);
-    
+
     if (!tool) {
       return false;
     }
-    
+
     try {
       const args = JSON.parse(toolCall.function.arguments);
       // Basic validation - in production, implement proper schema validation

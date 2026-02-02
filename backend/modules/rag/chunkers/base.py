@@ -15,7 +15,7 @@ class ChunkingConfig:
     """Configuration for chunking"""
     chunk_size: int = 512  # Target chunk size in tokens/characters
     chunk_overlap: int = 50  # Overlap between chunks
-    min_chunk_size: int = 100  # Minimum chunk size
+    min_chunk_size: int = 5  # Minimum chunk size
     max_chunk_size: int = 2048  # Maximum chunk size
     
     # Strategy-specific options

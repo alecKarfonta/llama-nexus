@@ -607,15 +607,28 @@ class DocumentManager:
         logger.info(f"Deleted document: {document_id}")
         return True
     
-    async def check_duplicate(self, content: str) -> Optional[str]:
-        """Check if content already exists, return existing document ID if found"""
+    async def check_duplicate(self, content: str, domain_id: Optional[str] = None) -> Optional[str]:
+        """Check if content already exists, return existing document ID if found.
+        
+        Args:
+            content: The content to check for duplicates
+            domain_id: If provided, only check within this domain. Otherwise check globally.
+        """
         content_hash = hashlib.md5(content.encode()).hexdigest()
         
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "SELECT id FROM documents WHERE content_hash = ?",
-                (content_hash,)
-            )
+            if domain_id:
+                # Domain-scoped duplicate check
+                cursor = await db.execute(
+                    "SELECT id FROM documents WHERE content_hash = ? AND domain_id = ?",
+                    (content_hash, domain_id)
+                )
+            else:
+                # Global duplicate check (legacy behavior)
+                cursor = await db.execute(
+                    "SELECT id FROM documents WHERE content_hash = ?",
+                    (content_hash,)
+                )
             row = await cursor.fetchone()
             if row:
                 return row[0]
