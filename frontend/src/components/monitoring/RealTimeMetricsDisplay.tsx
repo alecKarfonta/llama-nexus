@@ -37,22 +37,22 @@ export const RealTimeMetricsDisplay: React.FC<RealTimeMetricsDisplayProps> = ({
 }) => {
 
   const [timeRange, setTimeRange] = useState<'5m' | '15m' | '1h' | '6h' | '24h'>('1h');
-  
+
   // Real-time WebSocket connection (not used until endpoint is implemented)
   const { metrics, connectionStatus, error, disconnect, isConnected } = useRealTimeMetrics();
-  
+
   // Current metrics from API
   const { data: currentMetrics, isLoading: metricsLoading, error: metricsError, refetch: refetchMetrics } = useMetrics();
-  
+
   // Metrics history for charts
   const { data: metricsHistory, isLoading: historyLoading, error: historyError } = useMetricsHistory(timeRange);
-  
+
   // Prometheus metrics parsing
   const { parsedMetrics, fetchMetrics } = usePrometheusMetrics();
-  
+
   // Service status
   const { data: serviceStatus, isLoading: statusLoading, error: statusError } = useServiceStatus();
-  
+
 
 
   // Auto-connect on mount (disabled until WebSocket endpoint exists)
@@ -61,13 +61,13 @@ export const RealTimeMetricsDisplay: React.FC<RealTimeMetricsDisplayProps> = ({
     // if (autoConnect && !isConnected) {
     //   connect();
     // }
-    
+
     // Fetch initial metrics
     fetchMetrics();
-    
+
     // Set up polling for Prometheus metrics (primary mode for now)
-    const interval = setInterval(fetchMetrics, 5000);
-    
+    const interval = setInterval(fetchMetrics, 10000);
+
     return () => {
       clearInterval(interval);
       if (isConnected) {
@@ -130,7 +130,7 @@ export const RealTimeMetricsDisplay: React.FC<RealTimeMetricsDisplayProps> = ({
       {connectionStatus === 'error' && showWebSocketStatus && (
         <Alert severity="info" sx={{ mb: 3 }}>
           <Typography variant="body2">
-            <strong>Note:</strong> WebSocket endpoint is not implemented yet. 
+            <strong>Note:</strong> WebSocket endpoint is not implemented yet.
             Using polling mode with 5-second updates.
           </Typography>
         </Alert>
@@ -162,13 +162,13 @@ export const RealTimeMetricsDisplay: React.FC<RealTimeMetricsDisplayProps> = ({
       {/* Metrics Cards */}
       <Grid container spacing={3} sx={{ mb: 3 }}>
         <Grid item xs={12} md={6} lg={3}>
-          <ServiceStatusCard 
-            status={serviceStatus} 
-            loading={statusLoading} 
-            error={statusError?.message} 
+          <ServiceStatusCard
+            status={serviceStatus}
+            loading={statusLoading}
+            error={statusError?.message}
           />
         </Grid>
-        
+
         <Grid item xs={12} md={6} lg={3}>
           <MetricsCard
             title="CPU Usage"
@@ -182,7 +182,7 @@ export const RealTimeMetricsDisplay: React.FC<RealTimeMetricsDisplayProps> = ({
             isPlaceholder={metricsLoading && !displayMetrics}
           />
         </Grid>
-        
+
         <Grid item xs={12} md={6} lg={3}>
           <MetricsCard
             title="Memory"
@@ -196,7 +196,7 @@ export const RealTimeMetricsDisplay: React.FC<RealTimeMetricsDisplayProps> = ({
             isPlaceholder={metricsLoading && !displayMetrics}
           />
         </Grid>
-        
+
         <Grid item xs={12} md={6} lg={3}>
           <MetricsCard
             title="VRAM"
@@ -216,15 +216,15 @@ export const RealTimeMetricsDisplay: React.FC<RealTimeMetricsDisplayProps> = ({
       {displayMetrics && (
         <Grid container spacing={3} sx={{ mb: 3 }}>
           <Grid item xs={12} md={4}>
-            <TokensPerSecondCard 
-              tokens={parsedMetrics['llamacpp:prompt_tokens_seconds'] || 0} 
-              type="prompt" 
+            <TokensPerSecondCard
+              tokens={parsedMetrics['llamacpp:prompt_tokens_seconds'] || 0}
+              type="prompt"
             />
           </Grid>
           <Grid item xs={12} md={4}>
-            <TokensPerSecondCard 
-              tokens={parsedMetrics['llamacpp:predicted_tokens_seconds'] || 0} 
-              type="generation" 
+            <TokensPerSecondCard
+              tokens={parsedMetrics['llamacpp:predicted_tokens_seconds'] || 0}
+              type="generation"
             />
           </Grid>
           <Grid item xs={12} md={4}>
@@ -246,34 +246,34 @@ export const RealTimeMetricsDisplay: React.FC<RealTimeMetricsDisplayProps> = ({
           <Typography variant="h5" sx={{ mb: 3, mt: 2 }}>
             Historical Performance
           </Typography>
-          
+
           <Grid container spacing={3} sx={{ mb: 3 }}>
             <Grid item xs={12} lg={6}>
-              <ResourceUsageChart 
+              <ResourceUsageChart
                 data={metricsHistory}
                 timeRange={timeRange}
                 onTimeRangeChange={setTimeRange}
               />
             </Grid>
-            
+
             <Grid item xs={12} lg={6}>
-              <ThroughputChart 
+              <ThroughputChart
                 data={metricsHistory}
                 timeRange={timeRange}
                 onTimeRangeChange={setTimeRange}
               />
             </Grid>
           </Grid>
-          
+
           <Grid container spacing={3} sx={{ mb: 3 }}>
             <Grid item xs={12} lg={6}>
-              <ResponseTimeChart 
+              <ResponseTimeChart
                 data={metricsHistory}
                 timeRange={timeRange}
                 onTimeRangeChange={setTimeRange}
               />
             </Grid>
-            
+
             <Grid item xs={12} lg={6}>
               <MetricsChart
                 title="GPU Utilization & Temperature"

@@ -105,7 +105,7 @@ export const useRealTimeMetrics = () => {
     });
 
     // Monitor connection state
-    const connectionMonitor = setInterval(updateConnectionStatus, 1000);
+    const connectionMonitor = setInterval(updateConnectionStatus, 10000);
 
     return () => {
       clearInterval(connectionMonitor);
@@ -131,11 +131,11 @@ export const usePrometheusMetrics = () => {
   const parseMetrics = useCallback((metricsText: string) => {
     const metrics: Record<string, number> = {};
     const lines = metricsText.split('\n');
-    
+
     for (const line of lines) {
       // Skip comments and empty lines
       if (line.startsWith('#') || !line.trim()) continue;
-      
+
       // Parse metric lines (format: metric_name value)
       const match = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+([0-9.-]+)/);
       if (match) {
@@ -143,7 +143,7 @@ export const usePrometheusMetrics = () => {
         metrics[name] = parseFloat(value);
       }
     }
-    
+
     setParsedMetrics(metrics);
     return metrics;
   }, []);
