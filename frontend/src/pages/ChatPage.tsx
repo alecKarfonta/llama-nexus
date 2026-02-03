@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, ChangeEvent, KeyboardEvent } from 'react'
+import { flushSync } from 'react-dom'
 import {
   Box,
   Card,
@@ -821,6 +822,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
     return new ReadableStream({
       start(controller) {
+        let buffer = ''  // Buffer for incomplete SSE messages
+
         function pump(): Promise<void> {
           return reader.read().then(({ done, value }) => {
             if (done) {
@@ -828,23 +831,41 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               return;
             }
 
-            // Parse SSE data
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
+            // Append to buffer and parse complete SSE messages
+            buffer += decoder.decode(value, { stream: true });
 
-            for (const line of lines) {
-              const trimmedLine = line.trim();
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6);
-                if (data === '[DONE]') {
-                  controller.close();
-                  return;
+            // Split by double-newline (SSE message separator) or single newline for simple cases
+            // SSE spec: messages are separated by blank lines
+            const messages = buffer.split(/\n\n/);
+
+            // Keep the last potentially incomplete message in buffer
+            buffer = messages.pop() || '';
+
+            for (const message of messages) {
+              const lines = message.split('\n');
+              let data = '';
+
+              for (const line of lines) {
+                const trimmedLine = line.trim();
+                if (trimmedLine.startsWith('data: ')) {
+                  // Accumulate data field (may be spread across lines in some servers)
+                  data += trimmedLine.slice(6);
+                } else if (trimmedLine.startsWith('data:')) {
+                  data += trimmedLine.slice(5);
                 }
+              }
+
+              if (data === '[DONE]') {
+                controller.close();
+                return;
+              }
+
+              if (data) {
                 try {
                   const parsed = JSON.parse(data);
                   controller.enqueue(parsed);
                 } catch (e) {
-                  // Ignore malformed JSON
+                  // Try to handle case where data was split across chunks
                   console.warn('Failed to parse SSE data:', data);
                 }
               }
@@ -901,9 +922,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       const reader = stream.getReader()
 
       try {
+        // Tool calls are accumulated here across all deltas
         let accumulatedToolCalls: ToolCall[] = []
         let tokenCount = 0
         let firstTokenReceived = false
+        let toolCallsProcessed = false // Flag to prevent processing tool calls multiple times
 
         let fullResponseText = ''
 
@@ -957,6 +980,33 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
             // Flush any remaining TTS content
             processTTSBuffer(true)
+
+            // Process tool calls when stream ends (not when finish_reason is received)
+            // llama.cpp sends finish_reason before all tool data is accumulated
+            if (accumulatedToolCalls.length > 0 && !toolCallsProcessed) {
+              toolCallsProcessed = true
+              console.log('=== Stream ended with accumulated tool calls ===')
+              console.log('Tool calls:', JSON.stringify(accumulatedToolCalls, null, 2))
+
+              let messagesSnapshot: ChatMessage[] = []
+              flushSync(() => {
+                setMessages((prev: ChatMessage[]) => {
+                  const newMessages = [...prev]
+                  const lastMessage = newMessages[newMessages.length - 1]
+                  if (lastMessage.role === 'assistant') {
+                    const updatedAssistant = {
+                      ...lastMessage,
+                      tool_calls: accumulatedToolCalls
+                    }
+                    newMessages[newMessages.length - 1] = updatedAssistant
+                  }
+                  messagesSnapshot = [...newMessages]
+                  return newMessages
+                })
+              })
+
+              await handleToolCalls(accumulatedToolCalls, messagesSnapshot)
+            }
             break
           }
 
@@ -1062,34 +1112,46 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           }
 
           if (value.choices?.[0]?.delta?.tool_calls) {
-            // Tool calls arrive as deltas - need to accumulate by index
+            // Tool calls arrive as deltas - accumulate into a single tool call
+            // SIMPLE APPROACH: We only support one tool call at a time, 
+            // accumulate all deltas into index 0
+            console.log('=== Tool call delta received ===')
+            console.log('Delta:', JSON.stringify(value.choices[0].delta.tool_calls))
+
             for (const delta of value.choices[0].delta.tool_calls) {
-              const index = delta.index ?? 0
-              if (!accumulatedToolCalls[index]) {
-                // First delta for this tool call - initialize it
-                accumulatedToolCalls[index] = {
-                  id: delta.id || `call_${index}`,
+              // Initialize the single tool call if not exists
+              if (accumulatedToolCalls.length === 0) {
+                accumulatedToolCalls[0] = {
+                  id: delta.id || `call_${Date.now()}`,
                   type: 'function',
                   function: {
-                    name: delta.function?.name || '',
-                    arguments: delta.function?.arguments || ''
+                    name: '',
+                    arguments: ''
                   }
                 }
-              } else {
-                // Subsequent delta - accumulate the arguments
-                if (delta.function?.name) {
-                  accumulatedToolCalls[index].function.name += delta.function.name
-                }
-                if (delta.function?.arguments) {
-                  accumulatedToolCalls[index].function.arguments += delta.function.arguments
-                }
+                console.log('Initialized tool call accumulator')
+              }
+
+              // Always accumulate into the first (and only) tool call
+              if (delta.function?.name) {
+                accumulatedToolCalls[0].function.name += delta.function.name
+                console.log('Added to name:', delta.function.name)
+              }
+              if (delta.function?.arguments) {
+                accumulatedToolCalls[0].function.arguments += delta.function.arguments
+                console.log('Added to args:', delta.function.arguments)
+              }
+              // Capture ID if provided and we don't have one yet
+              if (delta.id && !accumulatedToolCalls[0].id.startsWith('call_')) {
+                accumulatedToolCalls[0].id = delta.id
               }
             }
+            console.log('Current accumulated:', JSON.stringify(accumulatedToolCalls[0]))
           }
 
-          if (value.choices?.[0]?.finish_reason === 'tool_calls') {
-            await handleToolCalls(accumulatedToolCalls)
-          }
+          // Note: Tool calls are now processed at stream end (when done === true)
+          // rather than when finish_reason === 'tool_calls' because llama.cpp
+          // sends finish_reason before all tool data is fully accumulated
         }
       } finally {
         reader.releaseLock()
@@ -1133,7 +1195,18 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     }
   }
 
-  const handleToolCalls = async (toolCalls: ToolCall[]) => {
+  const handleToolCalls = async (toolCalls: ToolCall[], messagesSnapshot?: ChatMessage[]) => {
+    // Use provided snapshot or capture current messages from state
+    let currentMessages: ChatMessage[] = messagesSnapshot || []
+
+    if (!messagesSnapshot) {
+      // Fallback: Get current messages state for building the follow-up request
+      setMessages((prev: ChatMessage[]) => {
+        currentMessages = [...prev]
+        return prev // Don't modify, just capture
+      })
+    }
+
     for (const toolCall of toolCalls) {
       try {
         // Show tool execution indicator
@@ -1153,7 +1226,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           tool_call_id: toolCall.id
         }
 
-        // Update the tool execution message with result
+        // Update the tool execution message with result and add tool result
         setMessages((prev: ChatMessage[]) => {
           const newMessages = [...prev]
           const lastMessage = newMessages[newMessages.length - 1]
@@ -1163,9 +1236,53 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           return [...newMessages, toolResultMessage]
         })
 
+        // Find the assistant message that made the tool call
+        // It should be the last assistant message with tool_calls in currentMessages
+        const assistantToolCallMessage = [...currentMessages].reverse().find(
+          (msg) => msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0
+        )
+
+        // Build proper message history for the LLM:
+        // 1. Include all messages up to and including the assistant's tool_call message
+        // 2. Add the tool result message
+        // The chat template expects: [user msg] -> [assistant with tool_calls] -> [tool result]
+
+        // Filter out UI-only messages (tool execution indicators)
+        const messagesForLLM = currentMessages
+          .filter(
+            (msg) => !msg.content?.toString().includes('🔧 Executing tool:') &&
+              !msg.content?.toString().includes('✅ Tool executed:')
+          )
+          .map((msg) => {
+            // Clean up message for API - remove UI-only properties
+            const cleanMsg: ChatMessage = {
+              role: msg.role,
+              content: msg.content,
+            }
+
+            // For assistant messages with tool_calls, content must be null (not empty string)
+            if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+              cleanMsg.content = null as any // llama.cpp requires null, not empty string
+              cleanMsg.tool_calls = msg.tool_calls
+            }
+
+            // Include tool_call_id for tool messages
+            if (msg.role === 'tool' && msg.tool_call_id) {
+              cleanMsg.tool_call_id = msg.tool_call_id
+            }
+
+            return cleanMsg
+          })
+
+        // Add the tool result message
+        const followUpMessages: ChatMessage[] = [
+          ...messagesForLLM,
+          toolResultMessage
+        ]
+
         // Continue conversation with tool result
         const followUpRequest: ChatCompletionRequest = {
-          messages: [...messages, toolResultMessage],
+          messages: followUpMessages,
           model: settings.model,
           temperature: settings.temperature,
           top_p: settings.topP,
@@ -1173,6 +1290,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           max_tokens: settings.maxTokens,
           stream: false, // Use non-streaming for tool follow-ups
         }
+
+        // Debug: Log the request to see what we're sending
+        console.log('=== Tool Follow-up Request ===')
+        console.log('Messages:', JSON.stringify(followUpMessages, null, 2))
+        console.log('Full request:', JSON.stringify(followUpRequest, null, 2))
 
         const followUpResponse = await createChatCompletion(followUpRequest)
         const responseMessage = followUpResponse.choices[0].message
@@ -1182,6 +1304,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           responseMessage.content = responseMessage.reasoning_content
         }
         setMessages((prev: ChatMessage[]) => [...prev, responseMessage])
+
+        // Update currentMessages for the next iteration
+        currentMessages = [...currentMessages, toolResultMessage, followUpResponse.choices[0].message]
 
       } catch (error) {
         const errorMessage: ChatMessage = {
