@@ -162,25 +162,29 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   content,
   reasoning_content,
 }) => {
+  // Debug: Log what we actually receive
+  console.log('=== MarkdownRenderer Props ===')
+  console.log('content:', JSON.stringify(content))
+  console.log('reasoning_content:', JSON.stringify(reasoning_content))
   // Check for thinking tags in content and extract them
   // Support multiple tag formats: <think>, <thinking>, <thought>
   // Use greedy matching to capture everything between tags
   const thinkingRegex = /<(think|thinking|thought)>([\s\S]*?)<\/\1>/gi
   let thinking = ''
   let displayContent = content
-  
+
   // Extract all thinking blocks
   let match
   const thinkingParts: string[] = []
   while ((match = thinkingRegex.exec(content)) !== null) {
     thinkingParts.push(match[2].trim())
   }
-  
+
   if (thinkingParts.length > 0) {
     thinking = thinkingParts.join('\n\n')
     displayContent = content.replace(/<(think|thinking|thought)>[\s\S]*?<\/\1>/gi, '').trim()
   }
-  
+
   // Handle unclosed thinking tags - if content starts with <think> but no closing tag,
   // treat everything as thinking (the response is still being generated)
   const unclosedThinkMatch = content.match(/^<(think|thinking|thought)>([\s\S]*)$/i)
@@ -188,7 +192,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     thinking = unclosedThinkMatch[2].trim()
     displayContent = '' // Response hasn't started yet
   }
-  
+
   // Use reasoning_content from API if available (takes priority)
   if (reasoning_content) {
     thinking = reasoning_content

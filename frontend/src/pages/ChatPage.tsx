@@ -131,7 +131,7 @@ const defaultSettings: ChatSettings = {
   temperature: 0.7,
   topP: 0.8,
   topK: 20,
-  maxTokens: 2048,
+  maxTokens: 8192,  // High default for reasoning models (thinking tokens count against limit)
   streamResponse: true,
   enableTools: false,
   selectedTools: [],
@@ -671,8 +671,36 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         setRagContext([])
       }
 
+      // Filter out UI-only messages and prepare messages for LLM
+      // This is critical: UI messages like "✅ Tool executed:" break the chat template
+      const cleanedMessages = [...messages, userMessage]
+        .filter(
+          (msg) => !msg.content?.toString().includes('🔧 Executing tool:') &&
+            !msg.content?.toString().includes('✅ Tool executed:')
+        )
+        .map((msg) => {
+          // Clean up message for API
+          const cleanMsg: ChatMessage = {
+            role: msg.role,
+            content: msg.content,
+          }
+
+          // For assistant messages with tool_calls, content must be null (not empty string)
+          if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+            cleanMsg.content = null as any // llama.cpp requires null, not empty string
+            cleanMsg.tool_calls = msg.tool_calls
+          }
+
+          // Include tool_call_id for tool messages
+          if (msg.role === 'tool' && msg.tool_call_id) {
+            cleanMsg.tool_call_id = msg.tool_call_id
+          }
+
+          return cleanMsg
+        })
+
       // Prepare messages with reasoning level system prompt if needed
-      let requestMessages = [...messages, userMessage]
+      let requestMessages = cleanedMessages
 
       // Add or update system message with reasoning level and RAG context
       const baseSystemContent = `You are a helpful AI assistant.${ragContextText}`
@@ -1181,7 +1209,18 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       reasoning_content: response.choices[0].message.reasoning_content
     }
 
-    setMessages((prev: ChatMessage[]) => [...prev, assistantMessage])
+    // For tool calls, we need to capture the snapshot synchronously
+    // to pass to handleToolCalls (React state updates are async)
+    let messagesSnapshot: ChatMessage[] | null = null
+
+    setMessages((prev: ChatMessage[]) => {
+      const newMessages = [...prev, assistantMessage]
+      // Capture snapshot if there are tool calls
+      if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
+        messagesSnapshot = newMessages
+      }
+      return newMessages
+    })
 
     // Trigger TTS for the response
     const responseText = typeof assistantMessage.content === 'string' ? assistantMessage.content : ''
@@ -1190,8 +1229,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     }
 
     // Handle tool calls if present
-    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
-      await handleToolCalls(assistantMessage.tool_calls)
+    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0 && messagesSnapshot) {
+      await handleToolCalls(assistantMessage.tool_calls, messagesSnapshot)
     }
   }
 
@@ -1297,6 +1336,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         console.log('Full request:', JSON.stringify(followUpRequest, null, 2))
 
         const followUpResponse = await createChatCompletion(followUpRequest)
+        // Debug: Log what we're adding to messages
+        console.log('=== Tool Follow-up Response ===')
+        console.log('Full response:', JSON.stringify(followUpResponse, null, 2))
+        console.log('Message to add:', JSON.stringify(followUpResponse.choices[0].message, null, 2))
+
         const responseMessage = followUpResponse.choices[0].message
         // If content is empty but reasoning_content exists, use it as the visible content
         // This handles models that put all output in reasoning/thinking tokens
