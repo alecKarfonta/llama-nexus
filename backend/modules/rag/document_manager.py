@@ -49,6 +49,11 @@ class DocumentType(str, Enum):
     EPUB = "epub"
 
 
+def _enum_value(val):
+    """Safely get the value of an enum (handles both enum and string values)."""
+    return val.value if hasattr(val, 'value') else val
+
+
 @dataclass
 class Domain:
     """Document domain/collection"""
@@ -103,6 +108,8 @@ class DocumentChunk:
     # Embedding
     embedding: Optional[List[float]] = None
     vector_id: Optional[str] = None
+    # Metadata
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -139,8 +146,9 @@ class Document:
     
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
-        data['doc_type'] = self.doc_type.value
-        data['status'] = self.status.value
+        # Handle both enum and string values (legacy data compatibility)
+        data['doc_type'] = self.doc_type.value if hasattr(self.doc_type, 'value') else self.doc_type
+        data['status'] = self.status.value if hasattr(self.status, 'value') else self.status
         return data
     
     @classmethod
@@ -250,6 +258,12 @@ class DocumentManager:
             # Add token_count column to chunks table if it doesn't exist
             try:
                 await db.execute("ALTER TABLE chunks ADD COLUMN token_count INTEGER DEFAULT 0")
+            except:
+                pass  # Column already exists
+            
+            # Add metadata column to chunks table if it doesn't exist
+            try:
+                await db.execute("ALTER TABLE chunks ADD COLUMN metadata TEXT DEFAULT '{}'")
             except:
                 pass  # Column already exists
             
@@ -458,8 +472,8 @@ class DocumentManager:
                     metadata, created_at, updated_at, processed_at, error_message)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                document.id, document.domain_id, document.name, document.doc_type.value,
-                document.status.value, document.content, document.content_hash,
+                document.id, document.domain_id, document.name, _enum_value(document.doc_type),
+                _enum_value(document.status), document.content, document.content_hash,
                 document.source_path, document.source_url, document.chunk_count,
                 document.token_count, json.dumps(document.metadata),
                 document.created_at, document.updated_at, document.processed_at,
@@ -557,8 +571,8 @@ class DocumentManager:
                     updated_at = ?, processed_at = ?, error_message = ?
                 WHERE id = ?
             """, (
-                document.name, document.domain_id, document.doc_type.value,
-                document.status.value, document.content, document.content_hash,
+                document.name, document.domain_id, _enum_value(document.doc_type),
+                _enum_value(document.status), document.content, document.content_hash,
                 document.source_path, document.source_url, document.chunk_count,
                 document.token_count, json.dumps(document.metadata),
                 document.updated_at, document.processed_at, document.error_message,
@@ -647,14 +661,14 @@ class DocumentManager:
             await db.executemany("""
                 INSERT OR REPLACE INTO chunks (id, document_id, content, chunk_index,
                     total_chunks, start_char, end_char, token_count, page_number, section_header,
-                    chunk_type, image_path, vector_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    chunk_type, image_path, vector_id, created_at, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     chunk.id, chunk.document_id, chunk.content, chunk.chunk_index,
                     chunk.total_chunks, chunk.start_char, chunk.end_char, chunk.token_count,
                     chunk.page_number, chunk.section_header, chunk.chunk_type,
-                    chunk.image_path, chunk.vector_id, now
+                    chunk.image_path, chunk.vector_id, now, json.dumps(chunk.metadata)
                 )
                 for chunk in chunks
             ])
@@ -693,7 +707,8 @@ class DocumentManager:
                     section_header=row['section_header'],
                     chunk_type=row['chunk_type'] if 'chunk_type' in row.keys() else 'text',
                     image_path=row['image_path'] if 'image_path' in row.keys() else None,
-                    vector_id=row['vector_id']
+                    vector_id=row['vector_id'],
+                    metadata=json.loads(row['metadata']) if 'metadata' in row.keys() and row['metadata'] else {}
                 )
                 for row in rows
             ]
@@ -721,7 +736,8 @@ class DocumentManager:
                     section_header=row['section_header'],
                     chunk_type=row['chunk_type'] if 'chunk_type' in row.keys() else 'text',
                     image_path=row['image_path'] if 'image_path' in row.keys() else None,
-                    vector_id=row['vector_id']
+                    vector_id=row['vector_id'],
+                    metadata=json.loads(row['metadata']) if 'metadata' in row.keys() and row['metadata'] else {}
                 )
         return None
     
@@ -784,7 +800,8 @@ class DocumentManager:
                     section_header=row['section_header'],
                     chunk_type=row['chunk_type'] if 'chunk_type' in row.keys() else 'text',
                     image_path=row['image_path'] if 'image_path' in row.keys() else None,
-                    vector_id=row['vector_id']
+                    vector_id=row['vector_id'],
+                    metadata=json.loads(row['metadata']) if 'metadata' in row.keys() and row['metadata'] else {}
                 )
                 for row in rows
             ]
@@ -835,7 +852,8 @@ class DocumentManager:
                     section_header=row['section_header'],
                     chunk_type=row['chunk_type'] if 'chunk_type' in row.keys() else 'text',
                     image_path=row['image_path'] if 'image_path' in row.keys() else None,
-                    vector_id=row['vector_id']
+                    vector_id=row['vector_id'],
+                    metadata=json.loads(row['metadata']) if 'metadata' in row.keys() and row['metadata'] else {}
                 )
                 for row in rows
             ]

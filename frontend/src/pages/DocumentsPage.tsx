@@ -405,7 +405,7 @@ const DocumentsPage: React.FC = () => {
   const loadDomains = useCallback(async () => {
     try {
       const res = await api.get('/api/v1/rag/domains');
-      const flatDomains = res.data.domains || [];
+      const flatDomains = res.domains || [];
 
       // Build tree structure
       const domainMap = new Map<string, Domain>();
@@ -442,8 +442,8 @@ const DocumentsPage: React.FC = () => {
       if (typeFilter) params.doc_type = typeFilter;
 
       const res = await api.get('/api/v1/rag/documents', { params });
-      setDocuments(res.data.documents || []);
-      setTotalDocuments(res.data.total || 0);
+      setDocuments(res.documents || []);
+      setTotalDocuments(res.total || 0);
     } catch (err) {
       console.error('Failed to load documents:', err);
     } finally {
@@ -456,7 +456,7 @@ const DocumentsPage: React.FC = () => {
     setChunksLoading(true);
     try {
       const res = await api.get(`/api/v1/rag/documents/${documentId}/chunks`);
-      setChunks(res.data.chunks || []);
+      setChunks(res.chunks || []);
     } catch (err) {
       console.error('Failed to load chunks:', err);
     } finally {
@@ -911,7 +911,7 @@ const DocumentsPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(loadProcessingQueue, 5000);
+    const interval = setInterval(loadProcessingQueue, 30000); // Reduced polling frequency to prevent connection saturation
     loadProcessingQueue();
     return () => clearInterval(interval);
   }, [loadProcessingQueue]);

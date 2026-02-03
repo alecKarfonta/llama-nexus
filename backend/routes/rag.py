@@ -591,6 +591,111 @@ async def clear_domain_collection(request: Request, domain_id: str):
 
 
 # Document Management
+@router.patch("/chunks/{chunk_id}")
+async def update_chunk_metadata(request: Request, chunk_id: str):
+    """
+    Update chunk metadata.
+    
+    Updates metadata in both:
+    1. SQLite chunks table
+    2. Vector store payload (if vector_id exists)
+    """
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    data = await request.json()
+    metadata_update = data.get('metadata')
+    
+    if metadata_update is None:
+        raise HTTPException(status_code=400, detail="No metadata provided")
+    
+    import aiosqlite
+    import json
+    from modules.rag.document_manager import DocumentChunk
+    
+    # 1. Fetch chunk from SQLite
+    db_path = rag['document_manager'].db_path
+    chunk = None
+    
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM chunks WHERE id = ?", (chunk_id,))
+        row = await cursor.fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Chunk not found")
+            
+        chunk_data = dict(row)
+        # Parse existing metadata if it exists
+        current_metadata = {}
+        if chunk_data.get('metadata'):
+            try:
+                current_metadata = json.loads(chunk_data['metadata'])
+            except:
+                pass
+        
+        # Merge metadata
+        updated_metadata = {**current_metadata, **metadata_update}
+        
+        # Update SQLite
+        await db.execute(
+            "UPDATE chunks SET metadata = ? WHERE id = ?",
+            (json.dumps(updated_metadata), chunk_id)
+        )
+        await db.commit()
+        
+        vector_id = chunk_data.get('vector_id')
+        document_id = chunk_data.get('document_id')
+        
+        # Get domain_id from document to know which collection update
+        cursor = await db.execute("SELECT domain_id FROM documents WHERE id = ?", (document_id,))
+        doc_row = await cursor.fetchone()
+        domain_id = doc_row['domain_id'] if doc_row else None
+
+    # 2. Update Vector Store Payload
+    if vector_id and domain_id and rag['vector_store']:
+        collection_name = f"domain_{domain_id}"
+        
+        # Check if custom collection
+        domain = await rag['document_manager'].get_domain(domain_id)
+        if domain:
+            collection_name = get_collection_name(domain)
+            
+        try:
+            # We need to fetch current payload first to merge? 
+            # Or Qdrant set_payload merges? It merges by default.
+            # We can use vector_store._client.set_payload directly if available,
+            # but our VectorStore wrapper doesn't expose set_payload explicitly.
+            # Let's check if we can access the underlying client properly.
+            
+            if hasattr(rag['vector_store'], '_client'):
+                from qdrant_client.http import models
+                
+                # Check if set_payload exists on client (it should on AsyncQdrantClient)
+                client = rag['vector_store']._client
+                
+                await client.set_payload(
+                    collection_name=collection_name,
+                    payload=metadata_update, # This merges with existing payload
+                    points=[vector_id],
+                    wait=True
+                )
+                logger.info(f"Updated payload for vector {vector_id} in {collection_name}")
+            else:
+                logger.warning("Vector store client not accessible, skipping payload update")
+                
+        except Exception as e:
+            logger.error(f"Failed to update vector store payload: {e}")
+            # We don't fail the request if vector store update fails, 
+            # but we should warn.
+            
+    return {
+        "id": chunk_id,
+        "status": "updated",
+        "metadata": updated_metadata
+    }
+
 @router.get("/documents")
 async def list_rag_documents(
     request: Request,
@@ -2302,12 +2407,26 @@ async def embed_text(request: Request):
 # Processing Queue
 @router.get("/processing/queue")
 async def get_processing_queue(request: Request):
-    """Get documents currently being processed or queued."""
+    """Get documents currently being processed or queued.
+    
+    Returns lightweight document summaries (without full content) to avoid
+    overwhelming the browser with large responses during polling.
+    """
     rag = get_rag_components(request)
     if not rag['document_manager']:
         raise HTTPException(status_code=503, detail="Document manager not initialized")
     
     from modules.rag.document_manager import DocumentStatus
+    
+    def doc_summary(doc):
+        """Create a lightweight summary of a document (without content)."""
+        data = doc.to_dict()
+        # Remove potentially large fields for queue display
+        data.pop('content', None)
+        # Truncate error messages if too long
+        if data.get('error_message') and len(data['error_message']) > 500:
+            data['error_message'] = data['error_message'][:500] + '...'
+        return data
     
     processing_docs, proc_total = await rag['document_manager'].list_documents(
         status=DocumentStatus.PROCESSING,
@@ -2326,15 +2445,15 @@ async def get_processing_queue(request: Request):
     
     return {
         "processing": {
-            "documents": [d.to_dict() for d in processing_docs],
+            "documents": [doc_summary(d) for d in processing_docs],
             "count": proc_total
         },
         "pending": {
-            "documents": [d.to_dict() for d in pending_docs],
+            "documents": [doc_summary(d) for d in pending_docs],
             "count": pend_total
         },
         "errors": {
-            "documents": [d.to_dict() for d in error_docs],
+            "documents": [doc_summary(d) for d in error_docs],
             "count": err_total
         }
     }
