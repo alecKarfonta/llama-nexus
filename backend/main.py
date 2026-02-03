@@ -3912,14 +3912,17 @@ async def get_resources():
                     timeout=5
                 )
                 if result.returncode == 0:
-                    values = result.stdout.strip().split(", ")
+                    # Handle multi-GPU systems: nvidia-smi returns one line per GPU
+                    # Take only the first GPU (primary) for this endpoint
+                    first_gpu_line = result.stdout.strip().split('\n')[0]
+                    values = [v.strip() for v in first_gpu_line.split(',')]
                     if len(values) >= 5:
                         resources["gpu"] = {
-                            "vram_used_mb": int(values[0]),
-                            "vram_total_mb": int(values[1]),
-                            "usage_percent": float(values[2]),
-                            "temperature_c": float(values[3]),
-                            "power_watts": float(values[4]) if values[4] != "N/A" else None
+                            "vram_used_mb": int(float(values[0])),
+                            "vram_total_mb": int(float(values[1])),
+                            "usage_percent": float(values[2]) if values[2] != "[N/A]" else 0,
+                            "temperature_c": float(values[3]) if values[3] != "[N/A]" else 0,
+                            "power_watts": float(values[4]) if values[4] not in ["N/A", "[N/A]"] else None
                         }
                 else:
                     logger.warning(f"nvidia-smi command failed with return code: {result.returncode}")

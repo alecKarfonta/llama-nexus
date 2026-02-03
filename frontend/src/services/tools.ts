@@ -208,7 +208,7 @@ export class ToolsService {
             properties: {
               metric: {
                 type: 'string',
-                enum: ['cpu', 'memory', 'disk', 'all'],
+                enum: ['cpu', 'memory', 'disk', 'gpu', 'all'],
                 description: 'Type of system metric to retrieve'
               }
             },
@@ -361,7 +361,7 @@ export class ToolsService {
           return this.executeCodeTool(parsedArgs as CodeExecutionQuery);
 
         case 'get_system_info':
-          return this.executeSystemInfoTool(parsedArgs);
+          return await this.executeSystemInfoTool(parsedArgs);
 
         case 'generate_uuid':
           return this.executeUUIDTool(parsedArgs);
@@ -646,23 +646,62 @@ export class ToolsService {
     }, null, 2);
   }
 
-  private static executeSystemInfoTool(query: { metric: string }): string {
+  private static async executeSystemInfoTool(query: { metric: string }): Promise<string> {
     const { metric } = query;
 
-    const systemInfo = {
-      cpu: { usage: '45%', cores: 8, model: 'Intel Core i7' },
-      memory: { usage: '8.2GB', total: '16GB', percentage: '51%' },
-      disk: { usage: '450GB', total: '1TB', percentage: '45%' },
-      all: {
+    try {
+      // Fetch real system info from backend
+      const response = await fetch('/api/v1/resources');
+      if (!response.ok) {
+        throw new Error(`Failed to fetch resources: ${response.status}`);
+      }
+      const data = await response.json();
+
+      // Format the response based on requested metric
+      const systemInfo: Record<string, unknown> = {
+        cpu: data.cpu ? {
+          usage_percent: data.cpu.percent,
+          cores: data.cpu.count,
+          frequency_mhz: data.cpu.freq?.current
+        } : { error: 'CPU info unavailable' },
+        memory: data.memory ? {
+          used_mb: Math.round(data.memory.used_mb),
+          total_mb: Math.round(data.memory.total_mb),
+          available_mb: Math.round(data.memory.available_mb),
+          usage_percent: data.memory.percent
+        } : { error: 'Memory info unavailable' },
+        gpu: data.gpu ? {
+          vram_used_mb: data.gpu.vram_used_mb,
+          vram_total_mb: data.gpu.vram_total_mb,
+          usage_percent: data.gpu.usage_percent,
+          temperature_c: data.gpu.temperature_c,
+          power_watts: data.gpu.power_watts
+        } : { status: data.gpu?.status || 'unavailable', reason: data.gpu?.reason },
+        disk: { usage: '450GB', total: '1TB', percentage: '45%' }, // Disk not in backend yet
+        all: {
+          cpu: data.cpu,
+          memory: data.memory,
+          gpu: data.gpu,
+          timestamp: data.timestamp
+        }
+      };
+
+      return JSON.stringify(systemInfo[metric] || systemInfo.all, null, 2);
+    } catch (error) {
+      // Fallback to simulated data on error
+      console.error('Failed to fetch system info:', error);
+      const fallback = {
         cpu: { usage: '45%', cores: 8, model: 'Intel Core i7' },
         memory: { usage: '8.2GB', total: '16GB', percentage: '51%' },
+        gpu: { error: 'Failed to fetch GPU info' },
         disk: { usage: '450GB', total: '1TB', percentage: '45%' },
-        uptime: '5 days, 3 hours',
-        timestamp: new Date().toISOString()
-      }
-    };
-
-    return JSON.stringify(systemInfo[metric as keyof typeof systemInfo] || systemInfo.all, null, 2);
+        all: {
+          error: 'Failed to fetch system info',
+          timestamp: new Date().toISOString()
+        }
+      };
+      return JSON.stringify(fallback[metric as keyof typeof fallback] || fallback.all, null, 2);
+    }
   }
 
   private static executeUUIDTool(query: { version?: string }): string {
