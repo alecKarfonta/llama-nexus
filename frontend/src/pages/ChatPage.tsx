@@ -1313,11 +1313,35 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             return cleanMsg
           })
 
-        // Add the tool result message
-        const followUpMessages: ChatMessage[] = [
+        // Add the tool result message and ensure reasoning level is set for follow-up
+        let followUpMessages: ChatMessage[] = [
           ...messagesForLLM,
           toolResultMessage
         ]
+
+        // Apply reasoning level instruction to system message (same logic as initial request)
+        if (settings.reasoningLevel !== 'none') {
+          const reasoningInstruction = `Reasoning: ${settings.reasoningLevel}`
+
+          if (followUpMessages.length > 0 && followUpMessages[0].role === 'system') {
+            // Update existing system message
+            const existingContent = typeof followUpMessages[0].content === 'string'
+              ? followUpMessages[0].content
+              : ''
+            followUpMessages[0] = {
+              ...followUpMessages[0],
+              content: existingContent.includes('Reasoning:')
+                ? existingContent.replace(/Reasoning: \w+/, reasoningInstruction)
+                : `${existingContent}\n${reasoningInstruction}`
+            }
+          } else {
+            // Add new system message at the beginning
+            followUpMessages = [
+              { role: 'system' as const, content: `You are a helpful AI assistant. ${reasoningInstruction}` },
+              ...followUpMessages
+            ]
+          }
+        }
 
         // Continue conversation with tool result
         const followUpRequest: ChatCompletionRequest = {
