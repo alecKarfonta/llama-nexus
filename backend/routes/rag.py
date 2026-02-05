@@ -60,7 +60,7 @@ def get_rag_components(request: Request):
 # Model name aliases for backward compatibility
 EMBEDDING_MODEL_ALIASES = {
     "nomic-embed-text": "nomic-embed-text-v1.5",
-    "all-MiniLM-L6-v2": "all-MiniLM-L6-v2",  # Direct mapping
+    "nomic-embed-text-v1.5": "nomic-embed-text-v1.5",  # Direct mapping
     "bge-large": "bge-large-en-v1.5",
 }
 
@@ -425,7 +425,7 @@ async def create_rag_domain(request: Request):
         parent_id=data.get('parent_id'),
         chunk_size=data.get('chunk_size', 512),
         chunk_overlap=data.get('chunk_overlap', 50),
-        embedding_model=data.get('embedding_model', 'all-MiniLM-L6-v2')
+        embedding_model=data.get('embedding_model', 'nomic-embed-text-v1.5')
     )
     
     result = await rag['document_manager'].create_domain(domain)
@@ -694,6 +694,129 @@ async def update_chunk_metadata(request: Request, chunk_id: str):
         "id": chunk_id,
         "status": "updated",
         "metadata": updated_metadata
+    }
+
+
+@router.post("/chunks/batch-update")
+async def batch_update_chunk_metadata(request: Request):
+    """
+    Batch update chunk metadata.
+    
+    Request body:
+    {
+        "updates": [
+            {"chunk_id": "id1", "metadata": {"key": "value"}},
+            {"chunk_id": "id2", "metadata": {"key": "value"}}
+        ]
+    }
+    
+    Or apply same metadata to multiple chunks:
+    {
+        "chunk_ids": ["id1", "id2", "id3"],
+        "metadata": {"key": "value"}
+    }
+    """
+    rag = get_rag_components(request)
+    if not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="Document manager not initialized")
+    
+    data = await request.json()
+    
+    import aiosqlite
+    import json
+    
+    db_path = rag['document_manager'].db_path
+    results = []
+    errors = []
+    
+    # Handle both formats
+    if 'updates' in data:
+        # Individual updates per chunk
+        updates = data['updates']
+    elif 'chunk_ids' in data and 'metadata' in data:
+        # Same metadata for multiple chunks
+        updates = [{"chunk_id": cid, "metadata": data['metadata']} for cid in data['chunk_ids']]
+    else:
+        raise HTTPException(status_code=400, detail="Provide either 'updates' array or 'chunk_ids' + 'metadata'")
+    
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        
+        for update in updates:
+            chunk_id = update.get('chunk_id')
+            metadata_update = update.get('metadata', {})
+            
+            if not chunk_id:
+                errors.append({"error": "Missing chunk_id in update"})
+                continue
+                
+            try:
+                # Fetch current chunk
+                cursor = await db.execute("SELECT * FROM chunks WHERE id = ?", (chunk_id,))
+                row = await cursor.fetchone()
+                
+                if not row:
+                    errors.append({"chunk_id": chunk_id, "error": "Chunk not found"})
+                    continue
+                
+                chunk_data = dict(row)
+                current_metadata = {}
+                if chunk_data.get('metadata'):
+                    try:
+                        current_metadata = json.loads(chunk_data['metadata'])
+                    except:
+                        pass
+                
+                # Merge metadata
+                updated_metadata = {**current_metadata, **metadata_update}
+                
+                # Update SQLite
+                await db.execute(
+                    "UPDATE chunks SET metadata = ? WHERE id = ?",
+                    (json.dumps(updated_metadata), chunk_id)
+                )
+                
+                results.append({
+                    "chunk_id": chunk_id,
+                    "status": "updated",
+                    "metadata": updated_metadata
+                })
+                
+                # Update vector store if available
+                vector_id = chunk_data.get('vector_id')
+                document_id = chunk_data.get('document_id')
+                
+                if vector_id and document_id and rag['vector_store']:
+                    cursor = await db.execute("SELECT domain_id FROM documents WHERE id = ?", (document_id,))
+                    doc_row = await cursor.fetchone()
+                    if doc_row:
+                        domain_id = doc_row['domain_id']
+                        domain = await rag['document_manager'].get_domain(domain_id)
+                        if domain:
+                            collection_name = get_collection_name(domain)
+                            try:
+                                if hasattr(rag['vector_store'], '_client'):
+                                    client = rag['vector_store']._client
+                                    await client.set_payload(
+                                        collection_name=collection_name,
+                                        payload=metadata_update,
+                                        points=[vector_id],
+                                        wait=True
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Failed to update vector payload for {chunk_id}: {e}")
+                                
+            except Exception as e:
+                errors.append({"chunk_id": chunk_id, "error": str(e)})
+        
+        await db.commit()
+    
+    return {
+        "status": "completed",
+        "updated": len(results),
+        "errors": len(errors),
+        "results": results,
+        "error_details": errors if errors else None
     }
 
 @router.get("/documents")
@@ -1195,7 +1318,7 @@ async def add_document_to_vector_store(request: Request, document_id: str):
     data = await request.json()
     domain = await rag['document_manager'].get_domain(doc.domain_id)
     
-    embedding_model = data.get('embedding_model', domain.embedding_model if domain else 'all-MiniLM-L6-v2')
+    embedding_model = data.get('embedding_model', domain.embedding_model if domain else 'nomic-embed-text-v1.5')
     embedder = create_embedder(request, model_name=embedding_model)
     
     texts = [chunk.content for chunk in chunks]
@@ -2388,7 +2511,7 @@ async def embed_text(request: Request):
     """Embed text using specified model."""
     data = await request.json()
     texts = data.get('texts', [])
-    model = data.get('model', 'all-MiniLM-L6-v2')
+    model = data.get('model', 'nomic-embed-text-v1.5')
     
     if not texts:
         raise HTTPException(status_code=400, detail="Texts are required")
@@ -2550,7 +2673,7 @@ async def ensure_memory_domain(collection: str, document_manager) -> None:
         name=info["name"],
         description=info["description"],
         custom_collection=collection,
-        embedding_model="all-MiniLM-L6-v2"
+        embedding_model="nomic-embed-text-v1.5"
     )
     
     await document_manager.create_domain(domain)
@@ -2573,7 +2696,7 @@ async def memory_upsert(request: Request):
     memory_id = data.get('id')
     content = data.get('content')
     metadata = data.get('metadata', {})
-    embedding_model = data.get('embedding_model', 'all-MiniLM-L6-v2')
+    embedding_model = data.get('embedding_model', 'nomic-embed-text-v1.5')
     
     # Validate required fields
     if not collection:
@@ -2655,7 +2778,7 @@ async def memory_search(request: Request):
     collections = data.get('collections', DEFAULT_MEMORY_COLLECTIONS)
     top_k = data.get('top_k', 5)
     min_score = data.get('min_score', 0.0)
-    embedding_model = data.get('embedding_model', 'all-MiniLM-L6-v2')
+    embedding_model = data.get('embedding_model', 'nomic-embed-text-v1.5')
     
     if not query:
         raise HTTPException(status_code=400, detail="query is required")

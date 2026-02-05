@@ -4490,7 +4490,7 @@ async def process_document_background(
         
         # Create embedder - use domain's configured model if not overridden
         # KEY FIX: Use domain.embedding_model when embedding_model is None
-        model_name = embedding_model or (domain.embedding_model if domain else 'all-MiniLM-L6-v2')
+        model_name = embedding_model or (domain.embedding_model if domain else 'nomic-embed-text-v1.5')
         logger.info(f"Using embedding model: {model_name} for document {document_id}")
         embedder = create_embedder(model_name=model_name)
         
@@ -4611,7 +4611,14 @@ async def process_document_background(
                 end_char=chunk.end_char,
                 token_count=len(chunk.content.split()),  # Approximate token count
                 chunk_type="text",
-                vector_id=vector_id
+                vector_id=vector_id,
+                metadata={
+                    "document_name": doc.name,
+                    "source_path": doc.source_path,
+                    "chunk_index": chunk.index,
+                    "total_chunks": total_chunks,
+                    **doc.metadata
+                }
             )
             chunks.append(doc_chunk)
             
@@ -4625,6 +4632,8 @@ async def process_document_background(
                     'chunk_index': chunk.index,
                     'chunk_id': chunk_id,
                     'chunk_type': 'text',
+                    'document_name': doc.name,
+                    'source_path': doc.source_path,
                     'metadata': doc.metadata
                 }
             ))
@@ -4649,7 +4658,15 @@ async def process_document_background(
                 page_number=page_num,
                 chunk_type="visual",
                 image_path=image_path,
-                vector_id=vector_id
+                vector_id=vector_id,
+                metadata={
+                    "document_name": doc.name,
+                    "source_path": doc.source_path,
+                    "chunk_index": chunk_index,
+                    "total_chunks": total_chunks,
+                    "page_number": page_num,
+                    **doc.metadata
+                }
             )
             chunks.append(doc_chunk)
             
@@ -4665,6 +4682,8 @@ async def process_document_background(
                     'chunk_type': 'visual',
                     'image_path': image_path,
                     'page_number': page_num,
+                    'document_name': doc.name,
+                    'source_path': doc.source_path,
                     'metadata': doc.metadata
                 }
             ))

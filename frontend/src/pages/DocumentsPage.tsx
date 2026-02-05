@@ -127,6 +127,7 @@ interface Chunk {
   chunk_index: number;
   total_chunks: number;
   section_header: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 // Document type icons
@@ -327,6 +328,23 @@ const ChunkViewer: React.FC<{
           />
         )}
         {chunks[selectedChunk]?.content}
+        {chunks[selectedChunk]?.metadata && Object.keys(chunks[selectedChunk].metadata!).length > 0 && (
+          <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary', mb: 1, display: 'block' }}>
+              Metadata
+            </Typography>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+              {Object.entries(chunks[selectedChunk].metadata!).map(([key, value]) => (
+                <Chip
+                  key={key}
+                  label={`${key}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`}
+                  size="small"
+                  sx={{ bgcolor: alpha('#10B981', 0.2), fontSize: 11 }}
+                />
+              ))}
+            </Box>
+          </Box>
+        )}
       </Paper>
     </Box>
   );

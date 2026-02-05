@@ -300,14 +300,15 @@ services:
       - MODEL_REPO=nomic-ai/nomic-embed-text-v1.5-GGUF
       - MODEL_FILE=nomic-embed-text-v1.5.Q8_0.gguf
       - CONTEXT_SIZE=2048
-      - GPU_LAYERS=0
+      - GPU_LAYERS=999
       - HOST=0.0.0.0
       - PORT=8080
       - API_KEY=llamacpp-embed
       - THREADS=8
-      - BATCH_SIZE=512
-      - UBATCH_SIZE=512
+      - BATCH_SIZE=1024
+      - UBATCH_SIZE=1024
       - POOLING_TYPE=mean
+      - PARALLEL=8
       # HuggingFace token for downloads
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
       # GPU device pinning - NVIDIA_VISIBLE_DEVICES is respected by Docker runtime

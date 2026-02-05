@@ -194,7 +194,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
   // Context window tracking state
   const [tokenCount, setTokenCount] = useState({ prompt: 0, total: 0 })
-  const maxContextTokens = 128000 // Default, can be made configurable
+  const [contextLimit, setContextLimit] = useState(4096)
 
   // Performance metrics tracking
   const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetrics>(initialPerformanceMetrics)
@@ -505,27 +505,33 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     const fetchCurrentModel = async () => {
       try {
         const modelInfo = await apiService.getCurrentModel()
-        if (modelInfo && modelInfo.name) {
-          setCurrentModelName(modelInfo.name)
-          // Update the initial greeting message with the model name
-          setMessages([
-            {
-              role: 'assistant',
-              content: `Hello! I'm your AI assistant powered by ${modelInfo.name}. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.`
-            }
-          ])
-          // Pre-fill model setting if not already set
-          setSettings((prev) => {
-            if (prev.model) return prev
-            const updated = { ...prev, model: modelInfo.name }
-            // Persist so subsequent loads keep the detected model
-            try {
-              localStorage.setItem('chat-settings', JSON.stringify(updated))
-            } catch (error) {
-              console.warn('Failed to save chat settings to localStorage:', error)
-            }
-            return updated
-          })
+        if (modelInfo) {
+          // Set context limit
+          const limit = modelInfo.context_size || modelInfo.contextLength || modelInfo.model?.context_size || 4096
+          if (limit) setContextLimit(limit)
+
+          if (modelInfo.name) {
+            setCurrentModelName(modelInfo.name)
+            // Update the initial greeting message with the model name
+            setMessages([
+              {
+                role: 'assistant',
+                content: `Hello! I'm your AI assistant powered by ${modelInfo.name}. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.`
+              }
+            ])
+            // Pre-fill model setting if not already set
+            setSettings((prev) => {
+              if (prev.model) return prev
+              const updated = { ...prev, model: modelInfo.name }
+              // Persist so subsequent loads keep the detected model
+              try {
+                localStorage.setItem('chat-settings', JSON.stringify(updated))
+              } catch (error) {
+                console.warn('Failed to save chat settings to localStorage:', error)
+              }
+              return updated
+            })
+          }
         }
       } catch (error) {
         console.warn('Failed to fetch current model:', error)
@@ -617,6 +623,54 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           // Add new system message at the beginning
           requestMessages = [systemMessage, ...requestMessages]
         }
+      }
+
+      // Truncate messages to fit context window
+      // Estimate tokens: Text ~3.5 chars/token, Image ~1000 tokens
+      // Reserve 1000 tokens for generation
+      const estimateTokens = (msg: ChatMessage) => {
+        let count = 0
+        // Text content
+        if (typeof msg.content === 'string') {
+          count += msg.content.length / 3.5
+        } else if (Array.isArray(msg.content)) {
+          msg.content.forEach((part: any) => {
+            if (part.type === 'text') count += (part.text?.length || 0) / 3.5
+            if (part.type === 'image_url') count += 1000 // Conservative estimate for image
+          })
+        }
+
+        // Reasoning content
+        if (msg.reasoning_content) {
+          count += msg.reasoning_content.length / 3.5
+        }
+
+        return Math.ceil(count)
+      }
+
+      // Keep system prompt (index 0) and newest messages that fit
+      if (requestMessages.length > 1) {
+        const systemMsg = requestMessages[0]
+        const systemTokens = estimateTokens(systemMsg)
+        const budget = contextLimit - 1000 - systemTokens // Reserve for generation and system prompt
+
+        let used = 0
+        const keptMessages: ChatMessage[] = []
+
+        // Iterate backwards from newest
+        for (let i = requestMessages.length - 1; i >= 1; i--) {
+          const msg = requestMessages[i]
+          const cost = estimateTokens(msg)
+          if (used + cost <= budget) {
+            keptMessages.unshift(msg)
+            used += cost
+          } else {
+            console.log(`Truncating history: Dropping message with ~${cost} tokens. Budget remaining: ${budget - used}`)
+            break
+          }
+        }
+
+        requestMessages = [systemMsg, ...keptMessages]
       }
 
       const request: ChatCompletionRequest = {
@@ -951,6 +1005,17 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         }
       } finally {
         reader.releaseLock()
+
+        // After streaming completes, if content is empty but reasoning_content exists,
+        // use reasoning_content as the visible content (for models that put all output in thinking)
+        setMessages((prev: ChatMessage[]) => {
+          const newMessages = [...prev]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage.role === 'assistant' && !lastMessage.content && lastMessage.reasoning_content) {
+            lastMessage.content = lastMessage.reasoning_content
+          }
+          return newMessages
+        })
       }
     } catch (streamError) {
       console.error('Streaming error:', streamError)
@@ -1022,7 +1087,13 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         }
 
         const followUpResponse = await createChatCompletion(followUpRequest)
-        setMessages((prev: ChatMessage[]) => [...prev, followUpResponse.choices[0].message])
+        const responseMessage = followUpResponse.choices[0].message
+        // If content is empty but reasoning_content exists, use it as the visible content
+        // This handles models that put all output in reasoning/thinking tokens
+        if (!responseMessage.content && responseMessage.reasoning_content) {
+          responseMessage.content = responseMessage.reasoning_content
+        }
+        setMessages((prev: ChatMessage[]) => [...prev, responseMessage])
 
       } catch (error) {
         const errorMessage: ChatMessage = {
@@ -1502,18 +1573,18 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             </span>
           </Tooltip>
           {/* Context window progress bar */}
-          <Tooltip title={`Context: ${tokenCount.prompt.toLocaleString()} / ${maxContextTokens.toLocaleString()} tokens (${((tokenCount.prompt / maxContextTokens) * 100).toFixed(1)}%)`}>
+          <Tooltip title={`Context: ${tokenCount.prompt.toLocaleString()} / ${contextLimit.toLocaleString()} tokens (${((tokenCount.prompt / contextLimit) * 100).toFixed(1)}%)`}>
             <Box sx={{ width: 100, mr: 1 }}>
               <LinearProgress
                 variant="determinate"
-                value={Math.min((tokenCount.prompt / maxContextTokens) * 100, 100)}
+                value={Math.min((tokenCount.prompt / contextLimit) * 100, 100)}
                 sx={{
                   height: 6,
                   borderRadius: 3,
                   bgcolor: 'action.hover',
                   '& .MuiLinearProgress-bar': {
-                    bgcolor: tokenCount.prompt > maxContextTokens * 0.9 ? 'error.main' :
-                      tokenCount.prompt > maxContextTokens * 0.7 ? 'warning.main' : 'primary.main'
+                    bgcolor: tokenCount.prompt > contextLimit * 0.9 ? 'error.main' :
+                      tokenCount.prompt > contextLimit * 0.7 ? 'warning.main' : 'primary.main'
                   }
                 }}
               />

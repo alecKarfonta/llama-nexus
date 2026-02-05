@@ -110,7 +110,7 @@ class GraphRAGWrapper:
         neo4j_user: str = "neo4j",
         neo4j_password: str = "password",
         qdrant_url: str = "http://qdrant:6333",
-        embedding_model: str = "all-MiniLM-L6-v2"
+        embedding_model: str = "nomic-embed-text-v1.5"
     ):
         """
         Initialize GraphRAG wrapper.

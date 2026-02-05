@@ -127,6 +127,13 @@ LLAMA_CMD="$LLAMA_CMD --batch-size ${BATCH_SIZE:-512}"
 LLAMA_CMD="$LLAMA_CMD --ubatch-size ${UBATCH_SIZE:-512}"
 
 # GPU configuration
+# Pin to specific GPU if CUDA_VISIBLE_DEVICES is set (important for multi-GPU systems)
+if [ -n "${CUDA_VISIBLE_DEVICES}" ]; then
+    echo "🎯 Pinning to GPU device(s): ${CUDA_VISIBLE_DEVICES}"
+    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}"
+    export NVIDIA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}"
+fi
+
 if [ "${GPU_LAYERS:-999}" != "0" ]; then
     LLAMA_CMD="$LLAMA_CMD --n-gpu-layers ${GPU_LAYERS:-999}"
 else
@@ -143,6 +150,11 @@ LLAMA_CMD="$LLAMA_CMD --metrics"
 LLAMA_CMD="$LLAMA_CMD --verbose"
 LLAMA_CMD="$LLAMA_CMD --flash-attn auto"
 LLAMA_CMD="$LLAMA_CMD --cont-batching"
+
+# Parallel slots for concurrent requests
+if [ -n "${PARALLEL}" ]; then
+    LLAMA_CMD="$LLAMA_CMD --parallel ${PARALLEL}"
+fi
 
 echo "🚀 Starting llama-server with command:"
 echo "   $LLAMA_CMD"
