@@ -3,7 +3,9 @@ RAG System Routes
 Provides endpoints for document management, vector stores, retrieval, and knowledge graphs.
 """
 
-from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Request, BackgroundTasks, Form
+
+
 from typing import Optional
 from datetime import datetime
 import uuid
@@ -80,6 +82,99 @@ def create_embedder(request: Request, model_name: Optional[str] = None):
     resolved_model = resolve_embedding_model_name(model_name)
     return embedder_factory(model_name=resolved_model)
 
+
+@router.post("/search")
+async def search_documents(request: Request):
+    """Search for relevant document chunks using vector similarity.
+    
+    Accepts both JSON body and form data.
+    Embeds the query with the configured embedding model (nomic-embed-text-v1.5)
+    and searches the appropriate Qdrant collection(s) for matching chunks.
+    
+    When no domain_id is provided, searches across ALL domains (global search).
+    """
+    # Parse request - accept both JSON and form data
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        data = await request.json()
+    else:
+        form = await request.form()
+        data = dict(form)
+    
+    query = data.get("query")
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    
+    top_k = int(data.get("top_k", 10))
+    domain_id = data.get("domain_id")
+    score_threshold = data.get("score_threshold")
+    if score_threshold is not None:
+        score_threshold = float(score_threshold)
+    
+    rag = get_rag_components(request)
+
+    if not rag['vector_store'] or not rag['document_manager']:
+        raise HTTPException(status_code=503, detail="RAG system not initialized")
+
+    from modules.rag.retrievers import VectorRetriever, RetrievalConfig
+
+    embedder = create_embedder(request)
+
+    config = RetrievalConfig(
+        top_k=top_k,
+        score_threshold=score_threshold,
+    )
+
+    all_results = []
+
+    if domain_id:
+        # Scoped search: single domain
+        domain = await rag['document_manager'].get_domain(domain_id)
+        collection_name = get_collection_name(domain) if domain else f"domain_{domain_id}"
+        
+        retriever = VectorRetriever(
+            vector_store=rag['vector_store'],
+            embedder=embedder,
+            document_manager=rag['document_manager'],
+            collection_name=collection_name
+        )
+        all_results = await retriever.retrieve(query, config)
+    else:
+        # Global search: iterate all domains
+        domains = await rag['document_manager'].list_domains()
+        for domain in domains:
+            collection_name = get_collection_name(domain)
+            try:
+                if not await rag['vector_store'].collection_exists(collection_name):
+                    continue
+                retriever = VectorRetriever(
+                    vector_store=rag['vector_store'],
+                    embedder=embedder,
+                    document_manager=rag['document_manager'],
+                    collection_name=collection_name
+                )
+                results = await retriever.retrieve(query, config)
+                # Tag each result with domain info
+                for r in results:
+                    r.domain_id = domain.id
+                    if not r.metadata.get("domain_name"):
+                        r.metadata["domain_name"] = domain.name
+                all_results.extend(results)
+            except Exception as e:
+                logger.warning(f"Search failed for domain {domain.name} ({collection_name}): {e}")
+                continue
+        
+        # Sort merged results by score descending, take top_k
+        all_results.sort(key=lambda r: r.score, reverse=True)
+        all_results = all_results[:top_k]
+
+    return {
+        "results": [r.to_dict() for r in all_results],
+        "query": query,
+        "top_k": top_k,
+        "total": len(all_results),
+        "scope": domain_id or "global"
+    }
 
 
 def get_collection_name(domain) -> str:
@@ -2796,11 +2891,12 @@ async def memory_search(request: Request):
     embedder = create_embedder(request, model_name=embedding_model)
     query_embedding = await embedder.embed_query(query)
     
-    # Filter to only collections that exist
-    existing_collections = []
-    for coll in collections:
-        if await rag['vector_store'].collection_exists(coll):
-            existing_collections.append(coll)
+    # Filter to only collections that exist (parallel checks)
+    import asyncio
+    existence_checks = await asyncio.gather(
+        *[rag['vector_store'].collection_exists(coll) for coll in collections]
+    )
+    existing_collections = [coll for coll, exists in zip(collections, existence_checks) if exists]
     
     if not existing_collections:
         return {
@@ -2810,15 +2906,18 @@ async def memory_search(request: Request):
             "total_results": 0
         }
     
-    # Search each collection
-    all_results = []
-    for coll in existing_collections:
-        results = await rag['vector_store'].search(
+    # Search all collections in parallel
+    search_results = await asyncio.gather(
+        *[rag['vector_store'].search(
             collection=coll,
             query_vector=query_embedding,
             limit=top_k,
             score_threshold=min_score
-        )
+        ) for coll in existing_collections]
+    )
+    
+    all_results = []
+    for coll, results in zip(existing_collections, search_results):
         for r in results:
             # Use original_id from payload if available, otherwise use Qdrant ID
             original_id = r.payload.get('original_id', r.id)

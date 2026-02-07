@@ -104,6 +104,7 @@ services:
       - VLM_MODEL_NAME=${VLM_MODEL_NAME:-Qwen_Qwen3-VL-4B-Thinking}
       - VLM_ENABLED=${VLM_ENABLED:-true}
       - USE_DEPLOYED_EMBEDDINGS=true
+      - DEFAULT_EMBEDDING_MODEL=nomic-embed-text-v1.5
     volumes:
       - backend_data:/data
       - gpt_oss_models:/home/llamacpp/models
@@ -277,8 +278,6 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: llamacpp-embed
-    profiles:
-      - embed
     hostname: llamacpp-embed
     ports:
       - "8602:8080" # Embedding server port

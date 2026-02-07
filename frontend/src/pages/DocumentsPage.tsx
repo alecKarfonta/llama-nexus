@@ -89,6 +89,7 @@ import {
 } from '@mui/icons-material';
 import { apiService as api } from '../services/api';
 import { BatchIngestionDialog } from '../components/documents/BatchIngestionDialog';
+import VectorSearchPanel from '../components/documents/VectorSearchPanel';
 
 // Types
 interface Domain {
@@ -1321,6 +1322,9 @@ const DocumentsPage: React.FC = () => {
                 </Typography>
               </Alert>
             )}
+
+            {/* Vector Search */}
+            <VectorSearchPanel selectedDomain={selectedDomain} />
 
             {/* Document Table */}
             <TableContainer>

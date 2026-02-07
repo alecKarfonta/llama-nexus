@@ -65,7 +65,7 @@ import { useVoiceInput } from '@/hooks/useVoiceInput'
 import { useTTS } from '@/hooks/useTTS'
 import { apiService } from '@/services/api'
 import { ToolsService, ExtendedTool } from '@/services/tools'
-import { MarkdownRenderer } from '@/components/chat'
+import { MarkdownRenderer, RAGSettingsPanel, RAGContextBlock, RAGChunk } from '@/components/chat'
 import { ConversationSidebar } from '@/components/chat/ConversationSidebar'
 import type { ChatMessage, ChatCompletionRequest, Tool, ToolCall, ConversationListItem } from '@/types/api'
 
@@ -101,6 +101,12 @@ interface ChatSettings {
   vadSilenceThreshold: number
   vadSilenceDuration: number
   noSpeechThreshold: number  // Max no_speech_prob to accept (0-1)
+  // RAG settings
+  ragEnabled: boolean
+  ragSearchMode: 'global' | 'domains'
+  ragSelectedDomains: string[]  // domain IDs when mode is 'domains'
+  ragTopK: number               // number of chunks to retrieve
+  ragShowContext: boolean       // show retrieved context in UI
 }
 
 interface PerformanceMetrics {
@@ -143,6 +149,12 @@ const defaultSettings: ChatSettings = {
   vadSilenceThreshold: 0.04,   // 4% - increase if it triggers too easily
   vadSilenceDuration: 1500,    // 1.5 seconds
   noSpeechThreshold: 0.6,      // Reject if no_speech_prob > 60%
+  // RAG settings
+  ragEnabled: false,
+  ragSearchMode: 'global',
+  ragSelectedDomains: [],
+  ragTopK: 5,
+  ragShowContext: true,
 }
 
 const initialPerformanceMetrics: PerformanceMetrics = {
@@ -223,6 +235,10 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   // Message editing state
   const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
   const [editingContent, setEditingContent] = useState<string>('')
+
+  // RAG context state
+  const [ragContext, setRagContext] = useState<RAGChunk[]>([])
+  const [ragLoading, setRagLoading] = useState(false)
 
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -597,14 +613,72 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         ? availableTools.filter((tool: Tool) => settings.selectedTools.includes(tool.function.name))
         : []
 
+      // Fetch RAG context if enabled
+      let ragContextText = ''
+      if (settings.ragEnabled) {
+        setRagLoading(true)
+        try {
+          const queryText = typeof messageContent === 'string'
+            ? messageContent
+            : (messageContent.find((p: any) => p.type === 'text')?.text || '')
+
+          if (queryText) {
+            const ragPayload: any = {
+              query: queryText,
+              top_k: settings.ragTopK,
+            }
+
+            if (settings.ragSearchMode === 'global') {
+              ragPayload.search_all_domains = true
+            } else if (settings.ragSelectedDomains.length > 0) {
+              ragPayload.domain_id = settings.ragSelectedDomains[0] // Primary domain
+            }
+
+            const ragResponse = await fetch('/api/v1/rag/retrieve', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(ragPayload),
+            })
+
+            if (ragResponse.ok) {
+              const ragData = await ragResponse.json()
+              const chunks: RAGChunk[] = (ragData.results || []).map((r: any) => ({
+                id: r.id || r.chunk_id,
+                content: r.content || r.text,
+                score: r.score || r.similarity || 0,
+                document_id: r.document_id,
+                document_title: r.document_title || r.metadata?.title,
+                chunk_index: r.chunk_index ?? 0,
+                metadata: r.metadata,
+              }))
+
+              setRagContext(chunks)
+
+              if (chunks.length > 0) {
+                ragContextText = '\n\n--- Retrieved Context ---\n' +
+                  chunks.map((c, i) => `[${i + 1}] ${c.content}`).join('\n\n') +
+                  '\n--- End Context ---\n\nUse the above context to help answer the user\'s question.'
+              }
+            }
+          }
+        } catch (ragError) {
+          console.warn('RAG retrieval failed:', ragError)
+        } finally {
+          setRagLoading(false)
+        }
+      } else {
+        setRagContext([])
+      }
+
       // Prepare messages with reasoning level system prompt if needed
       let requestMessages = [...messages, userMessage]
 
-      // Add or update system message with reasoning level for GPT-OSS models
+      // Add or update system message with reasoning level and RAG context
+      const baseSystemContent = `You are a helpful AI assistant.${ragContextText}`
       if (settings.reasoningLevel !== 'none') {
         const systemMessage = {
           role: 'system' as const,
-          content: `You are a helpful AI assistant. Reasoning: ${settings.reasoningLevel}`
+          content: `${baseSystemContent} Reasoning: ${settings.reasoningLevel}`
         }
 
         // Check if first message is already a system message
@@ -616,11 +690,25 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           requestMessages[0] = {
             ...requestMessages[0],
             content: existingContent.includes('Reasoning:')
-              ? existingContent.replace(/Reasoning: \w+/, `Reasoning: ${settings.reasoningLevel}`)
-              : `${existingContent}\nReasoning: ${settings.reasoningLevel}`
+              ? existingContent.replace(/Reasoning: \w+/, `Reasoning: ${settings.reasoningLevel}`) + ragContextText
+              : `${existingContent}\nReasoning: ${settings.reasoningLevel}${ragContextText}`
           }
         } else {
           // Add new system message at the beginning
+          requestMessages = [systemMessage, ...requestMessages]
+        }
+      } else if (ragContextText) {
+        // No reasoning level but have RAG context - add system message for context
+        const systemMessage = {
+          role: 'system' as const,
+          content: baseSystemContent
+        }
+        if (requestMessages.length > 0 && requestMessages[0].role === 'system') {
+          requestMessages[0] = {
+            ...requestMessages[0],
+            content: (typeof requestMessages[0].content === 'string' ? requestMessages[0].content : '') + ragContextText
+          }
+        } else {
           requestMessages = [systemMessage, ...requestMessages]
         }
       }
@@ -1771,6 +1859,16 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               Chat Settings
             </Typography>
 
+            {/* RAG Settings */}
+            <RAGSettingsPanel
+              ragEnabled={settings.ragEnabled}
+              ragSearchMode={settings.ragSearchMode}
+              ragSelectedDomains={settings.ragSelectedDomains}
+              ragTopK={settings.ragTopK}
+              ragShowContext={settings.ragShowContext}
+              onSettingsChange={(ragSettings) => saveSettings({ ...settings, ...ragSettings })}
+            />
+
             {/* Connection Settings */}
             <Typography variant="h6" gutterBottom sx={{ mt: 2, mb: 1 }}>
               Connection Settings
@@ -2419,6 +2517,41 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         p: 1
       }}>
         <Stack spacing={2}>
+          {/* RAG Context Display */}
+          {settings.ragShowContext && (ragLoading || ragContext.length > 0) && (
+            <RAGContextBlock
+              chunks={ragContext}
+              isLoading={ragLoading}
+              onFetchNeighbors={async (documentId, chunkIndex, direction) => {
+                // Fetch neighboring chunks for exploration
+                try {
+                  const response = await fetch('/api/v1/rag/chunks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      document_id: documentId,
+                      start_index: direction === 'before' ? Math.max(0, chunkIndex - 2) : chunkIndex + 1,
+                      count: 2,
+                    }),
+                  })
+                  if (response.ok) {
+                    const data = await response.json()
+                    return (data.chunks || []).map((c: any) => ({
+                      id: c.id,
+                      content: c.content,
+                      score: 0,
+                      document_id: documentId,
+                      chunk_index: c.chunk_index,
+                      metadata: c.metadata,
+                    }))
+                  }
+                } catch (error) {
+                  console.warn('Failed to fetch neighbor chunks:', error)
+                }
+                return []
+              }}
+            />
+          )}
           {messages.map((message: ChatMessage, index: number) => (
             <Box
               key={index}
