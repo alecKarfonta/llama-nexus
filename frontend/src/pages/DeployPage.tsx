@@ -122,7 +122,7 @@ const DEFAULT_VALUES = {
     rope_scaling: 'linear' as const,
     rope_freq_base: 0,
     rope_freq_scale: 0,
-    n_cpu_moe: 12,
+    n_cpu_moe: 0,
   },
   sampling: {
     temperature: 0.7,

@@ -369,28 +369,17 @@ class LlamaCPPManager:
             },
             "template": {
                 "directory": os.getenv("TEMPLATE_DIR", "/home/llamacpp/templates"),
-                "selected": os.getenv("CHAT_TEMPLATE", "chat-template-oss.jinja"),
+                "selected": os.getenv("CHAT_TEMPLATE", ""),
             },
             "sampling": {
-                "temperature": float(os.getenv("TEMPERATURE", "0.7")),
-                "top_p": float(os.getenv("TOP_P", "0.8")),
-                "top_k": int(os.getenv("TOP_K", "20")),
-                "min_p": float(os.getenv("MIN_P", "0.03")),
-                "repeat_penalty": float(os.getenv("REPEAT_PENALTY", "1.05")),
-                "repeat_last_n": int(os.getenv("REPEAT_LAST_N", "256")),
-                "frequency_penalty": float(os.getenv("FREQUENCY_PENALTY", "0.3")),
-                "presence_penalty": float(os.getenv("PRESENCE_PENALTY", "0.2")),
-                "dry_multiplier": float(os.getenv("DRY_MULTIPLIER", "0.6")),
-                "dry_base": float(os.getenv("DRY_BASE", "2.0")),
-                "dry_allowed_length": int(os.getenv("DRY_ALLOWED_LENGTH", "1")),
-                "dry_penalty_last_n": int(os.getenv("DRY_PENALTY_LAST_N", "1024")),
+                # Empty by default — llama-server uses its own built-in defaults
+                # (and GGUF-embedded model defaults) when not explicitly set.
+                # Users can set values via the UI or presets.
             },
             "performance": {
                 "threads": int(os.getenv("THREADS", "-1")),
                 "batch_size": int(os.getenv("BATCH_SIZE", "2048")),
                 "ubatch_size": int(os.getenv("UBATCH_SIZE", "512")),
-                "num_keep": int(os.getenv("NUM_KEEP", "1024")),
-                "num_predict": int(os.getenv("NUM_PREDICT", "64768")),
             },
             "execution": {
                 "mode": os.getenv("EXECUTION_MODE", "gpu"),  # "gpu" or "cpu"
@@ -3285,9 +3274,13 @@ def _merge_and_persist_config(new_config: Dict[str, Any]) -> Dict[str, Any]:
     config_data = new_config.get('config', new_config)
     
     # Required fields that should never be removed
+    # These match the required fields in the startup config loading
     required_fields = {
-        "model": ["name", "variant"],
-        "server": ["host", "port", "api_key"]
+        "model": ["name", "variant", "context_size", "gpu_layers", "n_cpu_moe"],
+        "server": ["host", "port", "api_key", "metrics"],
+        "template": ["directory"],
+        "execution": ["mode", "cuda_devices"],
+        "performance": ["threads", "batch_size", "ubatch_size"]
     }
     
     for category in ["model", "sampling", "performance", "context_extension", "server", "template", "execution"]:
@@ -3320,17 +3313,38 @@ async def lifespan(app: FastAPI):
     if config_file.exists():
         with open(config_file) as f:
             saved_config = json.load(f)
-            # Merge saved config with default config to ensure all required fields exist
+            # Merge saved config with default config to ensure ONLY required fields exist
+            # Optional fields (like sampling parameters) should remain None/absent if cleared by user
             default_config = manager.load_default_config()
+            
+            # Define required fields that must always have values
+            required_fields = {
+                "model": ["name", "variant", "context_size", "gpu_layers", "n_cpu_moe"],
+                "server": ["host", "port", "api_key", "metrics"],
+                "template": ["directory"],
+                "execution": ["mode", "cuda_devices"],
+                "performance": ["threads", "batch_size", "ubatch_size"]
+            }
+            
             for category in default_config:
                 if category in saved_config:
-                    # Merge category, keeping saved values but adding missing defaults
+                    # Merge category, but only restore required fields if missing/None
                     for key, default_value in default_config[category].items():
                         if key not in saved_config[category] or saved_config[category][key] is None:
-                            saved_config[category][key] = default_value
+                            # Only add back if it's a required field
+                            if category in required_fields and key in required_fields[category]:
+                                saved_config[category][key] = default_value
+                            # Otherwise, leave it as None/absent so llama-server uses its defaults
                 else:
-                    # Add missing category entirely
-                    saved_config[category] = default_config[category]
+                    # Add missing category entirely, but filter to required fields only
+                    if category in required_fields:
+                        saved_config[category] = {
+                            k: v for k, v in default_config[category].items()
+                            if k in required_fields[category]
+                        }
+                    else:
+                        # For categories without required fields, add empty dict
+                        saved_config[category] = {}
             manager.config = saved_config
 
     # Initialize RAG system
