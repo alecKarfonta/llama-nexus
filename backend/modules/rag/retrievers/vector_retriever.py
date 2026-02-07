@@ -4,6 +4,7 @@ Vector-Based Retriever
 Dense vector similarity search with optional MMR for diversity.
 """
 
+import asyncio
 import logging
 from typing import List, Optional, Dict, Any
 import numpy as np
@@ -194,21 +195,25 @@ class VectorRetriever(Retriever):
         search_results: List[SearchResult]
     ) -> List[RetrievalResult]:
         """Convert search results to retrieval results with metadata"""
-        results = []
+        # Fetch all document metadata in parallel
+        doc_ids = [sr.payload.get('document_id') for sr in search_results]
+        unique_doc_ids = list(set(did for did in doc_ids if did))
         
+        if unique_doc_ids:
+            docs = await asyncio.gather(
+                *[self.document_manager.get_document(did) for did in unique_doc_ids]
+            )
+            doc_map = {did: doc for did, doc in zip(unique_doc_ids, docs) if doc}
+        else:
+            doc_map = {}
+        
+        results = []
         for sr in search_results:
             payload = sr.payload
-            
-            # Get document info if available
-            doc_name = None
-            domain_id = None
-            
             doc_id = payload.get('document_id')
-            if doc_id:
-                doc = await self.document_manager.get_document(doc_id)
-                if doc:
-                    doc_name = doc.name
-                    domain_id = doc.domain_id
+            doc = doc_map.get(doc_id)
+            doc_name = doc.name if doc else None
+            domain_id = doc.domain_id if doc else None
             
             results.append(RetrievalResult(
                 chunk_id=sr.id,

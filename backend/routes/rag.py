@@ -1905,31 +1905,38 @@ async def retrieve_documents(request: Request):
     embedding_model = data.get('embedding_model', default_embedding_model)
     embedder = create_embedder(request, model_name=embedding_model)
     
-    # Cross-domain search: search all domain collections
+    # Cross-domain search: search all domain collections in parallel
     if search_all_domains:
-        all_results = []
+        import asyncio
         domains = await rag['document_manager'].list_domains()
         
-        for d in domains:
-            coll_name = get_collection_name(d)
-            if not await rag['vector_store'].collection_exists(coll_name):
-                continue
-            
+        # Check which collections exist (parallel)
+        coll_names = [get_collection_name(d) for d in domains]
+        existence_checks = await asyncio.gather(
+            *[rag['vector_store'].collection_exists(cn) for cn in coll_names]
+        )
+        valid_domains = [(d, cn) for d, cn, exists in zip(domains, coll_names, existence_checks) if exists]
+        
+        # Search all valid domains in parallel
+        async def search_domain(d, coll_name):
             retriever = VectorRetriever(
                 rag['vector_store'],
                 embedder,
                 rag['document_manager'],
                 coll_name
             )
-            
             config = RetrievalConfig(
                 top_k=data.get('top_k', 10),
                 score_threshold=data.get('score_threshold'),
                 domain_ids=[d.id]
             )
-            
-            results = await retriever.retrieve(query, config)
-            all_results.extend(results)
+            return await retriever.retrieve(query, config)
+        
+        domain_results = await asyncio.gather(
+            *[search_domain(d, cn) for d, cn in valid_domains]
+        )
+        
+        all_results = [r for results in domain_results for r in results]
         
         # Sort by score descending and take top_k
         all_results.sort(key=lambda r: r.score if hasattr(r, 'score') else 0, reverse=True)
@@ -1938,7 +1945,7 @@ async def retrieve_documents(request: Request):
         return {
             "query": query,
             "search_mode": "all_domains",
-            "domains_searched": len(domains),
+            "domains_searched": len(valid_domains),
             "results": [r.to_dict() for r in all_results]
         }
     
@@ -1979,43 +1986,41 @@ async def retrieve_documents(request: Request):
     neighbors_before = data.get('context_neighbors_before', RAG_CONTEXT_NEIGHBORS_BEFORE)
     neighbors_after = data.get('context_neighbors_after', RAG_CONTEXT_NEIGHBORS_AFTER)
     
-    enhanced_results = []
-    for r in results:
+    # Fetch all neighbor chunks in parallel
+    import asyncio
+    
+    async def expand_result(r):
         result_dict = r.to_dict()
-        
-        # Only expand context if we have chunk_index and document_id
-        if neighbors_before > 0 or neighbors_after > 0:
+        if (neighbors_before > 0 or neighbors_after > 0) and r.chunk_index is not None and r.document_id:
             chunk_index = r.chunk_index
-            if chunk_index is not None and r.document_id:
-                start_idx = chunk_index - neighbors_before
-                end_idx = chunk_index + neighbors_after
-                
-                # Fetch neighboring chunks
-                neighbor_chunks = await rag['document_manager'].get_chunks_by_range(
-                    r.document_id, start_idx, end_idx
-                )
-                
-                # Build context object
-                before_content = []
-                after_content = []
-                all_content = []
-                
-                for chunk in neighbor_chunks:
-                    if chunk.chunk_index < chunk_index:
-                        before_content.append(chunk.content)
-                    elif chunk.chunk_index > chunk_index:
-                        after_content.append(chunk.content)
-                    all_content.append(chunk.content)
-                
-                result_dict['context'] = {
-                    'before': before_content,
-                    'after': after_content,
-                    'combined': '\n\n'.join(all_content),
-                    'neighbors_before': neighbors_before,
-                    'neighbors_after': neighbors_after
-                }
-        
-        enhanced_results.append(result_dict)
+            start_idx = chunk_index - neighbors_before
+            end_idx = chunk_index + neighbors_after
+            
+            neighbor_chunks = await rag['document_manager'].get_chunks_by_range(
+                r.document_id, start_idx, end_idx
+            )
+            
+            before_content = []
+            after_content = []
+            all_content = []
+            
+            for chunk in neighbor_chunks:
+                if chunk.chunk_index < chunk_index:
+                    before_content.append(chunk.content)
+                elif chunk.chunk_index > chunk_index:
+                    after_content.append(chunk.content)
+                all_content.append(chunk.content)
+            
+            result_dict['context'] = {
+                'before': before_content,
+                'after': after_content,
+                'combined': '\n\n'.join(all_content),
+                'neighbors_before': neighbors_before,
+                'neighbors_after': neighbors_after
+            }
+        return result_dict
+    
+    enhanced_results = await asyncio.gather(*[expand_result(r) for r in results])
     
     return {
         "query": query,
