@@ -1,5 +1,8 @@
 /**
  * Entity Manager - Manage entities in the knowledge graph
+ * 
+ * Note: Full entity extraction requires the NER service.
+ * Deploy with: docker compose --profile graphrag-ner up -d
  */
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -26,6 +29,7 @@ import {
   Select,
   MenuItem,
   Alert,
+  AlertTitle,
   CircularProgress,
   Tooltip,
   InputAdornment,
@@ -36,6 +40,7 @@ import {
   ListItemText,
   Divider,
   alpha,
+  Collapse,
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -53,6 +58,7 @@ import {
   Computer as TechIcon,
   Lightbulb as ConceptIcon,
   Category as CategoryIcon,
+  Warning as WarningIcon,
 } from '@mui/icons-material';
 import { apiService as api } from '../services/api';
 
@@ -127,11 +133,11 @@ const EntityManagerPage: React.FC = () => {
       });
 
       const entitiesData = result.top_entities || [];
-      
+
       // Filter by type if selected
       let filteredEntities = entitiesData;
       if (typeFilter) {
-        filteredEntities = entitiesData.filter((e: any) => 
+        filteredEntities = entitiesData.filter((e: any) =>
           e.type?.toLowerCase() === typeFilter.toLowerCase()
         );
       }

@@ -1,5 +1,5 @@
 # Multi-stage build for llama.cpp with CUDA support
-FROM nvidia/cuda:12.9.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS builder
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     pciutils \
     python3 \
     python3-pip \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install huggingface_hub for model downloads
@@ -21,21 +22,37 @@ RUN pip3 install huggingface_hub hf_transfer
 
 # Clone and build llama.cpp with CUDA support
 WORKDIR /build
-RUN git clone https://github.com/ggml-org/llama.cpp.git && \
-    cd llama.cpp && \
-    git checkout master && \
-    echo "Building llama.cpp version: $(git describe --tags --always)" && \
-    cmake . -B build \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DGGML_CUDA=ON \
-        -DLLAMA_CURL=ON \
-        -DCMAKE_CUDA_ARCHITECTURES="50;61;70;75;80;86;89;90;100;120" && \
-    cmake --build build --config Release -j$(nproc) --clean-first \
-        --target llama-server llama-cli llama-gguf-split && \
-    echo "Built llama.cpp version: $(./build/bin/llama-cli --version | head -1)"
+ARG SKIP_BUILD_FROM_SOURCE=false
+ARG LLAMACPP_VERSION=b7836
+
+RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
+        echo "Skipping build, downloading pre-built binaries version: ${LLAMACPP_VERSION}" && \
+        mkdir -p /build/llama.cpp/build/bin && \
+        curl -L -o llama.zip https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_VERSION}/llama-${LLAMACPP_VERSION}-bin-ubuntu-x64.zip && \
+        unzip llama.zip -d extracted_llama && \
+        # Move binaries from extracted folder (structure varies, usually bin/) \
+        find extracted_llama -name "llama-server" -exec cp {} /build/llama.cpp/build/bin/ \; && \
+        find extracted_llama -name "llama-cli" -exec cp {} /build/llama.cpp/build/bin/ \; && \
+        find extracted_llama -name "llama-gguf-split" -exec cp {} /build/llama.cpp/build/bin/ \; && \
+        rm -rf llama.zip extracted_llama; \
+    else \
+        git clone https://github.com/ggml-org/llama.cpp.git && \
+        cd llama.cpp && \
+        # Checkout specific version if needed, or master \
+        git checkout ${LLAMACPP_VERSION} || git checkout master && \
+        echo "Building llama.cpp version: $(git describe --tags --always)" && \
+        cmake . -B build \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_CUDA=ON \
+            -DLLAMA_CURL=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="80;86;89;90" && \
+        cmake --build build --config Release -j4 --clean-first \
+            --target llama-server llama-cli llama-gguf-split && \
+        echo "Built llama.cpp version: $(./build/bin/llama-cli --version | head -1)"; \
+    fi
 
 # Runtime stage
-FROM nvidia/cuda:12.9.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 

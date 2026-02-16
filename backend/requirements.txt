@@ -27,6 +27,10 @@ PyPDF2==3.0.1  # PDF text extraction
 PyMuPDF==1.24.0  # PDF image extraction
 EbookLib>=0.18   # EPUB text extraction
 
+# GraphRAG Knowledge Graph
+neo4j>=5.14.0
+rank-bm25>=0.2.2
+
 # Testing
 pytest==7.4.3
 pytest-asyncio==0.21.1

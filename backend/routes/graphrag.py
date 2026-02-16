@@ -1,7 +1,14 @@
 """
-GraphRAG External Service Proxy Routes
-These endpoints proxy requests to the external graphrag microservice
-which provides advanced knowledge graph features using Neo4j and GLiNER.
+GraphRAG Routes - Integrated Knowledge Graph Features
+
+This module provides knowledge graph-enhanced RAG capabilities:
+- Core: Semantic chunking, hybrid retrieval, knowledge graph queries
+- NER Service (opt-in): Entity extraction via GLiNER 
+- Rel Service (opt-in): Relationship extraction
+
+Start GPU services with profiles:
+  docker compose --profile graphrag-ner up -d
+  docker compose --profile graphrag-rel up -d
 """
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
@@ -14,29 +21,91 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/graphrag", tags=["graphrag"])
 
-# GraphRAG Service Configuration (external graphrag microservice)
-GRAPHRAG_URL = os.getenv("GRAPHRAG_URL", "http://graphrag-api-1:8000")
-GRAPHRAG_ENABLED = os.getenv("GRAPHRAG_ENABLED", "true").lower() == "true"
+# GraphRAG Configuration
+GRAPHRAG_ENABLED = os.getenv("GRAPHRAG_ENABLED", "false").lower() == "true"
+
+# Service URLs (None if not deployed)
+NER_API_URL = os.getenv("NER_API_URL") or None
+REL_API_URL = os.getenv("REL_API_URL") or None
+CODE_RAG_URL = os.getenv("CODE_RAG_URL") or None
+
+# Legacy external service support (deprecated)
+GRAPHRAG_URL = os.getenv("GRAPHRAG_URL") or None
 
 
 def check_graphrag_enabled():
     """Check if GraphRAG is enabled and raise exception if not."""
     if not GRAPHRAG_ENABLED:
-        raise HTTPException(status_code=503, detail="GraphRAG service is disabled")
+        raise HTTPException(status_code=503, detail="GraphRAG service is disabled. Set GRAPHRAG_ENABLED=true")
+
 
 
 @router.get("/health")
 async def graphrag_health():
-    """Check if external graphrag service is available."""
-    if not GRAPHRAG_ENABLED:
-        return {"status": "disabled", "message": "GraphRAG service is disabled"}
+    """Check GraphRAG system health and service availability."""
     
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{GRAPHRAG_URL}/health")
-            return response.json()
-    except Exception as e:
-        return {"status": "unavailable", "error": str(e), "url": GRAPHRAG_URL}
+    async def check_service(url: str | None, name: str) -> dict:
+        """Check if a service is available."""
+        if not url:
+            return {"status": "not_configured", "message": f"Set {name.upper()}_API_URL to enable"}
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{url}/health")
+                if response.status_code == 200:
+                    return {"status": "healthy", "url": url}
+                return {"status": "unhealthy", "url": url, "code": response.status_code}
+        except Exception as e:
+            return {"status": "unavailable", "url": url, "error": str(e)}
+    
+    result = {
+        "graphrag_enabled": GRAPHRAG_ENABLED,
+        "status": "healthy" if GRAPHRAG_ENABLED else "disabled",
+        "services": {}
+    }
+    
+    if GRAPHRAG_ENABLED:
+        # Check optional GPU services
+        result["services"]["ner"] = await check_service(NER_API_URL, "ner")
+        result["services"]["rel"] = await check_service(REL_API_URL, "rel")
+        result["services"]["code_rag"] = await check_service(CODE_RAG_URL, "code_rag")
+        
+        # Check legacy external service
+        if GRAPHRAG_URL:
+            result["services"]["legacy_external"] = await check_service(GRAPHRAG_URL, "graphrag")
+        
+        # Add deployment instructions for NOT_CONFIGURED services
+        result["deployment_hints"] = {
+            "ner": "docker compose --profile graphrag-ner up -d",
+            "rel": "docker compose --profile graphrag-rel up -d",
+            "code_rag": "docker compose --profile graphrag-code up -d"
+        }
+    
+    return result
+
+
+@router.get("/services/status")
+async def graphrag_services_status():
+    """Get detailed status of all GraphRAG services (for UI display)."""
+    return {
+        "ner": {
+            "enabled": NER_API_URL is not None,
+            "url": NER_API_URL,
+            "deploy_command": "docker compose --profile graphrag-ner up -d",
+            "description": "GLiNER-based entity extraction (GPU required)"
+        },
+        "rel": {
+            "enabled": REL_API_URL is not None,
+            "url": REL_API_URL,
+            "deploy_command": "docker compose --profile graphrag-rel up -d",
+            "description": "Relationship extraction (GPU required)"
+        },
+        "code_rag": {
+            "enabled": CODE_RAG_URL is not None,
+            "url": CODE_RAG_URL,
+            "deploy_command": "docker compose --profile graphrag-code up -d",
+            "description": "Code detection and search"
+        }
+    }
 
 
 @router.get("/stats")

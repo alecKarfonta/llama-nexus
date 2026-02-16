@@ -1,0 +1,15 @@
+gliner
+fastapi
+uvicorn
+python-multipart
+numpy
+spacy
+torch
+pandas
+transformers
+sentencepiece
+protobuf
+accelerate
+pydantic
+requests
+scikit-learn 

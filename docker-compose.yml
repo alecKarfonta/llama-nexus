@@ -24,7 +24,7 @@ services:
     image: redis:7-alpine
     container_name: llama-nexus-redis
     ports:
-      - "6379:6379"
+      - "6389:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -82,13 +82,15 @@ services:
       - HF_HOME=/root/.cache/huggingface
       - FINETUNE_DATASET_DIR=/data/finetune_datasets
       - FINETUNE_JOB_DIR=/data/finetune_jobs
-      # GraphRAG submodule integration (optional)
+      # GraphRAG integrated module (use with --profile graphrag)
       - GRAPHRAG_ENABLED=${GRAPHRAG_ENABLED:-false}
       - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
-      # Legacy: GraphRAG external service (deprecated, use submodule)
-      - GRAPHRAG_URL=${GRAPHRAG_URL:-}
+      # GraphRAG GPU services (opt-in, use respective profiles)
+      - NER_API_URL=${NER_API_URL:-}
+      - REL_API_URL=${REL_API_URL:-}
+      - CODE_RAG_URL=${CODE_RAG_URL:-}
       # Database paths for persistent storage
       - TOKEN_DB_PATH=/data/token_usage.db
       - CONVERSATION_DB_PATH=/data/conversations.db
@@ -143,6 +145,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: builder
+      args:
+        SKIP_BUILD_FROM_SOURCE: "false"
+        LLAMACPP_VERSION: "b4610"
     container_name: llamacpp-builder
     volumes:
       - llamacpp_bin:/output
@@ -533,6 +538,108 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # ========================================
+  # GraphRAG NER Service (GLiNER entity extraction)
+  # Opt-in: Start with docker compose --profile graphrag-ner up -d
+  # ========================================
+  graphrag-ner:
+    build:
+      context: ./services/ner_api
+      dockerfile: Dockerfile
+    container_name: llama-nexus-ner
+    profiles:
+      - graphrag-ner
+    ports:
+      - "8711:8001"
+    environment:
+      - HF_HOME=/app/.cache/huggingface
+      - TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers
+    volumes:
+      - ner_cache:/app/.cache
+      - ner_models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+  # ========================================
+  # GraphRAG Relationship Extraction Service
+  # Opt-in: Start with docker compose --profile graphrag-rel up -d
+  # ========================================
+  graphrag-rel:
+    build:
+      context: ./services/rel_api
+      dockerfile: Dockerfile
+    container_name: llama-nexus-rel
+    profiles:
+      - graphrag-rel
+    ports:
+      - "8712:8002"
+    environment:
+      - HF_HOME=/app/.cache/huggingface
+      - TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers
+    volumes:
+      - rel_cache:/app/.cache
+      - rel_models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+  # ========================================
+  # GraphRAG Code-RAG Service (code detection/search)
+  # Opt-in: Start with docker compose --profile graphrag-code up -d
+  # ========================================
+  graphrag-code:
+    build:
+      context: ./services/code_rag
+      dockerfile: Dockerfile
+    container_name: llama-nexus-code-rag
+    profiles:
+      - graphrag-code
+    ports:
+      - "8713:8000"
+    environment:
+      - HF_HOME=/app/.cache/huggingface
+      - GRAPHRAG_API_URL=http://backend-api:8700
+    volumes:
+      - code_rag_cache:/app/.cache
+      - code_rag_models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
 volumes:
   gpt_oss_models:
     driver: local
@@ -559,4 +666,17 @@ volumes:
   neo4j_data:
     driver: local
   neo4j_logs:
+    driver: local
+  # GraphRAG service volumes
+  ner_cache:
+    driver: local
+  ner_models:
+    driver: local
+  rel_cache:
+    driver: local
+  rel_models:
+    driver: local
+  code_rag_cache:
+    driver: local
+  code_rag_models:
     driver: local
