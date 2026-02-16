@@ -199,10 +199,15 @@ def calculate_kv_cache_vram(
     num_layers: int,
     num_heads: int,
     kv_heads: int,
-    batch_size: int = 1,
+    n_parallel: int = 1,
     kv_cache_type: str = 'f16',
 ) -> float:
-    """Calculate KV cache VRAM in MB."""
+    """Calculate KV cache VRAM in MB.
+    
+    Note: n_parallel is the number of concurrent inference slots (sequences),
+    NOT the token batch size (n_batch). Token batch size affects compute buffer
+    but does NOT multiply KV cache memory.
+    """
     # Head dimension is based on total attention heads, not KV heads
     head_dim = hidden_size // num_heads if num_heads > 0 else 128
     if head_dim <= 0:
@@ -216,8 +221,9 @@ def calculate_kv_cache_vram(
         'q4_0': 4,
     }.get(kv_cache_type.lower(), 16)
     
-    # KV cache size: 2 (K and V) * layers * context * kv_heads * head_dim * batch_size
-    kv_elements = 2 * num_layers * context_size * kv_heads * head_dim * batch_size
+    # KV cache size: 2 (K and V) * layers * context * kv_heads * head_dim * n_parallel
+    # n_parallel = concurrent sequences (slots), NOT token batch size
+    kv_elements = 2 * num_layers * context_size * kv_heads * head_dim * n_parallel
     kv_size_bits = kv_elements * kv_bits
     kv_size_mb = kv_size_bits / 8 / 1024 / 1024
     
@@ -227,14 +233,24 @@ def calculate_kv_cache_vram(
 def calculate_compute_buffer(
     context_size: int,
     hidden_size: int,
-    batch_size: int = 1,
+    batch_size: int = 512,
 ) -> float:
-    """Calculate compute buffer VRAM in MB."""
-    # Compute buffer is roughly proportional to context * hidden * batch
-    # This includes activation memory and intermediate buffers for attention
+    """Calculate compute buffer VRAM in MB.
+    
+    batch_size here is the token batch size (n_batch), which affects temporary
+    activation memory. We use sub-linear scaling (capped at 2x) since batch
+    processing reuses most buffers.
+    """
+    # Sub-linear batch scaling factor: large batches don't linearly increase
+    # compute buffer because most memory is reused across batch steps.
+    # Cap at 2x regardless of batch size.
+    import math
+    batch_factor = min(2.0, 1.0 + math.log2(max(batch_size, 1)) / 10.0)
+    
+    # Compute buffer is roughly proportional to context * hidden
     # Factor of 2 for intermediate computations (conservative estimate)
-    buffer_elements = context_size * hidden_size * batch_size * 2
-    buffer_mb = buffer_elements * 2 / 1024 / 1024  # 2 bytes per element (fp16)
+    buffer_elements = context_size * hidden_size * 2
+    buffer_mb = buffer_elements * 2 * batch_factor / 1024 / 1024  # 2 bytes per element (fp16)
     
     # Add some minimum buffer for small contexts
     return max(buffer_mb, 256)
@@ -318,7 +334,7 @@ def estimate_vram(
         num_layers=num_layers,
         num_heads=num_heads,
         kv_heads=kv_heads,
-        batch_size=batch_size,
+        n_parallel=1,  # Single deployment slot; batch_size is NOT a KV multiplier
         kv_cache_type=kv_cache_type,
     )
     
@@ -329,7 +345,7 @@ def estimate_vram(
     compute_buffer_mb = calculate_compute_buffer(
         context_size=context_size,
         hidden_size=hidden_size,
-        batch_size=batch_size,
+        batch_size=batch_size,  # Token batch size, scaled sub-linearly
     )
     
     # Add overhead (CUDA context, fragmentation, etc.)
