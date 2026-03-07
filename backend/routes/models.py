@@ -192,6 +192,103 @@ async def delete_local_model_file(file_path: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/{model_id:path}")
+async def delete_model(model_id: str):
+    """Delete a model and all its associated files (including multi-part GGUF splits).
+    
+    The model_id is URL-encoded and can be either:
+    - A name:variant composite key (e.g., "Qwen3-Coder-Next:Q6_K")
+    - A plain filename stem
+    """
+    from urllib.parse import unquote
+    model_id = unquote(model_id)
+    
+    try:
+        models_dir = Path("/home/llamacpp/models")
+        if not models_dir.exists():
+            raise HTTPException(status_code=404, detail="Models directory not found")
+        
+        # Parse model_id - could be "name:variant" or just a name
+        if ":" in model_id:
+            name, variant = model_id.rsplit(":", 1)
+        else:
+            name = model_id
+            variant = None
+        
+        # Find all matching files
+        deleted_files = []
+        total_size_freed = 0
+        
+        for entry in models_dir.rglob("*.gguf"):
+            if not entry.is_file():
+                continue
+            
+            filename = entry.name
+            # Check if this file belongs to the model we want to delete
+            # Match patterns like:
+            #   Name-Variant.gguf
+            #   Name-Variant-00001-of-00003.gguf
+            matches = False
+            if variant:
+                # Build expected prefixes
+                prefixes = [
+                    f"{name}-{variant}",   # Name-Q6_K.gguf or Name-Q6_K-00001-of-00003.gguf
+                    f"{name}_{variant}",   # Name_Q6_K.gguf
+                    f"{name}.{variant}",   # Name.Q6_K.gguf
+                ]
+                for prefix in prefixes:
+                    if filename.startswith(prefix):
+                        # Ensure it's an exact match (not a prefix of a longer name)
+                        remainder = filename[len(prefix):]
+                        if remainder == ".gguf" or remainder.startswith("-0000") or remainder == "":
+                            matches = True
+                            break
+            else:
+                # No variant specified - match by name only
+                if filename.startswith(name):
+                    matches = True
+            
+            if matches:
+                file_size = entry.stat().st_size
+                entry.unlink()
+                deleted_files.append(entry.name)
+                total_size_freed += file_size
+                logger.info(f"Deleted model file: {entry.name} ({file_size / (1024**3):.2f} GB)")
+        
+        # Also check for Transformers-style model directories
+        for config_file in models_dir.rglob("config.json"):
+            model_dir = config_file.parent
+            if model_dir.name == name:
+                import shutil
+                dir_size = sum(f.stat().st_size for f in model_dir.rglob("*") if f.is_file())
+                shutil.rmtree(model_dir)
+                deleted_files.append(f"{model_dir.name}/ (directory)")
+                total_size_freed += dir_size
+                logger.info(f"Deleted model directory: {model_dir.name} ({dir_size / (1024**3):.2f} GB)")
+        
+        if not deleted_files:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No files found for model '{model_id}'"
+            )
+        
+        logger.info(f"Deleted model {model_id}: {len(deleted_files)} files, {total_size_freed / (1024**3):.2f} GB freed")
+        return {
+            "success": True,
+            "data": {
+                "modelId": model_id,
+                "filesDeleted": deleted_files,
+                "sizeFreed": total_size_freed
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting model {model_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/repo-files")
 async def list_repo_files(repo_id: str, revision: str = "main"):
     """List available model files in a HuggingFace model repository."""

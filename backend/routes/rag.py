@@ -3011,3 +3011,341 @@ async def memory_list_collections(request: Request):
     
     return {"collections": collections_info}
 
+
+
+async def process_document_background(
+    request: Request,
+    document_id: str,
+    chunking_strategy: str = 'semantic',
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
+    embedding_model: Optional[str] = None
+):
+    """Background task to process a document."""
+    try:
+        # Get RAG components from app state
+        rag = {
+            'document_manager': request.app.state.document_manager,
+            'vector_store': request.app.state.vector_store,
+            'graph_rag': request.app.state.graph_rag,
+            'document_discovery': request.app.state.document_discovery
+        }
+        
+        from modules.rag.document_manager import DocumentStatus, DocumentType
+        
+        doc = await rag['document_manager'].get_document(document_id)
+        if not doc:
+            logger.error(f"Document {document_id} not found for processing")
+            return
+        
+        # Update status to processing
+        doc.status = DocumentStatus.PROCESSING
+        await rag['document_manager'].update_document(doc)
+        
+        # Get domain settings
+        domain = await rag['document_manager'].get_domain(doc.domain_id)
+        
+        # Check for GraphRAG options in metadata
+        graphrag_options = doc.metadata.get('graphrag_options', {})
+        use_semantic_chunking = graphrag_options.get('use_semantic_chunking', False)
+        build_knowledge_graph = graphrag_options.get('build_knowledge_graph', False)
+        
+        # Try to use GraphRAG semantic chunking if requested
+        graphrag_chunking_used = False
+        raw_chunks = None
+        
+        if use_semantic_chunking:
+            try:
+                from modules.graphrag_wrapper import is_graphrag_available, GraphRAGWrapper
+                if is_graphrag_available():
+                    logger.info(f"Using GraphRAG semantic chunking for document {document_id}")
+                    wrapper = GraphRAGWrapper()
+                    graphrag_chunks = wrapper.semantic_chunk(doc.content)
+                    
+                    # Convert GraphRAG chunks to our ChunkResult format
+                    from modules.rag.chunking import ChunkResult
+                    raw_chunks = []
+                    start_pos = 0
+                    for i, chunk_text in enumerate(graphrag_chunks):
+                        end_pos = start_pos + len(chunk_text)
+                        raw_chunks.append(ChunkResult(
+                            content=chunk_text,
+                            index=i,
+                            start_char=start_pos,
+                            end_char=end_pos
+                        ))
+                        start_pos = end_pos + 1  # +1 for separator
+                    graphrag_chunking_used = True
+                    logger.info(f"GraphRAG created {len(raw_chunks)} semantic chunks")
+                else:
+                    logger.warning("GraphRAG requested but submodule not available, falling back to standard chunking")
+            except Exception as e:
+                logger.warning(f"GraphRAG semantic chunking failed: {e}, falling back to standard chunking")
+        
+        # Fallback to standard chunking if GraphRAG not used
+        if raw_chunks is None:
+            config = ChunkingConfig(
+                chunk_size=chunk_size or (domain.chunk_size if domain else 512),
+                chunk_overlap=chunk_overlap or (domain.chunk_overlap if domain else 50)
+            )
+            
+            if chunking_strategy == 'fixed':
+                chunker = FixedChunker(config)
+            elif chunking_strategy == 'recursive':
+                chunker = RecursiveChunker(config)
+            else:
+                chunker = SemanticChunker(config)
+            
+            raw_chunks = chunker.chunk(doc.content)
+        
+        # Extract entities and build knowledge graph if requested
+        if build_knowledge_graph:
+            try:
+                from modules.graphrag_wrapper import is_graphrag_available, GraphRAGWrapper
+                if is_graphrag_available():
+                    neo4j_uri = os.getenv('NEO4J_URI')
+                    if neo4j_uri:
+                        logger.info(f"Extracting entities for document {document_id}")
+                        wrapper = GraphRAGWrapper(neo4j_uri=neo4j_uri)
+                        extraction = wrapper.extract_entities(doc.content, domain.name if domain else 'general')
+                        
+                        if extraction.entities:
+                            wrapper.build_knowledge_graph(
+                                extraction.entities, 
+                                extraction.relationships, 
+                                domain.name if domain else 'general'
+                            )
+                            logger.info(f"Added {len(extraction.entities)} entities to knowledge graph")
+                    else:
+                        logger.warning("NEO4J_URI not configured, skipping knowledge graph building")
+                else:
+                    logger.warning("GraphRAG submodule not available, skipping knowledge graph building")
+            except Exception as e:
+                logger.warning(f"Knowledge graph building failed (non-fatal): {e}")
+        
+        # Create embedder - use domain's configured model if not overridden
+        # KEY FIX: Use domain.embedding_model when embedding_model is None
+        model_name = embedding_model or (domain.embedding_model if domain else 'nomic-embed-text-v1.5')
+        logger.info(f"Using embedding model: {model_name} for document {document_id}")
+        embedder = create_embedder(model_name=model_name)
+        
+        # ==========================================
+        # VLM Visual Processing for PDF Documents
+        # ==========================================
+        visual_descriptions = []  # List of (page_num, image_path, description) tuples
+        
+        if doc.doc_type == DocumentType.PDF:
+            try:
+                from modules.rag.vlm_client import VLMClient, VLM_ENABLED
+                from routes.rag import extract_pdf_images
+                import os
+                
+                # Extract images from original PDF content
+                # Get the original content (may be base64 or raw PDF)
+                original_content = doc.metadata.get('original_pdf_content', doc.content)
+                if original_content.startswith('%PDF') or len(original_content) > 1000:
+                    extracted_images = extract_pdf_images(
+                        original_content,
+                        document_id,
+                        output_dir="data/rag/images"
+                    )
+                    
+                    if extracted_images:
+                        logger.info(f"Found {len(extracted_images)} images in PDF")
+                        
+                        # Try VLM if enabled
+                        vlm_available = False
+                        vlm_client = None
+                        if VLM_ENABLED:
+                            try:
+                                vlm_client = VLMClient()
+                                # Quick connectivity check could go here
+                                vlm_available = True
+                            except Exception as e:
+                                logger.warning(f"VLM client initialization failed: {e}")
+                        
+                        for page_num, image_path, image_type in extracted_images:
+                            description = None
+                            image_filename = os.path.basename(image_path)
+                            
+                            # Try VLM description first
+                            if vlm_available and vlm_client:
+                                try:
+                                    description = await vlm_client.describe_image(image_path)
+                                    if description:
+                                        logger.info(f"VLM described image from page {page_num}: {len(description)} chars")
+                                except Exception as e:
+                                    logger.warning(f"VLM failed for {image_path}: {e}")
+                                    description = None
+                            
+                            # Fallback: create placeholder with image filename reference
+                            if not description:
+                                description = (
+                                    f"[Visual content from page {page_num}] "
+                                    f"Image file: {image_filename}. "
+                                    f"Document: {doc.name}. "
+                                    f"This is an embedded graphic or chart that could not be automatically described. "
+                                    f"Image path: {image_path}"
+                                )
+                                logger.info(f"Using placeholder for image {image_filename} (page {page_num})")
+                            
+                            visual_descriptions.append((page_num, image_path, description))
+                        
+                        vlm_count = sum(1 for _, _, d in visual_descriptions if not d.startswith('[Visual content'))
+                        placeholder_count = len(visual_descriptions) - vlm_count
+                        logger.info(f"Processed {len(visual_descriptions)} images: {vlm_count} VLM described, {placeholder_count} placeholders")
+                        
+            except ImportError as e:
+                logger.warning(f"VLM/image processing unavailable: {e}")
+            except Exception as e:
+                logger.warning(f"Visual processing failed (continuing with text only): {e}")
+        
+        # Combine text chunks and visual descriptions for embedding
+        all_texts = [c.content for c in raw_chunks]
+        visual_texts = [desc for _, _, desc in visual_descriptions]
+        all_texts.extend(visual_texts)
+        
+        # Embed all chunks (text + visual descriptions)
+        logger.info(f"Embedding {len(all_texts)} items ({len(raw_chunks)} text chunks + {len(visual_descriptions)} visuals) for document {document_id}")
+        
+        # Process in smaller batches for large documents
+        batch_size = 4 if USE_DEPLOYED_EMBEDDINGS else 32
+        embed_result = await embedder.embed(all_texts, batch_size=batch_size, show_progress=False)
+        
+        # Ensure collection exists
+        collection_name = f"domain_{doc.domain_id}"
+        if not await rag['vector_store'].collection_exists(collection_name):
+            from modules.rag.vector_stores.base import CollectionConfig
+            collection_config = CollectionConfig(
+                name=collection_name,
+                vector_size=embed_result.dimensions
+            )
+            await rag['vector_store'].create_collection(collection_config)
+        
+        # Store in vector store and create chunks
+        from modules.rag.document_manager import DocumentChunk
+        from modules.rag.vector_stores.base import VectorRecord
+        
+        chunks = []
+        records = []
+        
+        total_chunks = len(raw_chunks) + len(visual_descriptions)
+        
+        # Process text chunks
+        for i, (chunk, embedding) in enumerate(zip(raw_chunks, embed_result.embeddings[:len(raw_chunks)])):
+            chunk_id = str(uuid.uuid4())
+            vector_id = str(uuid.uuid4())
+            
+            doc_chunk = DocumentChunk(
+                id=chunk_id,
+                document_id=document_id,
+                content=chunk.content,
+                chunk_index=chunk.index,
+                total_chunks=total_chunks,
+                start_char=chunk.start_char,
+                end_char=chunk.end_char,
+                token_count=len(chunk.content.split()),  # Approximate token count
+                chunk_type="text",
+                vector_id=vector_id,
+                metadata={
+                    "document_name": doc.name,
+                    "source_path": doc.source_path,
+                    "chunk_index": chunk.index,
+                    "total_chunks": total_chunks,
+                    **doc.metadata
+                }
+            )
+            chunks.append(doc_chunk)
+            
+            records.append(VectorRecord(
+                id=vector_id,
+                vector=embedding,
+                payload={
+                    'document_id': document_id,
+                    'domain_id': doc.domain_id,
+                    'content': chunk.content,
+                    'chunk_index': chunk.index,
+                    'chunk_id': chunk_id,
+                    'chunk_type': 'text',
+                    'document_name': doc.name,
+                    'source_path': doc.source_path,
+                    'metadata': doc.metadata
+                }
+            ))
+        
+        # Process visual chunks
+        for i, ((page_num, image_path, description), embedding) in enumerate(
+            zip(visual_descriptions, embed_result.embeddings[len(raw_chunks):])
+        ):
+            chunk_id = str(uuid.uuid4())
+            vector_id = str(uuid.uuid4())
+            chunk_index = len(raw_chunks) + i
+            
+            doc_chunk = DocumentChunk(
+                id=chunk_id,
+                document_id=document_id,
+                content=description,
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
+                start_char=0,
+                end_char=0,
+                token_count=len(description.split()),  # Approximate token count
+                page_number=page_num,
+                chunk_type="visual",
+                image_path=image_path,
+                vector_id=vector_id,
+                metadata={
+                    "document_name": doc.name,
+                    "source_path": doc.source_path,
+                    "chunk_index": chunk_index,
+                    "total_chunks": total_chunks,
+                    "page_number": page_num,
+                    **doc.metadata
+                }
+            )
+            chunks.append(doc_chunk)
+            
+            records.append(VectorRecord(
+                id=vector_id,
+                vector=embedding,
+                payload={
+                    'document_id': document_id,
+                    'domain_id': doc.domain_id,
+                    'content': description,
+                    'chunk_index': chunk_index,
+                    'chunk_id': chunk_id,
+                    'chunk_type': 'visual',
+                    'image_path': image_path,
+                    'page_number': page_num,
+                    'document_name': doc.name,
+                    'source_path': doc.source_path,
+                    'metadata': doc.metadata
+                }
+            ))
+        
+        # Save chunks to document manager
+        await rag['document_manager'].save_chunks(chunks)
+        
+        # Add to vector store
+        await rag['vector_store'].add_vectors(collection_name, records)
+        
+        # Update document status
+        doc.status = DocumentStatus.READY
+        doc.chunk_count = len(chunks)
+        doc.token_count = embed_result.token_count
+        doc.processed_at = datetime.utcnow().isoformat()
+        await rag['document_manager'].update_document(doc)
+        
+        logger.info(f"Successfully processed document {document_id}: {len(chunks)} chunks ({len(raw_chunks)} text + {len(visual_descriptions)} visual)")
+        
+    except Exception as e:
+        logger.error(f"Error processing document {document_id}: {e}")
+        # Update document status to error
+        try:
+            doc = await rag['document_manager'].get_document(document_id)
+            if doc:
+                doc.status = DocumentStatus.ERROR
+                doc.error_message = str(e)
+                await rag['document_manager'].update_document(doc)
+        except:
+            pass

@@ -69,7 +69,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
       const params = new URLSearchParams();
       if (search) params.append('search', search);
       params.append('limit', '50');
-      
+
       const response = await fetch(`${BACKEND_URL}/api/v1/conversations?${params}`);
       if (response.ok) {
         const data: ConversationListResponse = await response.json();
@@ -104,7 +104,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   // Handle delete conversation
   const handleDelete = async () => {
     if (!selectedItem) return;
-    
+
     try {
       const response = await fetch(`${BACKEND_URL}/api/v1/conversations/${selectedItem.id}`, {
         method: 'DELETE',
@@ -123,7 +123,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   // Handle archive conversation
   const handleArchive = async () => {
     if (!selectedItem) return;
-    
+
     try {
       const response = await fetch(`${BACKEND_URL}/api/v1/conversations/${selectedItem.id}`, {
         method: 'PUT',
@@ -143,7 +143,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   // Handle export conversation
   const handleExport = async (format: 'json' | 'markdown') => {
     if (!selectedItem) return;
-    
+
     try {
       const response = await fetch(
         `${BACKEND_URL}/api/v1/conversations/${selectedItem.id}/export?format=${format}`
@@ -170,7 +170,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
     const date = new Date(timestamp);
     const now = new Date();
     const diff = now.getTime() - date.getTime();
-    
+
     if (diff < 60000) return 'Just now';
     if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
     if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
@@ -197,7 +197,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
           <Typography variant="h6" sx={{ mb: 2 }}>
             Conversations
           </Typography>
-          
+
           {/* New conversation button */}
           <Button
             fullWidth
@@ -211,7 +211,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
           >
             New Conversation
           </Button>
-          
+
           {/* Search */}
           <TextField
             fullWidth
@@ -229,9 +229,9 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
             sx={{ mb: 2 }}
           />
         </Box>
-        
+
         <Divider />
-        
+
         {/* Conversation list */}
         <Box sx={{ flexGrow: 1, overflow: 'auto' }}>
           {loading ? (
@@ -245,63 +245,96 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
                 No conversations yet
               </Typography>
             </Box>
-          ) : (
-            <List disablePadding>
-              {conversations.map((conversation) => (
-                <ListItem
-                  key={conversation.id}
-                  disablePadding
-                  sx={{
-                    borderLeft: conversation.id === currentConversationId ? '3px solid' : 'none',
-                    borderColor: 'primary.main',
-                  }}
-                >
-                  <ListItemButton
-                    onClick={() => {
-                      onSelectConversation(conversation);
-                      onClose();
-                    }}
-                    selected={conversation.id === currentConversationId}
-                    sx={{ pr: 6 }}
-                  >
-                    <ListItemText
-                      primary={
-                        <Typography
-                          variant="body2"
-                          sx={{
-                            fontWeight: conversation.id === currentConversationId ? 600 : 400,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {conversation.title}
-                        </Typography>
-                      }
-                      secondary={
-                        <Box component="span" sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <Typography variant="caption" color="text.secondary">
-                            {conversation.message_count} messages
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            {formatTime(conversation.updated_at)}
-                          </Typography>
-                        </Box>
-                      }
-                    />
-                  </ListItemButton>
-                  <ListItemSecondaryAction>
-                    <IconButton
-                      size="small"
-                      onClick={(e) => handleMenuOpen(e, conversation)}
+          ) : (() => {
+            // Group conversations by date
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const yesterday = new Date(today.getTime() - 86400000);
+            const weekAgo = new Date(today.getTime() - 7 * 86400000);
+
+            const groups: { label: string; items: ConversationListItem[] }[] = [
+              { label: 'Today', items: [] },
+              { label: 'Yesterday', items: [] },
+              { label: 'This Week', items: [] },
+              { label: 'Older', items: [] },
+            ];
+
+            conversations.forEach((c) => {
+              const d = new Date(c.updated_at);
+              if (d >= today) groups[0].items.push(c);
+              else if (d >= yesterday) groups[1].items.push(c);
+              else if (d >= weekAgo) groups[2].items.push(c);
+              else groups[3].items.push(c);
+            });
+
+            return (
+              <List disablePadding>
+                {groups.filter(g => g.items.length > 0).map((group) => (
+                  <React.Fragment key={group.label}>
+                    <Typography
+                      variant="overline"
+                      sx={{ px: 2, pt: 1.5, pb: 0.5, display: 'block', color: 'text.secondary', fontSize: '0.65rem', letterSpacing: 1 }}
                     >
-                      <MoreIcon fontSize="small" />
-                    </IconButton>
-                  </ListItemSecondaryAction>
-                </ListItem>
-              ))}
-            </List>
-          )}
+                      {group.label}
+                    </Typography>
+                    {group.items.map((conversation) => (
+                      <ListItem
+                        key={conversation.id}
+                        disablePadding
+                        sx={{
+                          borderLeft: conversation.id === currentConversationId ? '3px solid' : 'none',
+                          borderColor: 'primary.main',
+                        }}
+                      >
+                        <ListItemButton
+                          onClick={() => {
+                            onSelectConversation(conversation);
+                            onClose();
+                          }}
+                          selected={conversation.id === currentConversationId}
+                          sx={{ pr: 6 }}
+                        >
+                          <ListItemText
+                            primary={
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  fontWeight: conversation.id === currentConversationId ? 600 : 400,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {conversation.title}
+                              </Typography>
+                            }
+                            secondary={
+                              <Box component="span" sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                                <Typography variant="caption" color="text.secondary">
+                                  {conversation.message_count} messages
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {formatTime(conversation.updated_at)}
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                        </ListItemButton>
+                        <ListItemSecondaryAction>
+                          <IconButton
+                            size="small"
+                            onClick={(e) => handleMenuOpen(e, conversation)}
+                          >
+                            <MoreIcon fontSize="small" />
+                          </IconButton>
+                        </ListItemSecondaryAction>
+                      </ListItem>
+                    ))}
+                  </React.Fragment>
+                ))}
+              </List>
+            );
+          })()}
         </Box>
       </Drawer>
 
