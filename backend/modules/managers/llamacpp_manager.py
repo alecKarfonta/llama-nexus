@@ -11,6 +11,7 @@ import httpx
 from collections import deque
 import re
 
+from fastapi import HTTPException
 from huggingface_hub import hf_hub_url, HfApi
 from enhanced_logger import enhanced_logger as logger
 from modules.managers.base import DOCKER_AVAILABLE, docker_client
@@ -72,6 +73,9 @@ class LlamaCPPManager:
                 "threads": int(os.getenv("THREADS", "-1")),
                 "batch_size": int(os.getenv("BATCH_SIZE", "2048")),
                 "ubatch_size": int(os.getenv("UBATCH_SIZE", "512")),
+            },
+            "speculative": {
+                # Empty by default — speculative decoding is disabled unless configured
             },
             "execution": {
                 "mode": os.getenv("EXECUTION_MODE", "gpu"),  # "gpu" or "cpu"
@@ -212,10 +216,25 @@ class LlamaCPPManager:
         add_param_if_set(cmd, "--dry-allowed-length", self.config["sampling"].get("dry_allowed_length"))
         add_param_if_set(cmd, "--dry-penalty-last-n", self.config["sampling"].get("dry_penalty_last_n"))
         
+        # Add advanced sampling parameters
+        add_param_if_set(cmd, "--top-n-sigma", self.config["sampling"].get("top_n_sigma"))
+        add_param_if_set(cmd, "--typical-p", self.config["sampling"].get("typical_p"))
+        add_param_if_set(cmd, "--xtc-probability", self.config["sampling"].get("xtc_probability"))
+        add_param_if_set(cmd, "--xtc-threshold", self.config["sampling"].get("xtc_threshold"))
+        add_param_if_set(cmd, "--mirostat", self.config["sampling"].get("mirostat"))
+        add_param_if_set(cmd, "--mirostat-lr", self.config["sampling"].get("mirostat_lr"))
+        add_param_if_set(cmd, "--mirostat-ent", self.config["sampling"].get("mirostat_ent"))
+        add_param_if_set(cmd, "--dynatemp-range", self.config["sampling"].get("dynatemp_range"))
+        add_param_if_set(cmd, "--dynatemp-exp", self.config["sampling"].get("dynatemp_exp"))
+        
         # Add optional server parameters
         add_param_if_set(cmd, "--timeout", self.config["server"].get("timeout"))
         add_param_if_set(cmd, "--system-prompt-file", self.config["server"].get("system_prompt_file"))
         add_param_if_set(cmd, "--log-format", self.config["server"].get("log_format"))
+        add_param_if_set(cmd, "--cache-reuse", self.config["server"].get("cache_reuse"))
+        add_param_if_set(cmd, "--reasoning-format", self.config["server"].get("reasoning_format"))
+        add_param_if_set(cmd, "--reasoning-budget", self.config["server"].get("reasoning_budget"))
+        add_param_if_set(cmd, "--sleep-idle-seconds", self.config["server"].get("sleep_idle_seconds"))
         
         # Add boolean flags only if they are explicitly set to True
         if self.config["server"].get("embedding"):
@@ -225,7 +244,7 @@ class LlamaCPPManager:
         if self.config["server"].get("log_disable"):
             cmd.append("--log-disable")
         if self.config["server"].get("slots_endpoint_disable"):
-            cmd.append("--slots-endpoint-disable")
+            cmd.append("--no-slots")
         if self.config["performance"].get("memory_f32"):
             cmd.append("--memory-f32")
         if self.config["performance"].get("mlock"):
@@ -235,8 +254,47 @@ class LlamaCPPManager:
         if self.config["performance"].get("continuous_batching"):
             cmd.append("--cont-batching")
         
+        # Prompt caching (tri-state: None=default, True=enabled, False=disabled)
+        cache_prompt = self.config["server"].get("cache_prompt")
+        if cache_prompt is True:
+            cmd.append("--cache-prompt")
+        elif cache_prompt is False:
+            cmd.append("--no-cache-prompt")
+        
+        # KV offload (tri-state)
+        kv_offload = self.config["model"].get("kv_offload")
+        if kv_offload is True:
+            cmd.append("--kv-offload")
+        elif kv_offload is False:
+            cmd.append("--no-kv-offload")
+        
+        # Jinja templates (only add if explicitly set; template-file logic below handles --jinja for custom templates)
+        jinja = self.config["server"].get("jinja")
+        if jinja is True:
+            cmd.append("--jinja")
+        elif jinja is False:
+            cmd.append("--no-jinja")
+        
         # Add NUMA parameter if set
         add_param_if_set(cmd, "--numa", self.config["performance"].get("numa"))
+        
+        # Add model-level performance parameters
+        add_param_if_set(cmd, "--defrag-thold", self.config["model"].get("defrag_thold"))
+        
+        # Flash attention (configurable: on/off/auto)
+        flash_attn = self.config["model"].get("flash_attn", "auto")
+        if flash_attn:
+            cmd.extend(["--flash-attn", str(flash_attn)])
+        
+        # Add speculative decoding parameters if section exists
+        if "speculative" in self.config:
+            spec = self.config["speculative"]
+            add_param_if_set(cmd, "--model-draft", spec.get("model_draft"))
+            add_param_if_set(cmd, "--gpu-layers-draft", spec.get("gpu_layers_draft"))
+            add_param_if_set(cmd, "--ctx-size-draft", spec.get("ctx_size_draft"))
+            add_param_if_set(cmd, "--draft-max", spec.get("draft_max"))
+            add_param_if_set(cmd, "--draft-min", spec.get("draft_min"))
+            add_param_if_set(cmd, "--draft-p-min", spec.get("draft_p_min"))
         
         # Add context extension parameters if set
         if "context_extension" in self.config:
@@ -249,15 +307,12 @@ class LlamaCPPManager:
         
         # Only add chat template file if one is selected (not empty)
         if self.config.get("template", {}).get("selected"):
+            # Always enable jinja when using a custom template file
+            if "--jinja" not in cmd and "--no-jinja" not in cmd:
+                cmd.append("--jinja")
             cmd.extend([
-                "--jinja",
                 "--chat-template-file", str(Path(self.config["template"]["directory"]) / self.config["template"]["selected"]),
             ])
-        
-        # Add default flags that are always enabled
-        cmd.extend([
-            "--flash-attn", "auto"
-        ])
         
         return cmd
     
@@ -891,11 +946,11 @@ class LlamaCPPManager:
             "mode": "docker" if self.use_docker else "subprocess",
             "config": self.config,
             "model": {
-                "name": self.config["model"]["name"],
-                "variant": self.config["model"]["variant"],
-                "context_size": self.config["model"]["context_size"],
-                "gpu_layers": self.config["model"]["gpu_layers"],
-                "n_cpu_moe": self.config["model"]["n_cpu_moe"],
+                "name": self.config.get("model", {}).get("name"),
+                "variant": self.config.get("model", {}).get("variant"),
+                "context_size": self.config.get("model", {}).get("context_size", 4096),
+                "gpu_layers": self.config.get("model", {}).get("gpu_layers", 999),
+                "n_cpu_moe": self.config.get("model", {}).get("n_cpu_moe", 0),
             }
         }
         

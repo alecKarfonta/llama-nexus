@@ -245,9 +245,12 @@ class ApiService {
     if (apiData && Array.isArray(apiData.data)) {
       // Transform the API response to match ModelInfo structure
       return apiData.data.map((model: any) => {
+        const name = model.name || '';
+        const variant = model.variant || 'unknown';
         return {
-          name: model.name || '',
-          variant: model.variant || 'unknown',
+          id: `${name}:${variant}`,
+          name,
+          variant,
           size: model.size || 0,
           status: model.status || 'available',
           downloadProgress: model.downloadProgress,
@@ -373,7 +376,7 @@ class ApiService {
   }
 
   async deleteModel(modelId: string | number): Promise<{ success: boolean; modelId: string | number; filesDeleted?: string[]; sizeFreed?: number }> {
-    const response = await this.backendClient.delete<ApiResponse<any>>(`/v1/models/${modelId}`);
+    const response = await this.backendClient.delete<ApiResponse<any>>(`/v1/models/${encodeURIComponent(String(modelId))}`);
     return response.data.data;
   }
 

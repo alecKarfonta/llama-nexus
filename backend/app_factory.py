@@ -34,6 +34,36 @@ try:
 except ImportError:
     rag = graphrag = workflows = None
 
+# Optional service routes (STT, TTS, etc.)
+try:
+    import routes.stt as stt
+except ImportError:
+    stt = None
+try:
+    import routes.tts as tts
+except ImportError:
+    tts = None
+try:
+    import routes.streaming_stt as streaming_stt
+except ImportError:
+    streaming_stt = None
+try:
+    import routes.finetuning as finetuning
+except ImportError:
+    finetuning = None
+try:
+    import routes.quantization as quantization
+except ImportError:
+    quantization = None
+try:
+    import routes.reddit as reddit
+except ImportError:
+    reddit = None
+try:
+    import routes.tools as tools
+except ImportError:
+    tools = None
+
 # Custom Logging Middleware
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -104,6 +134,20 @@ def create_app(lifespan_handler) -> FastAPI:
         app.include_router(graphrag.router)
     if workflows is not None:
         app.include_router(workflows.router)
+    if stt is not None:
+        app.include_router(stt.router)
+    if tts is not None:
+        app.include_router(tts.router)
+    if streaming_stt is not None:
+        app.include_router(streaming_stt.router)
+    if finetuning is not None:
+        app.include_router(finetuning.router)
+    if quantization is not None:
+        app.include_router(quantization.router)
+    if reddit is not None:
+        app.include_router(reddit.router)
+    if tools is not None:
+        app.include_router(tools.router)
 
     # Compatibility health check (moved from main.py)
     @app.get("/health")

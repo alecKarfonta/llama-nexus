@@ -7,11 +7,13 @@ from contextlib import asynccontextmanager
 from enhanced_logger import enhanced_logger as logger
 from app_state import (
     manager,
+    download_manager,
     embedding_manager,
     stt_manager,
     streaming_stt_manager,
     tts_manager,
-    create_embedder
+    create_embedder,
+    _merge_and_persist_config,
 )
 
 # Optional Imports (Same as original main.py)
@@ -209,6 +211,8 @@ async def lifespan(app: FastAPI):
     app.state.benchmark_runner = benchmark_runner
     app.state.batch_processor = batch_processor
     app.state.manager = manager
+    app.state.download_manager = download_manager
+    app.state.merge_and_persist_config = _merge_and_persist_config
     app.state.token_tracker = token_tracker
 
     # Initialize Reddit crawler scheduler

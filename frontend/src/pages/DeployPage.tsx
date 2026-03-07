@@ -21,6 +21,9 @@ import {
   IconButton,
   Tooltip,
   FormHelperText,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
 } from '@mui/material'
 import {
   PlayArrow as StartIcon,
@@ -30,6 +33,7 @@ import {
   Save as SaveIcon,
   CloudDownload as DownloadIcon,
   Refresh as ResetIcon,
+  ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material'
 import { apiService } from '@/services/api'
 import type { ModelInfo } from '@/types/api'
@@ -51,6 +55,9 @@ interface Config {
     rope_freq_base?: number;
     rope_freq_scale?: number;
     n_cpu_moe?: number;
+    flash_attn?: 'on' | 'off' | 'auto';
+    kv_offload?: boolean;
+    defrag_thold?: number;
   };
   sampling: {
     temperature: number;
@@ -65,6 +72,16 @@ interface Config {
     dry_base: number;
     dry_allowed_length: number;
     dry_penalty_last_n: number;
+    // Advanced sampling
+    top_n_sigma?: number;
+    typical_p?: number;
+    xtc_probability?: number;
+    xtc_threshold?: number;
+    mirostat?: number;
+    mirostat_lr?: number;
+    mirostat_ent?: number;
+    dynatemp_range?: number;
+    dynatemp_exp?: number;
   };
   performance: {
     threads: number;
@@ -84,6 +101,14 @@ interface Config {
     parallel_slots?: number;
     cache_type_k?: string;
     cache_type_v?: string;
+  };
+  speculative?: {
+    model_draft?: string;
+    gpu_layers_draft?: number;
+    ctx_size_draft?: number;
+    draft_max?: number;
+    draft_min?: number;
+    draft_p_min?: number;
   };
   execution?: {
     mode: 'gpu' | 'cpu';
@@ -108,6 +133,12 @@ interface Config {
     log_disable?: boolean;
     slots_endpoint_disable?: boolean;
     metrics?: boolean;
+    cache_prompt?: boolean;
+    cache_reuse?: number;
+    reasoning_format?: 'deepseek' | 'none';
+    reasoning_budget?: number;
+    jinja?: boolean;
+    sleep_idle_seconds?: number;
   };
 }
 
@@ -123,6 +154,9 @@ const DEFAULT_VALUES = {
     rope_freq_base: 0,
     rope_freq_scale: 0,
     n_cpu_moe: 0,
+    flash_attn: 'auto' as const,
+    kv_offload: undefined,
+    defrag_thold: undefined,
   },
   sampling: {
     temperature: 0.7,
@@ -137,6 +171,15 @@ const DEFAULT_VALUES = {
     dry_base: 2.0,
     dry_allowed_length: 1,
     dry_penalty_last_n: 1024,
+    top_n_sigma: undefined,
+    typical_p: undefined,
+    xtc_probability: undefined,
+    xtc_threshold: undefined,
+    mirostat: undefined,
+    mirostat_lr: undefined,
+    mirostat_ent: undefined,
+    dynatemp_range: undefined,
+    dynatemp_exp: undefined,
   },
   performance: {
     threads: -1,
@@ -156,6 +199,14 @@ const DEFAULT_VALUES = {
     parallel_slots: 1,
     cache_type_k: 'q4_0',
     cache_type_v: 'q4_0',
+  },
+  speculative: {
+    model_draft: '',
+    gpu_layers_draft: undefined,
+    ctx_size_draft: undefined,
+    draft_max: undefined,
+    draft_min: undefined,
+    draft_p_min: undefined,
   },
   execution: {
     mode: 'gpu' as const,
@@ -180,6 +231,12 @@ const DEFAULT_VALUES = {
     log_disable: false,
     slots_endpoint_disable: false,
     metrics: false,
+    cache_prompt: undefined,
+    cache_reuse: undefined,
+    reasoning_format: undefined,
+    reasoning_budget: undefined,
+    jinja: undefined,
+    sleep_idle_seconds: undefined,
   },
 };
 
@@ -611,11 +668,15 @@ export const DeployPage: React.FC = () => {
         const persistedSettings = loadDeploySettings()
         deployLog('init', 'Loaded persisted settings:', persistedSettings)
 
-        // Load available local models
-        deployLog('init', 'Fetching available models...')
-        const list = await apiService.getModels()
-        deployLog('init', 'Loaded models:', { count: list.length, models: list.map(m => `${m.name}/${m.variant}`) })
-        setModels(list)
+        // Load available local models (non-fatal - page should still work without model list)
+        try {
+          deployLog('init', 'Fetching available models...')
+          const list = await apiService.getModels()
+          deployLog('init', 'Loaded models:', { count: list.length, models: list.map(m => `${m.name}/${m.variant}`) })
+          setModels(list)
+        } catch (e) {
+          deployLog('init', 'Failed to fetch models (non-fatal):', e)
+        }
 
         // Load available GPUs
         try {
@@ -1037,7 +1098,7 @@ export const DeployPage: React.FC = () => {
                 deployLog('reset', 'ABORT: config is null')
                 return;
               }
-              const sections = ['model', 'sampling', 'performance', 'context_extension', 'server'];
+              const sections = ['model', 'sampling', 'performance', 'speculative', 'context_extension', 'server'];
               const resetConfig = JSON.parse(JSON.stringify(config));
 
               sections.forEach(section => {
@@ -1840,6 +1901,152 @@ export const DeployPage: React.FC = () => {
                   onReset={resetToDefault}
                 />
               </Grid>
+
+              <Grid item xs={12}>
+                <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600, mt: 2 }}>Attention & Memory</Typography>
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <ParameterField
+                  label="Flash Attention"
+                  description="Enable flash attention for faster inference and lower memory usage. 'auto' lets llama-server decide based on model compatibility. (--flash-attn)"
+                  path="model.flash_attn"
+                  value={config.model.flash_attn ?? ''}
+                  defaultValue={getDefaultValue('model.flash_attn')}
+                  type="select"
+                  options={[
+                    { value: 'auto', label: 'Auto (recommended)' },
+                    { value: 'on', label: 'On' },
+                    { value: 'off', label: 'Off' },
+                  ]}
+                  onChange={updateConfig}
+                  onReset={resetToDefault}
+                />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <ParameterField
+                  label="KV Offload"
+                  description="Offload KV cache to GPU. Disabling keeps KV cache on CPU, freeing GPU VRAM but slowing inference. (--kv-offload / --no-kv-offload)"
+                  path="model.kv_offload"
+                  value={config.model.kv_offload === undefined ? '' : config.model.kv_offload ? 'true' : 'false'}
+                  defaultValue={'true'}
+                  type="select"
+                  options={[
+                    { value: 'true', label: 'Enabled (GPU)' },
+                    { value: 'false', label: 'Disabled (CPU)' },
+                  ]}
+                  onChange={(path, value) => updateConfig(path, value === '' ? undefined : value === 'true')}
+                  onReset={resetToDefault}
+                />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <ParameterField
+                  label="Defrag Threshold"
+                  description="KV cache defragmentation threshold. When fragmentation exceeds this ratio (0.0-1.0), the cache is defragmented. Lower values trigger more frequent defrag. (--defrag-thold)"
+                  path="model.defrag_thold"
+                  value={config.model.defrag_thold ?? ''}
+                  defaultValue={getDefaultValue('model.defrag_thold')}
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  onChange={updateConfig}
+                  onReset={resetToDefault}
+                />
+              </Grid>
+
+              {/* Speculative Decoding - Collapsible */}
+              <Grid item xs={12}>
+                <Accordion
+                  disableGutters
+                  sx={{
+                    bgcolor: 'rgba(255,255,255,0.02)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: '4px !important',
+                    '&:before': { display: 'none' },
+                    boxShadow: 'none',
+                  }}
+                >
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Speculative Decoding</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ ml: 1, mt: 0.3 }}>(advanced)</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: '0.75rem' }}>
+                      Speculative decoding uses a smaller draft model to predict tokens, then verifies with the main model. This can dramatically speed up inference (2-3x) with no quality loss.
+                    </Typography>
+                    <Grid container spacing={2}>
+                      <Grid item xs={12} md={6}>
+                        <ParameterField
+                          label="Draft Model"
+                          description="Path to a smaller draft model for speculative decoding. Should be the same architecture as the main model. (--model-draft)"
+                          path="speculative.model_draft"
+                          value={config.speculative?.model_draft || ''}
+                          defaultValue={getDefaultValue('speculative.model_draft')}
+                          type="text"
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <ParameterField
+                          label="Draft GPU Layers"
+                          description="Number of layers to offload to GPU for the draft model. Use fewer than main model to save VRAM. (--gpu-layers-draft)"
+                          path="speculative.gpu_layers_draft"
+                          value={config.speculative?.gpu_layers_draft ?? ''}
+                          defaultValue={getDefaultValue('speculative.gpu_layers_draft')}
+                          type="number"
+                          min={-1}
+                          max={999}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Draft Context Size"
+                          description="Context size for the draft model. Can be smaller than the main model. (--ctx-size-draft)"
+                          path="speculative.ctx_size_draft"
+                          value={config.speculative?.ctx_size_draft ?? ''}
+                          defaultValue={getDefaultValue('speculative.ctx_size_draft')}
+                          type="number"
+                          min={128}
+                          max={131072}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Draft Max Tokens"
+                          description="Maximum number of tokens to draft before verification. Higher values are faster but may waste compute if rejected. (--draft-max)"
+                          path="speculative.draft_max"
+                          value={config.speculative?.draft_max ?? ''}
+                          defaultValue={getDefaultValue('speculative.draft_max')}
+                          type="number"
+                          min={1}
+                          max={64}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Draft Min Tokens"
+                          description="Minimum number of tokens to draft. Ensures at least this many tokens are drafted each cycle. (--draft-min)"
+                          path="speculative.draft_min"
+                          value={config.speculative?.draft_min ?? ''}
+                          defaultValue={getDefaultValue('speculative.draft_min')}
+                          type="number"
+                          min={0}
+                          max={64}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                    </Grid>
+                  </AccordionDetails>
+                </Accordion>
+              </Grid>
             </Grid>
           </CardContent>
         </Card>
@@ -2063,6 +2270,183 @@ export const DeployPage: React.FC = () => {
                   onChange={updateConfig}
                   onReset={resetToDefault}
                 />
+              </Grid>
+
+              {/* Advanced Sampling - Collapsible */}
+              <Grid item xs={12}>
+                <Accordion
+                  disableGutters
+                  sx={{
+                    bgcolor: 'rgba(255,255,255,0.02)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: '4px !important',
+                    '&:before': { display: 'none' },
+                    boxShadow: 'none',
+                  }}
+                >
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Advanced Sampling</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ ml: 1, mt: 0.3 }}>(mirostat, dynamic temperature, XTC)</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <Grid container spacing={3}>
+                      <Grid item xs={12}>
+                        <Typography variant="subtitle2" gutterBottom sx={{ fontSize: '0.8125rem', fontWeight: 600 }}>Mirostat Sampling</Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontSize: '0.75rem' }}>
+                          Mirostat is an adaptive sampling algorithm that maintains a target perplexity (surprise level), dynamically adjusting the sampling distribution.
+                        </Typography>
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Mirostat Mode"
+                          description="Mirostat sampling mode. 0 = disabled, 1 = Mirostat v1, 2 = Mirostat v2. When enabled, top_k/top_p/min_p are ignored. (--mirostat)"
+                          path="sampling.mirostat"
+                          value={config.sampling.mirostat ?? ''}
+                          defaultValue={getDefaultValue('sampling.mirostat')}
+                          type="select"
+                          options={[
+                            { value: '0', label: '0 - Disabled' },
+                            { value: '1', label: '1 - Mirostat v1' },
+                            { value: '2', label: '2 - Mirostat v2' },
+                          ]}
+                          onChange={(path, value) => updateConfig(path, value === '' ? undefined : parseInt(value))}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Mirostat Learning Rate"
+                          description="Mirostat learning rate (eta). Controls how quickly the algorithm adapts. Higher values = faster adaptation. (--mirostat-lr)"
+                          path="sampling.mirostat_lr"
+                          value={config.sampling.mirostat_lr ?? ''}
+                          defaultValue={getDefaultValue('sampling.mirostat_lr')}
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Mirostat Entropy"
+                          description="Mirostat target entropy (tau). The desired perplexity level. Lower = more focused, Higher = more creative. (--mirostat-ent)"
+                          path="sampling.mirostat_ent"
+                          value={config.sampling.mirostat_ent ?? ''}
+                          defaultValue={getDefaultValue('sampling.mirostat_ent')}
+                          type="number"
+                          min={0}
+                          max={10}
+                          step={0.1}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+
+                      <Grid item xs={12}>
+                        <Typography variant="subtitle2" gutterBottom sx={{ fontSize: '0.8125rem', fontWeight: 600, mt: 1 }}>Dynamic Temperature</Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontSize: '0.75rem' }}>
+                          Dynamically adjusts temperature within a range based on token entropy. Provides lower temperature for confident predictions and higher for uncertain ones.
+                        </Typography>
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <ParameterField
+                          label="Dynamic Temp Range"
+                          description="Range of dynamic temperature adjustments. 0 = disabled. When set, temperature varies from (temp - range) to (temp + range). (--dynatemp-range)"
+                          path="sampling.dynatemp_range"
+                          value={config.sampling.dynatemp_range ?? ''}
+                          defaultValue={getDefaultValue('sampling.dynatemp_range')}
+                          type="number"
+                          min={0}
+                          max={5}
+                          step={0.1}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <ParameterField
+                          label="Dynamic Temp Exponent"
+                          description="Exponent for dynamic temperature scaling. Controls the shape of the temperature curve. (--dynatemp-exp)"
+                          path="sampling.dynatemp_exp"
+                          value={config.sampling.dynatemp_exp ?? ''}
+                          defaultValue={getDefaultValue('sampling.dynatemp_exp')}
+                          type="number"
+                          min={0}
+                          max={5}
+                          step={0.1}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+
+                      <Grid item xs={12}>
+                        <Typography variant="subtitle2" gutterBottom sx={{ fontSize: '0.8125rem', fontWeight: 600, mt: 1 }}>Other Advanced Samplers</Typography>
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Top N-Sigma"
+                          description="Filters tokens based on statistical significance. Only tokens within N standard deviations of the mean logit are kept. 0 = disabled. (--top-n-sigma)"
+                          path="sampling.top_n_sigma"
+                          value={config.sampling.top_n_sigma ?? ''}
+                          defaultValue={getDefaultValue('sampling.top_n_sigma')}
+                          type="number"
+                          min={0}
+                          max={10}
+                          step={0.1}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Typical P"
+                          description="Locally typical sampling threshold. Filters tokens based on how typical they are given the context. 1.0 = disabled. (--typical-p)"
+                          path="sampling.typical_p"
+                          value={config.sampling.typical_p ?? ''}
+                          defaultValue={getDefaultValue('sampling.typical_p')}
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="XTC Probability"
+                          description="XTC (eXtreme Token Control) sampling probability. Probability of removing top tokens. 0 = disabled. (--xtc-probability)"
+                          path="sampling.xtc_probability"
+                          value={config.sampling.xtc_probability ?? ''}
+                          defaultValue={getDefaultValue('sampling.xtc_probability')}
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="XTC Threshold"
+                          description="XTC threshold for token removal. Tokens with probability above this threshold may be removed. (--xtc-threshold)"
+                          path="sampling.xtc_threshold"
+                          value={config.sampling.xtc_threshold ?? ''}
+                          defaultValue={getDefaultValue('sampling.xtc_threshold')}
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                    </Grid>
+                  </AccordionDetails>
+                </Accordion>
               </Grid>
             </Grid>
           </CardContent>
@@ -2923,6 +3307,117 @@ export const DeployPage: React.FC = () => {
                   <MenuItem value="false">Enabled (Default)</MenuItem>
                   <MenuItem value="true">Disabled</MenuItem>
                 </Select>
+              </Grid>
+
+              {/* Advanced Server Options - Collapsible */}
+              <Grid item xs={12}>
+                <Accordion
+                  disableGutters
+                  sx={{
+                    bgcolor: 'rgba(255,255,255,0.02)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: '4px !important',
+                    '&:before': { display: 'none' },
+                    boxShadow: 'none',
+                    mt: 2,
+                  }}
+                >
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Prompt Caching & Reasoning</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ ml: 1, mt: 0.3 }}>(advanced)</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <Grid container spacing={2}>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Prompt Caching"
+                          description="Cache processed prompts to speed up repeated or similar requests. Particularly effective for multi-turn conversations. (--cache-prompt / --no-cache-prompt)"
+                          path="server.cache_prompt"
+                          value={config.server.cache_prompt === undefined ? '' : config.server.cache_prompt ? 'true' : 'false'}
+                          defaultValue={'true'}
+                          type="select"
+                          options={[
+                            { value: 'true', label: 'Enabled' },
+                            { value: 'false', label: 'Disabled' },
+                          ]}
+                          onChange={(path, value) => updateConfig(path, value === '' ? undefined : value === 'true')}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Cache Reuse"
+                          description="Number of tokens from the cached prompt to reuse. Allows reusing cached computation for partially matching prompts. (--cache-reuse)"
+                          path="server.cache_reuse"
+                          value={config.server.cache_reuse ?? ''}
+                          defaultValue={getDefaultValue('server.cache_reuse')}
+                          type="number"
+                          min={0}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Sleep on Idle (seconds)"
+                          description="Automatically unload the model from VRAM after N seconds of inactivity. 0 = disabled. Useful for shared GPU environments. (--sleep-idle-seconds)"
+                          path="server.sleep_idle_seconds"
+                          value={config.server.sleep_idle_seconds ?? ''}
+                          defaultValue={getDefaultValue('server.sleep_idle_seconds')}
+                          type="number"
+                          min={0}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Reasoning Format"
+                          description="Format for extracting reasoning/thinking content from model output. 'deepseek' extracts <think> tags into reasoning_content. 'none' treats everything as content. (--reasoning-format)"
+                          path="server.reasoning_format"
+                          value={config.server.reasoning_format ?? ''}
+                          defaultValue={getDefaultValue('server.reasoning_format')}
+                          type="select"
+                          options={[
+                            { value: 'deepseek', label: 'DeepSeek (<think> tags)' },
+                            { value: 'none', label: 'None (no extraction)' },
+                          ]}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Reasoning Budget"
+                          description="Maximum number of thinking/reasoning tokens the model can generate. -1 = unlimited. (--reasoning-budget)"
+                          path="server.reasoning_budget"
+                          value={config.server.reasoning_budget ?? ''}
+                          defaultValue={getDefaultValue('server.reasoning_budget')}
+                          type="number"
+                          min={-1}
+                          onChange={updateConfig}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <ParameterField
+                          label="Jinja Templates"
+                          description="Enable Jinja template processing for chat templates. Required for advanced template features. Automatically enabled when a custom template file is selected. (--jinja / --no-jinja)"
+                          path="server.jinja"
+                          value={config.server.jinja === undefined ? '' : config.server.jinja ? 'true' : 'false'}
+                          defaultValue={'true'}
+                          type="select"
+                          options={[
+                            { value: 'true', label: 'Enabled' },
+                            { value: 'false', label: 'Disabled' },
+                          ]}
+                          onChange={(path, value) => updateConfig(path, value === '' ? undefined : value === 'true')}
+                          onReset={resetToDefault}
+                        />
+                      </Grid>
+                    </Grid>
+                  </AccordionDetails>
+                </Accordion>
               </Grid>
             </Grid>
           </CardContent>

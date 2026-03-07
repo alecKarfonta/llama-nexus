@@ -61,6 +61,7 @@ import {
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
   Tune as TuneIcon,
+  CallSplit as ForkIcon,
 } from '@mui/icons-material'
 import { useVoiceInput } from '@/hooks/useVoiceInput'
 import { useTTS } from '@/hooks/useTTS'
@@ -204,6 +205,10 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const [conversationTitle, setConversationTitle] = useState<string>('New Conversation')
   const [isSaving, setIsSaving] = useState(false)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const saveConversationRef = useRef<(() => Promise<void>) | null>(null)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [editTitleValue, setEditTitleValue] = useState('')
 
   // Context window tracking state
   const [tokenCount, setTokenCount] = useState({ prompt: 0, total: 0 })
@@ -460,6 +465,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     }
   }, [messages, conversationTitle, currentModelName, settings, currentConversationId]);
 
+  // Keep ref in sync for use in non-stale callbacks
+  useEffect(() => {
+    saveConversationRef.current = saveConversation;
+  }, [saveConversation]);
+
   // Load a conversation from the sidebar
   const handleSelectConversation = useCallback(async (conversation: ConversationListItem) => {
     try {
@@ -495,6 +505,57 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     setError(null);
   }, [currentModelName]);
 
+  // Save title to backend
+  const handleTitleSave = useCallback(async () => {
+    const trimmed = editTitleValue.trim();
+    if (!trimmed || trimmed === conversationTitle) {
+      setEditingTitle(false);
+      return;
+    }
+    setConversationTitle(trimmed);
+    setEditingTitle(false);
+    if (currentConversationId) {
+      try {
+        await apiService.updateConversation(currentConversationId, { title: trimmed });
+      } catch (err) {
+        console.error('Failed to update title:', err);
+      }
+    }
+  }, [editTitleValue, conversationTitle, currentConversationId]);
+
+  // Fork conversation from a specific message index
+  const handleForkConversation = useCallback(async (fromIndex: number) => {
+    try {
+      const forkedMessages = messages.slice(0, fromIndex + 1).map((msg: any) => ({
+        role: msg.role,
+        content: msg.content,
+        reasoning_content: msg.reasoning_content,
+        tool_calls: msg.tool_calls,
+        tool_call_id: msg.tool_call_id,
+      }));
+      const firstUserMsg = forkedMessages.find((m: any) => m.role === 'user');
+      let forkTitle = conversationTitle;
+      if (firstUserMsg && typeof firstUserMsg.content === 'string') {
+        forkTitle = firstUserMsg.content.slice(0, 40) + ' (fork)';
+      } else {
+        forkTitle = conversationTitle + ' (fork)';
+      }
+      const newConv = await apiService.createConversation({
+        title: forkTitle,
+        messages: forkedMessages,
+        model: currentModelName,
+      });
+      setCurrentConversationId(newConv.id);
+      setConversationTitle(forkTitle);
+      setMessages(forkedMessages);
+      setHasUnsavedChanges(false);
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 2000);
+    } catch (err) {
+      console.error('Failed to fork conversation:', err);
+    }
+  }, [messages, conversationTitle, currentModelName]);
+
   // Update token count when messages change
   useEffect(() => {
     const count = estimateTokenCount(messages);
@@ -516,6 +577,33 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   useEffect(() => {
     scrollToBottom()
   }, [messages])
+
+  // Restore most recent conversation on mount
+  useEffect(() => {
+    const restoreLastConversation = async () => {
+      try {
+        const result = await apiService.listConversations({ limit: 1 });
+        if (result.conversations && result.conversations.length > 0) {
+          const latest = result.conversations[0];
+          const fullConversation = await apiService.getConversation(latest.id);
+          setCurrentConversationId(fullConversation.id);
+          setConversationTitle(fullConversation.title);
+          setMessages(fullConversation.messages.map((msg: any) => ({
+            role: msg.role,
+            content: msg.content,
+            reasoning_content: msg.reasoning_content,
+            tool_calls: msg.tool_calls,
+            tool_call_id: msg.tool_call_id,
+          })));
+          setHasUnsavedChanges(false);
+        }
+      } catch (err) {
+        // Silently fail — just start with a fresh conversation
+        console.warn('No previous conversations to restore:', err);
+      }
+    };
+    restoreLastConversation();
+  }, []);
 
   // Fetch current model info on mount
   useEffect(() => {
@@ -819,6 +907,15 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       console.error('Chat error:', err)
     } finally {
       setIsLoading(false)
+      // Auto-save after each assistant reply
+      setTimeout(() => {
+        saveConversationRef.current?.()
+          .then(() => {
+            setSaveStatus('saved');
+            setTimeout(() => setSaveStatus('idle'), 2000);
+          })
+          .catch(() => setSaveStatus('error'));
+      }, 300);
     }
   }
 
@@ -1433,12 +1530,16 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   }, [hasUnsavedChanges, showSettings, tts.isPlaying])
 
   const clearChat = () => {
+    setCurrentConversationId(null);
+    setConversationTitle('New Conversation');
     setMessages([
       {
         role: 'assistant',
         content: `Hello! I'm your AI assistant powered by ${currentModelName}. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.`
       }
     ])
+    setHasUnsavedChanges(false);
+    setSaveStatus('idle');
     setError(null)
   }
 
@@ -1765,27 +1866,75 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             </IconButton>
           </Tooltip>
           <Box>
-            <Typography
-              variant="h1"
-              sx={{
-                fontWeight: 700,
-                color: 'text.primary',
-                mb: 0.5,
-                fontSize: { xs: '1.25rem', sm: '1.5rem' },
-                lineHeight: 1
-              }}
-            >
-              {conversationTitle}
-            </Typography>
-            <Typography
-              variant="body2"
-              color="text.secondary"
-              sx={{
-                fontSize: '0.8125rem',
-              }}
-            >
-              {currentModelName} | ~{tokenCount.prompt.toLocaleString()} tokens | Reasoning: {settings.reasoningLevel}
-            </Typography>
+            {editingTitle ? (
+              <TextField
+                autoFocus
+                value={editTitleValue}
+                onChange={(e) => setEditTitleValue(e.target.value)}
+                onBlur={handleTitleSave}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleTitleSave();
+                  if (e.key === 'Escape') setEditingTitle(false);
+                }}
+                variant="standard"
+                sx={{
+                  '& .MuiInput-input': {
+                    fontWeight: 700,
+                    fontSize: { xs: '1.25rem', sm: '1.5rem' },
+                    lineHeight: 1,
+                    p: 0,
+                  },
+                }}
+              />
+            ) : (
+              <Tooltip title="Click to rename" placement="bottom-start">
+                <Typography
+                  variant="h1"
+                  onClick={() => {
+                    setEditTitleValue(conversationTitle);
+                    setEditingTitle(true);
+                  }}
+                  sx={{
+                    fontWeight: 700,
+                    color: 'text.primary',
+                    mb: 0.5,
+                    fontSize: { xs: '1.25rem', sm: '1.5rem' },
+                    lineHeight: 1,
+                    cursor: 'pointer',
+                    '&:hover': { color: 'primary.main' },
+                  }}
+                >
+                  {conversationTitle}
+                </Typography>
+              </Tooltip>
+            )}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+              <Chip
+                icon={<BotIcon sx={{ fontSize: '0.875rem !important' }} />}
+                label={currentModelName}
+                size="small"
+                variant="outlined"
+                sx={{
+                  fontSize: '0.75rem',
+                  height: 22,
+                  borderColor: 'primary.main',
+                  color: 'primary.main',
+                  '& .MuiChip-icon': { color: 'primary.main' },
+                }}
+              />
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                ~{tokenCount.prompt.toLocaleString()} tokens
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                Reasoning: {settings.reasoningLevel}
+              </Typography>
+              {saveStatus === 'saving' && (
+                <Chip label="Saving..." size="small" sx={{ fontSize: '0.7rem', height: 20, bgcolor: 'action.hover' }} />
+              )}
+              {saveStatus === 'saved' && (
+                <Chip icon={<CheckIcon sx={{ fontSize: '0.8rem !important' }} />} label="Saved" size="small" color="success" variant="outlined" sx={{ fontSize: '0.7rem', height: 20 }} />
+              )}
+            </Box>
           </Box>
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -2828,6 +2977,14 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                         onClick={() => copyToClipboard(message.content)}
                       >
                         <CopyIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Fork from here">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleForkConversation(index)}
+                      >
+                        <ForkIcon fontSize="small" />
                       </IconButton>
                     </Tooltip>
                   </Box>
