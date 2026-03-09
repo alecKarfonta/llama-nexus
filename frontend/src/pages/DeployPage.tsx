@@ -990,6 +990,27 @@ export const DeployPage: React.FC = () => {
         return value === undefined ? null : value
       })) : null
 
+      // Ensure the current template selection is included in the config
+      // The template dropdown updates selectedTemplate state separately from config,
+      // so we must inject it here to avoid the stale default overwriting the user's choice
+      if (configForAction) {
+        if (!configForAction.template) {
+          configForAction.template = { directory: templatesDir || '/home/llamacpp/templates', selected: selectedTemplate }
+        } else {
+          configForAction.template.selected = selectedTemplate
+        }
+
+        // Explicitly null out optional model fields when not set, so the backend
+        // deep_merge clears any stale persisted values (e.g. mmproj from a previous VL model)
+        if (configForAction.model) {
+          if (!configForAction.model.mmproj) configForAction.model.mmproj = null
+          if (!configForAction.model.lora) configForAction.model.lora = null
+          if (!configForAction.model.lora_base) configForAction.model.lora_base = null
+        }
+
+        deployLog('action', 'Injected template selection into config', { selectedTemplate })
+      }
+
       deployLog('action', 'Sending action to backend', { action, config: configForAction?.model })
       await apiService.performServiceAction(action === 'stop' ? { action } : { action, config: configForAction as any })
       deployLog('action', 'Action completed successfully')
