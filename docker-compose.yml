@@ -84,6 +84,7 @@ services:
       - FINETUNE_JOB_DIR=/data/finetune_jobs
       # GraphRAG integrated module (use with --profile graphrag)
       - GRAPHRAG_ENABLED=${GRAPHRAG_ENABLED:-false}
+      - GRAPHRAG_URL=${GRAPHRAG_URL:-}
       - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
@@ -147,7 +148,7 @@ services:
       target: builder
       args:
         SKIP_BUILD_FROM_SOURCE: "false"
-        LLAMACPP_VERSION: "b4610"
+        LLAMACPP_VERSION: "b8250"
     container_name: llamacpp-builder
     volumes:
       - llamacpp_bin:/output
@@ -554,16 +555,10 @@ services:
     environment:
       - HF_HOME=/app/.cache/huggingface
       - TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers
+      - CUDA_VISIBLE_DEVICES=  # Force CPU-only mode
     volumes:
       - ner_cache:/app/.cache
       - ner_models:/app/models
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -588,16 +583,10 @@ services:
     environment:
       - HF_HOME=/app/.cache/huggingface
       - TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers
+      - CUDA_VISIBLE_DEVICES=  # Force CPU-only mode
     volumes:
       - rel_cache:/app/.cache
       - rel_models:/app/models
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
@@ -680,3 +669,9 @@ volumes:
     driver: local
   code_rag_models:
     driver: local
+
+# Explicitly name the default network so external stacks (e.g. graphrag)
+# can reference it to access shared services like llamacpp-embed
+networks:
+  default:
+    name: llama-nexus_default
