@@ -34,6 +34,10 @@ import {
   CloudDownload as DownloadIcon,
   Refresh as ResetIcon,
   ExpandMore as ExpandMoreIcon,
+  Visibility as VisionIcon,
+  VisibilityOff as VisionOffIcon,
+  Sync as RefreshIcon,
+  FileDownload as FileDownloadIcon,
 } from '@mui/icons-material'
 import { apiService } from '@/services/api'
 import type { ModelInfo } from '@/types/api'
@@ -583,6 +587,46 @@ export const DeployPage: React.FC = () => {
     size_mb: number
   }>>([])
   const [mmprojLoading, setMmprojLoading] = useState(false)
+  const [downloadMmprojDialogOpen, setDownloadMmprojDialogOpen] = useState(false)
+  const [mmprojAutoMatched, setMmprojAutoMatched] = useState(false)
+
+  // Refresh mmproj file list from backend
+  const refreshMmprojFiles = async () => {
+    setMmprojLoading(true)
+    try {
+      const mmRes = await fetch('/v1/models/mmproj-files')
+      if (mmRes.ok) {
+        const mmData = await mmRes.json()
+        if (mmData.success && mmData.data?.files) {
+          setMmprojFiles(mmData.data.files)
+        }
+      }
+    } catch (e) {
+      deployLog('mmproj', 'Failed to refresh mmproj files:', e)
+    } finally {
+      setMmprojLoading(false)
+    }
+  }
+
+  // Auto-match mmproj file to selected model name
+  const autoMatchMmproj = (modelName: string, currentMmprojFiles: typeof mmprojFiles) => {
+    if (!modelName || currentMmprojFiles.length === 0) return
+    // Normalize for comparison: lowercase, remove hyphens/underscores
+    const normalize = (s: string) => s.toLowerCase().replace(/[-_]/g, '')
+    const normalizedModel = normalize(modelName)
+    const match = currentMmprojFiles.find(f => {
+      const normalizedFile = normalize(f.name)
+      return normalizedFile.includes(normalizedModel)
+    })
+    if (match) {
+      deployLog('mmproj', `Auto-matched mmproj for ${modelName}: ${match.name}`)
+      setMmprojAutoMatched(true)
+      return match.name
+    } else {
+      setMmprojAutoMatched(false)
+      return null
+    }
+  }
 
   // Apply a parameter preset
   const applyPreset = (preset: ParameterPreset) => {
@@ -1290,7 +1334,42 @@ export const DeployPage: React.FC = () => {
         bgcolor: 'background.paper'
       }}>
         <CardHeader
-          title={<Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 600 }}>Currently Deployed</Typography>}
+          title={
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 600 }}>Currently Deployed</Typography>
+              {config?.model?.mmproj ? (
+                <Chip
+                  icon={<VisionIcon sx={{ fontSize: '0.875rem' }} />}
+                  label="Vision Ready"
+                  size="small"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.6875rem',
+                    height: '22px',
+                    bgcolor: 'rgba(76, 175, 80, 0.15)',
+                    color: '#66bb6a',
+                    border: '1px solid rgba(76, 175, 80, 0.3)',
+                    '& .MuiChip-icon': { color: '#66bb6a' }
+                  }}
+                />
+              ) : (
+                <Chip
+                  icon={<VisionOffIcon sx={{ fontSize: '0.875rem' }} />}
+                  label="Text Only"
+                  size="small"
+                  variant="outlined"
+                  sx={{
+                    fontWeight: 500,
+                    fontSize: '0.6875rem',
+                    height: '22px',
+                    borderColor: 'rgba(255, 255, 255, 0.2)',
+                    color: 'text.secondary',
+                    '& .MuiChip-icon': { color: 'text.secondary' }
+                  }}
+                />
+              )}
+            </Box>
+          }
           subheader={<Typography variant="body2" sx={{ fontSize: '0.8125rem', color: 'text.secondary' }}>
             {currentModel ? `${currentModel.name} • ${currentModel.variant} • ${currentModel.status}` : 'No model information available'}
           </Typography>}
@@ -1345,12 +1424,21 @@ export const DeployPage: React.FC = () => {
                     deployLog('modelSelect', 'ABORT: config is null')
                     return;
                   }
-
-                  const nextConfig = JSON.parse(JSON.stringify(config))
+                  // Atomic update: set both name and variant in one setConfig call
+                  const nextConfig = { ...config }
+                  nextConfig.model = { ...nextConfig.model }
                   nextConfig.model.name = newName
                   nextConfig.model.variant = nextVariant
 
-                  console.log('📝 Calling setConfig with atomic update:', { name: newName, variant: nextVariant })
+                  // Auto-match mmproj file for the new model
+                  const matchedMmproj = autoMatchMmproj(newName, mmprojFiles)
+                  if (matchedMmproj) {
+                    nextConfig.model.mmproj = matchedMmproj
+                  } else {
+                    nextConfig.model.mmproj = ''
+                  }
+
+                  console.log('📝 Calling setConfig with atomic update:', { name: newName, variant: nextVariant, mmproj: nextConfig.model.mmproj })
                   setConfig(nextConfig)
 
                   // Save to localStorage for persistence
@@ -1846,24 +1934,168 @@ export const DeployPage: React.FC = () => {
                   onReset={resetToDefault}
                 />
               </Grid>
-              <Grid item xs={12} md={6}>
-                <ParameterField
-                  label="Multimodal Projector"
-                  description="Path to multimodal projector file for LLaVA models. Required for vision-language models that can process both text and images."
-                  path="model.mmproj"
-                  value={config.model.mmproj || ''}
-                  defaultValue={getDefaultValue('model.mmproj')}
-                  type="select"
-                  options={[
-                    ...mmprojFiles.map(f => ({
-                      value: f.name,
-                      label: `${f.name} (${f.size_mb} MB)`
-                    }))
-                  ]}
-                  onChange={updateConfig}
-                  onReset={resetToDefault}
-                />
+              {/* Vision / Multimodal Projector Section */}
+              <Grid item xs={12}>
+                <Box sx={{
+                  p: 2,
+                  bgcolor: config.model.mmproj ? 'rgba(76, 175, 80, 0.04)' : 'rgba(255,255,255,0.02)',
+                  borderRadius: 1,
+                  border: config.model.mmproj
+                    ? '1px solid rgba(76, 175, 80, 0.2)'
+                    : '1px solid rgba(255,255,255,0.1)',
+                  transition: 'all 0.2s ease'
+                }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      {config.model.mmproj ? (
+                        <VisionIcon sx={{ fontSize: '1.1rem', color: '#66bb6a' }} />
+                      ) : (
+                        <VisionOffIcon sx={{ fontSize: '1.1rem', color: 'text.secondary' }} />
+                      )}
+                      <Typography variant="subtitle2" sx={{ fontSize: '0.875rem', fontWeight: 600 }}>
+                        Vision / Multimodal Projector
+                      </Typography>
+                      {config.model.mmproj ? (
+                        <Chip
+                          label="Active"
+                          size="small"
+                          sx={{
+                            fontWeight: 600,
+                            fontSize: '0.625rem',
+                            height: '18px',
+                            bgcolor: 'rgba(76, 175, 80, 0.15)',
+                            color: '#66bb6a',
+                            border: '1px solid rgba(76, 175, 80, 0.3)',
+                          }}
+                        />
+                      ) : (
+                        <Chip
+                          label="Disabled"
+                          size="small"
+                          variant="outlined"
+                          sx={{
+                            fontWeight: 500,
+                            fontSize: '0.625rem',
+                            height: '18px',
+                            borderColor: 'rgba(255, 255, 255, 0.15)',
+                            color: 'text.secondary',
+                          }}
+                        />
+                      )}
+                    </Box>
+                    <Box sx={{ display: 'flex', gap: 0.5 }}>
+                      <Tooltip title="Refresh mmproj file list">
+                        <IconButton
+                          size="small"
+                          onClick={refreshMmprojFiles}
+                          disabled={mmprojLoading}
+                          sx={{ opacity: mmprojLoading ? 0.5 : 1 }}
+                        >
+                          {mmprojLoading ? <CircularProgress size={16} /> : <RefreshIcon fontSize="small" />}
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="Download mmproj from HuggingFace">
+                        <IconButton
+                          size="small"
+                          onClick={() => setDownloadMmprojDialogOpen(true)}
+                        >
+                          <FileDownloadIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    </Box>
+                  </Box>
+
+                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem', mb: 1.5 }}>
+                    Multimodal projector files enable vision capabilities, allowing the model to understand images and video alongside text.
+                    Select a projector file that matches your model, or download one from the model's HuggingFace repository.
+                  </Typography>
+
+                  {mmprojAutoMatched && config.model.mmproj && (
+                    <Alert severity="info" sx={{ mb: 1.5, py: 0, fontSize: '0.75rem' }}>
+                      Auto-matched projector file for this model
+                    </Alert>
+                  )}
+
+                  <Select
+                    fullWidth
+                    value={config.model.mmproj || ''}
+                    onChange={(e) => {
+                      const value = e.target.value === '' ? undefined : e.target.value
+                      updateConfig('model.mmproj', value)
+                      setMmprojAutoMatched(false)
+                    }}
+                    displayEmpty
+                    sx={{
+                      fontSize: '0.875rem',
+                      '& .MuiOutlinedInput-root': {
+                        borderRadius: 1,
+                        backgroundColor: 'background.default',
+                      }
+                    }}
+                  >
+                    <MenuItem value="">
+                      <em>None — text-only mode</em>
+                    </MenuItem>
+                    {mmprojFiles.map(f => (
+                      <MenuItem key={f.name} value={f.name}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
+                          <Typography sx={{ fontSize: '0.875rem' }}>{f.name}</Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ ml: 2 }}>
+                            {f.size_mb} MB
+                          </Typography>
+                        </Box>
+                      </MenuItem>
+                    ))}
+                  </Select>
+
+                  {mmprojFiles.length === 0 && !mmprojLoading && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                      No projector files found. Download one using the button above, or place mmproj GGUF files in the models directory.
+                    </Typography>
+                  )}
+                </Box>
               </Grid>
+
+              {/* Download mmproj Dialog */}
+              {downloadMmprojDialogOpen && (
+                <Grid item xs={12}>
+                  <Box sx={{
+                    p: 2,
+                    bgcolor: 'rgba(33, 150, 243, 0.04)',
+                    borderRadius: 1,
+                    border: '1px solid rgba(33, 150, 243, 0.2)',
+                  }}>
+                    <Typography variant="subtitle2" sx={{ fontSize: '0.875rem', fontWeight: 600, mb: 1 }}>
+                      Download Vision Projector
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem', mb: 1.5 }}>
+                      Download the mmproj file from the same HuggingFace repository as your model.
+                      Look for files starting with "mmproj-" in the repo's file list.
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 1 }}>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        startIcon={<DownloadIcon />}
+                        onClick={() => {
+                          setDownloadMmprojDialogOpen(false)
+                          window.location.assign('/models')
+                        }}
+                        sx={{ textTransform: 'none', fontSize: '0.8125rem' }}
+                      >
+                        Go to Models Page to Download
+                      </Button>
+                      <Button
+                        size="small"
+                        onClick={() => setDownloadMmprojDialogOpen(false)}
+                        sx={{ textTransform: 'none', fontSize: '0.8125rem' }}
+                      >
+                        Cancel
+                      </Button>
+                    </Box>
+                  </Box>
+                </Grid>
+              )}
               <Grid item xs={12} md={6}>
                 <ParameterField
                   label="RoPE Scaling Method"
