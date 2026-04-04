@@ -1,0 +1,7 @@
+======================================================================
+TURBOQUANT+ BENCHMARK
+======================================================================
+
+Skipping Qwen3.5-35B-A3B-MoE: /home/alec/local_llms/models/Qwen3.5-35B-A3B-Q8_0.gguf not found
+
+Skipping Qwopus-v2-27B: /home/alec/local_llms/models/Qwen3.5-27B.Q8_0.gguf not found

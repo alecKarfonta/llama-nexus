@@ -63,6 +63,10 @@ try:
     import routes.tools as tools
 except ImportError:
     tools = None
+try:
+    import routes.profiles as profiles
+except ImportError:
+    profiles = None
 
 # Custom Logging Middleware
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -148,6 +152,8 @@ def create_app(lifespan_handler) -> FastAPI:
         app.include_router(reddit.router)
     if tools is not None:
         app.include_router(tools.router)
+    if profiles is not None:
+        app.include_router(profiles.router)
 
     # Compatibility health check (moved from main.py)
     @app.get("/health")

@@ -215,6 +215,16 @@ async def lifespan(app: FastAPI):
     app.state.merge_and_persist_config = _merge_and_persist_config
     app.state.token_tracker = token_tracker
 
+    # Initialize deploy profiles
+    try:
+        from modules.deploy_profiles import DeployProfileStore
+        profile_db_path = os.getenv("PROFILE_DB_PATH", "data/deploy_profiles.db")
+        app.state.profile_store = DeployProfileStore(profile_db_path)
+        logger.info("Deploy profile store initialized")
+    except Exception as e:
+        logger.warning(f"Deploy profiles not available: {e}")
+        app.state.profile_store = None
+
     # Initialize Reddit crawler scheduler
     try:
         from modules.finetuning.reddit_scheduler import get_reddit_scheduler

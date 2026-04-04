@@ -103,8 +103,8 @@ interface Config {
     main_gpu?: number;
     continuous_batching?: boolean;
     parallel_slots?: number;
-    cache_type_k?: string;
-    cache_type_v?: string;
+    cache_type_k?: 'f16' | 'q8_0' | 'q4_0' | 'turbo4' | 'turbo3';
+    cache_type_v?: 'f16' | 'q8_0' | 'q4_0' | 'turbo4' | 'turbo3';
   };
   speculative?: {
     model_draft?: string;
@@ -2855,6 +2855,47 @@ export const DeployPage: React.FC = () => {
                   }}
                 />
               </Grid>
+              <Grid item xs={12} md={3}>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>Cache Type K</Typography>
+                </Box>
+                <Select
+                  fullWidth
+                  value={config.performance.cache_type_k || 'q4_0'}
+                  onChange={(e) => updateConfig('performance.cache_type_k', e.target.value)}
+                  sx={{ fontSize: '0.875rem', '& .MuiOutlinedInput-root': { borderRadius: 1 } }}
+                >
+                  <MenuItem value="f16">F16 (High Quality)</MenuItem>
+                  <MenuItem value="q8_0">Q8_0 (8-bit)</MenuItem>
+                  <MenuItem value="q4_0">Q4_0 (4-bit, Default)</MenuItem>
+                  <MenuItem value="turbo4">Turbo4 (4.25-bit TBQ)</MenuItem>
+                  <MenuItem value="turbo3">Turbo3 (3.25-bit TBQ)</MenuItem>
+                </Select>
+                <FormHelperText sx={{ mt: 0.5, fontSize: '0.75rem', color: 'text.secondary' }}>
+                  KV cache data type for K (--cache-type-k)
+                </FormHelperText>
+              </Grid>
+              <Grid item xs={12} md={3}>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>Cache Type V</Typography>
+                </Box>
+                <Select
+                  fullWidth
+                  value={config.performance.cache_type_v || 'q4_0'}
+                  onChange={(e) => updateConfig('performance.cache_type_v', e.target.value)}
+                  sx={{ fontSize: '0.875rem', '& .MuiOutlinedInput-root': { borderRadius: 1 } }}
+                >
+                  <MenuItem value="f16">F16 (High Quality)</MenuItem>
+                  <MenuItem value="q8_0">Q8_0 (8-bit)</MenuItem>
+                  <MenuItem value="q4_0">Q4_0 (4-bit, Default)</MenuItem>
+                  <MenuItem value="turbo4">Turbo4 (4.25-bit TBQ)</MenuItem>
+                  <MenuItem value="turbo3">Turbo3 (3.25-bit TBQ)</MenuItem>
+                </Select>
+                <FormHelperText sx={{ mt: 0.5, fontSize: '0.75rem', color: 'text.secondary' }}>
+                  KV cache data type for V (--cache-type-v)
+                </FormHelperText>
+              </Grid>
+
               <Grid item xs={12} md={3}>
                 <TextField
                   label="Parallel Slots"

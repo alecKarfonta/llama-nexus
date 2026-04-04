@@ -464,6 +464,46 @@ class ApiService {
     await this.client.post('/v1/service/action', request);
   }
 
+  // Deploy Profile APIs
+  async getProfiles(): Promise<any[]> {
+    const response = await this.backendClient.get('/api/v1/profiles');
+    return response.data?.profiles || [];
+  }
+
+  async getProfile(profileId: string): Promise<any> {
+    const response = await this.backendClient.get(`/api/v1/profiles/${profileId}`);
+    return response.data;
+  }
+
+  async saveProfile(data: { name: string; config?: any; tags?: string[]; description?: string }): Promise<any> {
+    const response = await this.backendClient.post('/api/v1/profiles', data);
+    return response.data;
+  }
+
+  async updateProfile(profileId: string, data: { name?: string; config?: any; tags?: string[]; description?: string }): Promise<any> {
+    const response = await this.backendClient.put(`/api/v1/profiles/${profileId}`, data);
+    return response.data;
+  }
+
+  async deleteProfile(profileId: string): Promise<void> {
+    await this.backendClient.delete(`/api/v1/profiles/${profileId}`);
+  }
+
+  async loadProfile(profileId: string): Promise<any> {
+    const response = await this.backendClient.post(`/api/v1/profiles/${profileId}/load`);
+    return response.data;
+  }
+
+  async deployProfile(profileId: string): Promise<any> {
+    const response = await this.backendClient.post(`/api/v1/profiles/${profileId}/deploy`);
+    return response.data;
+  }
+
+  async saveCurrentAsProfile(data: { name: string; tags?: string[]; description?: string }): Promise<any> {
+    const response = await this.backendClient.post('/api/v1/profiles/from-current', data);
+    return response.data;
+  }
+
   // Resource Monitoring APIs
   async getResourceMetrics(): Promise<ResourceMetrics> {
     try {

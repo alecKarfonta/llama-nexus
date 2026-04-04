@@ -36,10 +36,10 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         find extracted_llama -name "llama-gguf-split" -exec cp {} /build/llama.cpp/build/bin/ \; && \
         rm -rf llama.zip extracted_llama; \
     else \
-        git clone https://github.com/ggml-org/llama.cpp.git && \
+        git clone https://github.com/spiritbuun/llama-cpp-turboquant-cuda.git llama.cpp && \
         cd llama.cpp && \
         # Checkout specific version if needed, or master \
-        git checkout ${LLAMACPP_VERSION} || git checkout master && \
+        git checkout feature/turboquant-kv-cache && \
         echo "Building llama.cpp version: $(git describe --tags --always)" && \
         cmake . -B build \
             -DBUILD_SHARED_LIBS=OFF \
