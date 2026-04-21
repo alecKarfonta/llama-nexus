@@ -1064,6 +1064,7 @@ async def upload_rag_document(request: Request, background_tasks: BackgroundTask
     chunk_size = int(form.get('chunk_size', 512))
     chunk_overlap = int(form.get('chunk_overlap', 50))
     domain_id = form.get('domain_id')
+    build_knowledge_graph = str(form.get('build_knowledge_graph', 'false')).lower() in ('true', '1', 'yes')
     
     # If no domain_id provided, get default/first domain
     if not domain_id:
@@ -1132,7 +1133,7 @@ async def upload_rag_document(request: Request, background_tasks: BackgroundTask
     
     result = await rag['document_manager'].create_document(doc)
     
-    # Auto-process
+    # Auto-process (chunk + embed)
     process_func = getattr(request.app.state, 'process_document_background', None)
     if process_func:
         background_tasks.add_task(
@@ -1145,7 +1146,22 @@ async def upload_rag_document(request: Request, background_tasks: BackgroundTask
         )
         logger.info(f"Queued uploaded document {result.id} for background processing")
     
-    return {"success": True, "document": result.to_dict(), "message": f"Uploaded {filename}"}
+    # Auto-extract to Knowledge Graph if requested and GraphRAG is enabled
+    if build_knowledge_graph and GRAPHRAG_ENABLED and GRAPHRAG_URL:
+        background_tasks.add_task(
+            _auto_extract_knowledge,
+            result.id,
+            domain_id or 'general',
+            rag['document_manager']
+        )
+        logger.info(f"Queued document {result.id} for KG extraction")
+    
+    return {
+        "success": True,
+        "document": result.to_dict(),
+        "message": f"Uploaded {filename}",
+        "kg_extraction_queued": build_knowledge_graph and GRAPHRAG_ENABLED
+    }
 
 
 @router.get("/documents/{document_id}")
@@ -1452,6 +1468,107 @@ async def add_document_to_vector_store(request: Request, document_id: str):
         "vectors_added": len(records),
         "collection": collection_name
     }
+
+
+async def _auto_extract_knowledge(document_id: str, domain: str, document_manager):
+    """
+    Background task: wait for doc processing to complete, then extract to KG.
+    
+    This runs as a background task after upload. It polls until the document
+    is processed (chunked + embedded), then forwards the content to GraphRAG
+    for entity extraction and knowledge graph building.
+    """
+    import httpx
+    import asyncio
+    import tempfile
+    import os as temp_os
+    from modules.rag.document_manager import DocumentStatus
+    
+    # Wait for document processing to complete (poll every 2s, max 5 min)
+    max_wait = 300
+    waited = 0
+    while waited < max_wait:
+        doc = await document_manager.get_document(document_id)
+        if not doc:
+            logger.error(f"KG extraction: document {document_id} not found")
+            return
+        if doc.status == DocumentStatus.PROCESSED:
+            break
+        if doc.status == DocumentStatus.ERROR:
+            logger.warning(f"KG extraction: document {document_id} failed processing, skipping KG")
+            return
+        await asyncio.sleep(2)
+        waited += 2
+    
+    if waited >= max_wait:
+        logger.warning(f"KG extraction: timed out waiting for document {document_id} to process")
+        return
+    
+    # Document is processed — extract to KG
+    doc = await document_manager.get_document(document_id)
+    if not doc or not doc.content or len(doc.content.strip()) < 10:
+        logger.warning(f"KG extraction: document {document_id} has no content")
+        return
+    
+    # Update metadata to show KG extraction is in progress
+    metadata = doc.metadata or {}
+    metadata['kg_status'] = 'extracting'
+    doc.metadata = metadata
+    try:
+        await document_manager.update_document(doc)
+    except Exception:
+        pass
+    
+    try:
+        # Create temp file with document content
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as tmp:
+            tmp.write(doc.content)
+            tmp_path = tmp.name
+        
+        upload_name = doc.name
+        if not upload_name.endswith('.txt'):
+            upload_name = upload_name.rsplit('.', 1)[0] + '.txt'
+        
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                with open(tmp_path, 'rb') as f:
+                    files = {'files': (upload_name, f, 'text/plain')}
+                    response = await client.post(
+                        f"{GRAPHRAG_URL}/ingest-documents",
+                        files=files,
+                        timeout=300.0
+                    )
+                response.raise_for_status()
+                result = response.json()
+                
+                doc_result = result.get("results", {}).get(upload_name, {})
+                entity_count = doc_result.get("entities", 0)
+                rel_count = doc_result.get("relationships", 0)
+                
+                # Store KG extraction results in document metadata
+                metadata['kg_status'] = 'extracted'
+                metadata['kg_entities'] = entity_count
+                metadata['kg_relationships'] = rel_count
+                metadata['kg_domain'] = domain
+                doc.metadata = metadata
+                await document_manager.update_document(doc)
+                
+                logger.info(
+                    f"KG extraction complete for {doc.name}: "
+                    f"{entity_count} entities, {rel_count} relationships"
+                )
+        finally:
+            temp_os.unlink(tmp_path)
+            
+    except Exception as e:
+        logger.error(f"KG extraction failed for {doc.name}: {e}")
+        metadata['kg_status'] = 'error'
+        metadata['kg_error'] = str(e)[:200]
+        doc.metadata = metadata
+        try:
+            await document_manager.update_document(doc)
+        except Exception:
+            pass
 
 
 @router.post("/documents/{document_id}/extract-knowledge")
@@ -3056,29 +3173,35 @@ async def process_document_background(
         
         if use_semantic_chunking:
             try:
-                from modules.graphrag_wrapper import is_graphrag_available, GraphRAGWrapper
-                if is_graphrag_available():
+                import httpx
+                graphrag_url = os.getenv("GRAPHRAG_URL")
+                if graphrag_url:
                     logger.info(f"Using GraphRAG semantic chunking for document {document_id}")
-                    wrapper = GraphRAGWrapper()
-                    graphrag_chunks = wrapper.semantic_chunk(doc.content)
-                    
-                    # Convert GraphRAG chunks to our ChunkResult format
-                    from modules.rag.chunking import ChunkResult
-                    raw_chunks = []
-                    start_pos = 0
-                    for i, chunk_text in enumerate(graphrag_chunks):
-                        end_pos = start_pos + len(chunk_text)
-                        raw_chunks.append(ChunkResult(
-                            content=chunk_text,
-                            index=i,
-                            start_char=start_pos,
-                            end_char=end_pos
-                        ))
-                        start_pos = end_pos + 1  # +1 for separator
-                    graphrag_chunking_used = True
-                    logger.info(f"GraphRAG created {len(raw_chunks)} semantic chunks")
+                    async with httpx.AsyncClient(timeout=60.0) as http_client:
+                        resp = await http_client.post(
+                            f"{graphrag_url}/chunk",
+                            json={"text": doc.content, "method": "semantic"},
+                        )
+                    if resp.status_code == 200:
+                        chunk_texts = resp.json().get("chunks", [])
+                        from modules.rag.chunking import ChunkResult
+                        raw_chunks = []
+                        start_pos = 0
+                        for i, chunk_text in enumerate(chunk_texts):
+                            end_pos = start_pos + len(chunk_text)
+                            raw_chunks.append(ChunkResult(
+                                content=chunk_text,
+                                index=i,
+                                start_char=start_pos,
+                                end_char=end_pos
+                            ))
+                            start_pos = end_pos + 1
+                        graphrag_chunking_used = True
+                        logger.info(f"GraphRAG created {len(raw_chunks)} semantic chunks")
+                    else:
+                        logger.warning(f"GraphRAG chunking returned {resp.status_code}, falling back")
                 else:
-                    logger.warning("GraphRAG requested but submodule not available, falling back to standard chunking")
+                    logger.warning("GRAPHRAG_URL not configured, falling back to standard chunking")
             except Exception as e:
                 logger.warning(f"GraphRAG semantic chunking failed: {e}, falling back to standard chunking")
         
@@ -3101,25 +3224,24 @@ async def process_document_background(
         # Extract entities and build knowledge graph if requested
         if build_knowledge_graph:
             try:
-                from modules.graphrag_wrapper import is_graphrag_available, GraphRAGWrapper
-                if is_graphrag_available():
-                    neo4j_uri = os.getenv('NEO4J_URI')
-                    if neo4j_uri:
-                        logger.info(f"Extracting entities for document {document_id}")
-                        wrapper = GraphRAGWrapper(neo4j_uri=neo4j_uri)
-                        extraction = wrapper.extract_entities(doc.content, domain.name if domain else 'general')
-                        
-                        if extraction.entities:
-                            wrapper.build_knowledge_graph(
-                                extraction.entities, 
-                                extraction.relationships, 
-                                domain.name if domain else 'general'
-                            )
-                            logger.info(f"Added {len(extraction.entities)} entities to knowledge graph")
+                import httpx
+                import tempfile
+                graphrag_url = os.getenv("GRAPHRAG_URL")
+                if graphrag_url:
+                    logger.info(f"Extracting entities for document {document_id}")
+                    upload_name = doc.name if doc.name.endswith('.txt') else doc.name.rsplit('.', 1)[0] + '.txt'
+                    async with httpx.AsyncClient(timeout=300.0) as http_client:
+                        resp = await http_client.post(
+                            f"{graphrag_url}/ingest-documents",
+                            files={"files": (upload_name, doc.content.encode(), "text/plain")},
+                        )
+                    if resp.status_code == 200:
+                        result = resp.json().get("results", {}).get(upload_name, {})
+                        logger.info(f"Added {result.get('entities', 0)} entities to knowledge graph")
                     else:
-                        logger.warning("NEO4J_URI not configured, skipping knowledge graph building")
+                        logger.warning(f"GraphRAG ingestion returned {resp.status_code}")
                 else:
-                    logger.warning("GraphRAG submodule not available, skipping knowledge graph building")
+                    logger.warning("GRAPHRAG_URL not configured, skipping knowledge graph building")
             except Exception as e:
                 logger.warning(f"Knowledge graph building failed (non-fatal): {e}")
         

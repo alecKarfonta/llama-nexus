@@ -7,7 +7,7 @@ import re
 class SemanticChunker:
     """Intelligent text chunking using semantic similarity."""
     
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "nomic-embed-text-v1.5"):
         """Initialize with a sentence transformer model."""
         self.model = SentenceTransformer(model_name)
         self.min_chunk_size = 100

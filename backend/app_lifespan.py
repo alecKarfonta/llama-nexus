@@ -239,3 +239,10 @@ async def lifespan(app: FastAPI):
     if RAG_AVAILABLE and hasattr(app.state, 'vector_store') and app.state.vector_store:
         await app.state.vector_store.disconnect()
 
+    # Cleanup GraphRAG shared HTTP client
+    try:
+        from routes.graphrag.helpers import close_http_client
+        await close_http_client()
+    except Exception:
+        pass
+

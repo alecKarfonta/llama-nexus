@@ -6,7 +6,7 @@ import numpy as np
 
 class EntityResolver:
     """Resolves and deduplicates entities using semantic similarity, fuzzy matching, and LLM-based disambiguation."""
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2", fuzzy_threshold: int = 85, semantic_threshold: float = 0.85):
+    def __init__(self, model_name: str = "nomic-embed-text-v1.5", fuzzy_threshold: int = 85, semantic_threshold: float = 0.85):
         self.model = SentenceTransformer(model_name)
         self.fuzzy_threshold = fuzzy_threshold
         self.semantic_threshold = semantic_threshold

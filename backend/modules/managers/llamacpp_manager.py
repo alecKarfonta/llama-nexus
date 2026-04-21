@@ -87,6 +87,7 @@ class LlamaCPPManager:
                 "api_key": os.getenv("API_KEY", "placeholder-api-key"),
                 "metrics": True,
                 "embedding": False,  # Disabled by default - causes crashes with some models
+                "reasoning_budget": 0,  # Disable thinking by default - prevents thinking models from burning entire token budget on reasoning
             }
         }
     

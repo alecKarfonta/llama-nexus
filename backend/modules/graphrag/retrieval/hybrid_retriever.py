@@ -63,12 +63,12 @@ class HybridRetriever:
         """Initialize the hybrid retriever."""
         self.qdrant_client = QdrantClient(url=qdrant_url)
         self.collection_name = collection_name
-        self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.embedding_model = SentenceTransformer("nomic-embed-text-v1.5")
         
         # Initialize contextual embedder if available
         if CONTEXTUAL_EMBEDDINGS_AVAILABLE:
             self.contextual_embedder = ContextualEmbedder(
-                model_name="all-MiniLM-L6-v2",
+                model_name="nomic-embed-text-v1.5",
                 context_window_size=200,
                 max_context_length=512
             )

@@ -69,7 +69,7 @@ class ContextualEmbedder:
     """Advanced embedder that generates contextual embeddings with document-specific context."""
     
     def __init__(self, 
-                 model_name: str = "all-MiniLM-L6-v2",
+                 model_name: str = "nomic-embed-text-v1.5",
                  context_window_size: int = 200,
                  max_context_length: int = 512):
         """

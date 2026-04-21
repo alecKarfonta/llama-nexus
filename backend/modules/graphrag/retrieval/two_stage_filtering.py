@@ -80,7 +80,7 @@ class TwoStageFilter:
     
     def __init__(
         self,
-        embedding_model: str = "all-MiniLM-L6-v2",
+        embedding_model: str = "nomic-embed-text-v1.5",
         relevance_threshold: float = 0.1,
         quality_threshold: float = 0.2,
         confidence_threshold: float = 0.3,
