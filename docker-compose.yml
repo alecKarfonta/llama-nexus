@@ -44,10 +44,10 @@ services:
     ports:
       - "8700:8700" # Management API port
     environment:
-      # Default LlamaCPP configuration - Qwen3-VL-4B-Thinking
-      - MODEL_NAME=Qwen_Qwen3-VL-4B-Thinking
-      - MODEL_VARIANT=Q4_K_M
-      - MODEL_REPO=bartowski/Qwen_Qwen3-VL-4B-Thinking-GGUF
+      # Default LlamaCPP model configuration (override in .env)
+      - MODEL_NAME=${MODEL_NAME:-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive}
+      - MODEL_VARIANT=${MODEL_VARIANT:-Q6_K}
+      - MODEL_REPO=${MODEL_REPO:-}
       # MMPROJ_FILE should be set via UI when deploying multimodal models
       # - MMPROJ_FILE=mmproj-Qwen_Qwen3-VL-4B-Thinking-f16.gguf
       # Host path for chat templates so backend can mount it into the managed container
@@ -182,10 +182,10 @@ services:
       # CUDA optimizations - use '0' for single GPU or '0,1' for multiple
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
-      # Model configuration - Qwen3-VL-4B-Thinking (Vision-Language with Reasoning)
-      - MODEL_NAME=Qwen_Qwen3-VL-4B-Thinking
-      - MODEL_VARIANT=Q4_K_M
-      - MODEL_REPO=bartowski/Qwen_Qwen3-VL-4B-Thinking-GGUF
+      # Model configuration (override in .env)
+      - MODEL_NAME=${MODEL_NAME:-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive}
+      - MODEL_VARIANT=${MODEL_VARIANT:-Q6_K}
+      - MODEL_REPO=${MODEL_REPO:-}
       # MMPROJ_FILE should be set for VL models only
       # - MMPROJ_FILE=mmproj-Qwen_Qwen3-VL-4B-Thinking-f16.gguf
       - CONTEXT_SIZE=40960
@@ -304,7 +304,7 @@ services:
       - MODEL_VARIANT=Q8_0
       - MODEL_REPO=nomic-ai/nomic-embed-text-v1.5-GGUF
       - MODEL_FILE=nomic-embed-text-v1.5.Q8_0.gguf
-      - CONTEXT_SIZE=2048
+      - CONTEXT_SIZE=8192
       - GPU_LAYERS=999
       - HOST=0.0.0.0
       - PORT=8080
