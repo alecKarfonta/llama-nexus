@@ -67,7 +67,7 @@ import { useVoiceInput } from '@/hooks/useVoiceInput'
 import { useTTS } from '@/hooks/useTTS'
 import { apiService } from '@/services/api'
 import { ToolsService, ExtendedTool } from '@/services/tools'
-import { MarkdownRenderer, RAGSettingsPanel, RAGContextBlock, RAGChunk } from '@/components/chat'
+import { MarkdownRenderer, RAGSettingsPanel, RAGContextBlock, RAGChunk, GraphContextBlock, EntityExplorer, ConversationEntities, UnifiedContextBlock, UnifiedChunk, QualitySignals, RetrievalFeedbackBar } from '@/components/chat'
 import { ConversationSidebar } from '@/components/chat/ConversationSidebar'
 import type { ChatMessage, ChatCompletionRequest, Tool, ToolCall, ConversationListItem } from '@/types/api'
 
@@ -109,6 +109,8 @@ interface ChatSettings {
   ragSelectedDomains: string[]  // domain IDs when mode is 'domains'
   ragTopK: number               // number of chunks to retrieve
   ragShowContext: boolean       // show retrieved context in UI
+  // GraphRAG settings
+  graphEnabled: boolean         // augment with knowledge graph context
 }
 
 interface PerformanceMetrics {
@@ -157,6 +159,8 @@ const defaultSettings: ChatSettings = {
   ragSelectedDomains: [],
   ragTopK: 5,
   ragShowContext: true,
+  // GraphRAG settings
+  graphEnabled: false,
 }
 
 const initialPerformanceMetrics: PerformanceMetrics = {
@@ -245,6 +249,23 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   // RAG context state
   const [ragContext, setRagContext] = useState<RAGChunk[]>([])
   const [ragLoading, setRagLoading] = useState(false)
+
+  // Graph context state
+  const [graphEntities, setGraphEntities] = useState<any[]>([])
+  const [graphRelationships, setGraphRelationships] = useState<any[]>([])
+  const [graphLoading, setGraphLoading] = useState(false)
+
+  // Unified context state (when both RAG + Graph are enabled)
+  const [unifiedChunks, setUnifiedChunks] = useState<UnifiedChunk[]>([])
+  const [unifiedLoading, setUnifiedLoading] = useState(false)
+  const [unifiedCrossRefs, setUnifiedCrossRefs] = useState<any[]>([])
+  const [unifiedQuality, setUnifiedQuality] = useState<QualitySignals | null>(null)
+  const [unifiedGraphConnections, setUnifiedGraphConnections] = useState<string[]>([])
+
+  // Entity explorer state
+  const [explorerAnchorEl, setExplorerAnchorEl] = useState<HTMLElement | null>(null)
+  const [explorerEntity, setExplorerEntity] = useState({ name: '', type: '' })
+  const [conversationEntities, setConversationEntities] = useState<Array<{ name: string; type: string }>>([])
 
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -759,6 +780,116 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         setRagContext([])
       }
 
+      // Fetch graph context if enabled
+      let graphContextText = ''
+      if (settings.graphEnabled) {
+        setGraphLoading(true)
+        try {
+          const queryText = typeof messageContent === 'string'
+            ? messageContent
+            : (messageContent.find((p: any) => p.type === 'text')?.text || '')
+
+          if (queryText) {
+            // ── Unified mode: use /chat-context-v2 when BOTH RAG + Graph are enabled ──
+            if (settings.ragEnabled) {
+              setUnifiedLoading(true)
+              try {
+                const unifiedResponse = await fetch('/api/v1/graphrag/chat-context-v2', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    query: queryText,
+                    top_k: settings.ragTopK,
+                    rag_enabled: true,
+                    rag_domains: settings.ragSelectedDomains,
+                    rag_search_mode: settings.ragSearchMode || 'domain',
+                  }),
+                })
+
+                if (unifiedResponse.ok) {
+                  const uData = await unifiedResponse.json()
+                  // Populate unified state
+                  setUnifiedChunks(uData.chunks || [])
+                  setUnifiedCrossRefs(uData.cross_references || [])
+                  setUnifiedQuality(uData.quality_signals || null)
+                  setUnifiedGraphConnections(uData.graph_connections || [])
+                  // Also populate the individual states so old components work
+                  setGraphEntities(uData.entities || [])
+                  setGraphRelationships(uData.relationships || [])
+                  setRagContext((uData.chunks || []).map((c: any) => ({
+                    id: c.id,
+                    content: c.content,
+                    score: c.score,
+                    document_id: c.document_id,
+                    document_title: c.document_title,
+                    chunk_index: c.chunk_index,
+                    metadata: c.metadata,
+                  })))
+                  // Accumulate entities for conversation sidebar
+                  if (uData.entities?.length > 0) {
+                    setConversationEntities((prev: any[]) => {
+                      const existing = new Set(prev.map((e: { name: string }) => e.name.toLowerCase()))
+                      const newEntities = uData.entities.filter(
+                        (e: { name: string }) => !existing.has(e.name.toLowerCase())
+                      )
+                      return [...prev, ...newEntities]
+                    })
+                  }
+                  // Use the unified context text
+                  graphContextText = uData.context_text || ''
+                  // Clear individual ragContextText since unified has everything
+                  ragContextText = ''
+                }
+              } catch (unifiedError) {
+                console.warn('Unified context failed, falling back to separate fetches:', unifiedError)
+                // Fall through to the normal graph fetch below
+              } finally {
+                setUnifiedLoading(false)
+              }
+            }
+
+            // If unified mode didn't produce results, fall back to old graph context
+            if (!graphContextText) {
+              const graphResponse = await fetch('/api/v1/graphrag/chat-context', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  query: queryText,
+                  top_k: settings.ragTopK,
+                }),
+              })
+
+              if (graphResponse.ok) {
+                const graphData = await graphResponse.json()
+                setGraphEntities(graphData.entities || [])
+                setGraphRelationships(graphData.relationships || [])
+                if (graphData.entities?.length > 0) {
+                  setConversationEntities((prev: any[]) => {
+                    const existing = new Set(prev.map((e: { name: string }) => e.name.toLowerCase()))
+                    const newEntities = graphData.entities.filter(
+                      (e: { name: string }) => !existing.has(e.name.toLowerCase())
+                    )
+                    return [...prev, ...newEntities]
+                  })
+                }
+                graphContextText = graphData.context_text || ''
+              }
+            }
+          }
+        } catch (graphError) {
+          console.warn('Graph context retrieval failed:', graphError)
+        } finally {
+          setGraphLoading(false)
+        }
+      } else {
+        setGraphEntities([])
+        setGraphRelationships([])
+        setUnifiedChunks([])
+        setUnifiedCrossRefs([])
+        setUnifiedQuality(null)
+        setUnifiedGraphConnections([])
+      }
+
       // Filter out UI-only messages and prepare messages for LLM
       // This is critical: UI messages like "✅ Tool executed:" break the chat template
       const cleanedMessages = [...messages, userMessage]
@@ -790,8 +921,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       // Prepare messages with reasoning level system prompt if needed
       let requestMessages = cleanedMessages
 
-      // Add or update system message with reasoning level and RAG context
-      const baseSystemContent = `You are a helpful AI assistant.${ragContextText}`
+      // Add or update system message with reasoning level, RAG context, and graph context
+      const allContextText = ragContextText + graphContextText
+      const baseSystemContent = `You are a helpful AI assistant.${allContextText}`
       if (settings.reasoningLevel !== 'none') {
         const systemMessage = {
           role: 'system' as const,
@@ -1224,13 +1356,53 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             setPerformanceMetrics({ ...performanceRef.current })
           }
 
-          // Handle reasoning/thinking content (for models like DeepSeek R1, QwQ)
+          // Handle reasoning/thinking content (for models like DeepSeek R1, QwQ, Qwen3)
           if (value.choices?.[0]?.delta?.reasoning_content) {
+            const reasoningDelta = value.choices[0].delta.reasoning_content
+
+            // If content is empty, treat reasoning_content as the spoken response
+            // This handles models (e.g. Qwen3) that put ALL output in reasoning_content
+            if (!contentDelta) {
+              // Track first token time from reasoning content too
+              if (!firstTokenReceived) {
+                firstTokenReceived = true
+                const firstTokenTime = performance.now()
+                performanceRef.current = {
+                  ...performanceRef.current,
+                  firstTokenTime,
+                  timeToFirstToken: firstTokenTime - startTime,
+                }
+                setPerformanceMetrics({ ...performanceRef.current })
+              }
+
+              // Count tokens from reasoning content
+              const newTokens = reasoningDelta.split(/[\s\n]+/).filter((t: string) => t.length > 0).length
+              tokenCount += Math.max(1, newTokens)
+
+              fullResponseText += reasoningDelta
+
+              // Feed TTS buffer so avatar speaks in real-time
+              if (shouldStreamTTS) {
+                ttsSentenceBuffer += reasoningDelta
+                processTTSBuffer(false)
+              }
+
+              // Update metrics
+              const currentTime = performance.now()
+              const elapsedTime = (currentTime - startTime) / 1000
+              performanceRef.current = {
+                ...performanceRef.current,
+                tokensGenerated: tokenCount,
+                tokensPerSecond: tokenCount / elapsedTime,
+              }
+              setPerformanceMetrics({ ...performanceRef.current })
+            }
+
             setMessages((prev: ChatMessage[]) => {
               const newMessages = [...prev]
               const lastMessage = newMessages[newMessages.length - 1]
               if (lastMessage.role === 'assistant') {
-                lastMessage.reasoning_content = (lastMessage.reasoning_content || '') + value.choices[0].delta.reasoning_content
+                lastMessage.reasoning_content = (lastMessage.reasoning_content || '') + reasoningDelta
               }
               return newMessages
             })
@@ -1304,6 +1476,12 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       ...response.choices[0].message,
       // Include reasoning_content if present in the response
       reasoning_content: response.choices[0].message.reasoning_content
+    }
+
+    // If content is empty but reasoning_content exists, use it as the visible content
+    // This handles models (e.g. Qwen3) that put ALL output in reasoning_content
+    if (!assistantMessage.content && assistantMessage.reasoning_content) {
+      assistantMessage.content = assistantMessage.reasoning_content
     }
 
     // For tool calls, we need to capture the snapshot synchronously
@@ -2208,6 +2386,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               ragSelectedDomains={settings.ragSelectedDomains}
               ragTopK={settings.ragTopK}
               ragShowContext={settings.ragShowContext}
+              graphEnabled={settings.graphEnabled}
               onSettingsChange={(ragSettings) => saveSettings({ ...settings, ...ragSettings })}
             />
 
@@ -2859,8 +3038,32 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         p: 1
       }}>
         <Stack spacing={2}>
-          {/* RAG Context Display */}
-          {settings.ragShowContext && (ragLoading || ragContext.length > 0) && (
+          {/* Unified Context Block (when both RAG + Graph are enabled) */}
+          {settings.ragEnabled && settings.graphEnabled && (unifiedLoading || unifiedChunks.length > 0 || graphEntities.length > 0) && (
+            <UnifiedContextBlock
+              chunks={unifiedChunks}
+              entities={graphEntities}
+              relationships={graphRelationships}
+              graphConnections={unifiedGraphConnections}
+              crossReferences={unifiedCrossRefs}
+              qualitySignals={unifiedQuality || undefined}
+              isLoading={unifiedLoading}
+              onEntityClick={(name: string, type: string, anchorEl: HTMLElement) => {
+                setExplorerEntity({ name, type })
+                setExplorerAnchorEl(anchorEl)
+              }}
+            />
+          )}
+          {/* Feedback bar for unified context */}
+          {settings.ragEnabled && settings.graphEnabled && unifiedChunks.length > 0 && (
+            <RetrievalFeedbackBar
+              query={messages.length > 0 ? (typeof messages[messages.length - 1].content === 'string' ? messages[messages.length - 1].content as string : '') : ''}
+              qualitySignals={unifiedQuality}
+              domain={settings.ragSelectedDomains?.[0] || 'general'}
+            />
+          )}
+          {/* RAG Context Display (only when not in unified mode) */}
+          {settings.ragShowContext && !(settings.ragEnabled && settings.graphEnabled && unifiedChunks.length > 0) && (ragLoading || ragContext.length > 0) && (
             <RAGContextBlock
               chunks={ragContext}
               isLoading={ragLoading}
@@ -2894,6 +3097,47 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               }}
             />
           )}
+          {/* Conversation Entity Sidebar */}
+          {settings.graphEnabled && conversationEntities.length > 0 && (
+            <ConversationEntities
+              entities={conversationEntities}
+              onEntityClick={(name, type, anchorEl) => {
+                setExplorerEntity({ name, type })
+                setExplorerAnchorEl(anchorEl)
+              }}
+            />
+          )}
+          {/* Graph Context Display (only when NOT in unified mode) */}
+          {settings.graphEnabled && !(settings.ragEnabled && unifiedChunks.length > 0) && (graphLoading || graphEntities.length > 0 || graphRelationships.length > 0) && (
+            <GraphContextBlock
+              entities={graphEntities}
+              relationships={graphRelationships}
+              isLoading={graphLoading}
+              onEntityClick={(name, type, anchorEl) => {
+                setExplorerEntity({ name, type })
+                setExplorerAnchorEl(anchorEl)
+              }}
+              onAskAbout={(name) => {
+                setInput(`Tell me more about ${name} and its connections`)
+                setTimeout(() => handleSendMessage(), 100)
+              }}
+            />
+          )}
+          {/* Entity Explorer Popover */}
+          <EntityExplorer
+            anchorEl={explorerAnchorEl}
+            entityName={explorerEntity.name}
+            entityType={explorerEntity.type}
+            onClose={() => setExplorerAnchorEl(null)}
+            onEntityClick={(name, type) => {
+              setExplorerEntity({ name, type })
+            }}
+            onAskAbout={(name) => {
+              setExplorerAnchorEl(null)
+              setInput(`Tell me more about ${name} and its connections`)
+              setTimeout(() => handleSendMessage(), 100)
+            }}
+          />
           {messages.map((message: ChatMessage, index: number) => (
             <Box
               key={index}

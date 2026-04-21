@@ -206,6 +206,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
             formData.append('file', fileItem.file);
             formData.append('chunk_size', options.chunkSize.toString());
             formData.append('chunk_overlap', options.chunkOverlap.toString());
+            formData.append('build_knowledge_graph', options.buildKnowledgeGraph.toString());
 
             const response = await fetch('/api/v1/rag/documents/upload', {
               method: 'POST',
@@ -389,7 +390,7 @@ export const BatchIngestionDialog: React.FC<BatchIngestionDialogProps> = ({
         )}
 
         {/* Processing Options */}
-        {destination === 'graphrag' && (
+        {(
           <Accordion>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <SettingsIcon sx={{ mr: 1 }} />

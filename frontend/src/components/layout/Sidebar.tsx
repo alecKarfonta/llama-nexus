@@ -114,6 +114,7 @@ const navigationSections: NavigationSection[] = [
       { id: 'documents', label: 'Documents', path: '/documents', icon: 'documents', color: '#10b981' },
       { id: 'knowledge-graph', label: 'Knowledge Graph', path: '/knowledge-graph', icon: 'graph', color: '#6366f1' },
       { id: 'discovery', label: 'Discovery', path: '/discovery', icon: 'discovery', color: '#8b5cf6' },
+      { id: 'retrieval-analytics', label: 'Retrieval Quality', path: '/retrieval-analytics', icon: 'monitoring', color: '#10b981' },
     ],
   },
   {

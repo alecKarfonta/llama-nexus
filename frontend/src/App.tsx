@@ -28,6 +28,7 @@ import DiscoveryPage from '@/pages/DiscoveryPage'
 import { QuantizationPage } from '@/pages/QuantizationPage'
 import FineTuningPage from '@/pages/FineTuningPage'
 import MCPServersPage from '@/pages/MCPServersPage'
+import { RetrievalAnalyticsPage } from '@/pages/RetrievalAnalyticsPage'
 import { DatasetManagementPage, DistillationPage, ModelEvaluationPage, WorkflowTemplatesPage, AdapterComparisonPage, BookDatasetPage, BenchmarkComparisonPage } from '@/pages/finetuning'
 
 function App() {
@@ -129,6 +130,7 @@ function App() {
                 <Route path="/finetuning/compare" element={<AdapterComparisonPage />} />
                 <Route path="/finetuning/book-datasets" element={<BookDatasetPage />} />
                 <Route path="/benchmark-comparison" element={<BenchmarkComparisonPage />} />
+                <Route path="/retrieval-analytics" element={<RetrievalAnalyticsPage />} />
                 <Route path="/mcp" element={<MCPServersPage />} />
                 <Route path="/monitoring" element={<MonitoringPage />} />
                 <Route path="/api-docs" element={<ApiDocsPage />} />

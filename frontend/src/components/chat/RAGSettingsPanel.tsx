@@ -22,6 +22,7 @@ import {
     ExpandLess as ExpandLessIcon,
     Public as GlobalIcon,
     FolderSpecial as DomainIcon,
+    AccountTree as GraphIcon,
 } from '@mui/icons-material'
 
 interface RAGDomain {
@@ -37,12 +38,14 @@ interface RAGSettingsPanelProps {
     ragSelectedDomains: string[]
     ragTopK: number
     ragShowContext: boolean
+    graphEnabled: boolean
     onSettingsChange: (settings: {
         ragEnabled?: boolean
         ragSearchMode?: 'global' | 'domains'
         ragSelectedDomains?: string[]
         ragTopK?: number
         ragShowContext?: boolean
+        graphEnabled?: boolean
     }) => void
 }
 
@@ -52,11 +55,14 @@ export const RAGSettingsPanel: React.FC<RAGSettingsPanelProps> = ({
     ragSelectedDomains,
     ragTopK,
     ragShowContext,
+    graphEnabled,
     onSettingsChange,
 }) => {
     const [expanded, setExpanded] = useState(ragEnabled)
     const [domains, setDomains] = useState<RAGDomain[]>([])
     const [loadingDomains, setLoadingDomains] = useState(false)
+    const [graphAvailable, setGraphAvailable] = useState(false)
+    const [graphChecked, setGraphChecked] = useState(false)
 
     // Fetch domains when panel expands or RAG is enabled
     useEffect(() => {
@@ -64,6 +70,24 @@ export const RAGSettingsPanel: React.FC<RAGSettingsPanelProps> = ({
             fetchDomains()
         }
     }, [expanded, ragEnabled])
+
+    // Check GraphRAG availability
+    useEffect(() => {
+        const checkGraphRAG = async () => {
+            try {
+                const response = await fetch('/api/v1/graphrag/health')
+                if (response.ok) {
+                    const data = await response.json()
+                    setGraphAvailable(data.status === 'healthy')
+                }
+            } catch {
+                setGraphAvailable(false)
+            } finally {
+                setGraphChecked(true)
+            }
+        }
+        checkGraphRAG()
+    }, [])
 
     const fetchDomains = async () => {
         setLoadingDomains(true)
@@ -255,6 +279,45 @@ export const RAGSettingsPanel: React.FC<RAGSettingsPanelProps> = ({
                             }
                         />
                     </Tooltip>
+
+                    {/* Knowledge Graph Toggle */}
+                    {graphChecked && (
+                        <Box sx={{ mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
+                            <Tooltip title={
+                                graphAvailable
+                                    ? 'Augment responses with entity and relationship context from the Knowledge Graph'
+                                    : 'GraphRAG service unavailable — start with: docker compose --profile graphrag up -d'
+                            }>
+                                <FormControlLabel
+                                    control={
+                                        <Switch
+                                            checked={graphEnabled}
+                                            onChange={(e) => onSettingsChange({ graphEnabled: e.target.checked })}
+                                            size="small"
+                                            disabled={!graphAvailable}
+                                        />
+                                    }
+                                    label={
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                            <GraphIcon fontSize="small" sx={{ color: graphEnabled ? '#10B981' : 'text.secondary' }} />
+                                            <Typography variant="body2">
+                                                Knowledge Graph
+                                            </Typography>
+                                            <Box
+                                                sx={{
+                                                    width: 8,
+                                                    height: 8,
+                                                    borderRadius: '50%',
+                                                    bgcolor: graphAvailable ? '#10B981' : '#EF4444',
+                                                    ml: 0.5,
+                                                }}
+                                            />
+                                        </Box>
+                                    }
+                                />
+                            </Tooltip>
+                        </Box>
+                    )}
                 </Box>
             </Collapse>
         </Box>

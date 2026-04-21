@@ -1343,6 +1343,7 @@ const DocumentsPage: React.FC = () => {
                     <TableCell>Type</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell align="right">Chunks</TableCell>
+                    <TableCell>KG</TableCell>
                     <TableCell align="right">Created</TableCell>
                     <TableCell align="right">Actions</TableCell>
                   </TableRow>
@@ -1350,13 +1351,13 @@ const DocumentsPage: React.FC = () => {
                 <TableBody>
                   {loading ? (
                     <TableRow>
-                      <TableCell colSpan={7} sx={{ textAlign: 'center', py: 4 }}>
+                      <TableCell colSpan={8} sx={{ textAlign: 'center', py: 4 }}>
                         <CircularProgress />
                       </TableCell>
                     </TableRow>
                   ) : documents.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} sx={{ textAlign: 'center', py: 4 }}>
+                      <TableCell colSpan={8} sx={{ textAlign: 'center', py: 4 }}>
                         <DocIcon sx={{ fontSize: 48, color: 'text.disabled', mb: 1 }} />
                         <Typography variant="body2" color="text.secondary">
                           No documents found
@@ -1411,6 +1412,37 @@ const DocumentsPage: React.FC = () => {
                             />
                           </TableCell>
                           <TableCell align="right" onClick={() => setSelectedDocument(doc)}>{doc.chunk_count}</TableCell>
+                          <TableCell onClick={() => setSelectedDocument(doc)}>
+                            {(() => {
+                              const kgStatus = doc.metadata?.kg_status;
+                              const kgEntities = doc.metadata?.kg_entities || 0;
+                              const kgRels = doc.metadata?.kg_relationships || 0;
+                              if (kgStatus === 'extracted') {
+                                return (
+                                  <Tooltip title={`${kgEntities} entities, ${kgRels} relationships`}>
+                                    <Chip
+                                      label={`🕸️ ${kgEntities}`}
+                                      size="small"
+                                      sx={{ height: 20, fontSize: 10, bgcolor: alpha('#6366F1', 0.15), color: '#6366F1' }}
+                                    />
+                                  </Tooltip>
+                                );
+                              } else if (kgStatus === 'extracting') {
+                                return (
+                                  <Tooltip title="Extracting entities...">
+                                    <Chip label="⏳" size="small" sx={{ height: 20, fontSize: 10 }} />
+                                  </Tooltip>
+                                );
+                              } else if (kgStatus === 'error') {
+                                return (
+                                  <Tooltip title={doc.metadata?.kg_error || 'Extraction failed'}>
+                                    <Chip label="❌" size="small" sx={{ height: 20, fontSize: 10 }} />
+                                  </Tooltip>
+                                );
+                              }
+                              return <Typography variant="caption" color="text.disabled">—</Typography>;
+                            })()}
+                          </TableCell>
                           <TableCell align="right" onClick={() => setSelectedDocument(doc)}>
                             {new Date(doc.created_at).toLocaleDateString()}
                           </TableCell>
@@ -1577,6 +1609,22 @@ const DocumentsPage: React.FC = () => {
                     <Typography variant="h6">{selectedDocument.token_count}</Typography>
                   </Box>
                 </Grid>
+                {selectedDocument.metadata?.kg_status === 'extracted' && (
+                  <>
+                    <Grid item xs={6}>
+                      <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: alpha('#6366F1', 0.1) }}>
+                        <Typography variant="caption" color="text.secondary">🕸️ KG Entities</Typography>
+                        <Typography variant="h6">{selectedDocument.metadata?.kg_entities || 0}</Typography>
+                      </Box>
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: alpha('#8B5CF6', 0.1) }}>
+                        <Typography variant="caption" color="text.secondary">🔗 KG Relations</Typography>
+                        <Typography variant="h6">{selectedDocument.metadata?.kg_relationships || 0}</Typography>
+                      </Box>
+                    </Grid>
+                  </>
+                )}
               </Grid>
 
               {/* Actions */}
