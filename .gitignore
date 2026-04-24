@@ -218,3 +218,12 @@ Desktop.ini
 *.sqlite3
 *.db
 backup/
+
+# Build artifacts
+*.tsbuildinfo
+
+# External dependencies
+llama.cpp/
+llama.cpp-*/
+output.wav
+tools/
