@@ -73,6 +73,10 @@ class LlamaCPPManager:
                 "threads": int(os.getenv("THREADS", "-1")),
                 "batch_size": int(os.getenv("BATCH_SIZE", "2048")),
                 "ubatch_size": int(os.getenv("UBATCH_SIZE", "512")),
+                # Default to 1 slot — prevents llama.cpp auto-selecting n_parallel=4,
+                # which silently reserves KV cache × 4 (wastes ~4.5 GB on 256K context).
+                # Set higher only for multi-user / concurrent request workloads.
+                "parallel_slots": int(os.getenv("PARALLEL_SLOTS", "1")),
             },
             "speculative": {
                 # Empty by default — speculative decoding is disabled unless configured
