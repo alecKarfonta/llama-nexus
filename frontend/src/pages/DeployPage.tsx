@@ -103,8 +103,8 @@ interface Config {
     main_gpu?: number;
     continuous_batching?: boolean;
     parallel_slots?: number;
-    cache_type_k?: 'f16' | 'q8_0' | 'q4_0' | 'turbo4' | 'turbo3';
-    cache_type_v?: 'f16' | 'q8_0' | 'q4_0' | 'turbo4' | 'turbo3';
+    cache_type_k?: 'f16' | 'q8_0' | 'q4_0';
+    cache_type_v?: 'f16' | 'q8_0' | 'q4_0';
   };
   speculative?: {
     model_draft?: string;
@@ -2868,8 +2868,7 @@ export const DeployPage: React.FC = () => {
                   <MenuItem value="f16">F16 (High Quality)</MenuItem>
                   <MenuItem value="q8_0">Q8_0 (8-bit)</MenuItem>
                   <MenuItem value="q4_0">Q4_0 (4-bit, Default)</MenuItem>
-                  <MenuItem value="turbo4">Turbo4 (4.25-bit TBQ)</MenuItem>
-                  <MenuItem value="turbo3">Turbo3 (3.25-bit TBQ)</MenuItem>
+
                 </Select>
                 <FormHelperText sx={{ mt: 0.5, fontSize: '0.75rem', color: 'text.secondary' }}>
                   KV cache data type for K (--cache-type-k)
@@ -2888,8 +2887,7 @@ export const DeployPage: React.FC = () => {
                   <MenuItem value="f16">F16 (High Quality)</MenuItem>
                   <MenuItem value="q8_0">Q8_0 (8-bit)</MenuItem>
                   <MenuItem value="q4_0">Q4_0 (4-bit, Default)</MenuItem>
-                  <MenuItem value="turbo4">Turbo4 (4.25-bit TBQ)</MenuItem>
-                  <MenuItem value="turbo3">Turbo3 (3.25-bit TBQ)</MenuItem>
+
                 </Select>
                 <FormHelperText sx={{ mt: 0.5, fontSize: '0.75rem', color: 'text.secondary' }}>
                   KV cache data type for V (--cache-type-v)
@@ -3072,52 +3070,6 @@ export const DeployPage: React.FC = () => {
                   <MenuItem value="isolate">Isolate</MenuItem>
                   <MenuItem value="numactl">Numactl</MenuItem>
                 </Select>
-              </Grid>
-              <Grid item xs={12} md={3}>
-                <TextField
-                  label="Cache Type K"
-                  type="text"
-                  fullWidth
-                  value={config.performance.cache_type_k || 'q4_0'}
-                  onChange={(e) => updateConfig('performance.cache_type_k', e.target.value)}
-                  helperText="KV cache data type for K (--cache-type-k)"
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      fontSize: '0.875rem',
-                      borderRadius: 1,
-                      backgroundColor: 'background.default',
-                      '&.Mui-focused': {
-                        borderColor: 'primary.main'
-                      }
-                    },
-                    '& .MuiInputLabel-root': {
-                      fontSize: '0.875rem'
-                    }
-                  }}
-                />
-              </Grid>
-              <Grid item xs={12} md={3}>
-                <TextField
-                  label="Cache Type V"
-                  type="text"
-                  fullWidth
-                  value={config.performance.cache_type_v || 'q4_0'}
-                  onChange={(e) => updateConfig('performance.cache_type_v', e.target.value)}
-                  helperText="KV cache data type for V (--cache-type-v)"
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      fontSize: '0.875rem',
-                      borderRadius: 1,
-                      backgroundColor: 'background.default',
-                      '&.Mui-focused': {
-                        borderColor: 'primary.main'
-                      }
-                    },
-                    '& .MuiInputLabel-root': {
-                      fontSize: '0.875rem'
-                    }
-                  }}
-                />
               </Grid>
             </Grid>
           </CardContent>

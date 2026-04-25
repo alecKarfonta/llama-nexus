@@ -1,5 +1,5 @@
 # Multi-stage build for llama.cpp with CUDA support
-FROM nvidia/cuda:13.1.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:13.0.0-devel-ubuntu22.04 AS builder
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -24,6 +24,7 @@ RUN pip3 install huggingface_hub hf_transfer
 WORKDIR /build
 ARG SKIP_BUILD_FROM_SOURCE=false
 ARG LLAMACPP_VERSION=b8250
+ARG ENABLE_TURBOQUANT=false
 
 RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         echo "Skipping build, downloading pre-built binaries version: ${LLAMACPP_VERSION}" && \
@@ -36,23 +37,32 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         find extracted_llama -name "llama-gguf-split" -exec cp {} /build/llama.cpp/build/bin/ \; && \
         rm -rf llama.zip extracted_llama; \
     else \
-        git clone https://github.com/spiritbuun/llama-cpp-turboquant-cuda.git llama.cpp && \
-        cd llama.cpp && \
-        # Checkout specific version if needed, or master \
-        git checkout feature/turboquant-kv-cache && \
+        if [ "$ENABLE_TURBOQUANT" = "true" ]; then \
+            echo "Building TurboQuant fork..." && \
+            git clone https://github.com/spiritbuun/llama-cpp-turboquant-cuda.git llama.cpp && \
+            cd llama.cpp && \
+            git checkout feature/turboquant-kv-cache; \
+        else \
+            echo "Building standard llama.cpp..." && \
+            git clone https://github.com/ggml-org/llama.cpp.git llama.cpp && \
+            cd llama.cpp; \
+        fi && \
         echo "Building llama.cpp version: $(git describe --tags --always)" && \
         cmake . -B build \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_CUDA=ON \
             -DLLAMA_CURL=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="80;86;89;90;100;120" && \
-        cmake --build build --config Release -j4 --clean-first \
+            -DCMAKE_CUDA_ARCHITECTURES="86" && \
+        cmake --build build --config Release -j2 --clean-first \
             --target llama-server llama-cli llama-gguf-split && \
         echo "Built llama.cpp version: $(./build/bin/llama-cli --version | head -1)"; \
     fi
 
 # Runtime stage
-FROM nvidia/cuda:13.1.0-runtime-ubuntu22.04
+FROM nvidia/cuda:13.0.0-runtime-ubuntu22.04
+
+# Fix CUDA forward compatibility error on certain driver versions
+RUN rm -rf /usr/local/cuda/compat
 
 ENV DEBIAN_FRONTEND=noninteractive
 

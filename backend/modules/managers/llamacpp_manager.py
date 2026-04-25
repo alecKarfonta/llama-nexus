@@ -285,10 +285,11 @@ class LlamaCPPManager:
         # Add model-level performance parameters
         add_param_if_set(cmd, "--defrag-thold", self.config["model"].get("defrag_thold"))
         
-        # Flash attention (configurable: on/off/auto)
+        # Flash attention (boolean flag in llama.cpp - no value argument)
+        # When "auto" or True, enable it; when False/"false"/empty, omit it
         flash_attn = self.config["model"].get("flash_attn", "auto")
-        if flash_attn:
-            cmd.extend(["--flash-attn", str(flash_attn)])
+        if flash_attn and str(flash_attn).lower() not in ("false", "0", "off", "none"):
+            cmd.append("--flash-attn")
         
         # Add speculative decoding parameters if section exists
         if "speculative" in self.config:

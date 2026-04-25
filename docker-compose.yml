@@ -149,6 +149,7 @@ services:
       args:
         SKIP_BUILD_FROM_SOURCE: "false"
         LLAMACPP_VERSION: "b8250"
+        ENABLE_TURBOQUANT: "false"
     container_name: llamacpp-builder
     volumes:
       - llamacpp_bin:/output
@@ -167,6 +168,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        ENABLE_TURBOQUANT: "false"
     container_name: llamacpp-api
     hostname: llamacpp
     ports:
