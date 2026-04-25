@@ -300,7 +300,7 @@ services:
               capabilities: [ gpu ]
     volumes:
       - gpt_oss_models:/home/llamacpp/models
-      - ./start-embed.sh:/start-embed.sh:ro
+      - ./scripts/start-embed.sh:/start-embed.sh:ro
     environment:
       # Embedding model configuration - Nomic Embed v1.5
       - MODEL_NAME=nomic-embed-text-v1.5

@@ -225,5 +225,4 @@ backup/
 # External dependencies
 llama.cpp/
 llama.cpp-*/
-output.wav
 tools/

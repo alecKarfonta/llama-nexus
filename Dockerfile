@@ -88,7 +88,7 @@ COPY --from=builder /build/llama.cpp/build/bin/llama-cli /usr/local/bin/
 COPY --from=builder /build/llama.cpp/build/bin/llama-gguf-split /usr/local/bin/
 
 # Copy configuration files
-COPY start.sh /start.sh
+COPY scripts/start.sh /start.sh
 COPY chat-templates/chat-template-oss.jinja /home/llamacpp/templates/chat-template-oss.jinja
 COPY chat-templates/chat-template-basic.jinja /home/llamacpp/templates/chat-template-basic.jinja
 RUN mkdir -p /home/llamacpp/templates && chmod +x /start.sh
