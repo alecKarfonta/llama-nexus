@@ -20,7 +20,7 @@ from app_state import (
 try:
     from modules.rag.document_manager import DocumentManager
     from modules.rag.graph_rag import GraphRAG
-    from modules.rag.vector_store import QdrantStore
+    from modules.rag.vector_stores.qdrant_store import QdrantStore
     from modules.rag.discovery import DocumentDiscovery
     RAG_AVAILABLE = True
 except ImportError as e:
@@ -28,8 +28,8 @@ except ImportError as e:
     logger.warning(f"RAG modules not available: {e}")
 
 try:
-    from modules.workflows.storage import dict_to_workflow, WorkflowStorage
-    from modules.workflows.engine import WorkflowEngine
+    from modules.workflow.storage import WorkflowStorage
+    from modules.workflow.engine import WorkflowEngine
     WORKFLOW_AVAILABLE = True
 except ImportError as e:
     WORKFLOW_AVAILABLE = False

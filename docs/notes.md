@@ -5206,3 +5206,50 @@ Push the latest cleanup work, rebuild with Docker Compose, verify the current ap
 - Model archiving is stubbed.
 - Models page start/stop behavior is not fully model-specific.
 - GraphRAG hierarchical clustering remains TODO.
+
+---
+
+## Deployment Validation - 2026-04-26
+
+### Current Goal
+Confirm the latest pushed state is deployed through Docker Compose, monitor the
+runtime, and validate that the cleanup/rebuild changes did not leave broken
+service wiring.
+
+### Actions Taken
+- Confirmed `master` was clean and synced with `origin/master`.
+- Ran `docker compose up -d` to enforce the deployed Compose state.
+- Rebuilt and redeployed affected services through Docker Compose after finding
+  backend startup warnings.
+- Fixed stale backend initialization imports:
+  - `modules.rag.vector_store` -> `modules.rag.vector_stores.qdrant_store`
+  - `modules.workflows` -> `modules.workflow`
+  - `modules.rag.embeddings` -> `modules.rag.embedders`
+- Passed `EMBEDDING_SERVICE_API_KEY` from Compose into the backend so RAG
+  embedding pre-warm can authenticate against `llamacpp-embed`.
+
+### Validation Results
+- `backend-api` healthy on port `8700`.
+- `llamacpp-frontend` healthy on port `3002`.
+- `llamacpp-embed` healthy on port `8602`.
+- `qdrant` healthy on ports `6333` and `6334`.
+- `redis` healthy on host port `6389`.
+- `training` running.
+- HTTP checks passed:
+  - `GET /health`
+  - `GET /api/v1/service/status`
+  - `GET /api/v1/rag/statistics`
+  - `GET /api/v1/workflows`
+  - frontend root page
+  - Qdrant `/healthz`
+  - embedding service `/health`
+
+### Monitoring Findings
+- RAG now connects to Qdrant and initializes successfully.
+- Workflow system now initializes successfully.
+- Embedding model pre-warm now succeeds through `llamacpp-embed`.
+- Remaining warnings:
+  - `HUGGINGFACE_TOKEN` is unset.
+  - Backend Docker SDK connection falls back to subprocess mode.
+  - Benchmark datasets library is unavailable, so benchmark samples are limited.
+  - Legacy MCP endpoint initialization still looks for missing `mcp_server`.
