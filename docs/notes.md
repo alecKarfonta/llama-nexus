@@ -5253,3 +5253,51 @@ service wiring.
   - Backend Docker SDK connection falls back to subprocess mode.
   - Benchmark datasets library is unavailable, so benchmark samples are limited.
   - Legacy MCP endpoint initialization still looks for missing `mcp_server`.
+
+---
+
+## Benchmark Readiness Fix - 2026-04-26
+
+### Current Goal
+Enable benchmark runs using the provided `.env` `HUGGINGFACE_TOKEN`, fix the
+stale "datasets library unavailable" warning, and validate both benchmark
+dataset loading and local model speed benchmarking.
+
+### Findings
+- `.env` contains a non-empty `HUGGINGFACE_TOKEN`, but the backend container had
+  to be force-recreated before it saw the new environment value.
+- The `datasets` package was installed in the backend image.
+- The warning came from importing removed `datasets.list_datasets` in
+  `modules/finetuning/benchmarks.py`, which made the module mark all benchmark
+  datasets unavailable.
+- The local speed benchmark endpoint reached `llamacpp-api` but initially
+  failed with `401 Invalid API Key` because it did not pass the managed local
+  API key to llama.cpp.
+- The active Qwen reasoning model streams benchmark output as
+  `reasoning_content`, so the speed parser had to count that field as generated
+  output.
+
+### Changes Made
+- Removed the stale `list_datasets` import.
+- Passed the local manager API key into speed benchmark requests.
+- Counted streamed `reasoning_content` in benchmark token/throughput metrics.
+- Rebuilt and force-recreated `backend-api` through Docker Compose.
+
+### Validation Results
+- Backend now sees `HUGGINGFACE_TOKEN`.
+- `DATASETS_AVAILABLE=True` in `modules.finetuning.benchmarks`.
+- `/api/v1/finetune/benchmarks/available` reports Hugging Face availability for
+  MMLU, HellaSwag, ARC Easy, ARC Challenge, TruthfulQA, GSM8K, and HumanEval.
+- MMLU preview loaded 2 samples from Hugging Face.
+- Speed benchmark completed and saved successfully:
+  - result id: `4d74a164`
+  - completion chunks counted: `45`
+  - mean TPS: `30.75`
+  - mean TTFT: `180.01ms`
+- `/api/v1/benchmark/stats` reports 1 saved speed benchmark.
+
+### Remaining Notes
+- Full standardized benchmarks can be much longer and should be run with small
+  sample limits first before launching complete MMLU/HellaSwag suites.
+- `HUGGINGFACE_TOKEN` warning is resolved after container recreation.
+- Legacy MCP initialization still warns about missing `mcp_server`.

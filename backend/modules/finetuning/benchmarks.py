@@ -29,7 +29,7 @@ from enhanced_logger import enhanced_logger as logger
 
 # Try to import datasets library - required for real benchmark data
 try:
-    from datasets import load_dataset, get_dataset_config_names, list_datasets
+    from datasets import load_dataset, get_dataset_config_names
     from datasets import Dataset, DatasetDict, IterableDataset
     from huggingface_hub import HfApi, hf_hub_download
     DATASETS_AVAILABLE = True
