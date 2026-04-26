@@ -5175,3 +5175,25 @@ Complete UI refactor of all fine-tuning pages to match the existing Material UI 
 ### Before/After
 - Before: Raw inline styles, basic HTML elements, inconsistent colors
 - After: Full MUI component library, consistent theme, beautiful animations
+
+---
+
+## Current Handoff Check - 2026-04-26
+
+### Current Goal
+Push the latest cleanup work, rebuild with Docker Compose, verify the current app state, and preserve the handoff summary in `docs/feature-request.md`.
+
+### Findings Before Rebuild
+- Branch: `master`
+- Working tree was clean before handoff docs were updated.
+- Branch was ahead of `origin/master` by 1 commit: `c62233b chore: reorganize root directory and clean up junk files`
+- Docker Compose services already running: backend, frontend, Qdrant, Redis, and training.
+- `llamacpp-api` was not listed as running.
+- Compose warned that `HUGGINGFACE_TOKEN` was unset.
+
+### Known Unfinished Items
+- Historical metrics are simulated until backend history exists.
+- Monitoring WebSocket endpoint is not implemented yet.
+- Model archiving is stubbed.
+- Models page start/stop behavior is not fully model-specific.
+- GraphRAG hierarchical clustering remains TODO.
