@@ -857,7 +857,8 @@ class BenchmarkRunner:
                 )
                 response.raise_for_status()
                 data = response.json()
-                return data["choices"][0]["message"]["content"]
+                message = data["choices"][0]["message"]
+                return message.get("content") or message.get("reasoning_content", "")
             except Exception as e:
                 logger.error("Generation failed", extra={"error": str(e), "base_url": self.base_url})
                 return ""

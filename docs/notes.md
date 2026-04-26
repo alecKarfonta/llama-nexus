@@ -5301,3 +5301,40 @@ dataset loading and local model speed benchmarking.
   sample limits first before launching complete MMLU/HellaSwag suites.
 - `HUGGINGFACE_TOKEN` warning is resolved after container recreation.
 - Legacy MCP initialization still warns about missing `mcp_server`.
+
+---
+
+## All-Suite Benchmark Sweep - 2026-04-26
+
+### Current Goal
+Run all configured benchmark suites against the currently deployed model.
+
+### Setup
+- Model endpoint: deployed `llamacpp-api`
+- Model reported by `/v1/models`: `Qwen3.6-27B-Q6_K.gguf`
+- Job id: `9e314345-fd65-4f6b-8ab3-59a2cf2d7950`
+- Run mode: all 7 configured benchmark suites with 25 samples per suite
+- Config: zero-shot, temperature `0`, max tokens `256`
+
+### Results
+- MMLU: `5/25`, `20.0%`
+- HellaSwag: `7/25`, `28.0%`
+- ARC Easy: `7/25`, `28.0%`
+- ARC Challenge: `5/25`, `20.0%`
+- TruthfulQA: `8/25`, `32.0%`
+- GSM8K: `8/25`, `32.0%`
+- HumanEval: `24/25`, `96.0%`
+
+### Runtime
+- Started: `2026-04-26T15:38:03.529406`
+- Completed: `2026-04-26T16:06:53.919118`
+- Status: completed
+- Backend log scan: no benchmark job failures, generation failures, tracebacks,
+  or backend errors during the run.
+
+### Notes
+- This was a representative sweep across all suites, not the full unbounded
+  dataset run. Full MMLU/HellaSwag-scale runs will take much longer.
+- The benchmark evaluator uses simple answer parsing, so scores should be
+  treated as directional until prompt/parser calibration is improved for
+  reasoning-heavy models.
