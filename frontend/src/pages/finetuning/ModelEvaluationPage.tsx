@@ -126,6 +126,38 @@ type LMEvalJob = {
   gpu_device?: number;
 };
 
+type TerminalBenchDataset = {
+  name: string;
+  display_name: string;
+  description: string;
+  supports_modes: string[];
+  default_smoke_limit: number;
+};
+
+type TerminalBenchJob = {
+  id: string;
+  name: string;
+  dataset: string;
+  mode: "smoke" | "full";
+  task_limit?: number | null;
+  n_concurrent: number;
+  timeout_multiplier: number;
+  model_name: string;
+  endpoint_url: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  progress: number;
+  results: {
+    pass_rate?: number;
+    total_trials?: number;
+    passed_trials?: number;
+    failed_trials?: number;
+  };
+  error?: string;
+  artifacts?: Record<string, string>;
+  created_at: string;
+  completed_at?: string;
+};
+
 type ABTest = {
   id: string;
   name: string;
@@ -353,6 +385,14 @@ export const ModelEvaluationPage: React.FC = () => {
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [availableGpus, setAvailableGpus] = useState<Array<{ index: number; name: string }>>([]);
   const [selectedGpu, setSelectedGpu] = useState<number | null>(null);
+  const [terminalBenchAvailable, setTerminalBenchAvailable] = useState(false);
+  const [terminalBenchDatasets, setTerminalBenchDatasets] = useState<TerminalBenchDataset[]>([]);
+  const [terminalBenchJobs, setTerminalBenchJobs] = useState<TerminalBenchJob[]>([]);
+  const [terminalBenchMode, setTerminalBenchMode] = useState<"smoke" | "full">("smoke");
+  const [terminalBenchTaskLimit, setTerminalBenchTaskLimit] = useState<number>(5);
+  const [terminalBenchConcurrency, setTerminalBenchConcurrency] = useState<number>(1);
+  const [terminalBenchRunning, setTerminalBenchRunning] = useState(false);
+  const [terminalBenchProgress, setTerminalBenchProgress] = useState("");
 
   // A/B Testing
   const [abTests, setAbTests] = useState<ABTest[]>([]);
@@ -445,6 +485,38 @@ export const ModelEvaluationPage: React.FC = () => {
     } catch { }
   }, []);
 
+  const fetchTerminalBenchStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/finetune/terminal-bench/status");
+      if (res.ok) {
+        const data = await res.json();
+        setTerminalBenchAvailable(Boolean(data.available));
+      }
+    } catch {
+      setTerminalBenchAvailable(false);
+    }
+  }, []);
+
+  const fetchTerminalBenchDatasets = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/finetune/terminal-bench/datasets");
+      if (res.ok) {
+        const data = await res.json();
+        setTerminalBenchDatasets(data.datasets || []);
+      }
+    } catch { }
+  }, []);
+
+  const fetchTerminalBenchJobs = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/finetune/terminal-bench/jobs");
+      if (res.ok) {
+        const data = await res.json();
+        setTerminalBenchJobs(data.jobs || []);
+      }
+    } catch { }
+  }, []);
+
   const fetchAvailableModels = useCallback(async () => {
     try {
       // Use local-files endpoint to list all GGUF files on disk
@@ -489,6 +561,9 @@ export const ModelEvaluationPage: React.FC = () => {
     fetchLmEvalStatus();
     fetchLmEvalTasks();
     fetchLmEvalJobs();
+    fetchTerminalBenchStatus();
+    fetchTerminalBenchDatasets();
+    fetchTerminalBenchJobs();
     fetchAvailableModels();
 
     const interval = setInterval(() => {
@@ -496,9 +571,23 @@ export const ModelEvaluationPage: React.FC = () => {
       fetchBenchmarkJobs();
       fetchAbTests();
       fetchLmEvalJobs();
+      fetchTerminalBenchJobs();
     }, 5000);
     return () => clearInterval(interval);
-  }, [fetchJobs, fetchSessions, fetchBenchmarks, fetchBenchmarkJobs, fetchAbTests, fetchAvailableModels]);
+  }, [
+    fetchJobs,
+    fetchSessions,
+    fetchBenchmarks,
+    fetchBenchmarkJobs,
+    fetchAbTests,
+    fetchAvailableModels,
+    fetchLmEvalStatus,
+    fetchLmEvalTasks,
+    fetchLmEvalJobs,
+    fetchTerminalBenchStatus,
+    fetchTerminalBenchDatasets,
+    fetchTerminalBenchJobs,
+  ]);
 
   useEffect(() => {
     if (!selectedSession) {
@@ -722,6 +811,75 @@ export const ModelEvaluationPage: React.FC = () => {
     }
   };
 
+  const handleRunTerminalBench = async () => {
+    if (!selectedModel) {
+      setError("Please select a model before running Terminal-Bench");
+      return;
+    }
+
+    setTerminalBenchRunning(true);
+    setTerminalBenchProgress("Creating Terminal-Bench job...");
+    setError(null);
+
+    try {
+      const createRes = await fetch("/api/v1/finetune/terminal-bench/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: `Terminal-Bench ${new Date().toISOString().slice(0, 16)}`,
+          dataset: "terminal-bench@2.0",
+          mode: terminalBenchMode,
+          task_limit: terminalBenchMode === "smoke" ? terminalBenchTaskLimit : null,
+          n_concurrent: terminalBenchConcurrency,
+          timeout_multiplier: 1.0,
+          harbor_agent: "local-openai-agent",
+          model_name: selectedModel,
+          endpoint_url: "http://llamacpp-api:8080/v1",
+          api_key: "placeholder-api-key",
+        }),
+      });
+      if (!createRes.ok) {
+        throw new Error("Failed to create Terminal-Bench job");
+      }
+      const job = await createRes.json();
+      setTerminalBenchProgress(`Starting job ${job.id}...`);
+
+      const eventSource = new EventSource(`/api/v1/finetune/terminal-bench/jobs/${job.id}/start`);
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === "progress") {
+          setTerminalBenchProgress(`Progress: ${data.progress?.toFixed?.(1) ?? data.progress}% - ${data.message || ""}`);
+        } else if (data.type === "log") {
+          setTerminalBenchProgress(data.message || "Running...");
+        } else if (data.type === "complete") {
+          setTerminalBenchProgress("Terminal-Bench completed");
+          setTerminalBenchRunning(false);
+          fetchTerminalBenchJobs();
+          eventSource.close();
+        } else if (data.type === "error") {
+          setError(`Terminal-Bench failed: ${data.error}`);
+          setTerminalBenchRunning(false);
+          fetchTerminalBenchJobs();
+          eventSource.close();
+        } else if (data.type === "cancelled") {
+          setActionStatus("Terminal-Bench job cancelled");
+          setTerminalBenchRunning(false);
+          fetchTerminalBenchJobs();
+          eventSource.close();
+        }
+      };
+      eventSource.onerror = () => {
+        setError("Terminal-Bench stream connection lost");
+        setTerminalBenchRunning(false);
+        fetchTerminalBenchJobs();
+        eventSource.close();
+      };
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to run Terminal-Bench");
+      setTerminalBenchRunning(false);
+    }
+  };
+
   const handleCreateAbTest = async () => {
     if (!abTestName) {
       setError("Please provide a test name");
@@ -851,6 +1009,8 @@ export const ModelEvaluationPage: React.FC = () => {
                 fetchSessions();
                 fetchBenchmarkJobs();
                 fetchAbTests();
+                fetchLmEvalJobs();
+                fetchTerminalBenchJobs();
               }}
               sx={{
                 width: 38,
@@ -1261,8 +1421,78 @@ export const ModelEvaluationPage: React.FC = () => {
                 {lmEvalRunning ? "Running..." : "Run Standardized Benchmarks"}
               </Button>
 
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                Terminal-Bench 2.0
+              </Typography>
+              {!terminalBenchAvailable ? (
+                <Alert severity="warning" sx={{ mb: 2 }}>
+                  Terminal-Bench worker is not available yet. Start the `terminal-bench-worker` service in the `eval` profile.
+                </Alert>
+              ) : (
+                <Box sx={{ mb: 2 }}>
+                  <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
+                    <InputLabel>Run Mode</InputLabel>
+                    <Select
+                      value={terminalBenchMode}
+                      onChange={(e) => setTerminalBenchMode(e.target.value as "smoke" | "full")}
+                      label="Run Mode"
+                    >
+                      <MenuItem value="smoke">Smoke</MenuItem>
+                      <MenuItem value="full">Full</MenuItem>
+                    </Select>
+                  </FormControl>
+
+                  <TextField
+                    type="number"
+                    label="Task Limit (smoke mode)"
+                    size="small"
+                    fullWidth
+                    value={terminalBenchTaskLimit}
+                    onChange={(e) => setTerminalBenchTaskLimit(Number(e.target.value || 0))}
+                    disabled={terminalBenchMode !== "smoke"}
+                    sx={{ mb: 1.5 }}
+                    inputProps={{ min: 1, max: 2000 }}
+                  />
+
+                  <TextField
+                    type="number"
+                    label="Concurrency"
+                    size="small"
+                    fullWidth
+                    value={terminalBenchConcurrency}
+                    onChange={(e) => setTerminalBenchConcurrency(Number(e.target.value || 1))}
+                    sx={{ mb: 1.5 }}
+                    inputProps={{ min: 1, max: 64 }}
+                  />
+
+                  {terminalBenchRunning && (
+                    <Box sx={{ mb: 1.5 }}>
+                      <LinearProgress sx={{ mb: 1, borderRadius: 1 }} />
+                      <Typography variant="caption" color="text.secondary">
+                        {terminalBenchProgress}
+                      </Typography>
+                    </Box>
+                  )}
+
+                  <Button
+                    variant="contained"
+                    fullWidth
+                    startIcon={<StartIcon />}
+                    onClick={handleRunTerminalBench}
+                    disabled={!terminalBenchAvailable || terminalBenchRunning}
+                    sx={{ background: `linear-gradient(135deg, ${accentColors.warning} 0%, ${accentColors.rose} 100%)` }}
+                  >
+                    {terminalBenchRunning
+                      ? "Running Terminal-Bench..."
+                      : `Run Terminal-Bench (${terminalBenchMode})`}
+                  </Button>
+                </Box>
+              )}
+
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2, textAlign: "center" }}>
-                Powered by EleutherAI lm-evaluation-harness
+                Powered by lm-eval and Harbor Terminal-Bench ({terminalBenchDatasets.length} dataset profile)
               </Typography>
             </SectionCard>
           </Grid>
@@ -1270,12 +1500,11 @@ export const ModelEvaluationPage: React.FC = () => {
           <Grid item xs={12} md={7}>
             <SectionCard
               title="Benchmark Jobs"
-              subtitle={`${lmEvalJobs.length} jobs`}
+              subtitle={`${lmEvalJobs.length + terminalBenchJobs.length} jobs`}
               icon={<EvalIcon />}
               accentColor={accentColors.success}
             >
-              {
-                lmEvalJobs.length === 0 ? (
+              {lmEvalJobs.length === 0 && terminalBenchJobs.length === 0 ? (
                   <Box sx={{ p: 4, textAlign: "center" }}>
                     <BenchmarkIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
                     <Typography color="text.secondary">No benchmark jobs yet</Typography>
@@ -1285,6 +1514,81 @@ export const ModelEvaluationPage: React.FC = () => {
                   </Box>
                 ) : (
                   <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+                    {terminalBenchJobs.length > 0 && (
+                      <Typography variant="caption" color="text.secondary" sx={{ textTransform: "uppercase", fontWeight: 700 }}>
+                        Terminal-Bench
+                      </Typography>
+                    )}
+                    {terminalBenchJobs.map((job) => (
+                      <Box
+                        key={job.id}
+                        sx={{
+                          p: 2,
+                          borderRadius: 2,
+                          bgcolor: "rgba(0, 0, 0, 0.2)",
+                          border: "1px solid rgba(255, 255, 255, 0.06)",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                        }}
+                      >
+                        <Box sx={{ flex: 1 }}>
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                              {job.name}
+                            </Typography>
+                            <StatusChip status={job.status} />
+                          </Box>
+                          <Typography variant="caption" color="text.secondary">
+                            {job.dataset} • mode: {job.mode} • model: {job.model_name} • {new Date(job.created_at).toLocaleString()}
+                          </Typography>
+
+                          {job.status === "running" && (
+                            <LinearProgress
+                              variant="determinate"
+                              value={job.progress}
+                              sx={{
+                                mt: 1,
+                                height: 4,
+                                borderRadius: 2,
+                                bgcolor: "rgba(255, 255, 255, 0.1)",
+                                "& .MuiLinearProgress-bar": {
+                                  background: `linear-gradient(90deg, ${accentColors.warning}, ${accentColors.rose})`,
+                                },
+                              }}
+                            />
+                          )}
+
+                          {job.status === "completed" && (
+                            <Box sx={{ display: "flex", gap: 1, mt: 1, flexWrap: "wrap" }}>
+                              <Chip
+                                size="small"
+                                label={`Pass: ${job.results?.pass_rate?.toFixed?.(2) ?? 0}%`}
+                                sx={{ bgcolor: "rgba(16, 185, 129, 0.1)", color: accentColors.success, fontSize: "0.7rem" }}
+                              />
+                              <Chip
+                                size="small"
+                                label={`Passed ${job.results?.passed_trials ?? 0}/${job.results?.total_trials ?? 0}`}
+                                sx={{ fontSize: "0.7rem" }}
+                              />
+                            </Box>
+                          )}
+
+                          {job.error && (
+                            <Alert severity="error" sx={{ mt: 1, py: 0 }}>
+                              {job.error.slice(0, 180)}
+                            </Alert>
+                          )}
+                        </Box>
+                      </Box>
+                    ))}
+
+                    {terminalBenchJobs.length > 0 && lmEvalJobs.length > 0 && <Divider sx={{ my: 1 }} />}
+                    {lmEvalJobs.length > 0 && (
+                      <Typography variant="caption" color="text.secondary" sx={{ textTransform: "uppercase", fontWeight: 700 }}>
+                        LM-Eval
+                      </Typography>
+                    )}
                     {lmEvalJobs.map((job) => (
                       <Box
                         key={job.id}
@@ -1367,8 +1671,6 @@ export const ModelEvaluationPage: React.FC = () => {
                         )}
                       </Box>
                     ))}
-
-
                   </Box>
                 )
               }

@@ -5338,3 +5338,183 @@ Run all configured benchmark suites against the currently deployed model.
 - The benchmark evaluator uses simple answer parsing, so scores should be
   treated as directional until prompt/parser calibration is improved for
   reasoning-heavy models.
+
+---
+
+## Qwen3.6 Deployment and Benchmark Parser Check - 2026-04-26
+
+### Current Goal
+Verify whether the low benchmark scores were caused by accidentally running the
+older 4B model instead of the intended `Qwen3.6-27B`, then fix any deployment or
+evaluation mismatch found.
+
+### Findings
+- The live `llamacpp-api` container was already serving
+  `Qwen3.6-27B-Q6_K.gguf`.
+- llama.cpp logs showed the actual command using
+  `/home/llamacpp/models/Qwen3.6-27B-Q6_K.gguf` with `--ctx-size 256000` and
+  `--n-gpu-layers 999`.
+- `/v1/models` reported `Qwen3.6-27B-Q6_K.gguf` with `n_params=26895998464`.
+- The backend management API was misleading because its Compose defaults still
+  initialized the manager config as `Qwen_Qwen3-VL-4B-Thinking / Q4_K_M`.
+- Benchmark MCQ parsing was too naive for Qwen reasoning output: if the model
+  repeated answer options before giving a final answer, the parser could pick
+  the first echoed option label instead of the final answer marker.
+
+### Changes Made
+- Updated `docker-compose.yml` defaults for `backend-api` and `llamacpp-api` to
+  `Qwen3.6-27B / Q6_K`.
+- Added the live 27B runtime settings to Compose defaults, including 256k
+  context, two-slot parallelism, q8 KV cache, dry sampling settings, and GPU
+  pinning to `0,2`.
+- Updated the backend manager default config loader to read the additional
+  runtime env vars so management status/preview reflects the intended command.
+- Improved benchmark MCQ parsing to prefer explicit final-answer/output markers
+  before scanning for option labels.
+
+### Validation Results
+- Rebuilt and force-recreated `backend-api` through Docker Compose.
+- `/api/v1/service/status` now reports `Qwen3.6-27B / Q6_K`, 256k context, GPU
+  execution with `cuda_devices=0,2`, and a healthy llama.cpp endpoint.
+- Live `/v1/models` still reports `Qwen3.6-27B-Q6_K.gguf`.
+- Parser smoke checks now map direct answers and Qwen-style `[Output]: C`
+  reasoning responses to the correct choice indexes.
+
+### Quick Post-Fix Benchmark
+- Job id: `a9dbeb71-5dcc-44d5-81e3-28a0c54e05a3`
+- MMLU, 5 samples: `1/5`, `20.0%`
+- ARC Easy, 5 samples: `3/5`, `60.0%`
+
+### Remaining Notes
+- The previous all-suite benchmark scores should be considered unreliable for
+  quality comparison because they were affected by answer parsing.
+- The quick post-fix sample is too small to establish model quality, but it
+  confirms the corrected parser and 27B deployment path are working together.
+- A full rerun can now be launched from the corrected backend if we want updated
+  all-suite numbers.
+
+---
+
+## Full All-Suite Benchmark Run - 2026-04-26
+
+### Current Goal
+Run the full, uncapped benchmark suite against the corrected
+`Qwen3.6-27B-Q6_K.gguf` deployment.
+
+### Setup
+- Model endpoint: deployed `llamacpp-api`
+- Model: `Qwen3.6-27B-Q6_K.gguf`
+- Backend-reported config: `Qwen3.6-27B / Q6_K`, 256k context, GPU execution on
+  `0,2`
+- Job id: `c0e605a9-3a2f-460b-b818-f2302f4daee4`
+- Job name: `full-all-suite-qwen36-27b-q6k`
+- Suites: MMLU, HellaSwag, ARC Easy, ARC Challenge, TruthfulQA, GSM8K, HumanEval
+- Run mode: no sample cap (`num_samples=null`)
+- Config: zero-shot, temperature `0`, max tokens `512`
+
+### Initial Status
+- Started: `2026-04-26T16:39:30Z`
+- Status at launch: running
+- Current benchmark at launch: `mmlu`
+- Results completed at launch: `0`
+- First monitor check at `2026-04-26T16:40:32Z`: still running `mmlu`,
+  progress `0.021%`, no errors.
+
+### Notes
+- This full run is expected to take much longer than the earlier 25-sample
+  sweep because it removes the per-suite sample cap.
+- A background monitor is polling the job every 60 seconds and will print final
+  summary output when the job completes, fails, or is cancelled.
+
+---
+
+## Terminal-Bench 2 Integration and Validation - 2026-04-26
+
+### Current Goal
+Add Terminal-Bench 2 as a first-class benchmark path (backend jobs, worker,
+API routes, frontend controls/results), then run oracle smoke, local-Qwen smoke,
+and launch a full local-Qwen run.
+
+### Backend/Worker Changes
+- Added `backend/modules/finetuning/terminal_bench_runner.py` with:
+  - Job models/status lifecycle
+  - Redis queue dispatch via `terminal_bench:jobs`
+  - SSE-friendly status/log updates
+  - Persistent result reload from `/data/terminal_bench_results`
+- Extended `backend/routes/finetuning.py` with:
+  - `GET /api/v1/finetune/terminal-bench/status`
+  - `GET /api/v1/finetune/terminal-bench/datasets`
+  - `POST /api/v1/finetune/terminal-bench/jobs`
+  - `GET /api/v1/finetune/terminal-bench/jobs`
+  - `GET /api/v1/finetune/terminal-bench/jobs/{id}`
+  - `GET /api/v1/finetune/terminal-bench/jobs/{id}/start` (SSE)
+  - `POST /api/v1/finetune/terminal-bench/jobs/{id}/cancel`
+  - `DELETE /api/v1/finetune/terminal-bench/jobs/{id}`
+- Added custom Harbor agent `backend/harbor_local_openai_agent.py` for
+  OpenAI-compatible local endpoint driving.
+- Extended worker logic in `backend/lm_eval_worker.py` for `WORKER_MODE=terminal_bench`:
+  - Harbor run execution
+  - Redis status/log publishing for Terminal-Bench
+  - Result parsing, summary artifact write, DB persistence with `type=terminal_bench`
+- Added `backend/Dockerfile.terminal-bench` and compose service
+  `terminal-bench-worker` using compose-only build flow.
+
+### Frontend Changes
+- Updated `frontend/src/pages/finetuning/ModelEvaluationPage.tsx`:
+  - Added Terminal-Bench run controls (smoke/full, task limit, concurrency)
+  - Added Terminal-Bench job list alongside LM-Eval job list
+  - Wired to new terminal-bench endpoints.
+
+### Validation Runs
+- Oracle smoke run completed through the new path:
+  - Job: `ebe704a1-d827-49f7-b79a-5c245258b600`
+  - Status: completed
+  - Summary showed trial exceptions (no successful trial), but end-to-end flow
+    from API -> Redis -> worker -> Harbor -> persisted artifacts worked.
+- Local-Qwen smoke runs completed through the new path:
+  - Jobs: `44602643-f2df-4360-853f-e31a69ae6fbb`,
+    `075b38c4-b13b-42f2-97b5-ced99dee3a84`,
+    `be800af4-fd13-47a9-817b-80dad6e15150`,
+    `7effaf3e-5d20-4a10-b701-d0b578b59b02`
+  - Latest smoke summary: `total_trials=1`, `passed_trials=0`,
+    `failed_trials=1`, `pass_rate=0.0`
+  - Exception class in latest smoke: `AgentTimeoutError`.
+
+### Full Run Launch
+- Full local-Qwen Terminal-Bench run launched via SSE/background monitor:
+  - Job id: `b9c8edf4-d9fe-4486-9eb9-58b7ad62f78a`
+  - Name: `terminal-bench-local-qwen-full`
+  - Dataset: `terminal-bench@2.0`
+  - Mode: `full`
+  - Current status at launch: running
+
+### Current Problems / Next Debug Targets
+- Local custom agent still underperforms on task execution and can time out.
+- Need tighter command-generation prompting and/or step policy for long tasks.
+- Consider adding richer telemetry from trial-level artifacts (`trial.log`,
+  `exception.txt`) into API job detail for quicker failure diagnosis.
+
+---
+
+## Deploy Fix - Flash Attention Argument - 2026-04-26
+
+### Current Goal
+Recover deployment/startup after Docker restart where managed `llama-server`
+failed to start with:
+`error while handling argument "--flash-attn": expected value for argument`.
+
+### Root Cause
+- `backend/modules/managers/llamacpp_manager.py` was emitting bare
+  `--flash-attn` instead of value-form `--flash-attn [on|off|auto]`.
+- In failing run logs, `--flash-attn` appeared with an invalid/empty value.
+
+### Change Made
+- Updated command generation to always pass explicit value:
+  - bool true -> `on`
+  - bool false -> `off`
+  - empty/invalid -> `auto`
+  - valid strings keep `auto|on|off`
+
+### Expected Outcome
+- Managed container launch command now includes valid flash-attn syntax and
+  should no longer fail argument parsing on startup.

@@ -887,17 +887,32 @@ class BenchmarkRunner:
     def _parse_mcq_answer(self, response: str, num_choices: int) -> int:
         """Parse the model's answer to get the choice index."""
         response = response.strip().upper()
-        # Look for a letter A-D at the start
-        for i in range(num_choices):
-            letter = chr(65 + i)
-            if response.startswith(letter):
-                return i
-            if f"({letter})" in response or f"{letter}." in response or f"{letter}:" in response:
-                return i
-        # Fallback: look for any valid letter
-        for i in range(num_choices):
-            if chr(65 + i) in response:
-                return i
+        valid_letters = "".join(chr(65 + i) for i in range(num_choices))
+
+        # Reasoning models often echo all choices before a final answer. Prefer
+        # explicit final-answer markers and use the last one seen.
+        marker_patterns = [
+            rf"(?:FINAL\s+ANSWER|ANSWER|OUTPUT|\[OUTPUT\])\s*[:=\-\]]*\s*[\"'`(]*([{valid_letters}])\b",
+            rf"(?:OPTION|CHOICE)\s+([{valid_letters}])\b",
+            rf"CORRESPONDS\s+TO\s+(?:OPTION\s+)?([{valid_letters}])\b",
+        ]
+        for pattern in marker_patterns:
+            matches = re.findall(pattern, response)
+            if matches:
+                return ord(matches[-1]) - 65
+
+        # Direct concise answers like "B" or "B." are common.
+        direct_match = re.match(rf"^[\"'`(]*([{valid_letters}])(?:\b|[.)])", response)
+        if direct_match:
+            return ord(direct_match.group(1)) - 65
+
+        # Last resort: use the last standalone valid letter near the end rather
+        # than the first option label echoed near the start of the response.
+        tail = response[-500:]
+        matches = re.findall(rf"\b([{valid_letters}])\b", tail)
+        if matches:
+            return ord(matches[-1]) - 65
+
         return -1  # Could not parse
 
     async def run_mmlu(

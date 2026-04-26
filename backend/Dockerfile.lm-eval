@@ -26,11 +26,14 @@ RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/lib
 # Install lm-eval and dependencies
 RUN pip3 install --no-cache-dir \
     "lm_eval[api]" \
+    harbor \
     redis \
-    pydantic
+    pydantic \
+    httpx
 
 COPY lm_eval_worker.py /app/lm_eval_worker.py
 COPY gguf_local_model.py /app/gguf_local_model.py
 COPY run_lm_eval.py /app/run_lm_eval.py
+COPY harbor_local_openai_agent.py /app/harbor_local_openai_agent.py
 
 ENTRYPOINT ["python3", "/app/lm_eval_worker.py"]

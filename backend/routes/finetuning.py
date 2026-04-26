@@ -250,6 +250,20 @@ except ImportError:
     LM_EVAL_AVAILABLE = False
     lm_eval_runner = None
 
+# Import and initialize Terminal-Bench runner
+try:
+    from modules.finetuning.terminal_bench_runner import (
+        TerminalBenchJob,
+        TerminalBenchStatus,
+        get_terminal_bench_runner,
+    )
+
+    terminal_bench_runner = get_terminal_bench_runner()
+    TERMINAL_BENCH_AVAILABLE = True
+except ImportError:
+    TERMINAL_BENCH_AVAILABLE = False
+    terminal_bench_runner = None
+
 ab_test_manager = ABTestManager()
 adapter_manager = get_adapter_manager()
 dataset_processor = DatasetProcessor()
@@ -2938,6 +2952,182 @@ class LMEvalJobRequest(BaseModel):
     gpu_device: Optional[int] = Field(default=None, description="GPU device index to use for evaluation")
     num_fewshot: int = Field(default=5, ge=0, le=50, description="Number of few-shot examples")
     limit: Optional[int] = Field(default=None, ge=1, le=10000, description="Max samples per task")
+
+
+class TerminalBenchJobRequest(BaseModel):
+    """Request to create a Terminal-Bench 2.0 job."""
+
+    name: str = Field(description="Job name")
+    dataset: str = Field(default="terminal-bench@2.0", description="Harbor dataset reference")
+    mode: str = Field(default="smoke", description="Run mode: smoke or full")
+    task_limit: Optional[int] = Field(default=None, ge=1, le=2000, description="Maximum tasks to run")
+    n_concurrent: int = Field(default=1, ge=1, le=64, description="Concurrent trial count")
+    timeout_multiplier: float = Field(default=1.0, ge=0.1, le=20.0, description="Timeout multiplier")
+    harbor_agent: str = Field(default="local-openai-agent", description="Agent label")
+    model_name: str = Field(default="openai/gpt-4o-mini", description="Model identifier passed to Harbor")
+    endpoint_url: str = Field(default="http://llamacpp-api:8080/v1", description="OpenAI-compatible endpoint URL")
+    api_key: str = Field(default="placeholder-api-key", description="Endpoint API key")
+
+
+@router.get("/terminal-bench/status")
+def get_terminal_bench_status():
+    """Check if Terminal-Bench integration is available."""
+    return {
+        "available": TERMINAL_BENCH_AVAILABLE,
+        "message": (
+            "Terminal-Bench integration is available"
+            if TERMINAL_BENCH_AVAILABLE
+            else "Terminal-Bench integration is not available"
+        ),
+    }
+
+
+@router.get("/terminal-bench/datasets")
+def list_terminal_bench_datasets():
+    """List available Terminal-Bench datasets."""
+    if not TERMINAL_BENCH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Terminal-Bench integration is not available")
+    return {"datasets": terminal_bench_runner.get_available_datasets()}
+
+
+@router.get("/terminal-bench/jobs")
+def list_terminal_bench_jobs():
+    """List all Terminal-Bench jobs."""
+    if not TERMINAL_BENCH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Terminal-Bench integration is not available")
+
+    jobs = terminal_bench_runner.list_jobs()
+    return {
+        "jobs": [
+            {
+                "id": j.id,
+                "name": j.name,
+                "dataset": j.dataset,
+                "mode": j.mode,
+                "task_limit": j.task_limit,
+                "n_concurrent": j.n_concurrent,
+                "timeout_multiplier": j.timeout_multiplier,
+                "harbor_agent": j.harbor_agent,
+                "model_name": j.model_name,
+                "endpoint_url": j.endpoint_url,
+                "status": j.status.value,
+                "progress": j.progress,
+                "results": j.results,
+                "error": j.error,
+                "artifacts": j.artifacts,
+                "created_at": j.created_at.isoformat(),
+                "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+            }
+            for j in jobs
+        ]
+    }
+
+
+@router.post("/terminal-bench/jobs")
+def create_terminal_bench_job(request: TerminalBenchJobRequest):
+    """Create a new Terminal-Bench job."""
+    if not TERMINAL_BENCH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Terminal-Bench integration is not available")
+    if request.mode not in ("smoke", "full"):
+        raise HTTPException(status_code=400, detail="mode must be one of: smoke, full")
+
+    job = TerminalBenchJob(
+        id=str(uuid.uuid4()),
+        name=request.name,
+        dataset=request.dataset,
+        mode=request.mode,
+        task_limit=request.task_limit,
+        n_concurrent=request.n_concurrent,
+        timeout_multiplier=request.timeout_multiplier,
+        harbor_agent=request.harbor_agent,
+        model_name=request.model_name,
+        endpoint_url=request.endpoint_url,
+        api_key=request.api_key,
+    )
+    terminal_bench_runner.create_job(job)
+    return {
+        "id": job.id,
+        "name": job.name,
+        "status": job.status.value,
+        "dataset": job.dataset,
+        "mode": job.mode,
+        "task_limit": job.task_limit,
+    }
+
+
+@router.get("/terminal-bench/jobs/{job_id}")
+def get_terminal_bench_job(job_id: str):
+    """Get a specific Terminal-Bench job."""
+    if not TERMINAL_BENCH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Terminal-Bench integration is not available")
+    job = terminal_bench_runner.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "id": job.id,
+        "name": job.name,
+        "dataset": job.dataset,
+        "mode": job.mode,
+        "task_limit": job.task_limit,
+        "n_concurrent": job.n_concurrent,
+        "timeout_multiplier": job.timeout_multiplier,
+        "harbor_agent": job.harbor_agent,
+        "model_name": job.model_name,
+        "endpoint_url": job.endpoint_url,
+        "status": job.status.value,
+        "progress": job.progress,
+        "results": job.results,
+        "error": job.error,
+        "artifacts": job.artifacts,
+        "created_at": job.created_at.isoformat(),
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "log_output": job.log_output[-8000:] if job.log_output else "",
+    }
+
+
+@router.delete("/terminal-bench/jobs/{job_id}")
+def delete_terminal_bench_job(job_id: str):
+    """Delete a Terminal-Bench job and persisted artifacts."""
+    if not TERMINAL_BENCH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Terminal-Bench integration is not available")
+    if not terminal_bench_runner.delete_job(job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"deleted": True}
+
+
+@router.post("/terminal-bench/jobs/{job_id}/cancel")
+def cancel_terminal_bench_job(job_id: str):
+    """Cancel a pending/running Terminal-Bench job."""
+    if not TERMINAL_BENCH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Terminal-Bench integration is not available")
+    if not terminal_bench_runner.cancel_job(job_id):
+        raise HTTPException(status_code=400, detail="Job is not cancelable")
+    return {"id": job_id, "status": "cancel_requested"}
+
+
+@router.get("/terminal-bench/jobs/{job_id}/start")
+async def start_terminal_bench_job(job_id: str):
+    """Start a Terminal-Bench job and stream updates as SSE."""
+    from fastapi.responses import StreamingResponse
+
+    if not TERMINAL_BENCH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Terminal-Bench integration is not available")
+    job = terminal_bench_runner.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != TerminalBenchStatus.PENDING:
+        raise HTTPException(status_code=400, detail=f"Job is already {job.status.value}")
+
+    async def stream_results():
+        async for update in terminal_bench_runner.run_benchmark(job):
+            yield f"data: {json.dumps(update)}\n\n"
+            await asyncio.sleep(0.1)
+
+    return StreamingResponse(
+        stream_results(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 @router.get("/lm-eval/public-benchmarks")
