@@ -47,10 +47,18 @@ The `llamacpp-api` inference service was not listed as running.
 
 Compose also warned that `HUGGINGFACE_TOKEN` was unset and defaulted to a blank string.
 
+### Verification Completed
+
+- Local commits were pushed to `origin/master`.
+- `docker compose up -d --build` completed successfully after one retry.
+- Backend `/health` returned HTTP `200`.
+- Backend `/api/v1/service/status` returned HTTP `200`.
+- Frontend root page returned HTTP `200`.
+- Qdrant `/healthz` returned HTTP `200`.
+- Embedding service `/health` returned HTTP `200`.
+
 ### Unfinished Or Follow-Up Items
 
-- Push the local branch so `origin/master` includes the cleanup commit.
-- Rebuild via Docker Compose and confirm the app still works after the directory reorganization.
 - Set `HUGGINGFACE_TOKEN` if model download or Hugging Face access is needed.
 - Historical metrics are still simulated in `frontend/src/services/api.ts`.
 - Monitoring WebSocket endpoint is not implemented; the UI falls back to polling.
