@@ -56,6 +56,41 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
     }
   }, [logs, autoScroll])
 
+  const normalizeLogs = (rawLogs: unknown): LogEntry[] => {
+    if (!rawLogs) return []
+    if (Array.isArray(rawLogs)) {
+      return rawLogs
+        .map((entry) => {
+          if (typeof entry === 'string') {
+            return { message: entry, timestamp: new Date().toISOString(), level: 'INFO' }
+          }
+          if (entry && typeof entry === 'object') {
+            const obj = entry as Record<string, unknown>
+            const message = String(obj.message ?? obj.text ?? '')
+            if (!message) return null
+            return {
+              message,
+              timestamp: String(obj.timestamp ?? new Date().toISOString()),
+              level: typeof obj.level === 'string' ? obj.level : 'INFO'
+            }
+          }
+          return null
+        })
+        .filter((v): v is LogEntry => Boolean(v))
+    }
+    if (typeof rawLogs === 'string') {
+      return rawLogs
+        .split('\n')
+        .filter((line) => line.trim().length > 0)
+        .map((line) => ({
+          message: line,
+          timestamp: new Date().toISOString(),
+          level: 'INFO'
+        }))
+    }
+    return []
+  }
+
   // Fetch initial logs
   const fetchInitialLogs = async () => {
     setIsLoading(true)
@@ -66,7 +101,7 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
         throw new Error(`HTTP ${response.status}: ${response.statusText}`)
       }
       const data = await response.json()
-      setLogs(data.logs || [])
+      setLogs(normalizeLogs(data.logs))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch logs')
       console.error('Error fetching logs:', err)
@@ -95,8 +130,13 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
           return
         }
         
+        const message = data.message ?? data.text
+        if (!message) {
+          return
+        }
+
         const newLog: LogEntry = {
-          message: data.message,
+          message,
           timestamp: data.timestamp || new Date().toISOString(),
           level: 'INFO'
         }

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 import httpx
@@ -45,9 +46,17 @@ class LocalOpenAIAgent(BaseAgent):
         model = self.model_name or os.getenv("OPENAI_MODEL", "openai/gpt-4o-mini")
         max_steps = int(os.getenv("TB_AGENT_MAX_STEPS", "40"))
         max_obs_chars = int(os.getenv("TB_AGENT_MAX_OBS_CHARS", "6000"))
+        model_timeout_sec = float(os.getenv("TB_AGENT_MODEL_TIMEOUT_SEC", "75"))
+        command_timeout_sec = int(os.getenv("TB_AGENT_COMMAND_TIMEOUT_SEC", "120"))
+        max_model_tokens = int(os.getenv("TB_AGENT_MAX_MODEL_TOKENS", "256"))
+        max_same_command_repeats = int(os.getenv("TB_AGENT_MAX_SAME_COMMAND_REPEATS", "2"))
 
         system_prompt = (
             "You are an autonomous terminal agent operating in a container task. "
+            "Your objective is to complete the task quickly and safely with short, high-value commands. "
+            "Rules: avoid long-running or interactive commands (tail -f, watch, top, less, vim, nano). "
+            "Use one command per step and only inspect files/dirs relevant to the task. "
+            "If the task is done or cannot proceed due to a concrete blocker, return FINISH immediately. "
             "At each step, reply in exactly one of these formats:\n"
             "CMD: <single shell command>\n"
             "FINISH: <brief completion summary>\n"
@@ -57,8 +66,10 @@ class LocalOpenAIAgent(BaseAgent):
         transcript: List[Dict[str, Any]] = []
         usage_input = 0
         usage_output = 0
+        last_commands: List[str] = []
+        model_call_latencies_ms: List[int] = []
 
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        async with httpx.AsyncClient(timeout=model_timeout_sec) as client:
             for step in range(1, max_steps + 1):
                 user_payload = {
                     "instruction": instruction,
@@ -72,8 +83,9 @@ class LocalOpenAIAgent(BaseAgent):
                         {"role": "user", "content": json.dumps(user_payload)},
                     ],
                     "temperature": 0.1,
-                    "max_tokens": 1024,
+                    "max_tokens": max_model_tokens,
                 }
+                model_call_started = datetime.utcnow()
                 response = await client.post(
                     f"{base_url}/chat/completions",
                     headers={
@@ -82,6 +94,8 @@ class LocalOpenAIAgent(BaseAgent):
                     },
                     json=request_body,
                 )
+                model_call_ms = int((datetime.utcnow() - model_call_started).total_seconds() * 1000)
+                model_call_latencies_ms.append(model_call_ms)
                 response.raise_for_status()
                 data = response.json()
                 usage = data.get("usage", {})
@@ -99,9 +113,20 @@ class LocalOpenAIAgent(BaseAgent):
                     break
                 if action != "exec":
                     raise RuntimeError(f"Unsupported model action: {action!r}")
-                command = value
+                command = self._sanitize_command(value)
 
-                result = await environment.exec(command, timeout_sec=180)
+                last_commands.append(command)
+                if len(last_commands) > max_same_command_repeats + 1:
+                    last_commands = last_commands[-(max_same_command_repeats + 1) :]
+                if (
+                    len(last_commands) == max_same_command_repeats + 1
+                    and len(set(last_commands)) == 1
+                ):
+                    raise RuntimeError(
+                        f"Model repeated the same command {len(last_commands)} times: {command!r}"
+                    )
+
+                result = await environment.exec(command, timeout_sec=command_timeout_sec)
                 observation = {
                     "command": command,
                     "return_code": result.return_code,
@@ -132,6 +157,9 @@ class LocalOpenAIAgent(BaseAgent):
             "agent": self.name(),
             "steps_executed": len(transcript),
             "transcript_tail": transcript[-5:],
+            "model_call_timeout_sec": model_timeout_sec,
+            "command_timeout_sec": command_timeout_sec,
+            "model_call_latencies_ms_tail": model_call_latencies_ms[-10:],
         }
 
     @staticmethod
@@ -165,3 +193,25 @@ class LocalOpenAIAgent(BaseAgent):
                 return ("exec", candidate)
 
         raise RuntimeError("Model returned no actionable content")
+
+    @staticmethod
+    def _sanitize_command(command: str) -> str:
+        command = command.strip()
+        if not command:
+            raise RuntimeError("Parsed empty command")
+
+        blocked_patterns = [
+            r"\bwatch\b",
+            r"\btop\b",
+            r"\bhtop\b",
+            r"\bless\b",
+            r"\bmore\b",
+            r"\bvim\b",
+            r"\bnano\b",
+            r"\btail\s+-f\b",
+            r"\bsleep\s+([3-9]\d{1,}|\d{3,})\b",
+        ]
+        for pattern in blocked_patterns:
+            if re.search(pattern, command, flags=re.IGNORECASE):
+                raise RuntimeError(f"Blocked potentially non-terminating command: {command!r}")
+        return command

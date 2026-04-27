@@ -5518,3 +5518,96 @@ failed to start with:
 ### Expected Outcome
 - Managed container launch command now includes valid flash-attn syntax and
   should no longer fail argument parsing on startup.
+
+---
+
+## Frontend Container Logs 404 Fix - 2026-04-26
+
+### Current Goal
+Fix Deploy page "Container Logs" panel failing with `HTTP 404: Not Found`.
+
+### Problems Found
+- Frontend log viewer requested:
+  - `GET /api/v1/logs/container`
+  - `GET /api/v1/logs/container/stream`
+- Backend only exposed:
+  - `GET /api/v1/container/logs`
+  - `GET /api/v1/container/logs/stream`
+- Backend also hardcoded container name `llama-nexus-llamacpp-api`, but runtime
+  container is `llamacpp-api`.
+- SSE payload used `text` field while frontend expected `message`.
+
+### Changes Made
+- Updated `backend/routes/system.py`:
+  - Added legacy aliases:
+    - `/api/v1/logs/container`
+    - `/api/v1/logs/container/stream`
+  - Reworked non-stream logs endpoint to use `docker logs --tail N` directly.
+  - Made target container configurable via `LLAMACPP_CONTAINER_NAME`
+    (default `llamacpp-api`).
+  - Updated SSE payload to include `message` and `timestamp`.
+- Updated `frontend/src/components/LogViewer.tsx`:
+  - Added robust log normalization for string or object log payloads.
+  - Accepted stream entries from either `message` or `text`.
+
+### Verification
+- Rebuilt with Docker Compose (no host rebuild):
+  - `docker compose up -d --build backend-api llamacpp-frontend`
+- Endpoint checks now return 200:
+  - `/api/v1/container/logs?lines=2`
+  - `/api/v1/logs/container?lines=2`
+- SSE endpoint returns streaming bytes (curl received data continuously before
+  timeout), confirming route availability and live stream response.
+
+---
+
+## Terminal-Bench Agent Policy Tightening - 2026-04-26
+
+### Current Goal
+Address the next unresolved item: improve local Harbor agent behavior to reduce
+timeouts and command-loop inefficiency.
+
+### Problems Confirmed
+- Trial artifacts still show `AgentTimeoutError` against local Qwen tasks.
+- Backend became intermittently unresponsive when log streaming endpoint was
+  held open due to blocking stream reads (separate but discovered during this
+  validation cycle).
+
+### Changes Made
+- Updated `backend/harbor_local_openai_agent.py`:
+  - Added configurable model request timeout:
+    - `TB_AGENT_MODEL_TIMEOUT_SEC` (default `75`)
+  - Added configurable command timeout:
+    - `TB_AGENT_COMMAND_TIMEOUT_SEC` (default `120`)
+  - Reduced generation budget per step:
+    - `TB_AGENT_MAX_MODEL_TOKENS` (default `256`)
+  - Added repeated-command guard:
+    - `TB_AGENT_MAX_SAME_COMMAND_REPEATS` (default `2`)
+  - Added command sanitizer that blocks non-terminating interactive commands
+    (`watch`, `top`, `htop`, `less`, `more`, `vim`, `nano`, `tail -f`,
+    extreme `sleep`).
+  - Added model latency telemetry in context metadata:
+    `model_call_latencies_ms_tail`.
+- Updated `backend/routes/system.py` log stream implementation:
+  - Replaced blocking `subprocess.Popen(...).stdout.readline()` loop with
+    async subprocess reads via `asyncio.create_subprocess_exec`.
+  - Added graceful terminate/kill handling on stream shutdown.
+
+### Deployment and Validation
+- Rebuilt via Docker Compose only:
+  - `docker compose up -d --build terminal-bench-worker`
+  - `docker compose up -d --build backend-api`
+- Confirmed backend responsiveness restored:
+  - `/health` and `/api/v1/health` return `200`.
+- Launched new smoke run:
+  - Job: `b93054dc-ad20-42dc-b218-cbef74712134`
+  - Mode: smoke, `task_limit=1`, `timeout_multiplier=0.2`
+  - Completed with `AgentTimeoutError` after `180s` (bounded by run timeout).
+- Confirmed updated agent code is present in worker image (`/app/harbor_local_openai_agent.py`)
+  with new timeout/policy controls.
+
+### Current State / Next Target
+- Agent path now has tighter, explicit execution policy and telemetry.
+- Primary remaining limiter is model responsiveness under Terminal-Bench task
+  pressure; next practical step is tuning Harbor/agent timeout budget and/or
+  reducing model first-token latency under benchmark load.
