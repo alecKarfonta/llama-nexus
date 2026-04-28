@@ -274,39 +274,46 @@ def run_evaluation(
     num_fewshot: int = 5,
     limit: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Run lm-eval benchmark by connecting to llama.cpp API server."""
+    """Run lm-eval benchmark via the llama.cpp API server using local-chat-completions."""
     
-    # Create output directory
     output_path = Path(OUTPUT_DIR) / f"lm_eval_{job_id}"
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Connect to the llama.cpp API server
-    # The model_path is informational - the server already has a model loaded
-    # We use the gguf model type which connects to a llama.cpp server
-    # Build command - use custom run_lm_eval.py wrapper that imports the gguf-local model
-    # This registers the model with lm-eval before running evaluation
+    api_base_url = os.getenv("LLAMACPP_API_URL", "http://llamacpp-api:8080")
+    api_key = os.getenv("LM_EVAL_API_KEY", "placeholder-api-key")
+    proxy_port = os.getenv("PROXY_PORT", "8888")
+    
+    # The proxy runs locally and translates logprobs format
+    proxy_base_url = f"http://127.0.0.1:{proxy_port}"
+    
     task_str = ",".join(tasks)
     
-    # Use the wrapper script that imports our custom model
+    model_args = json.dumps({
+        "base_url": f"{proxy_base_url}/v1/completions",
+        "pretrained": "Qwen/Qwen2.5-7B",
+        "header": {"Authorization": f"Bearer {api_key}"},
+        "num_concurrent": 32,
+        "max_length": 4096,
+    })
+    
     cmd = [
-        "python3", "/app/run_lm_eval.py",
-        "--model_path", model_path,
+        "lm-eval", "run",
+        "--model", "local-completions",
+        "--model_args", model_args,
         "--tasks", task_str,
         "--num_fewshot", str(num_fewshot),
         "--output_path", str(output_path),
-        "--n_ctx", "2048",
-        "--n_gpu_layers", "-1",
-        "--n_batch", "512",
+        "--batch_size", "auto",
+        "--log_samples",
     ]
     
     if limit:
         cmd.extend(["--limit", str(limit)])
     
     print(f"[LM-Eval Worker] Running: {' '.join(cmd)}")
-    publish_log(client, job_id, f"Starting evaluation: {task_str}")
-    publish_status(client, job_id, "running", 0.0, f"Starting {len(tasks)} benchmark(s)...")
+    publish_log(client, job_id, f"Starting evaluation via API: {task_str}")
+    publish_status(client, job_id, "running", 0.0, f"Starting {len(tasks)} benchmark(s) via {api_base_url}...")
     
-    # Run the command and stream output
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -326,7 +333,6 @@ def run_evaluation(
         all_output.append(line)
         print(f"[lm_eval] {line}")
         
-        # Parse progress from output
         if "%" in line:
             match = re.search(r"(\d+)%", line)
             if match:
@@ -335,8 +341,7 @@ def run_evaluation(
                     last_progress = progress
                     publish_status(client, job_id, "running", progress, line[:100])
         
-        # Publish log lines (not too frequently)
-        if not line.startswith(("╭", "│", "╰", "─")):
+        if not line.startswith(("\u256c", "\u2502", "\u256f", "\u2500")):
             publish_log(client, job_id, line[:200])
     
     process.wait()
@@ -346,7 +351,6 @@ def run_evaluation(
         publish_status(client, job_id, "failed", last_progress, error_msg, error=error_msg)
         return {"error": error_msg, "output": "\n".join(all_output[-50:])}
     
-    # Parse results
     results = parse_results(output_path)
     publish_status(client, job_id, "completed", 100.0, "Evaluation complete", results=results)
     
@@ -357,8 +361,11 @@ def parse_results(output_path: Path) -> Dict[str, Any]:
     """Parse lm-eval results from output directory."""
     results = {"tasks": {}}
     
-    # Look for results.json in output directory or subdirectories
-    for results_file in output_path.rglob("results.json"):
+    # Look for results*.json in output directory or subdirectories
+    # lm-eval saves as results_TIMESTAMP.json in newer versions
+    results_files = sorted(output_path.rglob("results*.json"), reverse=True)
+    
+    for results_file in results_files:
         try:
             with open(results_file) as f:
                 raw_results = json.load(f)
@@ -370,18 +377,14 @@ def parse_results(output_path: Path) -> Dict[str, Any]:
                 metrics = {}
                 for key, value in task_results.items():
                     if isinstance(value, (int, float)):
-                        # Strip lm-eval v0.4+ filter suffixes (e.g., "acc,none" -> "acc")
                         clean_key = key.split(",")[0]
-                        # Skip stderr keys
                         if "stderr" in clean_key:
                             continue
-                        # Convert to percentage if it's a ratio
                         if 0 <= value <= 1:
                             metrics[clean_key] = round(value * 100, 2)
                         else:
                             metrics[clean_key] = round(value, 4) if isinstance(value, float) else value
                 
-                # Get primary score (now using cleaned keys)
                 primary_score = metrics.get("acc_norm") or metrics.get("acc") or metrics.get("exact_match") or 0
                 
                 results["tasks"][task_name] = {
@@ -389,7 +392,7 @@ def parse_results(output_path: Path) -> Dict[str, Any]:
                     "metrics": metrics,
                 }
             
-            break  # Found results, stop searching
+            break
         except (json.JSONDecodeError, IOError) as e:
             print(f"[LM-Eval Worker] Error parsing results: {e}")
     
@@ -681,40 +684,18 @@ def process_job(client: redis.Redis, job_data: str) -> None:
     
     print(f"[LM-Eval Worker] Processing job {job_id}")
     
-    # Get model path
-    model_name = job.get("model_path") or job.get("model_name")
-    if not model_name:
-        # Try to find any available model
-        models_path = Path(MODELS_DIR)
-        gguf_files = list(models_path.glob("*.gguf"))
-        if gguf_files:
-            model_path = str(gguf_files[0])
-            print(f"[LM-Eval Worker] No model specified, using: {model_path}")
-        else:
-            publish_status(client, job_id, "failed", 0, "No model specified and no models found", 
-                          error="No GGUF model available")
-            return
-    else:
-        model_path = find_model_path(model_name)
-        if not model_path:
-            publish_status(client, job_id, "failed", 0, f"Model not found: {model_name}",
-                          error=f"Model not found: {model_name}")
-            return
+    # model_path is informational when using API backend - the server already has a model loaded
+    model_name = job.get("model_path") or job.get("model_name") or "api-model"
+    model_path = model_name  # Kept for logging and DB record only
     
-    print(f"[LM-Eval Worker] Using model: {model_path}")
-    publish_log(client, job_id, f"Loading model: {model_path}")
-    
-    # Set GPU device if specified
-    gpu_device = job.get("gpu_device")
-    if gpu_device is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_device)
-        print(f"[LM-Eval Worker] Using GPU device: {gpu_device}")
-        publish_log(client, job_id, f"Using GPU device: {gpu_device}")
+    print(f"[LM-Eval Worker] Evaluating via API (model label: {model_path})")
+    publish_log(client, job_id, f"Evaluating model: {model_path} via API")
     
     # Get task configuration
     tasks = job.get("tasks", ["hellaswag"])
     num_fewshot = job.get("num_fewshot", 5)
     limit = job.get("limit")
+    gpu_device = job.get("gpu_device")
     
     # Run evaluation
     try:
@@ -809,16 +790,11 @@ def process_terminal_bench_job(client: redis.Redis, job_data: str) -> None:
 
 def poll_for_jobs():
     """Main polling loop for benchmark jobs."""
+    api_url = os.getenv("LLAMACPP_API_URL", "http://llamacpp-api:8080")
     print(f"[Worker] Starting job polling mode={WORKER_MODE}")
-    print(f"[Worker] Models directory: {MODELS_DIR}")
+    print(f"[Worker] LM-Eval API endpoint: {api_url}")
     print(f"[Worker] LM-Eval output directory: {OUTPUT_DIR}")
     print(f"[Worker] Terminal-Bench output directory: {TERMINAL_BENCH_OUTPUT_DIR}")
-    
-    # List available models
-    models_path = Path(MODELS_DIR)
-    if models_path.exists():
-        gguf_files = list(models_path.glob("*.gguf"))
-        print(f"[LM-Eval Worker] Available GGUF models: {[f.name for f in gguf_files]}")
     
     client = connect_redis()
     
@@ -850,16 +826,8 @@ def main():
     print(f"[Worker] Benchmark Worker (mode={WORKER_MODE})")
     print("=" * 60)
     
-    # Check for GPU
-    try:
-        import torch
-        if torch.cuda.is_available():
-            print(f"[Worker] GPU available: {torch.cuda.get_device_name(0)}")
-            print(f"[Worker] CUDA version: {torch.version.cuda}")
-        else:
-            print("[Worker] Warning: No GPU detected, running on CPU")
-    except ImportError:
-        print("[Worker] PyTorch not available for GPU check")
+    api_url = os.getenv("LLAMACPP_API_URL", "http://llamacpp-api:8080")
+    print(f"[Worker] Using API endpoint: {api_url}")
     
     # Create output directory
     Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)

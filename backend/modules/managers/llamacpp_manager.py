@@ -232,6 +232,8 @@ class LlamaCPPManager:
         add_param_if_set(cmd, "--main-gpu", self.config["performance"].get("main_gpu"))
         add_param_if_set(cmd, "--cache-type-k", self.config["performance"].get("cache_type_k"))
         add_param_if_set(cmd, "--cache-type-v", self.config["performance"].get("cache_type_v"))
+        # Disable context checkpoints for benchmark throughput (avoids 149MB checkpoint thrashing)
+        cmd.extend(["--ctx-checkpoints", "0"])
         
         # Add optional sampling parameters
         add_param_if_set(cmd, "--temp", self.config["sampling"].get("temperature"))

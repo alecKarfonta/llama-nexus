@@ -49,7 +49,7 @@ services:
       - MODEL_VARIANT=Q6_K
       - MODEL_REPO=unsloth/Qwen3.6-27B-GGUF
       # Host path for chat templates so backend can mount it into the managed container
-      - TEMPLATES_HOST_DIR=/home/alec/git/llama-nexus/chat-templates
+      - TEMPLATES_HOST_DIR=${PWD}/chat-templates
       - CONTEXT_SIZE=256000
       - GPU_LAYERS=999
       - TEMPERATURE=0.15
@@ -74,7 +74,7 @@ services:
       - CACHE_TYPE_K=q8_0
       - CACHE_TYPE_V=q8_0
       - N_CPU_MOE=0
-      - API_KEY=placeholder-api-key
+      - API_KEY=${API_KEY:-placeholder-api-key}
       - TEMPLATE_PATH=/home/llamacpp/chat-template.jinja
       # Enable Docker mode and set container name
       - USE_DOCKER=true
@@ -122,7 +122,7 @@ services:
       - VLM_MODEL_NAME=${VLM_MODEL_NAME:-Qwen_Qwen3-VL-4B-Thinking}
       - VLM_ENABLED=${VLM_ENABLED:-true}
       - USE_DEPLOYED_EMBEDDINGS=true
-      - EMBEDDING_SERVICE_API_KEY=llamacpp-embed
+      - EMBEDDING_SERVICE_API_KEY=${EMBEDDING_SERVICE_API_KEY:-llamacpp-embed}
       - DEFAULT_EMBEDDING_MODEL=nomic-embed-text-v1.5
     volumes:
       - backend_data:/data
@@ -211,7 +211,7 @@ services:
       - TOP_P=0.95
       - TOP_K=0
       - MIN_P=0.02
-      - API_KEY=placeholder-api-key
+      - API_KEY=${API_KEY:-placeholder-api-key}
       - BATCH_SIZE=1024
       - UBATCH_SIZE=512
       - THREADS=44
@@ -335,7 +335,7 @@ services:
       - GPU_LAYERS=999
       - HOST=0.0.0.0
       - PORT=8080
-      - API_KEY=llamacpp-embed
+      - API_KEY=${EMBEDDING_SERVICE_API_KEY:-llamacpp-embed}
       - THREADS=8
       - BATCH_SIZE=1024
       - UBATCH_SIZE=1024
@@ -423,7 +423,7 @@ services:
       retries: 3
       start_period: 60s
 
-  # LM-Eval Worker - GPU-accelerated model evaluation
+  # LM-Eval Worker - API-backed model evaluation (no local GPU needed)
   lm-eval-worker:
     build:
       context: ./backend
@@ -432,28 +432,13 @@ services:
     profiles:
       - eval  # Opt-in: start with 'docker compose --profile eval up -d'
     hostname: lm-eval-worker
-    shm_size: '16gb'
     volumes:
-      - gpt_oss_models:/home/llamacpp/models:ro
       - backend_data:/data
-      - huggingface_cache:/root/.cache/huggingface
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - MODELS_DIR=/home/llamacpp/models
       - LM_EVAL_OUTPUT_DIR=/data/lm_eval_results
-      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - LLAMACPP_API_URL=http://llamacpp-api:8080
       - LM_EVAL_API_KEY=placeholder-api-key
-      - OPENAI_API_KEY=placeholder-api-key
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     depends_on:
       redis:
         condition: service_healthy
@@ -463,7 +448,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 120s
+      start_period: 60s
 
   # Terminal-Bench Worker - Harbor-based agentic benchmark runner
   terminal-bench-worker:

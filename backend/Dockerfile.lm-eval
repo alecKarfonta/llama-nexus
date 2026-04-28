@@ -1,31 +1,26 @@
-FROM nvidia/cuda:13.0.1-devel-ubuntu22.04
+FROM python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
-    apt-get install -y python3 python3-pip git cmake build-essential ninja-build && \
+    apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install PyTorch nightly with CUDA 13.0 support for Blackwell GPUs
-# Note: Using cu128 nightly as cu130 may not be available yet - driver is forward compatible
-RUN pip3 install --no-cache-dir --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
-
-# Install llama-cpp-python for gguf-local lm-eval model backend.
-# Build CPU-only and serialize compile jobs to reduce build-time memory pressure.
-RUN CMAKE_BUILD_PARALLEL_LEVEL=1 CMAKE_ARGS="-DGGML_CUDA=off" pip3 install --no-cache-dir llama-cpp-python
-
-# Install lm-eval and dependencies
 RUN pip3 install --no-cache-dir \
     "lm_eval[api]" \
     redis \
     pydantic \
-    httpx
+    httpx \
+    transformers \
+    requests \
+    aiohttp
 
 COPY lm_eval_worker.py /app/lm_eval_worker.py
-COPY gguf_local_model.py /app/gguf_local_model.py
-COPY run_lm_eval.py /app/run_lm_eval.py
-COPY harbor_local_openai_agent.py /app/harbor_local_openai_agent.py
+COPY logprobs_proxy.py /app/logprobs_proxy.py
 
-ENTRYPOINT ["python3", "/app/lm_eval_worker.py"]
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENTRYPOINT ["/app/entrypoint.sh"]
