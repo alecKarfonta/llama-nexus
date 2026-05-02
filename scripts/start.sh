@@ -182,7 +182,7 @@ if [ $# -eq 0 ]; then
         "-c" "${CONTEXT_SIZE:-4096}"
         "--api-key" "$API_KEY"
         "--metrics" 
-        "--flash-attn" "auto"
+        "--flash-attn"
         "--cont-batching"
     )
     

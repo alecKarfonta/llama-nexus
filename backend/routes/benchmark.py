@@ -199,6 +199,18 @@ def get_llm_endpoint(request: Request, custom_endpoint: Optional[str] = None) ->
     )
 
 
+def get_llm_api_key(request: Request, custom_endpoint: Optional[str] = None) -> Optional[str]:
+    """Get the API key for the managed local LLM endpoint."""
+    if custom_endpoint:
+        return None
+
+    manager = get_manager(request)
+    if not manager:
+        return None
+
+    return manager.config.get("server", {}).get("api_key")
+
+
 def calculate_percentile(data: List[float], percentile: float) -> float:
     """Calculate a percentile value."""
     if not data:
@@ -327,7 +339,7 @@ async def run_single_inference(
                                 
                                 # Count tokens from delta
                                 delta = data.get("choices", [{}])[0].get("delta", {})
-                                content = delta.get("content", "")
+                                content = delta.get("content") or delta.get("reasoning_content", "")
                                 if content:
                                     completion_tokens += 1  # Approximate: 1 chunk = 1 token
                                     full_response += content
@@ -394,6 +406,7 @@ async def speed_test(request: Request, body: SpeedTestRequest):
     """
     try:
         endpoint = get_llm_endpoint(request, body.endpoint)
+        api_key = get_llm_api_key(request, body.endpoint)
     except HTTPException as e:
         raise e
     
@@ -412,6 +425,7 @@ async def speed_test(request: Request, body: SpeedTestRequest):
                     prompt=body.prompt,
                     max_tokens=body.max_tokens,
                     temperature=body.temperature,
+                    api_key=api_key,
                     stream=True
                 )
                 
@@ -479,6 +493,7 @@ async def speed_test_sync(request: Request, body: SpeedTestRequest):
     """
     try:
         endpoint = get_llm_endpoint(request, body.endpoint)
+        api_key = get_llm_api_key(request, body.endpoint)
     except HTTPException as e:
         raise e
     
@@ -493,6 +508,7 @@ async def speed_test_sync(request: Request, body: SpeedTestRequest):
                 prompt=body.prompt,
                 max_tokens=body.max_tokens,
                 temperature=body.temperature,
+                api_key=api_key,
                 stream=True
             )
             

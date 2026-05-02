@@ -59,6 +59,7 @@ def _merge_and_persist_config(new_config: Dict[str, Any]):
 # RAG Embedding Configuration
 USE_DEPLOYED_EMBEDDINGS = os.getenv("USE_DEPLOYED_EMBEDDINGS", "false").lower() == "true"
 EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "http://llamacpp-embed:8080/v1")
+EMBEDDING_SERVICE_API_KEY = os.getenv("EMBEDDING_SERVICE_API_KEY")
 DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "nomic-embed-text-v1.5")
 GRAPHRAG_ENABLED = os.getenv("GRAPHRAG_ENABLED", "true").lower() == "true"
 
@@ -69,7 +70,7 @@ def create_embedder(model_name: Optional[str] = None, use_deployed: Optional[boo
     """
     Factory function to create or retrieve a cached embedder instance.
     """
-    from modules.rag.embeddings import LocalEmbedder, APIEmbedder
+    from modules.rag.embedders import LocalEmbedder, APIEmbedder
     
     is_deployed = use_deployed if use_deployed is not None else USE_DEPLOYED_EMBEDDINGS
     target_model = model_name or DEFAULT_EMBEDDING_MODEL
@@ -88,7 +89,11 @@ def create_embedder(model_name: Optional[str] = None, use_deployed: Optional[boo
                 url = f"http://{url}"
                 
             logger.info(f"Creating new API Embedder caching instance: {url} (model: {target_model})")
-            embedder = APIEmbedder(url=url, model=target_model)
+            embedder = APIEmbedder(
+                base_url=url,
+                model_name=target_model,
+                api_key=EMBEDDING_SERVICE_API_KEY,
+            )
         else:
             logger.info(f"Creating new Local Embedder caching instance for model: {target_model}")
             embedder = LocalEmbedder(model_name=target_model)

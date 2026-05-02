@@ -96,7 +96,7 @@ class EmbeddingManager:
             "--pooling", self.config["performance"]["pooling_type"],
             "--embeddings",
             "--metrics",
-            "--flash-attn", "auto",
+            "--flash-attn",
             "--cont-batching",
         ]
         

@@ -22,6 +22,8 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 MODELS_DIR = os.getenv("MODELS_DIR", "/home/llamacpp/models")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "2"))
 OUTPUT_DIR = os.getenv("LM_EVAL_OUTPUT_DIR", "/data/lm_eval_results")
+TERMINAL_BENCH_OUTPUT_DIR = os.getenv("TERMINAL_BENCH_OUTPUT_DIR", "/data/terminal_bench_results")
+WORKER_MODE = os.getenv("WORKER_MODE", "lm_eval")
 DB_PATH = Path("/app/data/benchmarks.db") if os.path.exists("/app") else Path("/data/benchmarks.db")
 
 
@@ -76,6 +78,43 @@ def publish_log(client: redis.Redis, job_id: str, message: str):
         "timestamp": datetime.utcnow().isoformat(),
     }
     client.publish(f"lm_eval:logs:{job_id}", json.dumps(payload))
+
+
+def publish_terminal_bench_status(
+    client: redis.Redis,
+    job_id: str,
+    status: str,
+    progress: float = 0.0,
+    message: str = "",
+    results: Optional[Dict[str, Any]] = None,
+    artifacts: Optional[Dict[str, Any]] = None,
+    error: Optional[str] = None,
+):
+    payload = {
+        "job_id": job_id,
+        "status": status,
+        "progress": progress,
+        "message": message,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    if results is not None:
+        payload["results"] = results
+    if artifacts is not None:
+        payload["artifacts"] = artifacts
+    if error:
+        payload["error"] = error
+    client.publish(f"terminal_bench:status:{job_id}", json.dumps(payload))
+    client.set(f"terminal_bench:job:{job_id}:status", json.dumps(payload), ex=86400)
+
+
+def publish_terminal_bench_log(client: redis.Redis, job_id: str, message: str):
+    payload = {
+        "job_id": job_id,
+        "type": "log",
+        "message": message,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    client.publish(f"terminal_bench:logs:{job_id}", json.dumps(payload))
 
 
 def save_to_db(
@@ -146,6 +185,63 @@ def save_to_db(
         print(f"[LM-Eval Worker] Saved results to database: {job_id}")
     except Exception as e:
         print(f"[LM-Eval Worker] Failed to save to database: {e}")
+
+
+def save_terminal_bench_to_db(
+    job_id: str,
+    job_name: str,
+    config: Dict[str, Any],
+    summary: Dict[str, Any],
+):
+    """Save Terminal-Bench benchmark results to SQLite database."""
+    try:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS benchmark_results (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                type TEXT NOT NULL,
+                endpoint TEXT,
+                model_name TEXT,
+                config TEXT,
+                metrics TEXT,
+                runs TEXT,
+                status TEXT DEFAULT 'completed',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+            """
+        )
+
+        now = datetime.utcnow().isoformat()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO benchmark_results
+            (id, name, type, endpoint, model_name, config, metrics, runs, status, created_at, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                job_name,
+                "terminal_bench",
+                config.get("endpoint_url"),
+                config.get("model_name"),
+                json.dumps(config),
+                json.dumps(summary),
+                json.dumps([]),
+                summary.get("status", "completed"),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        print(f"[Terminal-Bench Worker] Saved results to database: {job_id}")
+    except Exception as e:
+        print(f"[Terminal-Bench Worker] Failed to save to database: {e}")
 
 
 def find_model_path(model_name: str) -> Optional[str]:
@@ -300,6 +396,276 @@ def parse_results(output_path: Path) -> Dict[str, Any]:
     return results
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _find_harbor_result_json(job_runs_dir: Path) -> Optional[Path]:
+    # Harbor jobs are typically nested under jobs-dir/<job-id>/result.json.
+    candidates = sorted(job_runs_dir.rglob("result.json"))
+    if not candidates:
+        return None
+    # Prefer shallow paths; trial-level results are often deeper.
+    candidates.sort(key=lambda p: (len(p.relative_to(job_runs_dir).parts), p.stat().st_mtime))
+    return candidates[0]
+
+
+def _extract_terminal_bench_summary(harbor_result: Dict[str, Any]) -> Dict[str, Any]:
+    summary = {
+        "status": "completed",
+        "total_trials": 0,
+        "passed_trials": 0,
+        "failed_trials": 0,
+        "pass_rate": 0.0,
+        "raw": harbor_result,
+    }
+    if not isinstance(harbor_result, dict):
+        return summary
+
+    # First try common aggregate fields.
+    trials = harbor_result.get("trials") or harbor_result.get("results") or []
+    if isinstance(trials, list):
+        summary["total_trials"] = len(trials)
+        passed = 0
+        for trial in trials:
+            if not isinstance(trial, dict):
+                continue
+            status = str(trial.get("status", "")).lower()
+            reward = trial.get("reward")
+            if status in {"passed", "success", "completed"}:
+                passed += 1
+            elif isinstance(reward, (int, float)) and float(reward) > 0:
+                passed += 1
+        summary["passed_trials"] = passed
+        summary["failed_trials"] = max(summary["total_trials"] - passed, 0)
+    else:
+        # Fallback to aggregate counters if provided.
+        total_trials = (
+            harbor_result.get("total_trials")
+            or harbor_result.get("n_total_trials")
+            or harbor_result.get("n_trials")
+            or 0
+        )
+        passed_trials = harbor_result.get("passed_trials") or harbor_result.get("n_passed")
+        if passed_trials is None:
+            stats = harbor_result.get("stats", {})
+            if isinstance(stats, dict):
+                stats_n_trials = stats.get("n_trials")
+                stats_n_errors = stats.get("n_errors")
+                if isinstance(stats_n_trials, (int, float)) and isinstance(stats_n_errors, (int, float)):
+                    passed_trials = max(int(stats_n_trials) - int(stats_n_errors), 0)
+        if passed_trials is None:
+            passed_trials = 0
+        summary["total_trials"] = int(total_trials) if isinstance(total_trials, (int, float)) else 0
+        summary["passed_trials"] = int(passed_trials) if isinstance(passed_trials, (int, float)) else 0
+        summary["failed_trials"] = max(summary["total_trials"] - summary["passed_trials"], 0)
+
+    if summary["total_trials"] > 0:
+        summary["pass_rate"] = round(100.0 * summary["passed_trials"] / summary["total_trials"], 2)
+    else:
+        stats = harbor_result.get("stats", {}) if isinstance(harbor_result, dict) else {}
+        if isinstance(stats, dict):
+            n_trials = stats.get("n_trials")
+            n_errors = stats.get("n_errors")
+            if isinstance(n_trials, (int, float)):
+                summary["total_trials"] = int(n_trials)
+                if isinstance(n_errors, (int, float)):
+                    summary["failed_trials"] = int(n_errors)
+                    summary["passed_trials"] = max(summary["total_trials"] - summary["failed_trials"], 0)
+                if summary["total_trials"] > 0:
+                    summary["pass_rate"] = round(
+                        100.0 * summary["passed_trials"] / summary["total_trials"], 2
+                    )
+
+    # Surface additional stats if present.
+    for key in ("duration_seconds", "wall_time_seconds", "avg_reward", "mean_reward"):
+        if key in harbor_result:
+            summary[key] = harbor_result[key]
+    return summary
+
+
+def run_terminal_bench_evaluation(client: redis.Redis, job: Dict[str, Any]) -> Dict[str, Any]:
+    job_id = job["id"]
+    output_root = Path(TERMINAL_BENCH_OUTPUT_DIR) / f"terminal_bench_{job_id}"
+    output_root.mkdir(parents=True, exist_ok=True)
+    jobs_dir = output_root / "harbor_jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    dataset = job.get("dataset", "terminal-bench@2.0")
+    model_name = job.get("model_name", "openai/gpt-4o-mini")
+    n_concurrent = int(job.get("n_concurrent", 1))
+    mode = job.get("mode", "smoke")
+    task_limit = job.get("task_limit")
+    timeout_multiplier = _safe_float(job.get("timeout_multiplier", 1.0), 1.0)
+    endpoint_url = job.get("endpoint_url", "http://llamacpp-api:8080/v1")
+    api_key = job.get("api_key", "placeholder-api-key")
+    harbor_agent = job.get("harbor_agent", "local-openai-agent")
+
+    cmd = [
+        "harbor",
+        "run",
+        "--dataset",
+        dataset,
+        "--n-concurrent",
+        str(n_concurrent),
+        "--jobs-dir",
+        str(jobs_dir),
+        "--timeout-multiplier",
+        str(timeout_multiplier),
+        "--quiet",
+    ]
+    if harbor_agent == "oracle":
+        cmd.extend(["--agent", "oracle"])
+    else:
+        cmd.extend(
+            [
+                "--agent-import-path",
+                "harbor_local_openai_agent:LocalOpenAIAgent",
+                "--model",
+                model_name,
+                "--ae",
+                f"OPENAI_BASE_URL={endpoint_url}",
+                "--ae",
+                f"OPENAI_API_KEY={api_key}",
+                "--ae",
+                f"TB_AGENT_MODE={mode}",
+                "--ae",
+                f"TB_AGENT_NAME={harbor_agent}",
+            ]
+        )
+    if task_limit is not None:
+        cmd.extend(["--n-tasks", str(task_limit)])
+
+    publish_terminal_bench_log(client, job_id, f"Running: {' '.join(cmd)}")
+    publish_terminal_bench_status(
+        client,
+        job_id,
+        "running",
+        progress=0.0,
+        message=f"Starting Terminal-Bench {dataset}",
+    )
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    output_lines = []
+    last_progress = 0.0
+    for line in iter(process.stdout.readline, ""):
+        line = line.rstrip()
+        if not line:
+            continue
+        output_lines.append(line)
+        print(f"[terminal_bench] {line}")
+        publish_terminal_bench_log(client, job_id, line[:500])
+
+        progress_match = re.search(r"(\d+(?:\.\d+)?)%", line)
+        if progress_match:
+            progress = _safe_float(progress_match.group(1), last_progress)
+            if progress > last_progress:
+                last_progress = progress
+                publish_terminal_bench_status(
+                    client,
+                    job_id,
+                    "running",
+                    progress=progress,
+                    message=line[:200],
+                )
+
+        cancel_requested = client.get(f"terminal_bench:job:{job_id}:cancel")
+        if cancel_requested == "1":
+            process.terminate()
+            process.wait(timeout=15)
+            publish_terminal_bench_status(
+                client,
+                job_id,
+                "cancelled",
+                progress=last_progress,
+                message="Cancelled by user request",
+            )
+            return {
+                "status": "cancelled",
+                "error": "Cancelled by user request",
+                "output_tail": "\n".join(output_lines[-80:]),
+            }
+
+    process.wait()
+    output_tail = "\n".join(output_lines[-200:])
+    raw_output_file = output_root / "harbor_stdout.log"
+    raw_output_file.write_text("\n".join(output_lines), encoding="utf-8")
+
+    artifacts = {
+        "output_root": str(output_root),
+        "jobs_dir": str(jobs_dir),
+        "stdout_log": str(raw_output_file),
+    }
+
+    if process.returncode != 0:
+        error_msg = f"Harbor exited with code {process.returncode}"
+        publish_terminal_bench_status(
+            client,
+            job_id,
+            "failed",
+            progress=last_progress,
+            message=error_msg,
+            error=error_msg,
+            artifacts=artifacts,
+        )
+        return {
+            "status": "failed",
+            "error": error_msg,
+            "output_tail": output_tail,
+            "artifacts": artifacts,
+        }
+
+    result_file = _find_harbor_result_json(jobs_dir)
+    harbor_result = {}
+    if result_file is not None and result_file.exists():
+        try:
+            harbor_result = json.loads(result_file.read_text(encoding="utf-8"))
+            artifacts["harbor_result_json"] = str(result_file)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to parse Harbor result JSON: {exc}") from exc
+    else:
+        raise RuntimeError("Harbor completed without producing result.json in jobs directory")
+
+    summary = _extract_terminal_bench_summary(harbor_result)
+    summary.update(
+        {
+            "status": "completed",
+            "dataset": dataset,
+            "mode": mode,
+            "task_limit": task_limit,
+            "n_concurrent": n_concurrent,
+            "timeout_multiplier": timeout_multiplier,
+            "model_name": model_name,
+            "endpoint_url": endpoint_url,
+            "completed_at": datetime.utcnow().isoformat(),
+        }
+    )
+    summary_path = output_root / "terminal_bench_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    artifacts["summary_json"] = str(summary_path)
+
+    publish_terminal_bench_status(
+        client,
+        job_id,
+        "completed",
+        progress=100.0,
+        message="Terminal-Bench completed",
+        results=summary,
+        artifacts=artifacts,
+    )
+    return {"status": "completed", "summary": summary, "artifacts": artifacts}
+
+
 def process_job(client: redis.Redis, job_data: str) -> None:
     """Process a single benchmark job."""
     try:
@@ -372,11 +738,81 @@ def process_job(client: redis.Redis, job_data: str) -> None:
         publish_status(client, job_id, "failed", 0, error_msg, error=error_msg)
 
 
+def process_terminal_bench_job(client: redis.Redis, job_data: str) -> None:
+    """Process a single Terminal-Bench job."""
+    try:
+        job = json.loads(job_data)
+    except json.JSONDecodeError as e:
+        print(f"[Terminal-Bench Worker] Invalid job JSON: {e}")
+        return
+
+    job_id = job.get("id")
+    if not job_id:
+        print("[Terminal-Bench Worker] Job missing ID, skipping")
+        return
+
+    print(f"[Terminal-Bench Worker] Processing job {job_id}")
+    publish_terminal_bench_log(
+        client,
+        job_id,
+        f"Starting Terminal-Bench job {job_id} ({job.get('dataset', 'terminal-bench@2.0')})",
+    )
+    try:
+        outcome = run_terminal_bench_evaluation(client, job)
+        status = outcome.get("status")
+        if status == "completed":
+            summary = outcome["summary"]
+            save_terminal_bench_to_db(
+                job_id=job_id,
+                job_name=job.get("name", f"Terminal-Bench: {job.get('model_name', 'unknown')}"),
+                config={
+                    "dataset": job.get("dataset", "terminal-bench@2.0"),
+                    "mode": job.get("mode", "smoke"),
+                    "task_limit": job.get("task_limit"),
+                    "n_concurrent": job.get("n_concurrent", 1),
+                    "timeout_multiplier": job.get("timeout_multiplier", 1.0),
+                    "model_name": job.get("model_name"),
+                    "endpoint_url": job.get("endpoint_url"),
+                },
+                summary=summary,
+            )
+        elif status == "cancelled":
+            publish_terminal_bench_status(
+                client,
+                job_id,
+                "cancelled",
+                progress=0.0,
+                message=outcome.get("error", "Cancelled"),
+            )
+        else:
+            publish_terminal_bench_status(
+                client,
+                job_id,
+                "failed",
+                progress=0.0,
+                message=outcome.get("error", "Terminal-Bench failed"),
+                error=outcome.get("error", "Terminal-Bench failed"),
+                artifacts=outcome.get("artifacts"),
+            )
+    except Exception as exc:
+        error_msg = f"Terminal-Bench evaluation failed: {exc}"
+        print(f"[Terminal-Bench Worker] {error_msg}")
+        publish_terminal_bench_status(
+            client,
+            job_id,
+            "failed",
+            progress=0.0,
+            message=error_msg,
+            error=error_msg,
+        )
+
+
 def poll_for_jobs():
     """Main polling loop for benchmark jobs."""
-    print("[LM-Eval Worker] Starting job polling...")
-    print(f"[LM-Eval Worker] Models directory: {MODELS_DIR}")
-    print(f"[LM-Eval Worker] Output directory: {OUTPUT_DIR}")
+    print(f"[Worker] Starting job polling mode={WORKER_MODE}")
+    print(f"[Worker] Models directory: {MODELS_DIR}")
+    print(f"[Worker] LM-Eval output directory: {OUTPUT_DIR}")
+    print(f"[Worker] Terminal-Bench output directory: {TERMINAL_BENCH_OUTPUT_DIR}")
     
     # List available models
     models_path = Path(MODELS_DIR)
@@ -389,40 +825,45 @@ def poll_for_jobs():
     while True:
         try:
             # Check for new jobs in the queue (blocking pop with timeout)
-            result = client.brpop("lm_eval:jobs", timeout=POLL_INTERVAL)
+            queue_name = "terminal_bench:jobs" if WORKER_MODE == "terminal_bench" else "lm_eval:jobs"
+            result = client.brpop(queue_name, timeout=POLL_INTERVAL)
             
             if result:
                 _, job_data = result
-                process_job(client, job_data)
+                if WORKER_MODE == "terminal_bench":
+                    process_terminal_bench_job(client, job_data)
+                else:
+                    process_job(client, job_data)
             
         except redis.ConnectionError as e:
-            print(f"[LM-Eval Worker] Redis connection lost: {e}")
+            print(f"[Worker] Redis connection lost: {e}")
             time.sleep(5)
             client = connect_redis()
         except Exception as e:
-            print(f"[LM-Eval Worker] Error: {e}")
+            print(f"[Worker] Error: {e}")
             time.sleep(1)
 
 
 def main():
     """Entry point."""
     print("=" * 60)
-    print("[LM-Eval Worker] GPU-accelerated LM Evaluation Worker")
+    print(f"[Worker] Benchmark Worker (mode={WORKER_MODE})")
     print("=" * 60)
     
     # Check for GPU
     try:
         import torch
         if torch.cuda.is_available():
-            print(f"[LM-Eval Worker] GPU available: {torch.cuda.get_device_name(0)}")
-            print(f"[LM-Eval Worker] CUDA version: {torch.version.cuda}")
+            print(f"[Worker] GPU available: {torch.cuda.get_device_name(0)}")
+            print(f"[Worker] CUDA version: {torch.version.cuda}")
         else:
-            print("[LM-Eval Worker] Warning: No GPU detected, running on CPU")
+            print("[Worker] Warning: No GPU detected, running on CPU")
     except ImportError:
-        print("[LM-Eval Worker] PyTorch not available for GPU check")
+        print("[Worker] PyTorch not available for GPU check")
     
     # Create output directory
     Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    Path(TERMINAL_BENCH_OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
     
     poll_for_jobs()
 

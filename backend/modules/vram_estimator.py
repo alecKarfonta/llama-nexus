@@ -219,6 +219,8 @@ def calculate_kv_cache_vram(
         'f32': 32,
         'q8_0': 8,
         'q4_0': 4,
+        'turbo4': 4.25,
+        'turbo3': 3.25,
     }.get(kv_cache_type.lower(), 16)
     
     # KV cache size: 2 (K and V) * layers * context * kv_heads * head_dim * n_parallel

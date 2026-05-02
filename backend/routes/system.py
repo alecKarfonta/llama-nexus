@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+import asyncio
 import psutil
 import subprocess
 from datetime import datetime
@@ -7,6 +8,7 @@ from typing import Optional
 
 from enhanced_logger import enhanced_logger as logger
 from app_state import manager
+import os
 
 try:
     from modules import vram_estimator
@@ -14,6 +16,10 @@ except ImportError:
     vram_estimator = None
 
 router = APIRouter(prefix="/api/v1", tags=["system"])
+
+
+def _llamacpp_container_name() -> str:
+    return os.getenv("LLAMACPP_CONTAINER_NAME", "llamacpp-api")
 
 @router.get("/health")
 async def health_check():
@@ -47,15 +53,24 @@ async def get_container_logs(lines: int = 100):
     """Fetch logs directly from Docker container"""
     if not manager.use_docker:
         raise HTTPException(status_code=400, detail="Service is not running in Docker mode")
-    
-    logs = manager.read_docker_logs_cli()
-    if logs:
-        # Keep only the requested number of lines
-        log_lines = logs.split('\n')
-        recent_logs = '\n'.join(log_lines[-lines:])
-        return {"logs": recent_logs}
-    
-    return {"logs": "No logs available or container not running"}
+
+    result = subprocess.run(
+        ["docker", "logs", "--tail", str(max(1, lines)), _llamacpp_container_name()],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=result.stderr.strip() or "Failed to read container logs",
+        )
+
+    return {"logs": result.stdout or ""}
+
+@router.get("/logs/container")
+async def get_container_logs_legacy(lines: int = 100):
+    """Legacy alias for container logs endpoint."""
+    return await get_container_logs(lines=lines)
 
 @router.get("/container/logs/stream")
 async def stream_container_logs():
@@ -66,7 +81,7 @@ async def stream_container_logs():
     async def log_generator():
         # First check if the container is running
         check = subprocess.run(
-            ["docker", "ps", "-q", "-f", "name=llama-nexus-llamacpp-api"],
+            ["docker", "ps", "-q", "-f", f"name={_llamacpp_container_name()}"],
             capture_output=True, text=True
         )
         
@@ -74,27 +89,40 @@ async def stream_container_logs():
             yield "data: Container is not running\n\n"
             return
             
-        # Start docker logs process
-        process = subprocess.Popen(
-            ["docker", "logs", "-f", "--tail", "100", "llama-nexus-llamacpp-api"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
+        process = await asyncio.create_subprocess_exec(
+            "docker",
+            "logs",
+            "-f",
+            "--tail",
+            "100",
+            _llamacpp_container_name(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
-        
+
         try:
-            for line in iter(process.stdout.readline, ''):
-                if line:
-                    import json
-                    # Format as SSE
-                    yield f"data: {json.dumps({'text': line})}\n\n"
-                else:
+            while True:
+                line = await process.stdout.readline()
+                if not line:
                     break
+                import json
+                decoded = line.decode(errors="replace")
+                yield f"data: {json.dumps({'message': decoded, 'timestamp': datetime.now().isoformat()})}\n\n"
         finally:
-            process.terminate()
+            if process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
             
     return StreamingResponse(log_generator(), media_type="text/event-stream")
+
+@router.get("/logs/container/stream")
+async def stream_container_logs_legacy():
+    """Legacy alias for container log stream endpoint."""
+    return await stream_container_logs()
 
 @router.get("/resources")
 async def get_resources():

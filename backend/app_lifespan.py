@@ -20,7 +20,7 @@ from app_state import (
 try:
     from modules.rag.document_manager import DocumentManager
     from modules.rag.graph_rag import GraphRAG
-    from modules.rag.vector_store import QdrantStore
+    from modules.rag.vector_stores.qdrant_store import QdrantStore
     from modules.rag.discovery import DocumentDiscovery
     RAG_AVAILABLE = True
 except ImportError as e:
@@ -28,8 +28,8 @@ except ImportError as e:
     logger.warning(f"RAG modules not available: {e}")
 
 try:
-    from modules.workflows.storage import dict_to_workflow, WorkflowStorage
-    from modules.workflows.engine import WorkflowEngine
+    from modules.workflow.storage import WorkflowStorage
+    from modules.workflow.engine import WorkflowEngine
     WORKFLOW_AVAILABLE = True
 except ImportError as e:
     WORKFLOW_AVAILABLE = False
@@ -214,6 +214,16 @@ async def lifespan(app: FastAPI):
     app.state.download_manager = download_manager
     app.state.merge_and_persist_config = _merge_and_persist_config
     app.state.token_tracker = token_tracker
+
+    # Initialize deploy profiles
+    try:
+        from modules.deploy_profiles import DeployProfileStore
+        profile_db_path = os.getenv("PROFILE_DB_PATH", "data/deploy_profiles.db")
+        app.state.profile_store = DeployProfileStore(profile_db_path)
+        logger.info("Deploy profile store initialized")
+    except Exception as e:
+        logger.warning(f"Deploy profiles not available: {e}")
+        app.state.profile_store = None
 
     # Initialize Reddit crawler scheduler
     try:

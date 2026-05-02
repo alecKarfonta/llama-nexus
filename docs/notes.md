@@ -5175,3 +5175,439 @@ Complete UI refactor of all fine-tuning pages to match the existing Material UI 
 ### Before/After
 - Before: Raw inline styles, basic HTML elements, inconsistent colors
 - After: Full MUI component library, consistent theme, beautiful animations
+
+---
+
+## Current Handoff Check - 2026-04-26
+
+### Current Goal
+Push the latest cleanup work, rebuild with Docker Compose, verify the current app state, and preserve the handoff summary in `docs/feature-request.md`.
+
+### Findings Before Rebuild
+- Branch: `master`
+- Working tree was clean before handoff docs were updated.
+- Branch was ahead of `origin/master` by 1 commit: `c62233b chore: reorganize root directory and clean up junk files`
+- Docker Compose services already running: backend, frontend, Qdrant, Redis, and training.
+- `llamacpp-api` was not listed as running.
+- Compose warned that `HUGGINGFACE_TOKEN` was unset.
+
+### Verification Results
+- Added handoff details to `docs/feature-request.md`.
+- Committed handoff documentation as `6e64d99 docs: record project handoff`.
+- Initial SSH push failed with `Permission denied (publickey)`.
+- HTTPS token push succeeded without changing Git config.
+- Initial Docker Compose rebuild failed on a transient `tls: bad record MAC` transfer error.
+- Retried the same `docker compose up -d --build`; rebuild completed successfully.
+- Verified backend, frontend, Qdrant, and embedding service endpoints with HTTP 200 responses.
+
+### Known Unfinished Items
+- Historical metrics are simulated until backend history exists.
+- Monitoring WebSocket endpoint is not implemented yet.
+- Model archiving is stubbed.
+- Models page start/stop behavior is not fully model-specific.
+- GraphRAG hierarchical clustering remains TODO.
+
+---
+
+## Deployment Validation - 2026-04-26
+
+### Current Goal
+Confirm the latest pushed state is deployed through Docker Compose, monitor the
+runtime, and validate that the cleanup/rebuild changes did not leave broken
+service wiring.
+
+### Actions Taken
+- Confirmed `master` was clean and synced with `origin/master`.
+- Ran `docker compose up -d` to enforce the deployed Compose state.
+- Rebuilt and redeployed affected services through Docker Compose after finding
+  backend startup warnings.
+- Fixed stale backend initialization imports:
+  - `modules.rag.vector_store` -> `modules.rag.vector_stores.qdrant_store`
+  - `modules.workflows` -> `modules.workflow`
+  - `modules.rag.embeddings` -> `modules.rag.embedders`
+- Passed `EMBEDDING_SERVICE_API_KEY` from Compose into the backend so RAG
+  embedding pre-warm can authenticate against `llamacpp-embed`.
+
+### Validation Results
+- `backend-api` healthy on port `8700`.
+- `llamacpp-frontend` healthy on port `3002`.
+- `llamacpp-embed` healthy on port `8602`.
+- `qdrant` healthy on ports `6333` and `6334`.
+- `redis` healthy on host port `6389`.
+- `training` running.
+- HTTP checks passed:
+  - `GET /health`
+  - `GET /api/v1/service/status`
+  - `GET /api/v1/rag/statistics`
+  - `GET /api/v1/workflows`
+  - frontend root page
+  - Qdrant `/healthz`
+  - embedding service `/health`
+
+### Monitoring Findings
+- RAG now connects to Qdrant and initializes successfully.
+- Workflow system now initializes successfully.
+- Embedding model pre-warm now succeeds through `llamacpp-embed`.
+- Remaining warnings:
+  - `HUGGINGFACE_TOKEN` is unset.
+  - Backend Docker SDK connection falls back to subprocess mode.
+  - Benchmark datasets library is unavailable, so benchmark samples are limited.
+  - Legacy MCP endpoint initialization still looks for missing `mcp_server`.
+
+---
+
+## Benchmark Readiness Fix - 2026-04-26
+
+### Current Goal
+Enable benchmark runs using the provided `.env` `HUGGINGFACE_TOKEN`, fix the
+stale "datasets library unavailable" warning, and validate both benchmark
+dataset loading and local model speed benchmarking.
+
+### Findings
+- `.env` contains a non-empty `HUGGINGFACE_TOKEN`, but the backend container had
+  to be force-recreated before it saw the new environment value.
+- The `datasets` package was installed in the backend image.
+- The warning came from importing removed `datasets.list_datasets` in
+  `modules/finetuning/benchmarks.py`, which made the module mark all benchmark
+  datasets unavailable.
+- The local speed benchmark endpoint reached `llamacpp-api` but initially
+  failed with `401 Invalid API Key` because it did not pass the managed local
+  API key to llama.cpp.
+- The active Qwen reasoning model streams benchmark output as
+  `reasoning_content`, so the speed parser had to count that field as generated
+  output.
+
+### Changes Made
+- Removed the stale `list_datasets` import.
+- Passed the local manager API key into speed benchmark requests.
+- Counted streamed `reasoning_content` in benchmark token/throughput metrics.
+- Rebuilt and force-recreated `backend-api` through Docker Compose.
+
+### Validation Results
+- Backend now sees `HUGGINGFACE_TOKEN`.
+- `DATASETS_AVAILABLE=True` in `modules.finetuning.benchmarks`.
+- `/api/v1/finetune/benchmarks/available` reports Hugging Face availability for
+  MMLU, HellaSwag, ARC Easy, ARC Challenge, TruthfulQA, GSM8K, and HumanEval.
+- MMLU preview loaded 2 samples from Hugging Face.
+- Speed benchmark completed and saved successfully:
+  - result id: `4d74a164`
+  - completion chunks counted: `45`
+  - mean TPS: `30.75`
+  - mean TTFT: `180.01ms`
+- `/api/v1/benchmark/stats` reports 1 saved speed benchmark.
+
+### Remaining Notes
+- Full standardized benchmarks can be much longer and should be run with small
+  sample limits first before launching complete MMLU/HellaSwag suites.
+- `HUGGINGFACE_TOKEN` warning is resolved after container recreation.
+- Legacy MCP initialization still warns about missing `mcp_server`.
+
+---
+
+## All-Suite Benchmark Sweep - 2026-04-26
+
+### Current Goal
+Run all configured benchmark suites against the currently deployed model.
+
+### Setup
+- Model endpoint: deployed `llamacpp-api`
+- Model reported by `/v1/models`: `Qwen3.6-27B-Q6_K.gguf`
+- Job id: `9e314345-fd65-4f6b-8ab3-59a2cf2d7950`
+- Run mode: all 7 configured benchmark suites with 25 samples per suite
+- Config: zero-shot, temperature `0`, max tokens `256`
+
+### Results
+- MMLU: `5/25`, `20.0%`
+- HellaSwag: `7/25`, `28.0%`
+- ARC Easy: `7/25`, `28.0%`
+- ARC Challenge: `5/25`, `20.0%`
+- TruthfulQA: `8/25`, `32.0%`
+- GSM8K: `8/25`, `32.0%`
+- HumanEval: `24/25`, `96.0%`
+
+### Runtime
+- Started: `2026-04-26T15:38:03.529406`
+- Completed: `2026-04-26T16:06:53.919118`
+- Status: completed
+- Backend log scan: no benchmark job failures, generation failures, tracebacks,
+  or backend errors during the run.
+
+### Notes
+- This was a representative sweep across all suites, not the full unbounded
+  dataset run. Full MMLU/HellaSwag-scale runs will take much longer.
+- The benchmark evaluator uses simple answer parsing, so scores should be
+  treated as directional until prompt/parser calibration is improved for
+  reasoning-heavy models.
+
+---
+
+## Qwen3.6 Deployment and Benchmark Parser Check - 2026-04-26
+
+### Current Goal
+Verify whether the low benchmark scores were caused by accidentally running the
+older 4B model instead of the intended `Qwen3.6-27B`, then fix any deployment or
+evaluation mismatch found.
+
+### Findings
+- The live `llamacpp-api` container was already serving
+  `Qwen3.6-27B-Q6_K.gguf`.
+- llama.cpp logs showed the actual command using
+  `/home/llamacpp/models/Qwen3.6-27B-Q6_K.gguf` with `--ctx-size 256000` and
+  `--n-gpu-layers 999`.
+- `/v1/models` reported `Qwen3.6-27B-Q6_K.gguf` with `n_params=26895998464`.
+- The backend management API was misleading because its Compose defaults still
+  initialized the manager config as `Qwen_Qwen3-VL-4B-Thinking / Q4_K_M`.
+- Benchmark MCQ parsing was too naive for Qwen reasoning output: if the model
+  repeated answer options before giving a final answer, the parser could pick
+  the first echoed option label instead of the final answer marker.
+
+### Changes Made
+- Updated `docker-compose.yml` defaults for `backend-api` and `llamacpp-api` to
+  `Qwen3.6-27B / Q6_K`.
+- Added the live 27B runtime settings to Compose defaults, including 256k
+  context, two-slot parallelism, q8 KV cache, dry sampling settings, and GPU
+  pinning to `0,2`.
+- Updated the backend manager default config loader to read the additional
+  runtime env vars so management status/preview reflects the intended command.
+- Improved benchmark MCQ parsing to prefer explicit final-answer/output markers
+  before scanning for option labels.
+
+### Validation Results
+- Rebuilt and force-recreated `backend-api` through Docker Compose.
+- `/api/v1/service/status` now reports `Qwen3.6-27B / Q6_K`, 256k context, GPU
+  execution with `cuda_devices=0,2`, and a healthy llama.cpp endpoint.
+- Live `/v1/models` still reports `Qwen3.6-27B-Q6_K.gguf`.
+- Parser smoke checks now map direct answers and Qwen-style `[Output]: C`
+  reasoning responses to the correct choice indexes.
+
+### Quick Post-Fix Benchmark
+- Job id: `a9dbeb71-5dcc-44d5-81e3-28a0c54e05a3`
+- MMLU, 5 samples: `1/5`, `20.0%`
+- ARC Easy, 5 samples: `3/5`, `60.0%`
+
+### Remaining Notes
+- The previous all-suite benchmark scores should be considered unreliable for
+  quality comparison because they were affected by answer parsing.
+- The quick post-fix sample is too small to establish model quality, but it
+  confirms the corrected parser and 27B deployment path are working together.
+- A full rerun can now be launched from the corrected backend if we want updated
+  all-suite numbers.
+
+---
+
+## Full All-Suite Benchmark Run - 2026-04-26
+
+### Current Goal
+Run the full, uncapped benchmark suite against the corrected
+`Qwen3.6-27B-Q6_K.gguf` deployment.
+
+### Setup
+- Model endpoint: deployed `llamacpp-api`
+- Model: `Qwen3.6-27B-Q6_K.gguf`
+- Backend-reported config: `Qwen3.6-27B / Q6_K`, 256k context, GPU execution on
+  `0,2`
+- Job id: `c0e605a9-3a2f-460b-b818-f2302f4daee4`
+- Job name: `full-all-suite-qwen36-27b-q6k`
+- Suites: MMLU, HellaSwag, ARC Easy, ARC Challenge, TruthfulQA, GSM8K, HumanEval
+- Run mode: no sample cap (`num_samples=null`)
+- Config: zero-shot, temperature `0`, max tokens `512`
+
+### Initial Status
+- Started: `2026-04-26T16:39:30Z`
+- Status at launch: running
+- Current benchmark at launch: `mmlu`
+- Results completed at launch: `0`
+- First monitor check at `2026-04-26T16:40:32Z`: still running `mmlu`,
+  progress `0.021%`, no errors.
+
+### Notes
+- This full run is expected to take much longer than the earlier 25-sample
+  sweep because it removes the per-suite sample cap.
+- A background monitor is polling the job every 60 seconds and will print final
+  summary output when the job completes, fails, or is cancelled.
+
+---
+
+## Terminal-Bench 2 Integration and Validation - 2026-04-26
+
+### Current Goal
+Add Terminal-Bench 2 as a first-class benchmark path (backend jobs, worker,
+API routes, frontend controls/results), then run oracle smoke, local-Qwen smoke,
+and launch a full local-Qwen run.
+
+### Backend/Worker Changes
+- Added `backend/modules/finetuning/terminal_bench_runner.py` with:
+  - Job models/status lifecycle
+  - Redis queue dispatch via `terminal_bench:jobs`
+  - SSE-friendly status/log updates
+  - Persistent result reload from `/data/terminal_bench_results`
+- Extended `backend/routes/finetuning.py` with:
+  - `GET /api/v1/finetune/terminal-bench/status`
+  - `GET /api/v1/finetune/terminal-bench/datasets`
+  - `POST /api/v1/finetune/terminal-bench/jobs`
+  - `GET /api/v1/finetune/terminal-bench/jobs`
+  - `GET /api/v1/finetune/terminal-bench/jobs/{id}`
+  - `GET /api/v1/finetune/terminal-bench/jobs/{id}/start` (SSE)
+  - `POST /api/v1/finetune/terminal-bench/jobs/{id}/cancel`
+  - `DELETE /api/v1/finetune/terminal-bench/jobs/{id}`
+- Added custom Harbor agent `backend/harbor_local_openai_agent.py` for
+  OpenAI-compatible local endpoint driving.
+- Extended worker logic in `backend/lm_eval_worker.py` for `WORKER_MODE=terminal_bench`:
+  - Harbor run execution
+  - Redis status/log publishing for Terminal-Bench
+  - Result parsing, summary artifact write, DB persistence with `type=terminal_bench`
+- Added `backend/Dockerfile.terminal-bench` and compose service
+  `terminal-bench-worker` using compose-only build flow.
+
+### Frontend Changes
+- Updated `frontend/src/pages/finetuning/ModelEvaluationPage.tsx`:
+  - Added Terminal-Bench run controls (smoke/full, task limit, concurrency)
+  - Added Terminal-Bench job list alongside LM-Eval job list
+  - Wired to new terminal-bench endpoints.
+
+### Validation Runs
+- Oracle smoke run completed through the new path:
+  - Job: `ebe704a1-d827-49f7-b79a-5c245258b600`
+  - Status: completed
+  - Summary showed trial exceptions (no successful trial), but end-to-end flow
+    from API -> Redis -> worker -> Harbor -> persisted artifacts worked.
+- Local-Qwen smoke runs completed through the new path:
+  - Jobs: `44602643-f2df-4360-853f-e31a69ae6fbb`,
+    `075b38c4-b13b-42f2-97b5-ced99dee3a84`,
+    `be800af4-fd13-47a9-817b-80dad6e15150`,
+    `7effaf3e-5d20-4a10-b701-d0b578b59b02`
+  - Latest smoke summary: `total_trials=1`, `passed_trials=0`,
+    `failed_trials=1`, `pass_rate=0.0`
+  - Exception class in latest smoke: `AgentTimeoutError`.
+
+### Full Run Launch
+- Full local-Qwen Terminal-Bench run launched via SSE/background monitor:
+  - Job id: `b9c8edf4-d9fe-4486-9eb9-58b7ad62f78a`
+  - Name: `terminal-bench-local-qwen-full`
+  - Dataset: `terminal-bench@2.0`
+  - Mode: `full`
+  - Current status at launch: running
+
+### Current Problems / Next Debug Targets
+- Local custom agent still underperforms on task execution and can time out.
+- Need tighter command-generation prompting and/or step policy for long tasks.
+- Consider adding richer telemetry from trial-level artifacts (`trial.log`,
+  `exception.txt`) into API job detail for quicker failure diagnosis.
+
+---
+
+## Deploy Fix - Flash Attention Argument - 2026-04-26
+
+### Current Goal
+Recover deployment/startup after Docker restart where managed `llama-server`
+failed to start with:
+`error while handling argument "--flash-attn": expected value for argument`.
+
+### Root Cause
+- `backend/modules/managers/llamacpp_manager.py` was emitting bare
+  `--flash-attn` instead of value-form `--flash-attn [on|off|auto]`.
+- In failing run logs, `--flash-attn` appeared with an invalid/empty value.
+
+### Change Made
+- Updated command generation to always pass explicit value:
+  - bool true -> `on`
+  - bool false -> `off`
+  - empty/invalid -> `auto`
+  - valid strings keep `auto|on|off`
+
+### Expected Outcome
+- Managed container launch command now includes valid flash-attn syntax and
+  should no longer fail argument parsing on startup.
+
+---
+
+## Frontend Container Logs 404 Fix - 2026-04-26
+
+### Current Goal
+Fix Deploy page "Container Logs" panel failing with `HTTP 404: Not Found`.
+
+### Problems Found
+- Frontend log viewer requested:
+  - `GET /api/v1/logs/container`
+  - `GET /api/v1/logs/container/stream`
+- Backend only exposed:
+  - `GET /api/v1/container/logs`
+  - `GET /api/v1/container/logs/stream`
+- Backend also hardcoded container name `llama-nexus-llamacpp-api`, but runtime
+  container is `llamacpp-api`.
+- SSE payload used `text` field while frontend expected `message`.
+
+### Changes Made
+- Updated `backend/routes/system.py`:
+  - Added legacy aliases:
+    - `/api/v1/logs/container`
+    - `/api/v1/logs/container/stream`
+  - Reworked non-stream logs endpoint to use `docker logs --tail N` directly.
+  - Made target container configurable via `LLAMACPP_CONTAINER_NAME`
+    (default `llamacpp-api`).
+  - Updated SSE payload to include `message` and `timestamp`.
+- Updated `frontend/src/components/LogViewer.tsx`:
+  - Added robust log normalization for string or object log payloads.
+  - Accepted stream entries from either `message` or `text`.
+
+### Verification
+- Rebuilt with Docker Compose (no host rebuild):
+  - `docker compose up -d --build backend-api llamacpp-frontend`
+- Endpoint checks now return 200:
+  - `/api/v1/container/logs?lines=2`
+  - `/api/v1/logs/container?lines=2`
+- SSE endpoint returns streaming bytes (curl received data continuously before
+  timeout), confirming route availability and live stream response.
+
+---
+
+## Terminal-Bench Agent Policy Tightening - 2026-04-26
+
+### Current Goal
+Address the next unresolved item: improve local Harbor agent behavior to reduce
+timeouts and command-loop inefficiency.
+
+### Problems Confirmed
+- Trial artifacts still show `AgentTimeoutError` against local Qwen tasks.
+- Backend became intermittently unresponsive when log streaming endpoint was
+  held open due to blocking stream reads (separate but discovered during this
+  validation cycle).
+
+### Changes Made
+- Updated `backend/harbor_local_openai_agent.py`:
+  - Added configurable model request timeout:
+    - `TB_AGENT_MODEL_TIMEOUT_SEC` (default `75`)
+  - Added configurable command timeout:
+    - `TB_AGENT_COMMAND_TIMEOUT_SEC` (default `120`)
+  - Reduced generation budget per step:
+    - `TB_AGENT_MAX_MODEL_TOKENS` (default `256`)
+  - Added repeated-command guard:
+    - `TB_AGENT_MAX_SAME_COMMAND_REPEATS` (default `2`)
+  - Added command sanitizer that blocks non-terminating interactive commands
+    (`watch`, `top`, `htop`, `less`, `more`, `vim`, `nano`, `tail -f`,
+    extreme `sleep`).
+  - Added model latency telemetry in context metadata:
+    `model_call_latencies_ms_tail`.
+- Updated `backend/routes/system.py` log stream implementation:
+  - Replaced blocking `subprocess.Popen(...).stdout.readline()` loop with
+    async subprocess reads via `asyncio.create_subprocess_exec`.
+  - Added graceful terminate/kill handling on stream shutdown.
+
+### Deployment and Validation
+- Rebuilt via Docker Compose only:
+  - `docker compose up -d --build terminal-bench-worker`
+  - `docker compose up -d --build backend-api`
+- Confirmed backend responsiveness restored:
+  - `/health` and `/api/v1/health` return `200`.
+- Launched new smoke run:
+  - Job: `b93054dc-ad20-42dc-b218-cbef74712134`
+  - Mode: smoke, `task_limit=1`, `timeout_multiplier=0.2`
+  - Completed with `AgentTimeoutError` after `180s` (bounded by run timeout).
+- Confirmed updated agent code is present in worker image (`/app/harbor_local_openai_agent.py`)
+  with new timeout/policy controls.
+
+### Current State / Next Target
+- Agent path now has tighter, explicit execution policy and telemetry.
+- Primary remaining limiter is model responsiveness under Terminal-Bench task
+  pressure; next practical step is tuning Harbor/agent timeout budget and/or
+  reducing model first-token latency under benchmark load.

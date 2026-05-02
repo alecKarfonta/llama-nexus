@@ -51,6 +51,30 @@ class LlamaCPPManager:
         
     def load_default_config(self) -> Dict[str, Any]:
         """Load default configuration from environment or defaults"""
+        def optional_int(name: str) -> Optional[int]:
+            value = os.getenv(name)
+            return int(value) if value not in (None, "") else None
+
+        def optional_float(name: str) -> Optional[float]:
+            value = os.getenv(name)
+            return float(value) if value not in (None, "") else None
+
+        sampling_config = {
+            "temperature": optional_float("TEMPERATURE"),
+            "top_p": optional_float("TOP_P"),
+            "top_k": optional_int("TOP_K"),
+            "min_p": optional_float("MIN_P"),
+            "repeat_penalty": optional_float("REPEAT_PENALTY"),
+            "repeat_last_n": optional_int("REPEAT_LAST_N"),
+            "frequency_penalty": optional_float("FREQUENCY_PENALTY"),
+            "presence_penalty": optional_float("PRESENCE_PENALTY"),
+            "dry_multiplier": optional_float("DRY_MULTIPLIER"),
+            "dry_base": optional_float("DRY_BASE"),
+            "dry_allowed_length": optional_int("DRY_ALLOWED_LENGTH"),
+            "dry_penalty_last_n": optional_int("DRY_PENALTY_LAST_N"),
+        }
+        sampling_config = {k: v for k, v in sampling_config.items() if v is not None}
+
         return {
             "model": {
                 "name": os.getenv("MODEL_NAME", "Qwen3-Coder-30B-A3B-Instruct"),
@@ -59,20 +83,27 @@ class LlamaCPPManager:
                 "context_size": int(os.getenv("CONTEXT_SIZE", "128000")),
                 "gpu_layers": int(os.getenv("GPU_LAYERS", "999")),
                 "n_cpu_moe": int(os.getenv("N_CPU_MOE", "0")),
+                "flash_attn": os.getenv("FLASH_ATTN", "auto"),
             },
             "template": {
                 "directory": os.getenv("TEMPLATE_DIR", "/home/llamacpp/templates"),
                 "selected": os.getenv("CHAT_TEMPLATE", ""),
             },
-            "sampling": {
-                # Empty by default — llama-server uses its own built-in defaults
-                # (and GGUF-embedded model defaults) when not explicitly set.
-                # Users can set values via the UI or presets.
-            },
+            "sampling": sampling_config,
             "performance": {
                 "threads": int(os.getenv("THREADS", "-1")),
                 "batch_size": int(os.getenv("BATCH_SIZE", "2048")),
                 "ubatch_size": int(os.getenv("UBATCH_SIZE", "512")),
+                "num_predict": optional_int("NUM_PREDICT"),
+                "num_keep": optional_int("NUM_KEEP"),
+                # Default to 1 slot — prevents llama.cpp auto-selecting n_parallel=4,
+                # which silently reserves KV cache × 4 (wastes ~4.5 GB on 256K context).
+                # Set higher only for multi-user / concurrent request workloads.
+                "parallel_slots": int(os.getenv("PARALLEL_SLOTS", "1")),
+                "split_mode": os.getenv("SPLIT_MODE"),
+                "main_gpu": optional_int("MAIN_GPU"),
+                "cache_type_k": os.getenv("CACHE_TYPE_K"),
+                "cache_type_v": os.getenv("CACHE_TYPE_V"),
             },
             "speculative": {
                 # Empty by default — speculative decoding is disabled unless configured
@@ -282,10 +313,31 @@ class LlamaCPPManager:
         # Add model-level performance parameters
         add_param_if_set(cmd, "--defrag-thold", self.config["model"].get("defrag_thold"))
         
-        # Flash attention (configurable: on/off/auto)
+        # Flash attention requires an explicit value in current llama-server:
+        # --flash-attn [on|off|auto]
         flash_attn = self.config["model"].get("flash_attn", "auto")
-        if flash_attn:
-            cmd.extend(["--flash-attn", str(flash_attn)])
+        flash_attn_value = "auto"
+        if isinstance(flash_attn, bool):
+            flash_attn_value = "on" if flash_attn else "off"
+        elif flash_attn is None:
+            flash_attn_value = "auto"
+        else:
+            normalized = str(flash_attn).strip().lower()
+            if normalized in ("", "none", "null", "."):
+                flash_attn_value = "auto"
+            elif normalized in ("true", "1", "yes", "on"):
+                flash_attn_value = "on"
+            elif normalized in ("false", "0", "no", "off"):
+                flash_attn_value = "off"
+            elif normalized in ("auto", "on", "off"):
+                flash_attn_value = normalized
+            else:
+                # Keep errors visible but avoid invalid CLI syntax.
+                logger.warning(
+                    f"Invalid flash_attn value '{flash_attn}', defaulting to 'auto'"
+                )
+                flash_attn_value = "auto"
+        cmd.extend(["--flash-attn", flash_attn_value])
         
         # Add speculative decoding parameters if section exists
         if "speculative" in self.config:

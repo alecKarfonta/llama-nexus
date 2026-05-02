@@ -44,21 +44,35 @@ services:
     ports:
       - "8700:8700" # Management API port
     environment:
-      # Default LlamaCPP model configuration (override in .env)
-      - MODEL_NAME=${MODEL_NAME:-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive}
-      - MODEL_VARIANT=${MODEL_VARIANT:-Q6_K}
-      - MODEL_REPO=${MODEL_REPO:-}
-      # MMPROJ_FILE should be set via UI when deploying multimodal models
-      # - MMPROJ_FILE=mmproj-Qwen_Qwen3-VL-4B-Thinking-f16.gguf
+      # Default LlamaCPP configuration - Qwen3.6-27B
+      - MODEL_NAME=Qwen3.6-27B
+      - MODEL_VARIANT=Q6_K
+      - MODEL_REPO=unsloth/Qwen3.6-27B-GGUF
       # Host path for chat templates so backend can mount it into the managed container
       - TEMPLATES_HOST_DIR=/home/alec/git/llama-nexus/chat-templates
-      - CONTEXT_SIZE=40960
+      - CONTEXT_SIZE=256000
       - GPU_LAYERS=999
-      - TEMPERATURE=0.7
-      - TOP_P=0.8
-      - TOP_K=20
-      - REPEAT_PENALTY=1.05
-      - BATCH_SIZE=2048
+      - TEMPERATURE=0.15
+      - TOP_P=0.95
+      - TOP_K=0
+      - MIN_P=0.02
+      - REPEAT_PENALTY=1
+      - REPEAT_LAST_N=64
+      - FREQUENCY_PENALTY=0
+      - PRESENCE_PENALTY=0
+      - DRY_MULTIPLIER=0.4
+      - DRY_ALLOWED_LENGTH=3
+      - DRY_PENALTY_LAST_N=510
+      - BATCH_SIZE=1024
+      - UBATCH_SIZE=512
+      - THREADS=44
+      - NUM_PREDICT=16000
+      - NUM_KEEP=256
+      - PARALLEL_SLOTS=2
+      - SPLIT_MODE=layer
+      - MAIN_GPU=2
+      - CACHE_TYPE_K=q8_0
+      - CACHE_TYPE_V=q8_0
       - N_CPU_MOE=0
       - API_KEY=placeholder-api-key
       - TEMPLATE_PATH=/home/llamacpp/chat-template.jinja
@@ -66,6 +80,7 @@ services:
       - USE_DOCKER=true
       - RUNNING_IN_DOCKER=true
       - LLAMACPP_CONTAINER_NAME=llamacpp-api
+      - CUDA_DEVICES=0,2
       # Pass through HuggingFace token from host environment
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
       # Enable colored logging
@@ -107,6 +122,7 @@ services:
       - VLM_MODEL_NAME=${VLM_MODEL_NAME:-Qwen_Qwen3-VL-4B-Thinking}
       - VLM_ENABLED=${VLM_ENABLED:-true}
       - USE_DEPLOYED_EMBEDDINGS=true
+      - EMBEDDING_SERVICE_API_KEY=llamacpp-embed
       - DEFAULT_EMBEDDING_MODEL=nomic-embed-text-v1.5
     volumes:
       - backend_data:/data
@@ -149,6 +165,7 @@ services:
       args:
         SKIP_BUILD_FROM_SOURCE: "false"
         LLAMACPP_VERSION: "b8250"
+        ENABLE_TURBOQUANT: "false"
     container_name: llamacpp-builder
     volumes:
       - llamacpp_bin:/output
@@ -167,6 +184,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        ENABLE_TURBOQUANT: "false"
     container_name: llamacpp-api
     hostname: llamacpp
     ports:
@@ -179,22 +198,30 @@ services:
     environment:
       - TEMPLATE_DIR=/home/llamacpp/templates
       - CHAT_TEMPLATE=builtin-gpt-oss
-      # CUDA optimizations - use '0' for single GPU or '0,1' for multiple
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
-      # Model configuration (override in .env)
-      - MODEL_NAME=${MODEL_NAME:-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive}
-      - MODEL_VARIANT=${MODEL_VARIANT:-Q6_K}
-      - MODEL_REPO=${MODEL_REPO:-}
-      # MMPROJ_FILE should be set for VL models only
-      # - MMPROJ_FILE=mmproj-Qwen_Qwen3-VL-4B-Thinking-f16.gguf
-      - CONTEXT_SIZE=40960
+      # CUDA optimizations - Qwen3.6-27B Q6_K is split across two GPUs
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,2}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0,2}
+      # Model configuration - Qwen3.6-27B
+      - MODEL_NAME=Qwen3.6-27B
+      - MODEL_VARIANT=Q6_K
+      - MODEL_REPO=unsloth/Qwen3.6-27B-GGUF
+      - CONTEXT_SIZE=256000
       - GPU_LAYERS=999
-      - TEMPERATURE=0.6
+      - TEMPERATURE=0.15
       - TOP_P=0.95
-      - TOP_K=20
+      - TOP_K=0
+      - MIN_P=0.02
       - API_KEY=placeholder-api-key
-      - BATCH_SIZE=2048
+      - BATCH_SIZE=1024
+      - UBATCH_SIZE=512
+      - THREADS=44
+      - NUM_PREDICT=16000
+      - NUM_KEEP=256
+      - PARALLEL_SLOTS=2
+      - SPLIT_MODE=layer
+      - MAIN_GPU=2
+      - CACHE_TYPE_K=q8_0
+      - CACHE_TYPE_V=q8_0
       - N_CPU_MOE=0
       # HuggingFace token for downloads
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
@@ -297,7 +324,7 @@ services:
               capabilities: [ gpu ]
     volumes:
       - gpt_oss_models:/home/llamacpp/models
-      - ./start-embed.sh:/start-embed.sh:ro
+      - ./scripts/start-embed.sh:/start-embed.sh:ro
     environment:
       # Embedding model configuration - Nomic Embed v1.5
       - MODEL_NAME=nomic-embed-text-v1.5
@@ -430,6 +457,53 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "python3", "-c", "import redis; redis.from_url('redis://redis:6379/0').ping()" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # Terminal-Bench Worker - Harbor-based agentic benchmark runner
+  terminal-bench-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.terminal-bench
+    container_name: terminal-bench-worker
+    profiles:
+      - eval
+    hostname: terminal-bench-worker
+    shm_size: '16gb'
+    command: [ "python3", "/app/lm_eval_worker.py" ]
+    volumes:
+      - backend_data:/data
+      - huggingface_cache:/root/.cache/huggingface
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /usr/libexec/docker/cli-plugins:/usr/libexec/docker/cli-plugins:ro
+    environment:
+      - WORKER_MODE=terminal_bench
+      - REDIS_URL=redis://redis:6379/0
+      - TERMINAL_BENCH_OUTPUT_DIR=/data/terminal_bench_results
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - LLAMACPP_API_URL=http://llamacpp-api:8080
+      - OPENAI_API_KEY=placeholder-api-key
+      - OPENAI_BASE_URL=http://llamacpp-api:8080/v1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend-api:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "python3", "-c", "import redis; redis.from_url('redis://redis:6379/0').ping()" ]
