@@ -56,7 +56,7 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_CUDA=ON \
             -DLLAMA_CURL=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="50;61;70;75;80;86;89;90;100;120" && \
+            -DCMAKE_CUDA_ARCHITECTURES="120" && \
         cmake --build build --config Release -j$(nproc) --clean-first \
             --target llama-server llama-cli llama-gguf-split && \
         echo "Built llama.cpp version: $(./build/bin/llama-cli --version | head -1)"; \
