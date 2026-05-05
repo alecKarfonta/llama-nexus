@@ -169,6 +169,36 @@ const initialPerformanceMetrics: PerformanceMetrics = {
   timeToFirstToken: null,
 }
 
+/** llama.cpp can emit ~1e6 tok/s when eval time is 0 ms; client token/Δt can also spike. */
+const MAX_SANE_TOKENS_PER_SEC = 10_000
+
+function coerceFiniteNumber(v: unknown): number | undefined {
+  if (v == null) return undefined
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : undefined
+  }
+  return undefined
+}
+
+/** Reject absurd server/client rates; accepts numeric strings from JSON. */
+function sanitizeTokensPerSecond(v: unknown): number | undefined {
+  const n = coerceFiniteNumber(v)
+  if (n == null || n <= 0) return undefined
+  if (n > MAX_SANE_TOKENS_PER_SEC) return undefined
+  return n
+}
+
+/** Only OpenAI delta string content — never __verbose (can inject timing garbage into chat). */
+function normalizeDeltaContent(raw: unknown): string {
+  if (raw == null) return ''
+  if (typeof raw !== 'string') return ''
+  const t = raw
+  if (/^\s*\d+(?:\.\d+)?\s*(?:tok\/s|tokens?\s*\/\s*s)/i.test(t.trim())) return ''
+  return t
+}
+
 export const ChatPage: React.FC<ChatPageProps> = () => {
   // Load settings from localStorage or use defaults
   const loadSettings = (): ChatSettings => {
@@ -1099,7 +1129,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             performanceRef.current = {
               ...performanceRef.current,
               endTime,
-              tokensPerSecond: tokenCount > 0 ? tokenCount / totalTime : null,
+              tokensPerSecond:
+                sanitizeTokensPerSecond(tokenCount > 0 && totalTime > 0 ? tokenCount / totalTime : null) ?? null,
             }
             setPerformanceMetrics({ ...performanceRef.current })
 
@@ -1138,12 +1169,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           console.log('Received stream chunk:', value)
           console.log('Delta object:', value.choices?.[0]?.delta)
 
-          // Check for content in multiple locations
-          // content: actual response content
-          // __verbose.content: llama.cpp verbose output
-          const contentDelta = value.choices?.[0]?.delta?.content ||
-            value.__verbose?.content ||
-            ''
+          // Only delta.content (string). Do not use __verbose.content — it can append timing lines to the assistant bubble.
+          const contentDelta = normalizeDeltaContent(value.choices?.[0]?.delta?.content)
 
           // Debug: log if we're getting reasoning_content
           if (value.choices?.[0]?.delta?.reasoning_content) {
@@ -1179,10 +1206,12 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             // Update metrics periodically
             const currentTime = performance.now()
             const elapsedTime = (currentTime - startTime) / 1000
+            const tpsClient = elapsedTime > 0 ? tokenCount / elapsedTime : undefined
+            const nextTps = sanitizeTokensPerSecond(tpsClient)
             performanceRef.current = {
               ...performanceRef.current,
               tokensGenerated: tokenCount,
-              tokensPerSecond: tokenCount / elapsedTime,
+              tokensPerSecond: nextTps ?? null,
             }
             setPerformanceMetrics({ ...performanceRef.current })
 
@@ -1198,10 +1227,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
           // Extract timing information if available (more accurate from server)
           const timings = value.timings || value.__verbose?.timings
-          if (timings?.predicted_per_second) {
+          if (timings != null && timings.predicted_per_second != null) {
+            const tpsServer = sanitizeTokensPerSecond(timings.predicted_per_second)
             performanceRef.current = {
               ...performanceRef.current,
-              tokensPerSecond: timings.predicted_per_second,
+              tokensPerSecond: tpsServer ?? null,
             }
             setPerformanceMetrics({ ...performanceRef.current })
 
@@ -1209,7 +1239,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               const newMessages = [...prev]
               const lastMessage = newMessages[newMessages.length - 1]
               if (lastMessage.role === 'assistant') {
-                lastMessage.tokensPerSecond = timings.predicted_per_second
+                if (tpsServer != null) {
+                  lastMessage.tokensPerSecond = tpsServer
+                } else {
+                  delete lastMessage.tokensPerSecond
+                }
               }
               return newMessages
             })
@@ -2106,15 +2140,17 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
                 Generation:
               </Typography>
-              <Chip
-                size="small"
-                label={performanceMetrics.tokensPerSecond
-                  ? `${performanceMetrics.tokensPerSecond.toFixed(1)} tok/s`
-                  : '--'
-                }
-                color={performanceMetrics.tokensPerSecond && performanceMetrics.tokensPerSecond > 20 ? 'success' : 'default'}
-                sx={{ height: 20, fontSize: '0.7rem' }}
-              />
+              {(() => {
+                const genTps = sanitizeTokensPerSecond(performanceMetrics.tokensPerSecond ?? undefined)
+                return (
+                  <Chip
+                    size="small"
+                    label={genTps != null ? `${genTps.toFixed(1)} tok/s` : '--'}
+                    color={genTps != null && genTps > 20 ? 'success' : 'default'}
+                    sx={{ height: 20, fontSize: '0.7rem' }}
+                  />
+                )
+              })()}
             </Box>
 
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
@@ -2929,14 +2965,18 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     size="small"
                     color={getRoleColor(message.role) as 'primary' | 'secondary' | 'info'}
                   />
-                  {message.tokensPerSecond && message.role === 'assistant' && (
-                    <Chip
-                      label={`${message.tokensPerSecond.toFixed(2)} tok/s`}
-                      size="small"
-                      variant="outlined"
-                      sx={{ ml: 1, fontSize: '0.7rem', height: 20 }}
-                    />
-                  )}
+                  {message.role === 'assistant' &&
+                    (() => {
+                      const bubbleTps = sanitizeTokensPerSecond(message.tokensPerSecond)
+                      return bubbleTps != null ? (
+                        <Chip
+                          label={`${bubbleTps.toFixed(2)} tok/s`}
+                          size="small"
+                          variant="outlined"
+                          sx={{ ml: 1, fontSize: '0.7rem', height: 20 }}
+                        />
+                      ) : null
+                    })()}
                   <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5 }}>
                     {/* Edit button for user messages */}
                     {message.role === 'user' && editingMessageIndex !== index && (

@@ -5611,3 +5611,128 @@ timeouts and command-loop inefficiency.
 - Primary remaining limiter is model responsiveness under Terminal-Bench task
   pressure; next practical step is tuning Harbor/agent timeout budget and/or
   reducing model first-token latency under benchmark load.
+## Docker Compose: Redis port conflict (Apr 17, 2026)
+
+### Problem
+`docker compose up -d` failed with: `Bind for 0.0.0.0:6379 failed: port is already allocated`.
+
+### Cause
+Another container (`flux-redis-1`) already publishes host port 6379.
+
+### Fix
+In `docker-compose.yml`, map Redis as `6381:6379` on the host. Services inside the compose network still use `redis:6379` (unchanged). From the host, use `localhost:6381` if you need direct Redis CLI access.
+
+---
+
+## LlamaCPP inference service fails to start (Apr 17, 2026)
+
+### Symptom
+`POST /api/v1/service/start` returned 500: container exits within ~3s; `docker logs llamacpp-api` showed `common_chat_templates_init: error: lexer: unexpected character: '$'` and `failed to initialize chat template`.
+
+### Cause
+Default chat template was `chat-template-oss.jinja`, which mixes **Go-template-style** `{{- $var := ... }}` with Jinja-looking markup. **llama.cpp** only accepts its Jinja subset; the `$` tokens make the lexer fail, so `llama-server` exits before the model serves.
+
+### Fix (code)
+- Default `CHAT_TEMPLATE` / `template.selected` → `chat-template-basic.jinja` in `backend/main.py` and `start.sh`.
+- On startup, migrate any persisted config that still has `chat-template-oss.jinja` to `chat-template-basic.jinja`.
+
+### Fix (running system without rebuild)
+`PUT /api/v1/service/config` with `template.selected` = `chat-template-basic.jinja`, then **Start** again.
+
+Rebuild `backend-api` after editing `main.py` so new containers pick up defaults and migration.
+
+---
+
+## Qwen3.6-35B-A3B-UD: unknown model architecture `qwen35moe` (Apr 17, 2026)
+
+### Symptom
+`llama_model_load: unknown model architecture: 'qwen35moe'` when loading `Qwen3.6-35B-A3B-UD-Q6_K.gguf`.
+
+### Cause
+The `llama-server` binary in the Docker image was built from an **older** llama.cpp (often due to **cached** `Dockerfile` layers from `git checkout master` at an old build time). That build predates `qwen35moe` support in upstream.
+
+### Fix
+Root `Dockerfile` pins `LLAMA_CPP_REF` to a commit that includes `src/models/qwen35moe.cpp`. Rebuild the inference image **without** reusing the stale llama.cpp layer:
+
+`docker compose build --no-cache llamacpp-api`
+
+(or pass `--build-arg LLAMA_CPP_REF=<current master SHA>`). Then restart the stack or redeploy from the UI so the new `llama-nexus-llamacpp-api` image is used.
+
+---
+
+## `common_chat_verify_template` / autoparser JSON parse error (Apr 17, 2026)
+
+### Symptom
+`failed to apply template: Unable to generate parser for this template. Automatic parser generation failed: ... parse error ... unexpected ','` when using `chat-template-basic.jinja`.
+
+### Cause
+Newer llama.cpp builds a **PEG parser** from the Jinja output. The old **basic** template inlined **hand-built JSON** for `tool_calls` (`"arguments": {{ ... }}`), which breaks the JSON parse step during verification.
+
+### Fix
+- Default `template.selected` is **empty** so `llama-server` uses the **chat template embedded in the GGUF** (correct for Qwen3.6 MoE).
+- `chat-template-basic.jinja` was reduced to a minimal ChatML loop (no tool JSON) for optional overrides.
+- Persisted configs that pointed at `chat-template-oss.jinja` or `chat-template-basic.jinja` migrate to **embedded** on API startup.
+
+---
+
+## Chat UI: "no response" but HTTP 200 / logs show completion (Apr 17, 2026)
+
+### Symptom
+`POST /v1/chat/completions` returns 200; logs show token timing; user sees an empty assistant bubble.
+
+### Cause
+llama.cpp sends thinking/reasoning in **`delta.reasoning_content`** (OpenAI-compatible). The main **`delta.content`** can be empty until/unless the model emits the visible answer. **`ThinkingBlock`** in `MarkdownRenderer` defaulted to **collapsed**, so only a small "Thinking Process (N characters)" line appeared — easy to miss.
+
+### Fix
+- `ThinkingBlock` defaults to **expanded** so reasoning is visible immediately.
+- When there is reasoning but no main markdown yet, show a short caption explaining that the answer may follow.
+
+---
+
+## Chat: raw `</redacted_thinking>` in message body (Apr 17, 2026)
+
+### Cause
+`MarkdownRenderer` only matched `<think|thinking|thought>`, not **`<think>`** (Qwen). Blocks were not removed from `content`, so closing tags leaked into the main markdown. Stray fragments also appeared when `reasoning_content` duplicated template markup.
+
+### Fix
+- `THINK_TAG_GROUP` includes **`redacted_thinking`**; extract with `matchAll` and strip with a fresh regex (avoid global `lastIndex` bugs).
+- **`stripThinkingTagsFromDisplay`** / **`stripOrphanThinkingTags`** remove blocks and orphan tags from answer + thinking panel.
+
+---
+
+## Chat UI: `1000000.00 tok/s` on assistant messages (Apr 17, 2026)
+
+### Cause
+llama.cpp timing can report **~1e6 tokens/s** when **eval time rounds to 0 ms** (same as server logs). The chat UI stored **`timings.predicted_per_second`** on each assistant message and showed it as a chip, so an empty reply looked like only **“1000000.00 tok/s”**.
+
+### Fix
+`ChatPage.tsx`: **`sanitizeTokensPerSecond()`** caps/rejects non-finite and absurd values (`> 50_000`); apply when reading server timings, client-side tok/s, stream-end totals, and when rendering chips.
+
+---
+
+## Chat UI: blank assistant bubble during streaming Qwen3 `<think>` (Apr 17, 2026)
+
+### Symptom
+Stream of content like `"\n\n<think>\nHere's a thinking process...\n</think>\n\nHi!"`. In the chat UI, the assistant bubble either flashes raw thinking text then goes empty, or stays blank.
+
+### Root cause (two separate bugs)
+1. **Frontend renderer:** `MarkdownRenderer`'s unclosed-tag detector was anchored (`^<(think|...)>`) but the stream always begins with whitespace (`\n\n<think>...`). While the `<think>` block was still open, the regex never matched, so the renderer treated the *thinking text itself* as main content. Once the block closed, the final short answer replaced it — giving an empty/flashing bubble.
+2. **Server — the *real* cause of "no output at all":** the running `llama-server` was deployed with:
+   - `--chat-template-file /home/llamacpp/templates/chat-template-basic.jinja` (a stub ChatML template that does **not** prime `<think>\n` the way the Qwen3.6 GGUF embedded template does), **and**
+   - `--dry-multiplier 0.6 --dry-allowed-length 1 --dry-penalty-last-n 1024 --frequency-penalty 0.3 --presence-penalty 0.2`.
+   `dry_allowed_length=1` penalises *every* token that appeared in the last 1024 tokens — combined with freq/presence penalties and the wrong template, the sampler chose `<|im_end|>` as the **first** token on ~25 % of requests. Observed directly with `curl`: `predicted_n: 1`, `predicted_per_second: 1000000.0`, and no content deltas.
+
+### Fix
+Frontend (`frontend/src/components/chat/MarkdownRenderer.tsx`):
+- Extract all completed `<think>…</think>` blocks anywhere in `raw` via `replace` with a callback.
+- Then scan the remainder for an **unclosed** `<think>` (not anchored to start). Text after it = currently-streaming reasoning → `ThinkingBlock`; text before it = visible answer.
+- Explicit yellow diagnostic rendered when a bubble arrives with **zero** content and **zero** reasoning (so a genuine server empty reply is never confused with a render bug — per the "no silent fallbacks" rule).
+
+Backend / runtime config:
+- `backend/main.py` `load_default_config`: defaults changed to **disable DRY** (`dry_multiplier=0`, `dry_allowed_length=2`, `dry_penalty_last_n=0`) and **disable frequency/presence penalties** (`=0.0`); `min_p=0.0`.
+- `docker-compose.yml` `llamacpp-api` env: `CHAT_TEMPLATE=` (empty → use GGUF-embedded template), plus the sampler env-vars above so any future restart inherits the safe values.
+- Live service reconfigured via `PUT /api/v1/service/config` + `POST /api/v1/service/restart`.
+
+### Verification
+After the fix, a 10-iteration stress test (`"hi"` streamed through nginx) returned `predicted_n` of 168–205 on every run — **0/10 empty replies** (was ~2.5/10 before).
+

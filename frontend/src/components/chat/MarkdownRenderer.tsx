@@ -25,6 +25,31 @@ interface MarkdownRendererProps {
   reasoning_content?: string
 }
 
+/** Qwen / chat templates use <think>…</think>, not only <think>. */
+const THINK_TAG_GROUP = 'redacted_thinking|think|thinking|thought'
+
+/** Remove thinking blocks and stray tags from the main answer so </redacted_thinking> never shows as body text. */
+function stripThinkingTagsFromDisplay(s: string): string {
+  if (!s) return ''
+  let out = s
+  const blockRe = new RegExp(`<(${THINK_TAG_GROUP})>([\\s\\S]*?)<\\/\\1>`, 'gi')
+  out = out.replace(blockRe, '')
+  out = out.replace(/<\/?redacted_thinking>/gi, '')
+  out = out.replace(/<\/?think>/gi, '')
+  out = out.replace(/<\/?thinking>/gi, '')
+  out = out.replace(/<\/?thought>/gi, '')
+  return out.replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/** Reasoning channel text sometimes includes stray tag fragments; keep panel clean. */
+function stripOrphanThinkingTags(s: string): string {
+  if (!s) return ''
+  return s
+    .replace(/<\/?redacted_thinking>/gi, '')
+    .replace(/<\/?(?:think|thinking|thought)>/gi, '')
+    .trim()
+}
+
 interface CodeBlockProps {
   language: string
   value: string
@@ -86,7 +111,8 @@ interface ThinkingBlockProps {
 }
 
 const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content }) => {
-  const [expanded, setExpanded] = useState(false)
+  // Default expanded: models often stream only reasoning_content first (or only); collapsed looked like "no reply"
+  const [expanded, setExpanded] = useState(true)
 
   if (!content) return null
 
@@ -165,45 +191,78 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   content,
   reasoning_content,
 }) => {
-  // Debug: Log what we actually receive
-  console.log('=== MarkdownRenderer Props ===')
-  console.log('content:', JSON.stringify(content))
-  console.log('reasoning_content:', JSON.stringify(reasoning_content))
-  // Check for thinking tags in content and extract them
-  // Support multiple tag formats: <think>, <thinking>, <thought>
-  // Use greedy matching to capture everything between tags
-  const thinkingRegex = /<(think|thinking|thought)>([\s\S]*?)<\/\1>/gi
+  const raw = typeof content === 'string' ? content : ''
+
   let thinking = ''
-  let displayContent = content
+  let displayContent = ''
 
-  // Extract all thinking blocks
-  let match
-  const thinkingParts: string[] = []
-  while ((match = thinkingRegex.exec(content)) !== null) {
-    thinkingParts.push(match[2].trim())
+  // 1) Extract all *completed* thinking blocks (<think>...</think>) anywhere in raw.
+  const closedBlockRe = new RegExp(`<(${THINK_TAG_GROUP})>([\\s\\S]*?)<\\/\\1>`, 'gi')
+  const closedThinking: string[] = []
+  const rawWithoutClosed = raw.replace(closedBlockRe, (_m, _tag, inner) => {
+    closedThinking.push(inner)
+    return ''
+  })
+
+  // 2) Handle any *still-streaming* thinking block (open tag with no matching close yet).
+  //    This can appear anywhere in the text (often after a leading newline), so do NOT anchor to ^.
+  const unclosedRe = new RegExp(`<(${THINK_TAG_GROUP})>([\\s\\S]*)$`, 'i')
+  const unclosedMatch = rawWithoutClosed.match(unclosedRe)
+  let beforeUnclosed = rawWithoutClosed
+  let streamingThinking = ''
+  if (unclosedMatch && unclosedMatch.index !== undefined) {
+    beforeUnclosed = rawWithoutClosed.slice(0, unclosedMatch.index)
+    streamingThinking = unclosedMatch[2]
   }
 
-  if (thinkingParts.length > 0) {
-    thinking = thinkingParts.join('\n\n')
-    displayContent = content.replace(/<(think|thinking|thought)>[\s\S]*?<\/\1>/gi, '').trim()
-  }
+  const combinedThinking = [...closedThinking, streamingThinking]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join('\n\n')
 
-  // Handle unclosed thinking tags - if content starts with <think> but no closing tag,
-  // treat everything as thinking (the response is still being generated)
-  const unclosedThinkMatch = content.match(/^<(think|thinking|thought)>([\s\S]*)$/i)
-  if (unclosedThinkMatch && !thinking) {
-    thinking = unclosedThinkMatch[2].trim()
-    displayContent = '' // Response hasn't started yet
-  }
+  thinking = combinedThinking
+  displayContent = beforeUnclosed
 
-  // Use reasoning_content from API if available (takes priority)
+  // reasoning_content (from OpenAI-style split stream) always wins for the panel.
   if (reasoning_content) {
     thinking = reasoning_content
   }
 
+  displayContent = stripThinkingTagsFromDisplay(displayContent)
+  const thinkingForPanel = stripOrphanThinkingTags(thinking)
+
+  const hasMainText = Boolean(displayContent && displayContent.trim())
+  const hasAnyText = Boolean(raw && raw.trim())
+
   return (
     <Box sx={{ width: '100%' }}>
-      {thinking && <ThinkingBlock content={thinking} />}
+      {thinkingForPanel && <ThinkingBlock content={thinkingForPanel} />}
+      {!hasMainText && thinkingForPanel && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+          The model returned thinking/reasoning above. The final answer appears below when the model emits visible text.
+        </Typography>
+      )}
+      {/* Diagnostic: the stream finished but server sent no content AND no reasoning.
+          Surfacing this so an empty server response is never confused with a render bug. */}
+      {!hasAnyText && !thinkingForPanel && (
+        <Typography
+          variant="caption"
+          sx={{
+            display: 'block',
+            mb: 1,
+            px: 1,
+            py: 0.5,
+            color: 'warning.main',
+            border: '1px dashed',
+            borderColor: 'warning.main',
+            borderRadius: 1,
+            fontFamily: 'monospace',
+            fontSize: '0.75rem',
+          }}
+        >
+          [empty assistant response — the server emitted no content and no reasoning. This is a llama-server/model issue (typically predicted_n=1 with EOS as the first token). Retry the prompt.]
+        </Typography>
+      )}
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}

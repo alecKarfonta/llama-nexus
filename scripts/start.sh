@@ -91,9 +91,9 @@ if [ -z "$MODEL_PATH" ]; then
 fi
 
 # Template selection now supports a directory of templates mounted at /home/llamacpp/templates
-# Use CHAT_TEMPLATE env var to pick a file inside that directory
+# Use CHAT_TEMPLATE env var to pick a file inside that directory (empty = use GGUF embedded template)
 TEMPLATE_DIR="${TEMPLATE_DIR:-/home/llamacpp/templates}"
-CHAT_TEMPLATE="${CHAT_TEMPLATE:-chat-template-oss.jinja}"
+CHAT_TEMPLATE="${CHAT_TEMPLATE:-}"
 TEMPLATE_PATH="${TEMPLATE_DIR}/${CHAT_TEMPLATE}"
 
 # Download model if not exists and we have a repository
@@ -205,8 +205,8 @@ if [ $# -eq 0 ]; then
         echo "🖼️  Enabled vision support with multimodal projection"
     fi
 
-    # Add template if it exists
-    if [[ -f "$TEMPLATE_PATH" ]]; then
+    # Add template only when a filename is set and the file exists (empty CHAT_TEMPLATE = GGUF default)
+    if [[ -n "$CHAT_TEMPLATE" && -f "$TEMPLATE_PATH" ]]; then
         CMD_ARGS+=("--jinja" "--chat-template-file" "$TEMPLATE_PATH")
     fi
 

@@ -24,7 +24,8 @@ services:
     image: redis:7-alpine
     container_name: llama-nexus-redis
     ports:
-      - "6389:6379"
+      # Host 6381: avoid conflict when another stack (e.g. flux-redis) uses 6379
+      - "6381:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -206,6 +207,26 @@ services:
       - MODEL_VARIANT=Q6_K
       - MODEL_REPO=unsloth/Qwen3.6-27B-GGUF
       - CONTEXT_SIZE=256000
+      # Empty = use the chat template embedded in the GGUF (required for Qwen3-family thinking
+      # models; custom templates often misprime <think> causing predicted_n=1 EOS replies).
+      - CHAT_TEMPLATE=
+      # Disable aggressive DRY + freq/presence penalties that caused intermittent empty replies.
+      - DRY_MULTIPLIER=0.0
+      - DRY_ALLOWED_LENGTH=2
+      - DRY_PENALTY_LAST_N=0
+      - FREQUENCY_PENALTY=0.0
+      - PRESENCE_PENALTY=0.0
+      - MIN_P=0.0
+      # CUDA optimizations - use '0' for single GPU or '0,1' for multiple
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
+      # Model configuration - Qwen3-VL-4B-Thinking (Vision-Language with Reasoning)
+      - MODEL_NAME=Qwen_Qwen3-VL-4B-Thinking
+      - MODEL_VARIANT=Q4_K_M
+      - MODEL_REPO=bartowski/Qwen_Qwen3-VL-4B-Thinking-GGUF
+      # MMPROJ_FILE should be set for VL models only
+      # - MMPROJ_FILE=mmproj-Qwen_Qwen3-VL-4B-Thinking-f16.gguf
+      - CONTEXT_SIZE=40960
       - GPU_LAYERS=999
       - TEMPERATURE=0.15
       - TOP_P=0.95
