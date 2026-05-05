@@ -277,7 +277,7 @@ services:
       retries: 3
       start_period: 30s
 
-  # vLLM API Server - Native MXFP4 GPT-OSS-20B
+  # vLLM API Server - Nemotron-3-Nano-Omni multimodal (text, image, video, audio)
   vllm-api:
     build:
       context: .
@@ -287,8 +287,9 @@ services:
       - vllm
     hostname: vllm
     ports:
-      - "8601:8080" # vLLM API server port (different from llamacpp)
+      - "8601:8080"
     shm_size: '16gb'
+    ipc: host
     deploy:
       resources:
         reservations:
@@ -297,22 +298,25 @@ services:
               device_ids: [ 'all' ]
               capabilities: [ gpu ]
     environment:
-      - MODEL_NAME=openai/gpt-oss-20b
+      - MODEL_NAME=nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
+      - SERVED_MODEL_NAME=Nemotron-3-Nano-Omni-30B-A3B-Reasoning
       - HOST=0.0.0.0
       - PORT=8080
-      - API_KEY=placeholder-api-key
-      - MAX_MODEL_LEN=131072
-      - GPU_MEMORY_UTILIZATION=0.8
+      - API_KEY=${API_KEY:-placeholder-api-key}
+      - MAX_MODEL_LEN=16384
+      - GPU_MEMORY_UTILIZATION=0.95
       - TENSOR_PARALLEL_SIZE=1
-      - DTYPE=auto
-      - TRUST_REMOTE_CODE=true
-      - ENABLE_CHUNKED_PREFILL=true
+      - KV_CACHE_DTYPE=fp8
+      - REASONING_PARSER=nemotron_v3
+      - TOOL_CALL_PARSER=qwen3_coder
+      - VIDEO_PRUNING_RATE=0.5
+      - VIDEO_FPS=2
+      - VIDEO_NUM_FRAMES=256
+      - MAX_NUM_SEQS=16
       - MAX_NUM_BATCHED_TOKENS=8192
-      - MAX_NUM_SEQS=256
-      - SERVED_MODEL_NAME=gpt-oss-20b
-      # HuggingFace token for downloads
+      - ENABLE_CHUNKED_PREFILL=true
+      - 'LIMIT_MM_PER_PROMPT={"video":1,"image":5,"audio":1}'
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
-      # CUDA optimizations - use '0' for single GPU or '0,1' for multiple
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
     volumes:
@@ -324,7 +328,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 600s # vLLM takes longer to start due to model download
+      start_period: 600s
 
   # Llama.cpp Embedding Server - Optional RAG Embedding Service
   llamacpp-embed:
