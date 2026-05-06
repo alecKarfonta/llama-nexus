@@ -142,17 +142,38 @@ async def get_vllm_status(request: Request):
 
 
 @router.get("/api/v1/service/config")
-async def get_config(request: Request):
-    """Get current configuration."""
-    manager = get_manager(request)
-    if manager is None:
+async def get_config(request: Request, backend: str = "llamacpp"):
+    """Get current configuration for the selected backend."""
+    mgr = get_backend_manager(request, backend)
+    if mgr is None:
         raise HTTPException(status_code=503, detail="Manager not available")
+
+    if backend == "vllm":
+        vllm_mgr = mgr
+        return {
+            "config": vllm_mgr.config,
+            "command": " ".join(vllm_mgr.build_command()),
+            "backend": "vllm",
+            "editable_fields": {
+                "model": ["name", "served_name"],
+                "sampling": ["temperature", "top_p", "top_k", "repetition_penalty",
+                              "frequency_penalty", "presence_penalty"],
+                "performance": ["max_model_len", "gpu_memory_utilization", "max_num_seqs",
+                                 "max_num_batched_tokens", "kv_cache_dtype"],
+                "reasoning": ["reasoning_parser"],
+                "server": ["api_key"],
+            }
+        }
+
+    # llama.cpp backend (default)
+    manager = mgr
     return {
         "config": manager.config,
         "command": " ".join(manager.build_command()),
+        "backend": "llamacpp",
         "editable_fields": {
             "model": ["context_size", "gpu_layers"],
-            "sampling": ["temperature", "top_p", "top_k", "min_p", "repeat_penalty", 
+            "sampling": ["temperature", "top_p", "top_k", "min_p", "repeat_penalty",
                         "frequency_penalty", "presence_penalty", "dry_multiplier"],
             "performance": ["threads", "batch_size", "ubatch_size", "num_predict", "parallel_slots", "ctx_checkpoints"],
             "server": ["api_key"],
@@ -161,9 +182,39 @@ async def get_config(request: Request):
     }
 
 
+def _deep_merge_config(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """Deep-merge incoming into base (mutates base)."""
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge_config(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
 @router.put("/api/v1/service/config")
-async def update_config(request: Request, config: Dict[str, Any]):
-    """Update configuration (requires restart to apply)."""
+async def update_config(request: Request, config: Dict[str, Any], backend: str = "llamacpp"):
+    """Update configuration (requires restart to apply).
+
+    Use query param ``backend=vllm`` to update the vLLM manager in-memory config.
+    llama.cpp continues to use persisted merge when ``merge_and_persist_config`` is available.
+    """
+    if backend == "vllm":
+        mgr = get_vllm_manager(request)
+        if mgr is None:
+            raise HTTPException(status_code=503, detail="vLLM manager not available")
+        try:
+            _deep_merge_config(mgr.config, config)
+            return {
+                "success": True,
+                "config": mgr.config,
+                "command": " ".join(mgr.build_command()),
+                "backend": "vllm",
+                "message": "vLLM configuration updated in memory. Restart vLLM service to apply.",
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to update vLLM config: {str(e)}")
+
     manager = get_manager(request)
     merge_config = get_merge_config_func(request)
     if manager is None:
@@ -176,6 +227,7 @@ async def update_config(request: Request, config: Dict[str, Any]):
             "success": True,
             "config": updated_config,
             "command": " ".join(manager.build_command()),
+            "backend": "llamacpp",
             "message": "Configuration updated. Restart service to apply changes."
         }
     except Exception as e:
@@ -185,37 +237,53 @@ async def update_config(request: Request, config: Dict[str, Any]):
 @router.post("/api/v1/service/config/preview")
 async def preview_config(request: Request, payload: Dict[str, Any]):
     """Preview the command line that would be generated for a configuration without applying it."""
-    manager = get_manager(request)
-    if manager is None:
+    backend = payload.get("backend", "llamacpp")
+    mgr = get_backend_manager(request, backend)
+    if mgr is None:
         raise HTTPException(status_code=503, detail="Manager not available")
-    
+
     config = payload.get("config")
     if not config:
         raise HTTPException(status_code=400, detail="Config is required")
-    
+
     try:
-        # Create a temporary copy of the manager with the new config
-        # We'll temporarily update the manager's config to generate the command
-        original_config = manager.config.copy()
-        
-        # Merge the new config with the existing one
-        temp_config = {**original_config, **config}
-        manager.config = temp_config
-        
-        # Generate the command
-        command = " ".join(manager.build_command())
-        
-        # Restore the original config
-        manager.config = original_config
-        
+        original_config = mgr.config.copy()
+
+        # Deep merge for nested dicts
+        temp_config = original_config.copy()
+        for key, value in config.items():
+            if isinstance(value, dict) and isinstance(temp_config.get(key), dict):
+                temp_config[key] = {**temp_config[key], **value}
+            else:
+                temp_config[key] = value
+
+        mgr.config = temp_config
+        command = " ".join(mgr.build_command())
+        mgr.config = original_config
+
         return {
             "command": command,
-            "config": temp_config
+            "config": temp_config,
+            "backend": backend,
         }
     except Exception as e:
-        # Make sure to restore original config even if there's an error
-        manager.config = original_config
+        mgr.config = original_config
         raise HTTPException(status_code=500, detail=f"Failed to preview config: {str(e)}")
+
+
+@router.get("/api/v1/service/config/fields")
+async def get_config_fields(request: Request, backend: str = "llamacpp"):
+    """Get field metadata for the selected backend, including scope and cross-framework mapping."""
+    mgr = get_backend_manager(request, backend)
+    if mgr is None:
+        raise HTTPException(status_code=503, detail="Manager not available")
+
+    if hasattr(mgr, "get_field_metadata"):
+        return {
+            "backend": backend,
+            "fields": mgr.get_field_metadata(),
+        }
+    return {"backend": backend, "fields": {}}
 
 
 @router.post("/api/v1/service/config/validate")
@@ -270,15 +338,24 @@ async def service_action(request: Request, payload: Dict[str, Any]):
     if mgr is None:
         raise HTTPException(status_code=503, detail=f"{backend} manager not available")
 
-    # Apply config before start/restart if provided (llamacpp only)
-    if backend == "llamacpp" and config and action in ("start", "restart"):
-        merge_config = get_merge_config_func(request)
-        if merge_config:
-            logger.info(f"Applying config before {action}: model={config.get('model', {}).get('name')}/{config.get('model', {}).get('variant')}")
-            merge_config(config)
-        else:
-            logger.info(f"Directly updating manager config before {action}")
-            mgr.config = {**mgr.config, **config}
+    # Apply config before start/restart if provided
+    if config and action in ("start", "restart"):
+        if backend == "llamacpp":
+            merge_config = get_merge_config_func(request)
+            if merge_config:
+                logger.info(f"Applying config before {action}: model={config.get('model', {}).get('name')}/{config.get('model', {}).get('variant')}")
+                merge_config(config)
+            else:
+                logger.info(f"Directly updating manager config before {action}")
+                mgr.config = {**mgr.config, **config}
+        elif backend == "vllm":
+            # Deep merge for vLLM nested config
+            logger.info(f"Applying vLLM config before {action}")
+            for key, value in config.items():
+                if isinstance(value, dict) and isinstance(mgr.config.get(key), dict):
+                    mgr.config[key] = {**mgr.config[key], **value}
+                else:
+                    mgr.config[key] = value
 
     if action == "start":
         success = await mgr.start()
@@ -299,9 +376,9 @@ async def get_config_alias(request: Request):
 
 
 @router.put("/v1/service/config")
-async def update_config_alias(request: Request, config: Dict[str, Any]):
+async def update_config_alias(request: Request, config: Dict[str, Any], backend: str = "llamacpp"):
     """Update config (frontend compatibility)."""
-    return await update_config(request, config)
+    return await update_config(request, config, backend)
 
 
 @router.post("/v1/service/config/preview")

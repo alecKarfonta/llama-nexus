@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useRef } from 'react'
+import React, { useEffect, useLayoutEffect, useState, useMemo, useCallback, useRef } from 'react'
 import {
   Box,
   Grid,
@@ -26,8 +26,8 @@ import {
   AccordionDetails,
   ToggleButtonGroup,
   ToggleButton,
-  Divider,
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import {
   PlayArrow as StartIcon,
   Stop as StopIcon,
@@ -150,6 +150,116 @@ interface Config {
   };
 }
 
+// vLLM-specific config type
+interface VllmConfig {
+  backend_type: string;
+  model: {
+    name: string;
+    served_name: string;
+    dtype: string;
+    quantization: string;
+  };
+  sampling: {
+    temperature: number;
+    top_p: number;
+    top_k: number;
+    repetition_penalty: number;
+    frequency_penalty: number;
+    presence_penalty: number;
+  };
+  performance: {
+    max_model_len: number;
+    gpu_memory_utilization: number;
+    tensor_parallel_size: number;
+    pipeline_parallel_size: number;
+    data_parallel_size: number;
+    max_num_seqs: number;
+    max_num_batched_tokens: number;
+    kv_cache_dtype: string;
+    enforce_eager: boolean;
+    enable_chunked_prefill: boolean;
+    async_scheduling: boolean;
+  };
+  moe: {
+    moe_backend: string;
+    mamba_ssm_cache_dtype: string;
+  };
+  reasoning: {
+    reasoning_parser: string;
+    reasoning_parser_plugin: string;
+  };
+  speculative: {
+    method: string;
+    num_speculative_tokens: number;
+    speculative_moe_backend: string;
+  };
+  tools: {
+    enable_auto_tool_choice: boolean;
+    tool_call_parser: string;
+  };
+  media: {
+    video_pruning_rate: number;
+    video_fps: number;
+    video_num_frames: number;
+  };
+  environment: {
+    vllm_nvfp4_gemm_backend: string;
+    vllm_allow_long_max_model_len: string;
+    vllm_flashinfer_allreduce_backend: string;
+    vllm_use_flashinfer_moe_fp4: string;
+    hf_token: string;
+  };
+  server: {
+    host: string;
+    port: number;
+    api_key: string;
+    trust_remote_code: boolean;
+  };
+}
+
+// Field metadata from backend
+interface FieldMeta {
+  scope: 'shared' | 'vllm' | 'llamacpp';
+  type: 'number' | 'text' | 'select' | 'boolean';
+  description: string;
+  vllm_flag?: string;
+  llamacpp_flag?: string;
+  llamacpp_equivalent?: string | null;
+  vllm_equivalent?: string | null;
+  mapping_note?: string;
+  note?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: string[];
+}
+type FieldMetadata = Record<string, Record<string, FieldMeta>>;
+
+// Colored badge showing which framework a field belongs to
+const FrameworkBadge: React.FC<{ scope: string }> = ({ scope }) => {
+  const config: Record<string, { label: string; bg: string; color: string; border: string }> = {
+    shared: { label: 'Shared', bg: 'rgba(76, 175, 80, 0.12)', color: '#81c784', border: 'rgba(76, 175, 80, 0.3)' },
+    vllm: { label: 'vLLM', bg: 'rgba(33, 150, 243, 0.12)', color: '#64b5f6', border: 'rgba(33, 150, 243, 0.3)' },
+    llamacpp: { label: 'llama.cpp', bg: 'rgba(255, 152, 0, 0.12)', color: '#ffb74d', border: 'rgba(255, 152, 0, 0.3)' },
+  };
+  const c = config[scope] || config.shared;
+  return (
+    <Chip
+      label={c.label}
+      size="small"
+      sx={{
+        fontWeight: 600,
+        fontSize: '0.625rem',
+        height: '18px',
+        bgcolor: c.bg,
+        color: c.color,
+        border: `1px solid ${c.border}`,
+        '& .MuiChip-label': { px: 0.75 },
+      }}
+    />
+  );
+};
+
 // Default values matching backend's load_default_config() method
 const DEFAULT_VALUES = {
   model: {
@@ -249,6 +359,100 @@ const DEFAULT_VALUES = {
   },
 };
 
+// vLLM default values matching backend VLLMManager.load_default_config()
+const VLLM_DEFAULT_VALUES: VllmConfig = {
+  backend_type: 'vllm',
+  model: {
+    name: 'nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4',
+    served_name: 'Nemotron-3-Nano-Omni-30B-A3B-Reasoning',
+    dtype: 'auto',
+    quantization: 'fp4',
+  },
+  sampling: {
+    temperature: 0.7,
+    top_p: 0.8,
+    top_k: -1,
+    repetition_penalty: 1.0,
+    frequency_penalty: 0.0,
+    presence_penalty: 0.0,
+  },
+  performance: {
+    max_model_len: 16384,
+    gpu_memory_utilization: 0.95,
+    tensor_parallel_size: 1,
+    pipeline_parallel_size: 1,
+    data_parallel_size: 1,
+    max_num_seqs: 16,
+    max_num_batched_tokens: 8192,
+    kv_cache_dtype: 'fp8',
+    enforce_eager: true,
+    enable_chunked_prefill: true,
+    async_scheduling: true,
+  },
+  moe: {
+    moe_backend: 'marlin',
+    mamba_ssm_cache_dtype: 'float16',
+  },
+  reasoning: {
+    reasoning_parser: 'nemotron_v3',
+    reasoning_parser_plugin: '',
+  },
+  speculative: {
+    method: '',
+    num_speculative_tokens: 0,
+    speculative_moe_backend: '',
+  },
+  tools: {
+    enable_auto_tool_choice: true,
+    tool_call_parser: 'qwen3_coder',
+  },
+  media: {
+    video_pruning_rate: 0.5,
+    video_fps: 2,
+    video_num_frames: 256,
+  },
+  environment: {
+    vllm_nvfp4_gemm_backend: 'marlin',
+    vllm_allow_long_max_model_len: '1',
+    vllm_flashinfer_allreduce_backend: 'trtllm',
+    vllm_use_flashinfer_moe_fp4: '0',
+    hf_token: '',
+  },
+  server: {
+    host: '0.0.0.0',
+    port: 8080,
+    api_key: 'placeholder-api-key',
+    trust_remote_code: true,
+  },
+};
+
+/** Last tab index for each backend (Model = 0). Keeps MuiTabs value aligned with Tab children. */
+const DEPLOY_TAB_MAX_LLAMACPP = 6
+const DEPLOY_TAB_MAX_VLLM = 8
+
+/** Merge API payload into defaults so nested sections always exist (avoids blank panels / crashes). */
+function mergeVllmApiWithDefaults(raw: unknown): VllmConfig | null {
+  if (raw == null || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  const d = VLLM_DEFAULT_VALUES
+  const obj = (x: unknown) =>
+    x && typeof x === 'object' && !Array.isArray(x) ? (x as Record<string, unknown>) : {}
+
+  return {
+    backend_type: typeof r.backend_type === 'string' ? r.backend_type : d.backend_type,
+    model: { ...d.model, ...obj(r.model) } as VllmConfig['model'],
+    sampling: { ...d.sampling, ...obj(r.sampling) } as VllmConfig['sampling'],
+    performance: { ...d.performance, ...obj(r.performance) } as VllmConfig['performance'],
+    moe: { ...d.moe, ...obj(r.moe) } as VllmConfig['moe'],
+    reasoning: { ...d.reasoning, ...obj(r.reasoning) } as VllmConfig['reasoning'],
+    speculative: { ...d.speculative, ...obj(r.speculative) } as VllmConfig['speculative'],
+    tools: { ...d.tools, ...obj(r.tools) } as VllmConfig['tools'],
+    media: { ...d.media, ...obj(r.media) } as VllmConfig['media'],
+    environment: { ...d.environment, ...obj(r.environment) } as VllmConfig['environment'],
+    server: { ...d.server, ...obj(r.server) } as VllmConfig['server'],
+  }
+}
+
 // Parameter Presets for different use cases
 interface ParameterPreset {
   name: string;
@@ -317,38 +521,52 @@ const PARAMETER_PRESETS: ParameterPreset[] = [
   },
 ];
 
-// LocalStorage key for persisting deployment settings
-const DEPLOY_SETTINGS_KEY = 'llama-nexus-deploy-settings';
+// LocalStorage key for persisting deployment settings (llama.cpp config, API keys, backend toggle, vLLM snapshot)
+const DEPLOY_SETTINGS_KEY = 'llama-nexus-deploy-settings'
 
-// Helper functions for localStorage persistence
+function readDeployStorage(): Record<string, unknown> {
+  try {
+    const raw = localStorage.getItem(DEPLOY_SETTINGS_KEY)
+    if (!raw) return {}
+    const o = JSON.parse(raw)
+    return typeof o === 'object' && o !== null && !Array.isArray(o) ? o : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Merge-write so we never drop unrelated fields (e.g. backend when saving llama config). */
+function writeDeployStorage(patch: Record<string, unknown>) {
+  try {
+    const prev = readDeployStorage()
+    localStorage.setItem(DEPLOY_SETTINGS_KEY, JSON.stringify({ ...prev, ...patch, timestamp: Date.now() }))
+  } catch (error) {
+    console.warn('Failed to write deploy settings:', error)
+  }
+}
+
 const saveDeploySettings = (config: Config, selectedApiKey: string) => {
-  try {
-    const settingsToSave = {
-      config,
-      selectedApiKey,
-      timestamp: Date.now()
-    };
-    localStorage.setItem(DEPLOY_SETTINGS_KEY, JSON.stringify(settingsToSave));
-  } catch (error) {
-    console.warn('Failed to save deploy settings to localStorage:', error);
-  }
-};
+  writeDeployStorage({ config, selectedApiKey })
+}
 
-const loadDeploySettings = (): { config: Config | null; selectedApiKey: string } => {
-  try {
-    const stored = localStorage.getItem(DEPLOY_SETTINGS_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      return {
-        config: parsed.config || null,
-        selectedApiKey: parsed.selectedApiKey || ''
-      };
-    }
-  } catch (error) {
-    console.warn('Failed to load deploy settings from localStorage:', error);
+const loadDeploySettings = (): {
+  config: Config | null
+  selectedApiKey: string
+  deployBackend: 'llamacpp' | 'vllm'
+  vllmConfig: VllmConfig | undefined
+} => {
+  const p = readDeployStorage()
+  const deployBackend = p.deployBackend === 'vllm' ? 'vllm' : 'llamacpp'
+  return {
+    config: (p.config as Config) ?? null,
+    selectedApiKey: typeof p.selectedApiKey === 'string' ? p.selectedApiKey : '',
+    deployBackend,
+    vllmConfig:
+      p.vllmConfig && typeof p.vllmConfig === 'object' && !Array.isArray(p.vllmConfig)
+        ? (p.vllmConfig as VllmConfig)
+        : undefined,
   }
-  return { config: null, selectedApiKey: '' };
-};
+}
 
 // API Key management helpers
 const API_KEYS_STORAGE_KEY = 'llama-nexus-api-keys';
@@ -538,8 +756,13 @@ export const DeployPage: React.FC = () => {
   const [selectedTemplate, setSelectedTemplate] = useState<string>('')
   const [templatesDir, setTemplatesDir] = useState<string>('')
   const [templatesLoading, setTemplatesLoading] = useState<boolean>(false)
-  const [backend, setBackend] = useState<'llamacpp' | 'vllm'>('llamacpp')
+  const [backend, setBackend] = useState<'llamacpp' | 'vllm'>(() => loadDeploySettings().deployBackend)
   const [vllmStatus, setVllmStatus] = useState<any | null>(null)
+  const [vllmConfig, setVllmConfig] = useState<VllmConfig | null>(null)
+  const [originalVllmConfig, setOriginalVllmConfig] = useState<VllmConfig | null>(null)
+  const [vllmReloading, setVllmReloading] = useState(false)
+  const [vllmReloadError, setVllmReloadError] = useState<string | null>(null)
+  const [fieldMetadata, setFieldMetadata] = useState<FieldMetadata>({})
 
   // API Key management
   const [selectedApiKey, setSelectedApiKey] = useState<string>('')
@@ -559,6 +782,90 @@ export const DeployPage: React.FC = () => {
       deployLog('mount', 'DeployPage component unmounted')
     }
   }, [])
+
+  useEffect(() => {
+    if (backend !== 'vllm') {
+      setVllmReloading(false)
+    }
+  }, [backend])
+
+  useLayoutEffect(() => {
+    setTab(0)
+  }, [backend])
+
+  useEffect(() => {
+    writeDeployStorage({ deployBackend: backend })
+  }, [backend])
+
+  // Reload config when backend selection changes
+  useEffect(() => {
+    if (loading) return
+
+    const activeBackend = backend
+    if (activeBackend === 'vllm') {
+      setVllmReloading(true)
+      setVllmReloadError(null)
+    }
+
+    let cancelled = false
+    ;(async () => {
+      deployLog('backend', `Backend changed to ${activeBackend}, reloading config`)
+      try {
+        const cfgRes = await fetch(`/api/v1/service/config?backend=${activeBackend}`)
+        if (!cfgRes.ok) {
+          const errText = await cfgRes.text()
+          const msg = errText || `HTTP ${cfgRes.status}`
+          deployLog('backend', 'Failed to load config:', msg)
+          if (!cancelled && activeBackend === 'vllm') {
+            setVllmReloadError(msg)
+            setVllmConfig(null)
+            setOriginalVllmConfig(null)
+          }
+        } else if (!cancelled) {
+          const cfgJson = await cfgRes.json()
+          deployLog('backend', 'Loaded config for backend:', activeBackend)
+          if (activeBackend === 'vllm') {
+            const persisted = loadDeploySettings()
+            const raw = persisted.vllmConfig ?? cfgJson.config
+            const merged = mergeVllmApiWithDefaults(raw)
+            if (merged == null) {
+              setVllmReloadError('Server returned an invalid or empty vLLM configuration')
+              setVllmConfig(null)
+              setOriginalVllmConfig(null)
+            } else {
+              setVllmConfig(merged)
+              setOriginalVllmConfig(JSON.parse(JSON.stringify(merged)))
+              setVllmReloadError(null)
+            }
+          } else {
+            setConfig(cfgJson.config)
+            setOriginalConfig(JSON.parse(JSON.stringify(cfgJson.config)))
+          }
+          setCommandLine(cfgJson.command || '')
+        }
+
+        const fieldsRes = await fetch(`/api/v1/service/config/fields?backend=${activeBackend}`)
+        if (fieldsRes.ok && !cancelled) {
+          const fieldsJson = await fieldsRes.json()
+          setFieldMetadata(fieldsJson.fields || {})
+        }
+      } catch (e) {
+        deployLog('backend', 'Failed to load config for backend:', e)
+        if (!cancelled && activeBackend === 'vllm') {
+          setVllmReloadError(e instanceof Error ? e.message : 'Failed to load vLLM config')
+          setVllmConfig(null)
+        }
+      } finally {
+        if (!cancelled && activeBackend === 'vllm') {
+          setVllmReloading(false)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [backend, loading])
 
   // VRAM estimation state
   const [vramEstimate, setVramEstimate] = useState<{
@@ -783,6 +1090,18 @@ export const DeployPage: React.FC = () => {
         setOriginalConfig(JSON.parse(JSON.stringify(cfgJson.config)))
         setCommandLine(cfgJson.command || '')
 
+        // Fetch field metadata for the current backend
+        try {
+          deployLog('init', 'Fetching field metadata...')
+          const fieldsRes = await fetch(`/api/v1/service/config/fields?backend=llamacpp`)
+          if (fieldsRes.ok) {
+            const fieldsJson = await fieldsRes.json()
+            setFieldMetadata(fieldsJson.fields || {})
+          }
+        } catch (e) {
+          deployLog('init', 'Failed to fetch field metadata (non-fatal):', e)
+        }
+
         // Load currently deployed model info (best-effort)
         try {
           deployLog('init', 'Fetching current model...')
@@ -854,14 +1173,44 @@ export const DeployPage: React.FC = () => {
     return uniqueVariants
   }, [models, config?.model?.name]) // Only depend on the model name, not the entire config
 
-  const hasChanges = useMemo(
-    () => JSON.stringify(config) !== JSON.stringify(originalConfig),
-    [config, originalConfig]
-  )
+  const availableVllmVariantsForSelected = useMemo(() => {
+    const served = (vllmConfig?.model?.served_name || '').trim()
+    if (!served) return [] as string[]
+    const variants = models.filter((m) => m.name === served).map((m) => m.variant)
+    return Array.from(new Set(variants.filter(Boolean))).sort()
+  }, [models, vllmConfig?.model?.served_name])
+
+  const vllmSelectModelNameValue = useMemo(() => {
+    const served = (vllmConfig?.model?.served_name || '').trim()
+    if (served && availableModelNames.includes(served)) return served
+    return ''
+  }, [availableModelNames, vllmConfig?.model?.served_name])
+
+  const vllmSelectVariantValue = useMemo(() => {
+    if (!vllmConfig) return ''
+    const served = (vllmConfig.model.served_name || '').trim()
+    const repo = (vllmConfig.model.name || '').trim()
+    const candidates = models.filter((m) => m.name === served)
+    if (candidates.length === 0) return ''
+    if (repo) {
+      const hit = candidates.find((m) => (m.repositoryId || '').trim() === repo)
+      if (hit) return hit.variant
+    }
+    if (availableVllmVariantsForSelected.length === 1) return availableVllmVariantsForSelected[0]
+    return candidates[0].variant
+  }, [models, vllmConfig, availableVllmVariantsForSelected])
+
+  const hasChanges = useMemo(() => {
+    if (backend === 'vllm') {
+      if (!vllmConfig || !originalVllmConfig) return false
+      return JSON.stringify(vllmConfig) !== JSON.stringify(originalVllmConfig)
+    }
+    return JSON.stringify(config) !== JSON.stringify(originalConfig)
+  }, [backend, config, originalConfig, vllmConfig, originalVllmConfig])
 
   // Function to update command line preview in real-time
   const updateCommandPreview = async (configToPreview: Config) => {
-    deployLog('commandPreview', 'Updating command preview', { modelName: configToPreview?.model?.name })
+    deployLog('commandPreview', 'Updating command preview', { modelName: configToPreview?.model?.name, backend })
     try {
       // Convert undefined values to null so they get properly serialized and handled by backend
       const configForPreview = JSON.parse(JSON.stringify(configToPreview, (key, value) => {
@@ -873,7 +1222,7 @@ export const DeployPage: React.FC = () => {
       const response = await fetch('/api/v1/service/config/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: configForPreview })
+        body: JSON.stringify({ config: configForPreview, backend: 'llamacpp' })
       })
       deployLog('commandPreview', 'Preview response:', { ok: response.ok, status: response.status })
       if (response.ok) {
@@ -890,11 +1239,30 @@ export const DeployPage: React.FC = () => {
     }
   }
 
+  // vLLM command preview updater
+  const updateCommandPreviewVllm = async (configToPreview: VllmConfig) => {
+    deployLog('commandPreview', 'Updating vLLM command preview')
+    try {
+      const configForPreview = JSON.parse(JSON.stringify(configToPreview))
+      const response = await fetch('/api/v1/service/config/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: configForPreview, backend: 'vllm' })
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setCommandLine(data.command || '')
+      }
+    } catch (error) {
+      deployLog('commandPreview', 'vLLM preview error:', error)
+    }
+  }
+
   const updateConfig = (path: string, value: any) => {
-    console.log('🔄 updateConfig CALLED:', { path, value })
+    console.log('updateConfig CALLED:', { path, value })
     deployLog('updateConfig', `Updating config path: ${path}`, { value, currentConfig: config })
     if (!config) {
-      console.error('❌ ABORT: config is null')
+      console.error('ABORT: config is null')
       deployLog('updateConfig', 'ABORT: config is null')
       return
     }
@@ -904,9 +1272,9 @@ export const DeployPage: React.FC = () => {
     for (let i = 0; i < keys.length - 1; i++) ref = ref[keys[i]]
     const oldValue = ref[keys[keys.length - 1]]
     ref[keys[keys.length - 1]] = value
-    console.log('✅ Config value changed:', { path, oldValue, newValue: value })
+    console.log('Config value changed:', { path, oldValue, newValue: value })
     deployLog('updateConfig', `Config updated: ${path}`, { oldValue, newValue: value })
-    console.log('📝 Calling setConfig with new config:', next)
+    console.log('Calling setConfig with new config:', next)
     setConfig(next)
 
     // Save to localStorage for persistence
@@ -917,6 +1285,41 @@ export const DeployPage: React.FC = () => {
     deployLog('updateConfig', 'Updating command preview')
     updateCommandPreview(next)
   }
+
+  // vLLM config updater - works on VllmConfig instead of Config
+  const updateVllmConfig = (path: string, value: any) => {
+    deployLog('updateVllmConfig', `Updating vLLM config path: ${path}`, { value })
+    if (!vllmConfig) {
+      deployLog('updateVllmConfig', 'ABORT: vllmConfig is null')
+      return
+    }
+    const next: VllmConfig = JSON.parse(JSON.stringify(vllmConfig))
+    const keys = path.split('.')
+    let ref: any = next
+    for (let i = 0; i < keys.length - 1; i++) ref = ref[keys[i]]
+    ref[keys[keys.length - 1]] = value
+    setVllmConfig(next)
+    writeDeployStorage({ vllmConfig: next })
+
+    // Update command line preview
+    updateCommandPreviewVllm(next)
+  }
+
+  const applyVllmModelFromCatalog = useCallback(
+    (displayName: string, variant: string) => {
+      deployLog('vllmCatalog', 'Apply catalog model', { displayName, variant })
+      if (!vllmConfig) return
+      const m = models.find((x) => x.name === displayName && x.variant === variant)
+      const repoId = (m?.repositoryId && String(m.repositoryId).trim()) || ''
+      const next = JSON.parse(JSON.stringify(vllmConfig)) as VllmConfig
+      next.model.name = repoId
+      next.model.served_name = displayName
+      setVllmConfig(next)
+      writeDeployStorage({ vllmConfig: next })
+      updateCommandPreviewVllm(next)
+    },
+    [vllmConfig, models]
+  )
 
   const resetToDefault = (path: string) => {
     // Set to undefined so backend skips the parameter (uses llama-server defaults)
@@ -972,6 +1375,13 @@ export const DeployPage: React.FC = () => {
 
   const handleValidate = async () => {
     deployLog('validate', 'Starting validation', { modelName: config?.model?.name })
+    if (backend === 'vllm') {
+      setError(null)
+      setValidateErrors(null)
+      setValidateWarnings(null)
+      setSuccess('Validation only applies to llama.cpp. Switch the backend toggle to llama.cpp to run it.')
+      return
+    }
     if (!config) {
       deployLog('validate', 'ABORT: config is null')
       return
@@ -1001,6 +1411,38 @@ export const DeployPage: React.FC = () => {
   }
 
   const handleSave = async () => {
+    deployLog('save', 'Starting save', { backend })
+    if (backend === 'vllm') {
+      if (!vllmConfig) {
+        deployLog('save', 'ABORT: vllmConfig is null')
+        return
+      }
+      try {
+        setSaving(true)
+        const body = JSON.parse(JSON.stringify(vllmConfig))
+        const res = await fetch('/api/v1/service/config?backend=vllm', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        if (!res.ok) {
+          const t = await res.text()
+          throw new Error(t || res.statusText)
+        }
+        const cfgRes = await fetch('/api/v1/service/config?backend=vllm')
+        const cfgJson = await cfgRes.json()
+        setCommandLine(cfgJson.command || '')
+        setOriginalVllmConfig(JSON.parse(JSON.stringify(vllmConfig)))
+        setSuccess('vLLM configuration saved')
+      } catch (e) {
+        deployLog('save', 'Save error:', e)
+        setError(e instanceof Error ? e.message : 'Failed to save configuration')
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
+
     deployLog('save', 'Starting save', { modelName: config?.model?.name })
     if (!config) {
       deployLog('save', 'ABORT: config is null')
@@ -1019,7 +1461,7 @@ export const DeployPage: React.FC = () => {
         const updated = await apiService.updateServiceConfig({ config: configForSave as any })
         deployLog('save', 'Config saved, fetching updated command')
         // Re-query command line preview from backend since apiService doesn't return it
-        const cfgRes = await fetch(`/api/v1/service/config`)
+        const cfgRes = await fetch(`/api/v1/service/config?backend=${backend}`)
         const cfgJson = await cfgRes.json()
         return { command: cfgJson.command, updated }
       })()
@@ -1036,8 +1478,13 @@ export const DeployPage: React.FC = () => {
   }
 
   const runAction = async (action: 'start' | 'stop' | 'restart') => {
-    deployLog('action', `Running action: ${action}`, { hasConfig: !!config, modelName: config?.model?.name })
-    if (!config && action !== 'stop') {
+    deployLog('action', `Running action: ${action}`, { backend, hasConfig: !!config, hasVllm: !!vllmConfig })
+    if (backend === 'vllm') {
+      if (!vllmConfig && action !== 'stop') {
+        deployLog('action', 'ABORT: vllmConfig is null and action is not stop')
+        return
+      }
+    } else if (!config && action !== 'stop') {
       deployLog('action', 'ABORT: config is null and action is not stop')
       return
     }
@@ -1050,15 +1497,19 @@ export const DeployPage: React.FC = () => {
         logViewerRef.current.clearLogs()
       }
 
-      // Convert undefined values to null for proper backend handling
-      const configForAction = config ? JSON.parse(JSON.stringify(config, (key, value) => {
-        return value === undefined ? null : value
-      })) : null
+      let configForAction: any = null
+      if (backend === 'vllm' && vllmConfig) {
+        configForAction = JSON.parse(JSON.stringify(vllmConfig))
+      } else if (config) {
+        configForAction = JSON.parse(JSON.stringify(config, (key, value) => {
+          return value === undefined ? null : value
+        }))
+      }
 
       // Ensure the current template selection is included in the config
       // The template dropdown updates selectedTemplate state separately from config,
       // so we must inject it here to avoid the stale default overwriting the user's choice
-      if (configForAction) {
+      if (configForAction && backend === 'llamacpp') {
         if (!configForAction.template) {
           configForAction.template = { directory: templatesDir || '/home/llamacpp/templates', selected: selectedTemplate }
         } else {
@@ -1101,6 +1552,141 @@ export const DeployPage: React.FC = () => {
     }
   }
 
+  const vllmFieldMeta = (section: string, field: string): FieldMeta | undefined =>
+    fieldMetadata[section]?.[field]
+
+  const vllmHintLines = (section: string, field: string): string[] => {
+    const m = vllmFieldMeta(section, field)
+    if (!m) return []
+    const lines: string[] = []
+    if (m.description) lines.push(m.description)
+    if (m.mapping_note) lines.push(`Mapping: ${m.mapping_note}`)
+    if (m.note) lines.push(m.note)
+    if (m.vllm_flag) lines.push(`CLI / env: ${m.vllm_flag}`)
+    if (m.llamacpp_equivalent) lines.push(`llama.cpp equivalent: ${m.llamacpp_equivalent}`)
+    return lines
+  }
+
+  const vllmCatalogModelPickers = () => {
+    if (!vllmConfig) return null
+    const selectStyles = {
+      fontSize: '0.875rem',
+      '& .MuiOutlinedInput-root': {
+        borderRadius: 1,
+        backgroundColor: 'background.default',
+      },
+    }
+    const anchorForVariant = vllmSelectModelNameValue || (vllmConfig.model.served_name || '').trim()
+    return (
+      <>
+        <Grid item xs={12} md={6}>
+          <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Name</Typography>
+          <Select
+            fullWidth
+            value={vllmSelectModelNameValue}
+            displayEmpty
+            renderValue={(selected) => {
+              if (!selected) {
+                return <em>Select a model...</em>
+              }
+              return selected
+            }}
+            onChange={(e) => {
+              const newName = e.target.value as string
+              const newModelVariants = models.filter((m) => m.name === newName).map((m) => m.variant)
+              const uniqueNewVariants = Array.from(new Set(newModelVariants.filter(Boolean)))
+              const nextVariant = uniqueNewVariants[0] || 'unknown'
+              deployLog('vllmCatalog', `Model name -> ${newName}, variant ${nextVariant}`, {
+                availableVariants: uniqueNewVariants,
+              })
+              applyVllmModelFromCatalog(newName, nextVariant)
+            }}
+            sx={selectStyles}
+          >
+            {availableModelNames.map((name) => (
+              <MenuItem key={name} value={name}>{name}</MenuItem>
+            ))}
+          </Select>
+        </Grid>
+        {availableVllmVariantsForSelected.length > 1 && (
+          <Grid item xs={12} md={6}>
+            <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Variant</Typography>
+            <Select
+              fullWidth
+              value={vllmSelectVariantValue}
+              onChange={(e) => {
+                const v = e.target.value as string
+                const anchor = anchorForVariant
+                if (anchor) applyVllmModelFromCatalog(anchor, v)
+              }}
+              sx={selectStyles}
+            >
+              {availableVllmVariantsForSelected.map((variant) => (
+                <MenuItem key={variant} value={variant}>{variant}</MenuItem>
+              ))}
+            </Select>
+          </Grid>
+        )}
+        {availableVllmVariantsForSelected.length <= 1 && vllmSelectModelNameValue && (
+          <Grid item xs={12} md={6}>
+            <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Variant</Typography>
+            <Typography
+              sx={{
+                fontSize: '0.875rem',
+                color: 'text.secondary',
+                fontStyle: 'italic',
+                py: 1.5,
+                px: 1,
+                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                borderRadius: 1,
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+              }}
+            >
+              {vllmSelectVariantValue || '—'} (only variant available)
+            </Typography>
+          </Grid>
+        )}
+        <Grid item xs={12} md={6}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+            <Typography sx={{ fontSize: '0.875rem' }}>Hugging Face repo id</Typography>
+            {vllmFieldMeta('model', 'name') && <FrameworkBadge scope={vllmFieldMeta('model', 'name')!.scope} />}
+          </Box>
+          <TextField
+            fullWidth
+            size="small"
+            value={vllmConfig.model.name}
+            placeholder="org/model"
+            onChange={(e) => updateVllmConfig('model.name', e.target.value)}
+          />
+          <FormHelperText sx={{ fontSize: '0.75rem' }}>
+            {[vllmHintLines('model', 'name').join(' — '), 'Auto-filled when the catalog entry has repository metadata.'].filter(Boolean).join(' ')}
+          </FormHelperText>
+        </Grid>
+        <Grid item xs={12} md={6}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+            <Typography sx={{ fontSize: '0.875rem' }}>Served model name</Typography>
+            {vllmFieldMeta('model', 'served_name') && <FrameworkBadge scope={vllmFieldMeta('model', 'served_name')!.scope} />}
+          </Box>
+          <TextField
+            fullWidth
+            size="small"
+            value={vllmConfig.model.served_name}
+            onChange={(e) => updateVllmConfig('model.served_name', e.target.value)}
+          />
+          <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('model', 'served_name').join(' — ')}</FormHelperText>
+        </Grid>
+      </>
+    )
+  }
+
+  const deployTabMax = backend === 'llamacpp' ? DEPLOY_TAB_MAX_LLAMACPP : DEPLOY_TAB_MAX_VLLM
+  const activeDeployTab = Math.min(Math.max(0, tab), deployTabMax)
+
+  /** MUI Tabs onChange does not always fire here; explicit handlers keep selection reliable. */
+  const selectDeployTab = useCallback((idx: number) => {
+    const max = backend === 'llamacpp' ? DEPLOY_TAB_MAX_LLAMACPP : DEPLOY_TAB_MAX_VLLM
+    setTab(Math.min(Math.max(0, idx), max))
+  }, [backend])
 
   if (loading) {
     deployLog('render', 'Rendering loading state')
@@ -1149,73 +1735,167 @@ export const DeployPage: React.FC = () => {
       maxWidth: '100%',
       overflow: 'hidden'
     }}>
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
-        <Box>
-          <Typography
-            variant="h1"
+      <Box sx={{ mb: 3 }}>
+        <Typography
+          variant="h1"
+          sx={{
+            fontWeight: 700,
+            color: 'text.primary',
+            mb: 0.5,
+            fontSize: { xs: '1.25rem', sm: '1.5rem' },
+            lineHeight: 1
+          }}
+        >
+          Deploy
+        </Typography>
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          sx={{
+            fontSize: '0.8125rem',
+            mb: 1,
+          }}
+        >
+          Configure and deploy your AI models
+        </Typography>
+
+        <Paper
+          elevation={0}
+          sx={{
+            mt: 1,
+            mb: 2,
+            p: { xs: 2, sm: 2.75 },
+            borderRadius: 2,
+            border: '2px solid',
+            borderColor: 'primary.main',
+            background: (theme) =>
+              `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.22)} 0%, ${alpha(theme.palette.primary.dark, 0.08)} 45%, ${alpha(theme.palette.background.paper, 0.95)} 100%)`,
+            boxShadow: (theme) =>
+              `0 0 0 1px ${alpha(theme.palette.primary.light, 0.35)}, 0 8px 32px ${alpha(theme.palette.common.black, 0.45)}`,
+          }}
+        >
+          <Box
             sx={{
-              fontWeight: 700,
-              color: 'text.primary',
-              mb: 0.5,
-              fontSize: { xs: '1.25rem', sm: '1.5rem' },
-              lineHeight: 1
+              display: 'flex',
+              flexDirection: { xs: 'column', lg: 'row' },
+              alignItems: { lg: 'center' },
+              justifyContent: 'space-between',
+              gap: { xs: 2.5, lg: 3 },
             }}
           >
-            Deploy
-          </Typography>
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{
-              fontSize: '0.8125rem',
-              mb: { xs: 1, sm: 2 }
-            }}
-          >
-            Configure and deploy your AI models
-          </Typography>
-        </Box>
-        <Box display="flex" gap={1} alignItems="center">
-          <ToggleButtonGroup
-            value={backend}
-            exclusive
-            onChange={(_, value) => {
-              if (value) {
-                setBackend(value)
-                deployLog('backend', `Switched backend to ${value}`)
-              }
-            }}
-            size="small"
-            sx={{
-              '& .MuiToggleButton-root': {
-                textTransform: 'none',
-                fontSize: '0.8125rem',
-                fontWeight: 500,
-                px: 1.5,
-                py: 0.5,
-                borderRadius: 1,
-                border: '1px solid',
-                borderColor: 'rgba(255, 255, 255, 0.2)',
-                color: 'text.secondary',
-                '&.Mui-selected': {
-                  bgcolor: 'primary.main',
-                  color: 'primary.contrastText',
-                  borderColor: 'primary.main',
-                  '&:hover': {
-                    bgcolor: 'primary.dark',
+            <Box sx={{ flex: '1 1 auto', minWidth: 0 }}>
+              <Typography
+                variant="overline"
+                sx={{
+                  color: 'primary.light',
+                  fontWeight: 800,
+                  letterSpacing: '0.14em',
+                  fontSize: '0.72rem',
+                  display: 'block',
+                  mb: 0.75,
+                }}
+              >
+                Inference backend
+              </Typography>
+              <Typography
+                sx={{
+                  fontWeight: 800,
+                  fontSize: { xs: '1.15rem', sm: '1.35rem' },
+                  letterSpacing: '-0.02em',
+                  mb: 1,
+                  lineHeight: 1.25,
+                }}
+              >
+                Select llama.cpp or vLLM
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.9rem', maxWidth: 620 }}>
+                {backend === 'vllm' ? (
+                  <>
+                    You are editing <strong>vLLM</strong> settings (HF IDs, parallelism, MoE, Docker-style env mirrors). GGUF / llama-server fields stay hidden until you switch back.
+                  </>
+                ) : (
+                  <>
+                    You are editing <strong>llama.cpp</strong> (GGUF paths, llama-server flags, templates). Switch to <strong>vLLM</strong> for Nemotron-style server launches and MoE/env tuning.
+                  </>
+                )}
+              </Typography>
+            </Box>
+
+            <Box sx={{ flex: '0 0 auto', alignSelf: { xs: 'stretch', lg: 'center' } }}>
+              <ToggleButtonGroup
+                value={backend}
+                exclusive
+                onChange={(_, value) => {
+                  if (value) {
+                    setBackend(value)
+                    deployLog('backend', `Switched backend to ${value}`)
+                  }
+                }}
+                sx={{
+                  display: 'flex',
+                  flexWrap: { xs: 'wrap', sm: 'nowrap' },
+                  gap: 1,
+                  p: 1,
+                  borderRadius: 2,
+                  bgcolor: (theme) => alpha(theme.palette.common.black, 0.35),
+                  border: '1px solid',
+                  borderColor: (theme) => alpha(theme.palette.common.white, 0.15),
+                  '& .MuiToggleButtonGroup-grouped': {
+                    border: 'none',
+                    borderRadius: '8px !important',
+                    mx: 0,
                   },
-                },
-              },
-            }}
-          >
-            <ToggleButton value="llamacpp">llama.cpp</ToggleButton>
-            <ToggleButton value="vllm">vLLM</ToggleButton>
-          </ToggleButtonGroup>
-          <Divider orientation="vertical" flexItem sx={{ borderColor: 'rgba(255, 255, 255, 0.12)' }} />
+                  '& .MuiToggleButton-root': {
+                    textTransform: 'none',
+                    fontSize: { xs: '0.95rem', sm: '1.05rem' },
+                    fontWeight: 700,
+                    px: { xs: 2.5, sm: 3.5 },
+                    py: { xs: 1.35, sm: 1.5 },
+                    minHeight: 52,
+                    minWidth: { xs: 140, sm: 160 },
+                    color: 'text.secondary',
+                    border: '2px solid transparent',
+                    transition: 'background-color 0.2s, border-color 0.2s, color 0.2s, transform 0.15s',
+                    '&:hover': {
+                      bgcolor: (theme) => alpha(theme.palette.common.white, 0.06),
+                    },
+                    '&.Mui-selected': {
+                      bgcolor: 'primary.main',
+                      color: 'primary.contrastText',
+                      borderColor: (theme) => alpha(theme.palette.primary.contrastText, 0.35),
+                      boxShadow: (theme) => `0 4px 16px ${alpha(theme.palette.primary.main, 0.55)}`,
+                      transform: 'translateY(-1px)',
+                      '&:hover': {
+                        bgcolor: 'primary.dark',
+                      },
+                    },
+                  },
+                }}
+              >
+                <ToggleButton value="llamacpp">llama.cpp</ToggleButton>
+                <ToggleButton value="vllm">vLLM</ToggleButton>
+              </ToggleButtonGroup>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1.25, fontSize: '0.75rem', maxWidth: 380 }}>
+                Backend choice and draft settings are remembered in this browser (same storage as llama.cpp deploy fields). After pulling UI changes: rebuild{' '}
+                <code style={{ fontSize: '0.7rem' }}>llamacpp-frontend</code> and hard-refresh (Ctrl+Shift+R).
+              </Typography>
+            </Box>
+          </Box>
+        </Paper>
+
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
           <Button
             variant="outlined"
             startIcon={<ResetIcon />}
             onClick={() => {
               deployLog('reset', 'Clear All button clicked')
+              if (backend === 'vllm') {
+                const next = JSON.parse(JSON.stringify(VLLM_DEFAULT_VALUES)) as VllmConfig
+                setVllmConfig(next)
+                writeDeployStorage({ vllmConfig: next })
+                updateCommandPreviewVllm(next)
+                return
+              }
               if (!config) {
                 deployLog('reset', 'ABORT: config is null')
                 return;
@@ -1394,7 +2074,20 @@ export const DeployPage: React.FC = () => {
           title={
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 600 }}>Currently Deployed</Typography>
-              {config?.model?.mmproj ? (
+              {backend === 'vllm' ? (
+                <Chip
+                  label="vLLM (HF weights)"
+                  size="small"
+                  variant="outlined"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.6875rem',
+                    height: '22px',
+                    borderColor: 'rgba(33, 150, 243, 0.45)',
+                    color: 'primary.light',
+                  }}
+                />
+              ) : config?.model?.mmproj ? (
                 <Chip
                   icon={<VisionIcon sx={{ fontSize: '0.875rem' }} />}
                   label="Vision Ready"
@@ -1446,13 +2139,15 @@ export const DeployPage: React.FC = () => {
           sx={{ pb: 0 }}
         />
         <CardContent>
+          {backend === 'llamacpp' && (
+          <>
           <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Model</Typography>
           <Grid container spacing={2}>
             <Grid item xs={12} md={6}>
               <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Name</Typography>
               <Select
                 fullWidth
-                value={config.model.name}
+                value={config?.model?.name ?? ''}
                 displayEmpty
                 renderValue={(selected) => {
                   if (!selected) {
@@ -1522,12 +2217,12 @@ export const DeployPage: React.FC = () => {
                 <Typography gutterBottom sx={{ fontSize: '0.875rem' }}>Model Variant</Typography>
                 <Select
                   fullWidth
-                  value={config.model.variant}
+                  value={config?.model?.variant ?? ''}
                   onChange={(e) => {
                     deployLog('variantSelect', 'Variant selection changed', {
                       newVariant: e.target.value,
-                      previousVariant: config.model.variant,
-                      modelName: config.model.name
+                      previousVariant: config?.model?.variant,
+                      modelName: config?.model?.name
                     })
                     updateConfig('model.variant', e.target.value)
                   }}
@@ -1560,7 +2255,7 @@ export const DeployPage: React.FC = () => {
                     border: '1px solid rgba(255, 255, 255, 0.1)'
                   }}
                 >
-                  {config.model.variant} (only variant available)
+                  {config?.model?.variant ?? '—'} (only variant available)
                 </Typography>
               </Grid>
             )}
@@ -1631,25 +2326,6 @@ export const DeployPage: React.FC = () => {
                 />
               </Box>
             </Grid>
-            <Grid item xs={12}>
-              <Button
-                variant="contained"
-                color="warning"
-                startIcon={actionLoading === 'restart' ? <CircularProgress size={20} /> : <RestartIcon />}
-                onClick={() => runAction('restart')}
-                disabled={actionLoading !== null}
-                sx={{
-                  borderRadius: 1,
-                  fontWeight: 500,
-                  fontSize: '0.8125rem',
-                  textTransform: 'none',
-                  boxShadow: 'none',
-                  '&:hover': { boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)' }
-                }}
-              >
-                Deploy this model now (restart)
-              </Button>
-            </Grid>
           </Grid>
           <Box mt={1}>
             <Chip
@@ -1665,6 +2341,98 @@ export const DeployPage: React.FC = () => {
                 borderColor: 'rgba(255, 255, 255, 0.2)'
               }}
             />
+          </Box>
+          </>
+          )}
+          {backend === 'vllm' && (
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>
+                Model
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, fontSize: '0.8125rem' }}>
+                Same catalog as llama.cpp (Models page). Pick name / variant; Hugging Face repo id is filled when the catalog entry includes it (GGUF download metadata or transformers <code>.hf_repo_id</code>).
+              </Typography>
+              {vllmReloading && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1 }}>
+                  <CircularProgress size={22} />
+                  <Typography variant="body2" color="text.secondary">Loading vLLM configuration…</Typography>
+                </Box>
+              )}
+              {!vllmReloading && vllmConfig && (
+                <Grid container spacing={2}>
+                  {vllmCatalogModelPickers()}
+                  <Grid item xs={12} md={6}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                      <Typography sx={{ fontSize: '0.875rem' }}>dtype</Typography>
+                      {vllmFieldMeta('model', 'dtype') && <FrameworkBadge scope={vllmFieldMeta('model', 'dtype')!.scope} />}
+                    </Box>
+                    <Select fullWidth size="small" value={vllmConfig.model.dtype}
+                      onChange={(e) => updateVllmConfig('model.dtype', e.target.value)}>
+                      {(vllmFieldMeta('model', 'dtype')?.options || ['auto', 'float16', 'bfloat16', 'float32']).map((o) => (
+                        <MenuItem key={o} value={o}>{o}</MenuItem>
+                      ))}
+                    </Select>
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                      <Typography sx={{ fontSize: '0.875rem' }}>quantization</Typography>
+                      {vllmFieldMeta('model', 'quantization') && <FrameworkBadge scope={vllmFieldMeta('model', 'quantization')!.scope} />}
+                    </Box>
+                    <Select fullWidth size="small" value={vllmConfig.model.quantization || ''}
+                      onChange={(e) => updateVllmConfig('model.quantization', e.target.value)}>
+                      <MenuItem value=""><em>None</em></MenuItem>
+                      {(vllmFieldMeta('model', 'quantization')?.options || ['fp4', 'awq', 'gptq', 'bitsandbytes']).filter((o) => o !== 'None').map((o) => (
+                        <MenuItem key={o} value={o}>{o}</MenuItem>
+                      ))}
+                    </Select>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Button size="small" variant="text" onClick={() => setTab(0)} sx={{ textTransform: 'none', px: 0 }}>
+                      Open full Model tab
+                    </Button>
+                  </Grid>
+                </Grid>
+              )}
+              {!vllmReloading && !vllmConfig && vllmReloadError && (
+                <Alert severity="error" sx={{ mt: 1 }}>{vllmReloadError}</Alert>
+              )}
+              {!vllmReloading && vllmConfig && (
+                <Box mt={1}>
+                  <Chip
+                    icon={<DownloadIcon />}
+                    label="Download more models"
+                    variant="outlined"
+                    onClick={() => window.location.assign('/models')}
+                    sx={{
+                      borderRadius: '4px',
+                      fontWeight: 500,
+                      fontSize: '0.6875rem',
+                      height: '24px',
+                      borderColor: 'rgba(255, 255, 255, 0.2)',
+                    }}
+                  />
+                </Box>
+              )}
+            </Box>
+          )}
+          <Box sx={{ mt: backend === 'llamacpp' ? 1 : 0 }}>
+            <Button
+              variant="contained"
+              color="warning"
+              startIcon={actionLoading === 'restart' ? <CircularProgress size={20} /> : <RestartIcon />}
+              onClick={() => runAction('restart')}
+              disabled={actionLoading !== null}
+              sx={{
+                borderRadius: 1,
+                fontWeight: 500,
+                fontSize: '0.8125rem',
+                textTransform: 'none',
+                boxShadow: 'none',
+                '&:hover': { boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)' }
+              }}
+            >
+              Deploy this model now (restart)
+            </Button>
           </Box>
         </CardContent>
       </Card>
@@ -1761,14 +2529,27 @@ export const DeployPage: React.FC = () => {
         </Card>
       )}
 
-      {/* Tabs for settings */}
+      {/* Tabs for settings - backend-aware (key forces clean MUI state when switching backends) */}
+      <Box sx={{ position: 'relative', zIndex: 10, mb: 3 }}>
       <Tabs
-        value={tab}
-        onChange={(_, v) => setTab(v)}
+        key={backend}
+        value={activeDeployTab}
+        onChange={(_, v) => {
+          const max =
+            backend === 'llamacpp' ? DEPLOY_TAB_MAX_LLAMACPP : DEPLOY_TAB_MAX_VLLM
+          const idx =
+            typeof v === 'number'
+              ? v
+              : typeof v === 'string'
+                ? Number.parseInt(v, 10)
+                : Number.NaN
+          deployLog('deployTabs', 'Tab change request', { raw: v, parsed: idx, max })
+          if (!Number.isFinite(idx)) return
+          setTab(Math.min(Math.max(0, idx), max))
+        }}
         variant="scrollable"
-        scrollButtons="auto"
+        scrollButtons={false}
         sx={{
-          mb: 3,
           '& .MuiTabs-indicator': {
             height: 3,
             borderRadius: '3px 3px 0 0'
@@ -1781,16 +2562,114 @@ export const DeployPage: React.FC = () => {
           }
         }}
       >
-        <Tab label="Model" />
-        <Tab label="Sampling" />
-        <Tab label="Performance" />
-        <Tab label="Context Extension" />
-        <Tab label="Server" />
-        <Tab label="LlamaCPP Version" />
-        <Tab label="Command Line" />
+        {backend === 'llamacpp' ? (
+          <>
+            <Tab label="Model" value={0} onClick={() => selectDeployTab(0)} />
+            <Tab label="Sampling" value={1} onClick={() => selectDeployTab(1)} />
+            <Tab label="Performance" value={2} onClick={() => selectDeployTab(2)} />
+            <Tab label="Context Extension" value={3} onClick={() => selectDeployTab(3)} />
+            <Tab label="Server" value={4} onClick={() => selectDeployTab(4)} />
+            <Tab label="LlamaCPP Version" value={5} onClick={() => selectDeployTab(5)} />
+            <Tab label="Command Line" value={6} onClick={() => selectDeployTab(6)} />
+          </>
+        ) : (
+          <>
+            <Tab label="Model" value={0} onClick={() => selectDeployTab(0)} />
+            <Tab label="Sampling" value={1} onClick={() => selectDeployTab(1)} />
+            <Tab label="Performance" value={2} onClick={() => selectDeployTab(2)} />
+            <Tab label="MoE & Reasoning" value={3} onClick={() => selectDeployTab(3)} />
+            <Tab label="Tools & Speculative" value={4} onClick={() => selectDeployTab(4)} />
+            <Tab label="Environment" value={5} onClick={() => selectDeployTab(5)} />
+            <Tab label="vLLM Version" value={6} onClick={() => selectDeployTab(6)} />
+            <Tab label="Server" value={7} onClick={() => selectDeployTab(7)} />
+            <Tab label="Command Line" value={8} onClick={() => selectDeployTab(8)} />
+          </>
+        )}
       </Tabs>
+      </Box>
 
-      {tab === 0 && (
+      {backend === 'vllm' && (
+        <Alert severity="info" sx={{ mb: 2, borderRadius: 1 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }} gutterBottom>
+            Framework legend and mapping
+          </Typography>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1, mb: 1 }}>
+            <FrameworkBadge scope="shared" />
+            <Typography variant="caption" color="text.secondary">Used by both backends (field names may differ).</Typography>
+            <FrameworkBadge scope="vllm" />
+            <Typography variant="caption" color="text.secondary">vLLM-only (no llama.cpp toggle).</Typography>
+          </Box>
+          <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
+            Rough equivalents: llama.cpp <strong>context_size</strong> maps to vLLM <strong>max_model_len</strong>.
+            llama.cpp <strong>repeat_penalty</strong> maps to vLLM <strong>repetition_penalty</strong>.
+            llama.cpp KV cache types (<strong>cache_type_k</strong> / <strong>cache_type_v</strong>) map to vLLM <strong>kv_cache_dtype</strong> (single setting).
+            Parallel slots / batch concepts align loosely with <strong>max_num_seqs</strong> and <strong>max_num_batched_tokens</strong>.
+            Environment variables below correspond to Docker <code>-e</code> settings (shown in metadata as env:); they are persisted in config for reference — ensure your compose / run script exports them for production.
+          </Typography>
+        </Alert>
+      )}
+
+      {backend === 'vllm' && vllmReloading && (
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, py: 4, mb: 2 }}>
+          <CircularProgress size={28} />
+          <Typography variant="body2" color="text.secondary">Loading vLLM configuration…</Typography>
+        </Box>
+      )}
+      {backend === 'vllm' && !vllmReloading && vllmReloadError && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setVllmReloadError(null)}>
+          {vllmReloadError}. Ensure API and UI images are rebuilt/recreated, then hard-refresh (Ctrl+Shift+R).
+        </Alert>
+      )}
+
+      {backend === 'vllm' && vllmConfig && activeDeployTab === 0 && (
+        <Card sx={{
+          mb: 3,
+          scrollMarginTop: '96px',
+          borderRadius: 1,
+          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          bgcolor: 'background.paper'
+        }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>vLLM model</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: '0.8125rem' }}>
+              Same model list as llama.cpp (Models page). Pick name and variant; HF repo id uses catalog metadata when present.
+            </Typography>
+            <Grid container spacing={2}>
+              {vllmCatalogModelPickers()}
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>dtype</Typography>
+                  {vllmFieldMeta('model', 'dtype') && <FrameworkBadge scope={vllmFieldMeta('model', 'dtype')!.scope} />}
+                </Box>
+                <Select fullWidth size="small" value={vllmConfig.model.dtype}
+                  onChange={(e) => updateVllmConfig('model.dtype', e.target.value)}>
+                  {(vllmFieldMeta('model', 'dtype')?.options || ['auto', 'float16', 'bfloat16', 'float32']).map((o) => (
+                    <MenuItem key={o} value={o}>{o}</MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('model', 'dtype').join(' — ')}</FormHelperText>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>quantization</Typography>
+                  {vllmFieldMeta('model', 'quantization') && <FrameworkBadge scope={vllmFieldMeta('model', 'quantization')!.scope} />}
+                </Box>
+                <Select fullWidth size="small" value={vllmConfig.model.quantization || ''}
+                  onChange={(e) => updateVllmConfig('model.quantization', e.target.value)}>
+                  <MenuItem value=""><em>None</em></MenuItem>
+                  {(vllmFieldMeta('model', 'quantization')?.options || ['fp4', 'awq', 'gptq', 'bitsandbytes']).filter((o) => o !== 'None').map((o) => (
+                    <MenuItem key={o} value={o}>{o}</MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('model', 'quantization').join(' — ')}</FormHelperText>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
+
+      {backend === 'llamacpp' && activeDeployTab === 0 && (
         <Card sx={{
           mb: 3,
           borderRadius: 1,
@@ -2362,7 +3241,44 @@ export const DeployPage: React.FC = () => {
         </Card>
       )}
 
-      {tab === 1 && (
+      {backend === 'vllm' && vllmConfig && activeDeployTab === 1 && (
+        <Card sx={{
+          mb: 3,
+          scrollMarginTop: '96px',
+          borderRadius: 1,
+          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          bgcolor: 'background.paper'
+        }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>vLLM sampling (defaults / reference)</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: '0.8125rem' }}>
+              These values are stored for documentation and merging; OpenAI-compatible sampling is usually chosen per request.
+            </Typography>
+            <Grid container spacing={2}>
+              {(['temperature', 'top_p', 'top_k', 'repetition_penalty', 'frequency_penalty', 'presence_penalty'] as const).map((key) => (
+                <Grid item xs={12} md={6} key={key}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                    <Typography sx={{ fontSize: '0.875rem', textTransform: 'capitalize' }}>{key.replace(/_/g, ' ')}</Typography>
+                    {vllmFieldMeta('sampling', key) && <FrameworkBadge scope={vllmFieldMeta('sampling', key)!.scope} />}
+                  </Box>
+                  <TextField fullWidth size="small" type="number"
+                    value={vllmConfig.sampling[key]}
+                    onChange={(e) => {
+                      const raw = e.target.value
+                      const n = key === 'top_k' ? parseInt(raw, 10) : parseFloat(raw)
+                      updateVllmConfig(`sampling.${key}`, Number.isNaN(n) ? 0 : n)
+                    }}
+                  />
+                  <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('sampling', key).join(' — ')}</FormHelperText>
+                </Grid>
+              ))}
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
+
+      {backend === 'llamacpp' && activeDeployTab === 1 && (
         <Card sx={{
           mb: 3,
           borderRadius: 1,
@@ -2763,7 +3679,80 @@ export const DeployPage: React.FC = () => {
         </Card>
       )}
 
-      {tab === 2 && (
+      {backend === 'vllm' && vllmConfig && activeDeployTab === 2 && (
+        <Card sx={{
+          mb: 3,
+          scrollMarginTop: '96px',
+          borderRadius: 1,
+          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          bgcolor: 'background.paper'
+        }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>vLLM performance</Typography>
+            <Grid container spacing={2}>
+              {([
+                { path: 'performance.max_model_len', label: 'max_model_len', type: 'int', meta: 'max_model_len' },
+                { path: 'performance.gpu_memory_utilization', label: 'gpu_memory_utilization', type: 'float', meta: 'gpu_memory_utilization' },
+                { path: 'performance.tensor_parallel_size', label: 'tensor_parallel_size', type: 'int', meta: 'tensor_parallel_size' },
+                { path: 'performance.pipeline_parallel_size', label: 'pipeline_parallel_size', type: 'int', meta: 'pipeline_parallel_size' },
+                { path: 'performance.data_parallel_size', label: 'data_parallel_size', type: 'int', meta: 'data_parallel_size' },
+                { path: 'performance.max_num_seqs', label: 'max_num_seqs', type: 'int', meta: 'max_num_seqs' },
+                { path: 'performance.max_num_batched_tokens', label: 'max_num_batched_tokens', type: 'int', meta: 'max_num_batched_tokens' },
+              ] as const).map((row) => (
+                <Grid item xs={12} md={6} key={row.path}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                    <Typography sx={{ fontSize: '0.875rem' }}>{row.label}</Typography>
+                    {vllmFieldMeta('performance', row.meta) && <FrameworkBadge scope={vllmFieldMeta('performance', row.meta)!.scope} />}
+                  </Box>
+                  <TextField fullWidth size="small" type="number"
+                    value={(vllmConfig as any).performance[row.meta]}
+                    onChange={(e) => {
+                      const raw = e.target.value
+                      const n = row.type === 'int' ? parseInt(raw, 10) : parseFloat(raw)
+                      updateVllmConfig(row.path, Number.isNaN(n) ? 0 : n)
+                    }}
+                  />
+                  <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('performance', row.meta).join(' — ')}</FormHelperText>
+                </Grid>
+              ))}
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>kv_cache_dtype</Typography>
+                  {vllmFieldMeta('performance', 'kv_cache_dtype') && <FrameworkBadge scope={vllmFieldMeta('performance', 'kv_cache_dtype')!.scope} />}
+                </Box>
+                <Select fullWidth size="small" value={vllmConfig.performance.kv_cache_dtype}
+                  onChange={(e) => updateVllmConfig('performance.kv_cache_dtype', e.target.value)}>
+                  {(vllmFieldMeta('performance', 'kv_cache_dtype')?.options || ['auto', 'fp8', 'fp8_e5m2', 'fp8_e4m3']).map((o) => (
+                    <MenuItem key={o} value={o}>{o}</MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('performance', 'kv_cache_dtype').join(' — ')}</FormHelperText>
+              </Grid>
+              {([
+                { path: 'performance.enforce_eager', label: 'enforce_eager', meta: 'enforce_eager' },
+                { path: 'performance.enable_chunked_prefill', label: 'enable_chunked_prefill', meta: 'enable_chunked_prefill' },
+                { path: 'performance.async_scheduling', label: 'async_scheduling', meta: 'async_scheduling' },
+              ] as const).map((row) => (
+                <Grid item xs={12} md={4} key={row.path}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                    <Typography sx={{ fontSize: '0.875rem' }}>{row.label}</Typography>
+                    {vllmFieldMeta('performance', row.meta) && <FrameworkBadge scope={vllmFieldMeta('performance', row.meta)!.scope} />}
+                  </Box>
+                  <Select fullWidth size="small" value={vllmConfig.performance[row.meta as keyof typeof vllmConfig.performance] ? 'true' : 'false'}
+                    onChange={(e) => updateVllmConfig(row.path, e.target.value === 'true')}>
+                    <MenuItem value="true">true</MenuItem>
+                    <MenuItem value="false">false</MenuItem>
+                  </Select>
+                  <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('performance', row.meta).join(' — ')}</FormHelperText>
+                </Grid>
+              ))}
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
+
+      {backend === 'llamacpp' && activeDeployTab === 2 && (
         <Card sx={{
           mb: 3,
           borderRadius: 1,
@@ -3159,7 +4148,73 @@ export const DeployPage: React.FC = () => {
         </Card>
       )}
 
-      {tab === 3 && (
+      {backend === 'vllm' && vllmConfig && activeDeployTab === 3 && (
+        <Card sx={{
+          mb: 3,
+          scrollMarginTop: '96px',
+          borderRadius: 1,
+          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          bgcolor: 'background.paper'
+        }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>MoE and reasoning</Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>moe_backend</Typography>
+                  {vllmFieldMeta('moe', 'moe_backend') && <FrameworkBadge scope={vllmFieldMeta('moe', 'moe_backend')!.scope} />}
+                </Box>
+                <Select fullWidth size="small" value={vllmConfig.moe.moe_backend}
+                  onChange={(e) => updateVllmConfig('moe.moe_backend', e.target.value)}>
+                  {(vllmFieldMeta('moe', 'moe_backend')?.options || ['marlin', 'triton']).map((o) => (
+                    <MenuItem key={o} value={o}>{o}</MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('moe', 'moe_backend').join(' — ')}</FormHelperText>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>mamba_ssm_cache_dtype</Typography>
+                  {vllmFieldMeta('moe', 'mamba_ssm_cache_dtype') && <FrameworkBadge scope={vllmFieldMeta('moe', 'mamba_ssm_cache_dtype')!.scope} />}
+                </Box>
+                <Select fullWidth size="small" value={vllmConfig.moe.mamba_ssm_cache_dtype}
+                  onChange={(e) => updateVllmConfig('moe.mamba_ssm_cache_dtype', e.target.value)}>
+                  {(vllmFieldMeta('moe', 'mamba_ssm_cache_dtype')?.options || ['float16', 'float32', 'bfloat16']).map((o) => (
+                    <MenuItem key={o} value={o}>{o}</MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('moe', 'mamba_ssm_cache_dtype').join(' — ')}</FormHelperText>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>reasoning_parser</Typography>
+                  {vllmFieldMeta('reasoning', 'reasoning_parser') && <FrameworkBadge scope={vllmFieldMeta('reasoning', 'reasoning_parser')!.scope} />}
+                </Box>
+                <Select fullWidth size="small" value={vllmConfig.reasoning.reasoning_parser}
+                  onChange={(e) => updateVllmConfig('reasoning.reasoning_parser', e.target.value)}>
+                  {(vllmFieldMeta('reasoning', 'reasoning_parser')?.options || ['nemotron_v3', 'deepseek_r1']).filter(Boolean).map((o) => (
+                    <MenuItem key={o} value={o}>{o}</MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('reasoning', 'reasoning_parser').join(' — ')}</FormHelperText>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>reasoning_parser_plugin (host path)</Typography>
+                  {vllmFieldMeta('reasoning', 'reasoning_parser_plugin') && <FrameworkBadge scope={vllmFieldMeta('reasoning', 'reasoning_parser_plugin')!.scope} />}
+                </Box>
+                <TextField fullWidth size="small" placeholder="/app/plugin.py"
+                  value={vllmConfig.reasoning.reasoning_parser_plugin}
+                  onChange={(e) => updateVllmConfig('reasoning.reasoning_parser_plugin', e.target.value)} />
+                <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('reasoning', 'reasoning_parser_plugin').join(' — ')}</FormHelperText>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
+
+      {backend === 'llamacpp' && activeDeployTab === 3 && (
         <Card sx={{
           mb: 3,
           borderRadius: 1,
@@ -3347,7 +4402,93 @@ export const DeployPage: React.FC = () => {
         </Card>
       )}
 
-      {tab === 4 && (
+      {backend === 'vllm' && vllmConfig && activeDeployTab === 4 && (
+        <Card sx={{
+          mb: 3,
+          scrollMarginTop: '96px',
+          borderRadius: 1,
+          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          bgcolor: 'background.paper'
+        }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Tools and speculative decoding</Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>enable_auto_tool_choice</Typography>
+                  {vllmFieldMeta('tools', 'enable_auto_tool_choice') && <FrameworkBadge scope={vllmFieldMeta('tools', 'enable_auto_tool_choice')!.scope} />}
+                </Box>
+                <Select fullWidth size="small" value={vllmConfig.tools.enable_auto_tool_choice ? 'true' : 'false'}
+                  onChange={(e) => updateVllmConfig('tools.enable_auto_tool_choice', e.target.value === 'true')}>
+                  <MenuItem value="true">true</MenuItem>
+                  <MenuItem value="false">false</MenuItem>
+                </Select>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>tool_call_parser</Typography>
+                  {vllmFieldMeta('tools', 'tool_call_parser') && <FrameworkBadge scope={vllmFieldMeta('tools', 'tool_call_parser')!.scope} />}
+                </Box>
+                <Select fullWidth size="small" value={vllmConfig.tools.tool_call_parser}
+                  onChange={(e) => updateVllmConfig('tools.tool_call_parser', e.target.value)}>
+                  {(vllmFieldMeta('tools', 'tool_call_parser')?.options || ['qwen3_coder', 'hermes', 'mistral', 'internlm', 'llama3_json']).filter((x) => x !== '').map((o) => (
+                    <MenuItem key={o} value={o}>{o}</MenuItem>
+                  ))}
+                </Select>
+              </Grid>
+              <Grid item xs={12}>
+                <Typography variant="subtitle2" sx={{ mt: 1, mb: 1 }}>Speculative config (leave method empty to disable)</Typography>
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>speculative method</Typography>
+                <Select fullWidth size="small" value={vllmConfig.speculative.method || ''}
+                  onChange={(e) => updateVllmConfig('speculative.method', e.target.value)}>
+                  <MenuItem value=""><em>Disabled</em></MenuItem>
+                  {(vllmFieldMeta('speculative', 'method')?.options || ['mtp', 'ngram', 'eagle', 'medusa']).filter(Boolean).map((o) => (
+                    <MenuItem key={o} value={o}>{o}</MenuItem>
+                  ))}
+                </Select>
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>num_speculative_tokens</Typography>
+                <TextField fullWidth size="small" type="number"
+                  value={vllmConfig.speculative.num_speculative_tokens}
+                  onChange={(e) => updateVllmConfig('speculative.num_speculative_tokens', parseInt(e.target.value, 10) || 0)} />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>speculative moe_backend (JSON field)</Typography>
+                <TextField fullWidth size="small" placeholder="triton"
+                  value={vllmConfig.speculative.speculative_moe_backend}
+                  onChange={(e) => updateVllmConfig('speculative.speculative_moe_backend', e.target.value)} />
+              </Grid>
+              <Grid item xs={12}>
+                <Typography variant="subtitle2" sx={{ mt: 1, mb: 1 }}>Media (Omni / video)</Typography>
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>video_pruning_rate</Typography>
+                <TextField fullWidth size="small" type="number"
+                  value={vllmConfig.media.video_pruning_rate}
+                  onChange={(e) => updateVllmConfig('media.video_pruning_rate', parseFloat(e.target.value) || 0)} />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>video_fps</Typography>
+                <TextField fullWidth size="small" type="number"
+                  value={vllmConfig.media.video_fps}
+                  onChange={(e) => updateVllmConfig('media.video_fps', parseInt(e.target.value, 10) || 0)} />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>video_num_frames</Typography>
+                <TextField fullWidth size="small" type="number"
+                  value={vllmConfig.media.video_num_frames}
+                  onChange={(e) => updateVllmConfig('media.video_num_frames', parseInt(e.target.value, 10) || 0)} />
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
+
+      {backend === 'llamacpp' && activeDeployTab === 4 && (
         <Card sx={{
           mb: 3,
           borderRadius: 1,
@@ -3753,7 +4894,67 @@ export const DeployPage: React.FC = () => {
         </Card>
       )}
 
-      {tab === 5 && (
+      {backend === 'vllm' && vllmConfig && activeDeployTab === 5 && (
+        <Card sx={{
+          mb: 3,
+          scrollMarginTop: '96px',
+          borderRadius: 1,
+          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          bgcolor: 'background.paper'
+        }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Docker-style environment</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: '0.8125rem' }}>
+              Values correspond to common <code>-e</code> variables for vLLM containers. Wire these into your compose file or run script so they take effect at container start.
+            </Typography>
+            <Grid container spacing={2}>
+              {([
+                { path: 'environment.vllm_nvfp4_gemm_backend', label: 'VLLM_NVFP4_GEMM_BACKEND', metaKey: 'vllm_nvfp4_gemm_backend' },
+                { path: 'environment.vllm_allow_long_max_model_len', label: 'VLLM_ALLOW_LONG_MAX_MODEL_LEN', metaKey: 'vllm_allow_long_max_model_len' },
+                { path: 'environment.vllm_flashinfer_allreduce_backend', label: 'VLLM_FLASHINFER_ALLREDUCE_BACKEND', metaKey: 'vllm_flashinfer_allreduce_backend' },
+                { path: 'environment.vllm_use_flashinfer_moe_fp4', label: 'VLLM_USE_FLASHINFER_MOE_FP4', metaKey: 'vllm_use_flashinfer_moe_fp4' },
+              ] as const).map((row) => {
+                const meta = vllmFieldMeta('environment', row.metaKey)
+                const opts = meta?.options
+                const val = (vllmConfig.environment as any)[row.metaKey] as string
+                return (
+                  <Grid item xs={12} md={6} key={row.path}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                      <Typography sx={{ fontSize: '0.875rem' }}>{row.label}</Typography>
+                      {meta && <FrameworkBadge scope={meta.scope} />}
+                    </Box>
+                    {opts ? (
+                      <Select fullWidth size="small" value={val}
+                        onChange={(e) => updateVllmConfig(row.path, e.target.value)}>
+                        {opts.map((o) => (
+                          <MenuItem key={o} value={o}>{o}</MenuItem>
+                        ))}
+                      </Select>
+                    ) : (
+                      <TextField fullWidth size="small" value={val}
+                        onChange={(e) => updateVllmConfig(row.path, e.target.value)} />
+                    )}
+                    <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('environment', row.metaKey).join(' — ')}</FormHelperText>
+                  </Grid>
+                )
+              })}
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>HF_TOKEN</Typography>
+                  {vllmFieldMeta('environment', 'hf_token') && <FrameworkBadge scope={vllmFieldMeta('environment', 'hf_token')!.scope} />}
+                </Box>
+                <TextField fullWidth size="small" type="password"
+                  value={vllmConfig.environment.hf_token}
+                  onChange={(e) => updateVllmConfig('environment.hf_token', e.target.value)} />
+                <FormHelperText sx={{ fontSize: '0.75rem' }}>{vllmHintLines('environment', 'hf_token').join(' — ')}</FormHelperText>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
+
+      {backend === 'llamacpp' && activeDeployTab === 5 && (
         <Box sx={{ mb: 3 }}>
           <LlamaCppCommitSelector
             onCommitChanged={(commit) => {
@@ -3764,7 +4965,76 @@ export const DeployPage: React.FC = () => {
         </Box>
       )}
 
-      {tab === 6 && (
+      {backend === 'vllm' && vllmConfig && activeDeployTab === 6 && (
+        <Box sx={{ mb: 3 }}>
+          <LlamaCppCommitSelector
+            variant="vllm"
+            onCommitChanged={(tag) => {
+              console.log('vLLM base image tag changed to:', tag)
+            }}
+          />
+        </Box>
+      )}
+
+      {backend === 'vllm' && vllmConfig && activeDeployTab === 7 && (
+        <Card sx={{
+          mb: 3,
+          scrollMarginTop: '96px',
+          borderRadius: 1,
+          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          bgcolor: 'background.paper'
+        }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>vLLM server</Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={4}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>Host</Typography>
+                  {vllmFieldMeta('server', 'host') && <FrameworkBadge scope={vllmFieldMeta('server', 'host')!.scope} />}
+                </Box>
+                <TextField fullWidth size="small" value={vllmConfig.server.host}
+                  onChange={(e) => updateVllmConfig('server.host', e.target.value)} />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>Port</Typography>
+                  {vllmFieldMeta('server', 'port') && <FrameworkBadge scope={vllmFieldMeta('server', 'port')!.scope} />}
+                </Box>
+                <TextField fullWidth size="small" type="number"
+                  value={vllmConfig.server.port}
+                  onChange={(e) => updateVllmConfig('server.port', parseInt(e.target.value, 10) || 0)} />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>API key</Typography>
+                  {vllmFieldMeta('server', 'api_key') && <FrameworkBadge scope={vllmFieldMeta('server', 'api_key')!.scope} />}
+                </Box>
+                <TextField fullWidth size="small"
+                  value={vllmConfig.server.api_key}
+                  onChange={(e) => {
+                    updateVllmConfig('server.api_key', e.target.value)
+                    handleApiKeyChange(e.target.value)
+                  }}
+                />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Typography sx={{ fontSize: '0.875rem' }}>trust_remote_code</Typography>
+                  {vllmFieldMeta('server', 'trust_remote_code') && <FrameworkBadge scope={vllmFieldMeta('server', 'trust_remote_code')!.scope} />}
+                </Box>
+                <Select fullWidth size="small" value={vllmConfig.server.trust_remote_code ? 'true' : 'false'}
+                  onChange={(e) => updateVllmConfig('server.trust_remote_code', e.target.value === 'true')}>
+                  <MenuItem value="true">true</MenuItem>
+                  <MenuItem value="false">false</MenuItem>
+                </Select>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
+
+      {backend === 'llamacpp' && activeDeployTab === 6 && (
         <Card sx={{
           borderRadius: 1,
           boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
@@ -3772,7 +5042,9 @@ export const DeployPage: React.FC = () => {
           bgcolor: 'background.paper'
         }}>
           <CardContent>
-            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Generated Command</Typography>
+            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>
+              Generated Command
+            </Typography>
             <Paper sx={{
               p: 2,
               backgroundColor: '#1e1e1e',
@@ -3784,6 +5056,37 @@ export const DeployPage: React.FC = () => {
               border: '1px solid rgba(255, 255, 255, 0.05)'
             }}>
               {commandLine || 'Save configuration to refresh command preview.'}
+            </Paper>
+          </CardContent>
+        </Card>
+      )}
+
+      {backend === 'vllm' && vllmConfig && activeDeployTab === 8 && (
+        <Card sx={{
+          borderRadius: 1,
+          scrollMarginTop: '96px',
+          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          bgcolor: 'background.paper'
+        }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>
+              vLLM launch command (preview)
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontSize: '0.8125rem' }}>
+              Docker run wiring and env vars are not expanded here; this reflects CLI flags from the saved vLLM config.
+            </Typography>
+            <Paper sx={{
+              p: 2,
+              backgroundColor: '#1e1e1e',
+              color: '#d4d4d4',
+              fontFamily: 'monospace',
+              fontSize: '0.9rem',
+              overflowX: 'auto',
+              borderRadius: 1,
+              border: '1px solid rgba(255, 255, 255, 0.05)'
+            }}>
+              {commandLine || 'Adjust settings to refresh command preview.'}
             </Paper>
           </CardContent>
         </Card>

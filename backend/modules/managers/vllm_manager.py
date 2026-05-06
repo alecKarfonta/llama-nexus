@@ -9,6 +9,7 @@ It manages lifecycle (start/stop) and provides health/status info.
 import os
 import asyncio
 import subprocess
+import json
 import httpx
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -47,18 +48,42 @@ class VLLMManager:
             "model": {
                 "name": os.getenv("VLLM_MODEL_NAME", "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"),
                 "served_name": os.getenv("VLLM_SERVED_MODEL_NAME", "Nemotron-3-Nano-Omni-30B-A3B-Reasoning"),
+                "dtype": os.getenv("VLLM_DTYPE", "auto"),
+                "quantization": os.getenv("VLLM_QUANTIZATION", "fp4"),
+            },
+            "sampling": {
+                "temperature": float(os.getenv("VLLM_TEMPERATURE", "0.7")),
+                "top_p": float(os.getenv("VLLM_TOP_P", "0.8")),
+                "top_k": int(os.getenv("VLLM_TOP_K", "-1")),
+                "repetition_penalty": float(os.getenv("VLLM_REPETITION_PENALTY", "1.0")),
+                "frequency_penalty": float(os.getenv("VLLM_FREQUENCY_PENALTY", "0.0")),
+                "presence_penalty": float(os.getenv("VLLM_PRESENCE_PENALTY", "0.0")),
             },
             "performance": {
                 "max_model_len": int(os.getenv("VLLM_MAX_MODEL_LEN", "16384")),
                 "gpu_memory_utilization": float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.95")),
                 "tensor_parallel_size": int(os.getenv("VLLM_TENSOR_PARALLEL_SIZE", "1")),
+                "pipeline_parallel_size": int(os.getenv("VLLM_PIPELINE_PARALLEL_SIZE", "1")),
+                "data_parallel_size": int(os.getenv("VLLM_DATA_PARALLEL_SIZE", "1")),
                 "max_num_seqs": int(os.getenv("VLLM_MAX_NUM_SEQS", "16")),
                 "max_num_batched_tokens": int(os.getenv("VLLM_MAX_NUM_BATCHED_TOKENS", "8192")),
                 "kv_cache_dtype": os.getenv("VLLM_KV_CACHE_DTYPE", "fp8"),
                 "enforce_eager": os.getenv("VLLM_ENFORCE_EAGER", "true").lower() == "true",
+                "enable_chunked_prefill": os.getenv("VLLM_ENABLE_CHUNKED_PREFILL", "true").lower() == "true",
+                "async_scheduling": os.getenv("VLLM_ASYNC_SCHEDULING", "true").lower() == "true",
+            },
+            "moe": {
+                "moe_backend": os.getenv("VLLM_MOE_BACKEND", "marlin"),
+                "mamba_ssm_cache_dtype": os.getenv("VLLM_MAMBA_SSM_CACHE_DTYPE", "float16"),
             },
             "reasoning": {
                 "reasoning_parser": os.getenv("VLLM_REASONING_PARSER", "nemotron_v3"),
+                "reasoning_parser_plugin": os.getenv("VLLM_REASONING_PARSER_PLUGIN", ""),
+            },
+            "speculative": {
+                "method": os.getenv("VLLM_SPECULATIVE_METHOD", ""),
+                "num_speculative_tokens": int(os.getenv("VLLM_SPECULATIVE_TOKENS", "0")),
+                "speculative_moe_backend": os.getenv("VLLM_SPECULATIVE_MOE_BACKEND", ""),
             },
             "tools": {
                 "enable_auto_tool_choice": True,
@@ -69,10 +94,214 @@ class VLLMManager:
                 "video_fps": int(os.getenv("VLLM_VIDEO_FPS", "2")),
                 "video_num_frames": int(os.getenv("VLLM_VIDEO_NUM_FRAMES", "256")),
             },
+            "environment": {
+                "vllm_nvfp4_gemm_backend": os.getenv("VLLM_NVFP4_GEMM_BACKEND", "marlin"),
+                "vllm_allow_long_max_model_len": os.getenv("VLLM_ALLOW_LONG_MAX_MODEL_LEN", "1"),
+                "vllm_flashinfer_allreduce_backend": os.getenv("VLLM_FLASHINFER_ALLREDUCE_BACKEND", "trtllm"),
+                "vllm_use_flashinfer_moe_fp4": os.getenv("VLLM_USE_FLASHINFER_MOE_FP4", "0"),
+                "hf_token": os.getenv("HF_TOKEN", ""),
+            },
             "server": {
                 "host": os.getenv("VLLM_HOST", "0.0.0.0"),
                 "port": int(os.getenv("VLLM_PORT", "8080")),
                 "api_key": os.getenv("API_KEY", "placeholder-api-key"),
+                "trust_remote_code": True,
+            },
+        }
+
+    def build_command(self) -> list:
+        """Build the vLLM launch command from the current config.
+
+        Returns the command as a list of tokens (matching LlamaCPPManager
+        convention) suitable for display in the DeployPage command preview.
+        """
+        cfg = self.config
+        model = cfg.get("model", {})
+        sampling = cfg.get("sampling", {})
+        perf = cfg.get("performance", {})
+        moe = cfg.get("moe", {})
+        reasoning = cfg.get("reasoning", {})
+        speculative = cfg.get("speculative", {})
+        tools = cfg.get("tools", {})
+        media = cfg.get("media", {})
+        server = cfg.get("server", {})
+
+        cmd = [
+            "vllm", "serve", model.get("name", ""),
+            "--served-model-name", model.get("served_name", ""),
+            "--host", str(server.get("host", "0.0.0.0")),
+            "--port", str(server.get("port", 8080)),
+            "--api-key", server.get("api_key", ""),
+            "--dtype", model.get("dtype", "auto"),
+            "--max-model-len", str(perf.get("max_model_len", 16384)),
+            "--gpu-memory-utilization", str(perf.get("gpu_memory_utilization", 0.95)),
+            "--tensor-parallel-size", str(perf.get("tensor_parallel_size", 1)),
+            "--kv-cache-dtype", perf.get("kv_cache_dtype", "fp8"),
+            "--max-num-seqs", str(perf.get("max_num_seqs", 16)),
+            "--max-num-batched-tokens", str(perf.get("max_num_batched_tokens", 8192)),
+        ]
+
+        if server.get("trust_remote_code", True):
+            cmd.append("--trust-remote-code")
+
+        if perf.get("enforce_eager", True):
+            cmd.append("--enforce-eager")
+
+        # Pipeline parallel
+        pp = perf.get("pipeline_parallel_size", 1)
+        if pp and pp > 1:
+            cmd.extend(["--pipeline-parallel-size", str(pp)])
+
+        # Data parallel
+        dp = perf.get("data_parallel_size", 1)
+        if dp and dp > 1:
+            cmd.extend(["--data-parallel-size", str(dp)])
+
+        # Chunked prefill
+        if perf.get("enable_chunked_prefill", True):
+            cmd.append("--enable-chunked-prefill")
+
+        # Async scheduling
+        if perf.get("async_scheduling", True):
+            cmd.append("--async-scheduling")
+
+        # MoE backend
+        moe_backend = moe.get("moe_backend", "")
+        if moe_backend:
+            cmd.extend(["--moe-backend", moe_backend])
+
+        mamba_dtype = moe.get("mamba_ssm_cache_dtype", "")
+        if mamba_dtype:
+            cmd.extend(["--mamba_ssm_cache_dtype", mamba_dtype])
+
+        # Quantization
+        quant = model.get("quantization", "")
+        if quant:
+            cmd.extend(["--quantization", quant])
+
+        # Reasoning
+        rp = reasoning.get("reasoning_parser", "")
+        if rp:
+            cmd.extend(["--reasoning-parser", rp])
+        rp_plugin = reasoning.get("reasoning_parser_plugin", "")
+        if rp_plugin:
+            cmd.extend(["--reasoning-parser-plugin", rp_plugin])
+
+        # Tools
+        if tools.get("enable_auto_tool_choice", True):
+            cmd.append("--enable-auto-tool-choice")
+        tcp = tools.get("tool_call_parser", "")
+        if tcp:
+            cmd.extend(["--tool-call-parser", tcp])
+
+        # Speculative decoding
+        spec_method = speculative.get("method", "")
+        if spec_method:
+            spec_config = {"method": spec_method}
+            spec_tokens = speculative.get("num_speculative_tokens", 0)
+            if spec_tokens:
+                spec_config["num_speculative_tokens"] = spec_tokens
+            spec_moe = speculative.get("speculative_moe_backend", "")
+            if spec_moe:
+                spec_config["moe_backend"] = spec_moe
+            cmd.extend(["--speculative_config", json.dumps(spec_config)])
+
+        # Media
+        if media.get("video_pruning_rate") is not None:
+            cmd.extend(["--video-pruning-rate", str(media["video_pruning_rate"])])
+
+        # Sampling parameters (applied at request time, shown for reference)
+        sampling_note_parts = []
+        temp = sampling.get("temperature")
+        if temp is not None:
+            sampling_note_parts.append(f"temperature={temp}")
+        top_p = sampling.get("top_p")
+        if top_p is not None:
+            sampling_note_parts.append(f"top_p={top_p}")
+        rep_pen = sampling.get("repetition_penalty")
+        if rep_pen is not None and rep_pen != 1.0:
+            sampling_note_parts.append(f"repetition_penalty={rep_pen}")
+        freq_pen = sampling.get("frequency_penalty")
+        if freq_pen is not None and freq_pen != 0.0:
+            sampling_note_parts.append(f"frequency_penalty={freq_pen}")
+        pres_pen = sampling.get("presence_penalty")
+        if pres_pen is not None and pres_pen != 0.0:
+            sampling_note_parts.append(f"presence_penalty={pres_pen}")
+
+        if sampling_note_parts:
+            cmd.extend(["# sampling:", ", ".join(sampling_note_parts)])
+
+        return cmd
+
+    def get_field_metadata(self) -> Dict[str, Any]:
+        """Return metadata describing which config fields exist for vLLM,
+        their scope, and cross-framework mapping information.
+
+        Each field has:
+          - scope: "shared" | "vllm" | "llamacpp"
+          - type: "number" | "text" | "select" | "boolean"
+          - description: human-readable description
+          - vllm_flag: the CLI flag for vLLM
+          - llamacpp_equivalent: what it maps to in llama.cpp (if any)
+          - min/max/step: for number fields
+          - options: for select fields
+        """
+        return {
+            "model": {
+                "name": {"scope": "shared", "type": "text", "description": "Model name or HuggingFace repo ID", "vllm_flag": "--model", "llamacpp_equivalent": "model.name"},
+                "served_name": {"scope": "vllm", "type": "text", "description": "Name exposed to clients via API", "vllm_flag": "--served-model-name", "llamacpp_equivalent": None},
+                "dtype": {"scope": "vllm", "type": "select", "description": "Data type for model weights", "vllm_flag": "--dtype", "options": ["auto", "float16", "bfloat16", "float32"], "llamacpp_equivalent": None},
+                "quantization": {"scope": "vllm", "type": "select", "description": "Quantization method for the model", "vllm_flag": "--quantization", "options": ["fp4", "awq", "gptq", "bitsandbytes", "None"], "llamacpp_equivalent": None, "note": "llama.cpp uses GGUF quantization variants instead"},
+            },
+            "sampling": {
+                "temperature": {"scope": "shared", "type": "number", "description": "Controls randomness in text generation. Higher values produce more creative output, lower values produce more focused and deterministic text.", "vllm_flag": "per-request", "llamacpp_flag": "--temp", "min": 0, "max": 2, "step": 0.1},
+                "top_p": {"scope": "shared", "type": "number", "description": "Nucleus sampling: limits next token selection to a subset with cumulative probability above threshold.", "vllm_flag": "per-request", "llamacpp_flag": "--top-p", "min": 0, "max": 1, "step": 0.05},
+                "top_k": {"scope": "shared", "type": "number", "description": "Limits next token selection to the K most probable tokens. -1 to disable.", "vllm_flag": "per-request", "llamacpp_flag": "--top-k", "min": -1, "max": 200},
+                "repetition_penalty": {"scope": "shared", "type": "number", "description": "Penalizes repeated tokens. Values > 1.0 discourage repetition.", "vllm_flag": "per-request", "llamacpp_flag": "--repeat-penalty", "min": 0.1, "max": 2.0, "step": 0.1, "mapping_note": "llama.cpp: repeat_penalty, vLLM: repetition_penalty"},
+                "frequency_penalty": {"scope": "shared", "type": "number", "description": "Penalizes tokens based on their frequency in the text so far.", "vllm_flag": "per-request", "llamacpp_flag": "--frequency-penalty", "min": -2.0, "max": 2.0, "step": 0.1},
+                "presence_penalty": {"scope": "shared", "type": "number", "description": "Penalizes tokens that have already appeared, encouraging new topics.", "vllm_flag": "per-request", "llamacpp_flag": "--presence-penalty", "min": -2.0, "max": 2.0, "step": 0.1},
+            },
+            "performance": {
+                "max_model_len": {"scope": "vllm", "type": "number", "description": "Maximum model context length (sequence length). Equivalent to context_size in llama.cpp. vLLM will allocate KV cache for this length.", "vllm_flag": "--max-model-len", "llamacpp_equivalent": "model.context_size", "mapping_note": "llama.cpp: context_size, vLLM: max_model_len"},
+                "gpu_memory_utilization": {"scope": "vllm", "type": "number", "description": "Fraction of GPU memory to use (0.0-1.0). vLLM pre-allocates this fraction. llama.cpp has no direct equivalent -- it offloads layers until VRAM is full.", "vllm_flag": "--gpu-memory-utilization", "llamacpp_equivalent": None, "min": 0.0, "max": 1.0, "step": 0.05},
+                "tensor_parallel_size": {"scope": "vllm", "type": "number", "description": "Number of GPUs for tensor parallelism (splitting layers across GPUs). llama.cpp uses split_mode + tensor_split instead.", "vllm_flag": "--tensor-parallel-size", "llamacpp_equivalent": "performance.split_mode", "min": 1, "max": 16},
+                "pipeline_parallel_size": {"scope": "vllm", "type": "number", "description": "Number of pipeline parallel stages. Splits model across GPUs by layers.", "vllm_flag": "--pipeline-parallel-size", "llamacpp_equivalent": None, "min": 1, "max": 16},
+                "data_parallel_size": {"scope": "vllm", "type": "number", "description": "Number of data parallel replicas. Replicates the model for higher throughput.", "vllm_flag": "--data-parallel-size", "llamacpp_equivalent": "performance.parallel_slots", "mapping_note": "llama.cpp: parallel_slots, vLLM: data_parallel_size"},
+                "max_num_seqs": {"scope": "vllm", "type": "number", "description": "Maximum number of sequences per iteration. Controls batching.", "vllm_flag": "--max-num-seqs", "llamacpp_equivalent": "performance.parallel_slots"},
+                "max_num_batched_tokens": {"scope": "vllm", "type": "number", "description": "Maximum number of tokens per batch.", "vllm_flag": "--max-num-batched-tokens", "llamacpp_equivalent": "performance.batch_size"},
+                "kv_cache_dtype": {"scope": "vllm", "type": "select", "description": "Data type for KV cache. llama.cpp uses cache_type_k/cache_type_v (separate for K and V).", "vllm_flag": "--kv-cache-dtype", "options": ["auto", "fp8", "fp8_e5m2", "fp8_e4m3"], "llamacpp_equivalent": "performance.cache_type_k", "mapping_note": "llama.cpp has separate K and V cache types, vLLM uses one setting"},
+                "enforce_eager": {"scope": "vllm", "type": "boolean", "description": "Disable CUDA graphs (use eager mode). Useful for debugging.", "vllm_flag": "--enforce-eager", "llamacpp_equivalent": None},
+                "enable_chunked_prefill": {"scope": "vllm", "type": "boolean", "description": "Enable chunked prefill for better scheduling of long prompts.", "vllm_flag": "--enable-chunked-prefill", "llamacpp_equivalent": None},
+                "async_scheduling": {"scope": "vllm", "type": "boolean", "description": "Enable async scheduling for improved throughput.", "vllm_flag": "--async-scheduling", "llamacpp_equivalent": None},
+            },
+            "moe": {
+                "moe_backend": {"scope": "vllm", "type": "select", "description": "Backend for MoE (Mixture of Experts) computation.", "vllm_flag": "--moe-backend", "options": ["marlin", "triton"], "llamacpp_equivalent": None},
+                "mamba_ssm_cache_dtype": {"scope": "vllm", "type": "select", "description": "Data type for Mamba SSM cache.", "vllm_flag": "--mamba_ssm_cache_dtype", "options": ["float16", "float32", "bfloat16"], "llamacpp_equivalent": None},
+            },
+            "reasoning": {
+                "reasoning_parser": {"scope": "vllm", "type": "select", "description": "Parser for extracting reasoning/thinking content from model output.", "vllm_flag": "--reasoning-parser", "options": ["nemotron_v3", "deepseek_r1", "None"], "llamacpp_equivalent": "server.reasoning_format", "mapping_note": "llama.cpp: reasoning_format, vLLM: reasoning_parser"},
+                "reasoning_parser_plugin": {"scope": "vllm", "type": "text", "description": "Path to custom reasoning parser plugin Python file.", "vllm_flag": "--reasoning-parser-plugin", "llamacpp_equivalent": None},
+            },
+            "speculative": {
+                "method": {"scope": "vllm", "type": "select", "description": "Speculative decoding method.", "vllm_flag": "--speculative_config.method", "options": ["mtp", "ngram", "eagle", "medusa", ""], "llamacpp_equivalent": "speculative.model_draft", "mapping_note": "llama.cpp uses draft model, vLLM uses methods like MTP"},
+                "num_speculative_tokens": {"scope": "vllm", "type": "number", "description": "Number of speculative tokens to generate.", "vllm_flag": "--speculative_config.num_speculative_tokens", "llamacpp_equivalent": "speculative.draft_max", "min": 0, "max": 16},
+            },
+            "tools": {
+                "enable_auto_tool_choice": {"scope": "vllm", "type": "boolean", "description": "Enable automatic tool choice for function calling.", "vllm_flag": "--enable-auto-tool-choice", "llamacpp_equivalent": None},
+                "tool_call_parser": {"scope": "vllm", "type": "select", "description": "Parser for extracting tool calls from model output.", "vllm_flag": "--tool-call-parser", "options": ["qwen3_coder", "hermes", "mistral", "internlm", "llama3_json", ""], "llamacpp_equivalent": None},
+            },
+            "environment": {
+                "vllm_nvfp4_gemm_backend": {"scope": "vllm", "type": "select", "description": "Backend for NVFP4 GEMM operations.", "vllm_flag": "env:VLLM_NVFP4_GEMM_BACKEND", "options": ["marlin", "triton", "cutlass"], "llamacpp_equivalent": None},
+                "vllm_allow_long_max_model_len": {"scope": "vllm", "type": "select", "description": "Allow max_model_len beyond recommended limit.", "vllm_flag": "env:VLLM_ALLOW_LONG_MAX_MODEL_LEN", "options": ["0", "1"], "llamacpp_equivalent": None},
+                "vllm_flashinfer_allreduce_backend": {"scope": "vllm", "type": "select", "description": "Backend for FlashInfer all-reduce operations.", "vllm_flag": "env:VLLM_FLASHINFER_ALLREDUCE_BACKEND", "options": ["trtllm", "custom"], "llamacpp_equivalent": None},
+                "vllm_use_flashinfer_moe_fp4": {"scope": "vllm", "type": "select", "description": "Use FlashInfer MoE for FP4 quantization.", "vllm_flag": "env:VLLM_USE_FLASHINFER_MOE_FP4", "options": ["0", "1"], "llamacpp_equivalent": None},
+                "hf_token": {"scope": "shared", "type": "text", "description": "HuggingFace API token for gated model access.", "vllm_flag": "env:HF_TOKEN", "llamacpp_equivalent": None},
+            },
+            "server": {
+                "host": {"scope": "shared", "type": "text", "description": "IP address to listen on.", "vllm_flag": "--host", "llamacpp_flag": "--host"},
+                "port": {"scope": "shared", "type": "number", "description": "Port to listen on.", "vllm_flag": "--port", "llamacpp_flag": "--port"},
+                "api_key": {"scope": "shared", "type": "text", "description": "API key for authentication.", "vllm_flag": "--api-key", "llamacpp_flag": "--api-key"},
+                "trust_remote_code": {"scope": "vllm", "type": "boolean", "description": "Allow remote code execution from model repo.", "vllm_flag": "--trust-remote-code", "llamacpp_equivalent": None},
             },
         }
 

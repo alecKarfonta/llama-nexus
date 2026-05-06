@@ -137,6 +137,7 @@ services:
       - .:/home/alec/git/llama-nexus:ro
       # Mount Dockerfile separately as read-write for version management
       - ./Dockerfile:/home/alec/git/llama-nexus/Dockerfile
+      - ./Dockerfile.vllm:/home/alec/git/llama-nexus/Dockerfile.vllm
       # Conversation storage
       - conversation_data:/data/conversations
     shm_size: '16gb'

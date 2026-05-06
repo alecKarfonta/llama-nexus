@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Card,
@@ -38,10 +38,13 @@ import type { LlamaCppCommit, LlamaCppCommitsResponse } from '@/types/api';
 
 interface LlamaCppCommitSelectorProps {
   onCommitChanged?: (commit: string) => void;
+  /** Select Docker base image workflow for vLLM (`Dockerfile.vllm`) vs llama.cpp (`Dockerfile`). */
+  variant?: 'llamacpp' | 'vllm';
 }
 
 export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
-  onCommitChanged
+  onCommitChanged,
+  variant = 'llamacpp',
 }) => {
   const [commits, setCommits] = useState<LlamaCppCommitsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,15 +63,14 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
   const [customCommitInfo, setCustomCommitInfo] = useState<any>(null);
   const [customCommitError, setCustomCommitError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchCommits();
-  }, []);
-
-  const fetchCommits = async () => {
+  const fetchCommits = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      const data = await apiService.getLlamaCppCommits();
+      const data =
+        variant === 'vllm'
+          ? await apiService.getVllmImageVersions()
+          : await apiService.getLlamaCppCommits();
       setCommits(data);
       setSelectedCommit(data.current_commit);
     } catch (err) {
@@ -76,7 +78,11 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [variant]);
+
+  useEffect(() => {
+    void fetchCommits();
+  }, [fetchCommits]);
 
   const handleApplyCommit = async (commit: LlamaCppCommit) => {
     setConfirmDialog({ open: true, commit });
@@ -89,7 +95,10 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
     try {
       setApplying(true);
       setError(null);
-      const result = await apiService.applyLlamaCppCommit(commit.tag);
+      const result =
+        variant === 'vllm'
+          ? await apiService.applyVllmOpenAiImageTag(commit.tag)
+          : await apiService.applyLlamaCppCommit(commit.tag);
       setSuccess(`${result.message}. ${result.requires_rebuild ? 'Rebuild required.' : ''}`);
       setSelectedCommit(commit.tag);
       onCommitChanged?.(commit.tag);
@@ -108,7 +117,8 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
     try {
       setRebuilding(true);
       setError(null);
-      const result = await apiService.rebuildLlamaCpp();
+      const result =
+        variant === 'vllm' ? await apiService.rebuildVllmApi() : await apiService.rebuildLlamaCpp();
       setSuccess('Containers rebuilt successfully');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to rebuild containers');
@@ -127,7 +137,10 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
     try {
       setValidatingCustom(true);
       setCustomCommitError(null);
-      const result = await apiService.validateLlamaCppCommit(commitId.trim());
+      const result =
+        variant === 'vllm'
+          ? await apiService.validateVllmImageRef(commitId.trim())
+          : await apiService.validateLlamaCppCommit(commitId.trim());
       
       if (result.valid) {
         setCustomCommitInfo(result.commit);
@@ -161,7 +174,10 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
     try {
       setApplying(true);
       setError(null);
-      const result = await apiService.applyLlamaCppCommit(customCommit.trim());
+      const result =
+        variant === 'vllm'
+          ? await apiService.applyVllmOpenAiImageTag(customCommit.trim())
+          : await apiService.applyLlamaCppCommit(customCommit.trim());
       setSuccess(`${result.message}. ${result.requires_rebuild ? 'Rebuild required.' : ''}`);
       setSelectedCommit(customCommit.trim());
       onCommitChanged?.(customCommit.trim());
@@ -278,8 +294,12 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
     <Box>
       <Card>
         <CardHeader
-          title="LlamaCPP Version Management"
-          subheader={`Current version: ${commits.current_commit}`}
+          title={variant === 'vllm' ? 'vLLM base image version' : 'LlamaCPP Version Management'}
+          subheader={
+            variant === 'vllm'
+              ? `Current Docker tag (vllm/vllm-openai): ${commits.current_commit}`
+              : `Current version: ${commits.current_commit}`
+          }
           action={
             <Box display="flex" gap={1}>
               <Button
@@ -309,6 +329,14 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
             </Alert>
           )}
 
+          {variant === 'vllm' && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Tags are loaded live from <strong>vllm-project/vllm</strong> on GitHub. This stack pulls{' '}
+              <strong>vllm/vllm-openai</strong> with a release tag (for example <code>v0.20.1</code>). Release tags match published images.
+              A raw commit SHA may resolve on GitHub but fail at docker pull if no image was published for that revision.
+            </Alert>
+          )}
+
           {(applying || rebuilding) && (
             <Box sx={{ mb: 2 }}>
               <LinearProgress />
@@ -321,18 +349,20 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
           {/* Custom Commit Input */}
           <Paper sx={{ p: 3, mb: 3, bgcolor: 'grey.50' }}>
             <Typography variant="h6" gutterBottom>
-              Apply Custom Commit
+              {variant === 'vllm' ? 'Custom tag or commit ref' : 'Apply Custom Commit'}
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Enter a specific commit SHA, tag, or branch name to use a custom version.
+              {variant === 'vllm'
+                ? 'Enter a release tag (recommended), branch name, or full commit SHA. The ref must resolve on the vLLM GitHub repo.'
+                : 'Enter a specific commit SHA, tag, or branch name to use a custom version.'}
             </Typography>
             
             <Box display="flex" gap={2} alignItems="flex-start">
               <TextField
-                label="Commit ID / Tag / Branch"
+                label={variant === 'vllm' ? 'Image tag / ref' : 'Commit ID / Tag / Branch'}
                 value={customCommit}
                 onChange={(e) => handleCustomCommitChange(e.target.value)}
-                placeholder="e.g., b6181, main, or full SHA"
+                placeholder={variant === 'vllm' ? 'e.g., v0.20.1 or main' : 'e.g., b6181, main, or full SHA'}
                 fullWidth
                 error={!!customCommitError}
                 helperText={customCommitError}
@@ -354,7 +384,7 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
             {customCommitInfo && (
               <Box sx={{ mt: 2, p: 2, bgcolor: 'success.light', borderRadius: 1 }}>
                 <Typography variant="subtitle2" gutterBottom>
-                  ✓ Valid Commit Found
+                  Valid ref (GitHub)
                 </Typography>
                 <Typography variant="body2">
                   <strong>SHA:</strong> {customCommitInfo.short_sha} ({customCommitInfo.sha})
@@ -375,12 +405,32 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
           <Divider sx={{ mb: 3 }} />
 
           <Tabs value={tabValue} onChange={(_, newValue) => setTabValue(newValue)} sx={{ mb: 3 }}>
-            <Tab label={`Releases (${commits.releases.length})`} />
-            <Tab label={`Recent Commits (${commits.recent_commits.length})`} />
+            <Tab
+              label={
+                variant === 'vllm'
+                  ? `GitHub releases (${commits.releases.length})`
+                  : `Releases (${commits.releases.length})`
+              }
+            />
+            <Tab
+              label={
+                variant === 'vllm'
+                  ? `Recent commits (${commits.recent_commits.length})`
+                  : `Recent Commits (${commits.recent_commits.length})`
+              }
+            />
           </Tabs>
 
-          {tabValue === 0 && renderCommitList(commits.releases, 'Official Releases')}
-          {tabValue === 1 && renderCommitList(commits.recent_commits, 'Recent Commits')}
+          {tabValue === 0 &&
+            renderCommitList(
+              commits.releases,
+              variant === 'vllm' ? 'Published releases (typical Docker tags)' : 'Official Releases'
+            )}
+          {tabValue === 1 &&
+            renderCommitList(
+              commits.recent_commits,
+              variant === 'vllm' ? 'Latest commits on default branch' : 'Recent Commits'
+            )}
         </CardContent>
       </Card>
 
@@ -410,7 +460,13 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
             </Box>
           )}
           <Alert severity="warning" sx={{ mt: 2 }}>
-            This will update the Dockerfile and require a container rebuild to take effect.
+            This updates{' '}
+            {variant === 'vllm' ? (
+              <strong>Dockerfile.vllm</strong>
+            ) : (
+              <strong>Dockerfile</strong>
+            )}{' '}
+            and requires a container rebuild for the change to take effect.
           </Alert>
         </DialogContent>
         <DialogActions>

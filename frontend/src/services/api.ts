@@ -254,6 +254,7 @@ class ApiService {
           size: model.size || 0,
           status: model.status || 'available',
           downloadProgress: model.downloadProgress,
+          framework: model.framework,
           repositoryId: model.repositoryId,
           contextLength: model.contextLength,
           parameters: this.formatParameters(this.extractParameters(model.name)),
@@ -853,6 +854,29 @@ class ApiService {
    */
   async rebuildLlamaCpp(): Promise<{ message: string; stdout: string; stderr: string }> {
     const response = await this.backendClient.post('/api/v1/llamacpp/rebuild');
+    return response.data;
+  }
+
+  /** GitHub-backed list for vLLM Docker base image (`vllm/vllm-openai:<tag>`). Same shape as llama.cpp commits API. */
+  async getVllmImageVersions(): Promise<LlamaCppCommitsResponse> {
+    const response = await this.backendClient.get<LlamaCppCommitsResponse>('/api/v1/vllm/image-versions');
+    return response.data;
+  }
+
+  async validateVllmImageRef(ref: string): Promise<{ valid: boolean; error?: string; commit?: any }> {
+    const enc = encodeURIComponent(ref);
+    const response = await this.backendClient.get(`/api/v1/vllm/image-tag/${enc}/validate`);
+    return response.data;
+  }
+
+  async applyVllmOpenAiImageTag(tag: string): Promise<{ message: string; commit: string; commit_info?: any; requires_rebuild: boolean }> {
+    const enc = encodeURIComponent(tag);
+    const response = await this.backendClient.post(`/api/v1/vllm/image-tag/${enc}/apply`);
+    return response.data;
+  }
+
+  async rebuildVllmApi(): Promise<{ message: string; stdout: string; stderr: string }> {
+    const response = await this.backendClient.post('/api/v1/vllm/rebuild');
     return response.data;
   }
 
