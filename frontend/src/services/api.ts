@@ -464,6 +464,19 @@ class ApiService {
     await this.client.post('/v1/service/action', request);
   }
 
+  async getBackendsStatus(): Promise<{
+    active: string;
+    backends: Record<string, any>;
+  }> {
+    const response = await this.backendClient.get('/api/v1/service/backends');
+    return response.data;
+  }
+
+  async getVllmStatus(): Promise<any> {
+    const response = await this.backendClient.get('/api/v1/service/vllm/status');
+    return response.data;
+  }
+
   // Deploy Profile APIs
   async getProfiles(): Promise<any[]> {
     const response = await this.backendClient.get('/api/v1/profiles');

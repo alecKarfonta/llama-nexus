@@ -224,6 +224,7 @@ export interface ConfigUpdateRequest {
 
 export interface ServiceActionRequest {
   action: 'start' | 'stop' | 'restart' | 'reload';
+  backend?: 'llamacpp' | 'vllm';
   config?: Partial<ServiceConfig>;
 }
 

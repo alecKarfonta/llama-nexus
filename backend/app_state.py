@@ -16,9 +16,11 @@ from modules.managers import (
     StreamingSTTManager,
     TTSManager
 )
+from modules.managers.vllm_manager import VLLMManager
 
 # Initialize service managers
 manager = LlamaCPPManager()
+vllm_manager = VLLMManager()
 download_manager = ModelDownloadManager()
 embedding_manager = EmbeddingManager()
 stt_manager = STTManager()

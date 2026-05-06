@@ -6,9 +6,17 @@ from datetime import datetime
 import psutil
 
 from enhanced_logger import enhanced_logger as logger
-from app_state import manager
+from app_state import manager, vllm_manager
 
 router = APIRouter()
+
+
+def _get_log_manager(backend: str = "llamacpp"):
+    """Get the appropriate log manager by backend type."""
+    if backend == "vllm":
+        return vllm_manager
+    return manager
+
 
 # ============================================================================
 # WebSocket Log Streaming
@@ -17,32 +25,42 @@ router = APIRouter()
 async def websocket_logs(websocket: WebSocket):
     """
     WebSocket endpoint for real-time log streaming.
-    Clients connect to receive new stderr output from llamacpp.
+    Accepts an optional ?backend=vllm query parameter.
+    Defaults to llamacpp.
     """
     await websocket.accept()
-    
+
+    # Determine which backend to stream logs for
+    backend = "llamacpp"
+    # FastAPI passes query params via websocket scope
+    query_string = websocket.scope.get("query_string", b"").decode()
+    if "backend=vllm" in query_string:
+        backend = "vllm"
+
+    log_mgr = _get_log_manager(backend)
+
     # Send all recent logs immediately upon connection
-    recent_logs = manager.get_logs(100)
+    recent_logs = log_mgr.get_logs(100)
     for log_line in recent_logs:
         try:
             await websocket.send_text(log_line)
         except Exception:
-            pass # Client might have disconnected
-            
+            pass
+
     try:
         # Keep connection open and send new logs as they arrive
-        manager.ws_clients.append(websocket)
+        log_mgr.websocket_clients.append(websocket)
         while True:
             # We just need to keep the connection alive
             # The actual sending happens in add_log_line
             await websocket.receive_text()
     except WebSocketDisconnect:
-        if websocket in manager.ws_clients:
-            manager.ws_clients.remove(websocket)
+        if websocket in log_mgr.websocket_clients:
+            log_mgr.websocket_clients.remove(websocket)
     except Exception as e:
         logger.error(f"WebSocket error in log streaming: {e}")
-        if websocket in manager.ws_clients:
-            manager.ws_clients.remove(websocket)
+        if websocket in log_mgr.websocket_clients:
+            log_mgr.websocket_clients.remove(websocket)
 
 
 # ============================================================================

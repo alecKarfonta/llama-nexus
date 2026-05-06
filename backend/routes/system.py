@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from enhanced_logger import enhanced_logger as logger
-from app_state import manager
+from app_state import manager, vllm_manager
 import os
 
 try:
@@ -35,27 +35,29 @@ async def health_check():
     }
 
 @router.get("/logs")
-async def get_logs(lines: int = 100):
-    """Get recent logs from the llamacpp service"""
-    return {"logs": manager.get_logs(lines)}
+async def get_logs(lines: int = 100, backend: str = "llamacpp"):
+    """Get recent logs from the specified backend service."""
+    log_mgr = vllm_manager if backend == "vllm" else manager
+    return {"logs": log_mgr.get_logs(lines)}
 
 @router.delete("/logs")
-async def clear_logs():
-    """Clear internal log buffer"""
-    manager.log_buffer.clear()
+async def clear_logs(backend: str = "llamacpp"):
+    """Clear internal log buffer."""
+    log_mgr = vllm_manager if backend == "vllm" else manager
+    log_mgr.log_buffer.clear()
     last_log = f"[{datetime.now().strftime('%H:%M:%S')}] Logs cleared by user\n"
-    manager.log_buffer.append(last_log)
-    await manager.broadcast_ws_event("log", {"text": last_log})
+    log_mgr.log_buffer.append(last_log)
+    if log_mgr.broadcast_ws_event:
+        await log_mgr.broadcast_ws_event("log", {"text": last_log})
     return {"status": "cleared"}
 
 @router.get("/container/logs")
-async def get_container_logs(lines: int = 100):
-    """Fetch logs directly from Docker container"""
-    if not manager.use_docker:
-        raise HTTPException(status_code=400, detail="Service is not running in Docker mode")
+async def get_container_logs(lines: int = 100, backend: str = "llamacpp"):
+    """Fetch logs directly from Docker container."""
+    container_name = "vllm-api" if backend == "vllm" else _llamacpp_container_name()
 
     result = subprocess.run(
-        ["docker", "logs", "--tail", str(max(1, lines)), _llamacpp_container_name()],
+        ["docker", "logs", "--tail", str(max(1, lines)), container_name],
         capture_output=True,
         text=True,
     )
@@ -68,34 +70,33 @@ async def get_container_logs(lines: int = 100):
     return {"logs": result.stdout or ""}
 
 @router.get("/logs/container")
-async def get_container_logs_legacy(lines: int = 100):
+async def get_container_logs_legacy(lines: int = 100, backend: str = "llamacpp"):
     """Legacy alias for container logs endpoint."""
-    return await get_container_logs(lines=lines)
+    return await get_container_logs(lines=lines, backend=backend)
 
 @router.get("/container/logs/stream")
-async def stream_container_logs():
-    """Stream logs directly from Docker container"""
-    if not manager.use_docker:
-        raise HTTPException(status_code=400, detail="Service is not running in Docker mode")
-        
+async def stream_container_logs(backend: str = "llamacpp"):
+    """Stream logs directly from Docker container."""
+    container_name = "vllm-api" if backend == "vllm" else _llamacpp_container_name()
+
     async def log_generator():
         # First check if the container is running
         check = subprocess.run(
-            ["docker", "ps", "-q", "-f", f"name={_llamacpp_container_name()}"],
+            ["docker", "ps", "-q", "-f", f"name={container_name}"],
             capture_output=True, text=True
         )
-        
+
         if not check.stdout.strip():
             yield "data: Container is not running\n\n"
             return
-            
+
         process = await asyncio.create_subprocess_exec(
             "docker",
             "logs",
             "-f",
             "--tail",
             "100",
-            _llamacpp_container_name(),
+            container_name,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -120,9 +121,9 @@ async def stream_container_logs():
     return StreamingResponse(log_generator(), media_type="text/event-stream")
 
 @router.get("/logs/container/stream")
-async def stream_container_logs_legacy():
+async def stream_container_logs_legacy(backend: str = "llamacpp"):
     """Legacy alias for container log stream endpoint."""
-    return await stream_container_logs()
+    return await stream_container_logs(backend=backend)
 
 @router.get("/resources")
 async def get_resources():
@@ -224,7 +225,26 @@ async def list_gpus():
 
 @router.get("/models/current")
 async def get_current_model():
-    """Get information about the currently configured model"""
+    """Get information about the currently configured model.
+
+    Returns the model info from whichever inference backend is active.
+    When vLLM is running, returns the vLLM served model name so that
+    chat requests use the correct model ID.
+    """
+    # Prefer vLLM if it's running
+    if vllm_manager and vllm_manager.is_running():
+        vllm_status = vllm_manager.get_status()
+        model_info = vllm_status.get("model", {})
+        return {
+            "name": model_info.get("served_name") or model_info.get("name", "vllm-model"),
+            "variant": "NVFP4",
+            "context_size": model_info.get("max_model_len", 16384),
+            "gpu_layers": 0,
+            "status": "loaded",
+            "backend": "vllm",
+        }
+
+    # Fall back to llama.cpp manager
     status = manager.get_status()
     return {
         "name": manager.config["model"]["name"],
@@ -233,7 +253,8 @@ async def get_current_model():
         "gpu_layers": manager.config["model"]["gpu_layers"],
         "status": "loaded" if status["running"] else "not_loaded",
         "file_path": f"/home/llamacpp/models/{manager.config['model']['name']}-{manager.config['model']['variant']}.gguf",
-        "estimated_vram_gb": 19 if "30B" in manager.config["model"]["name"] else 8
+        "estimated_vram_gb": 19 if "30B" in manager.config["model"]["name"] else 8,
+        "backend": "llamacpp",
     }
 
 @router.get("/config/presets")

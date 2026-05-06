@@ -1,7 +1,9 @@
 """Service management routes for LlamaCPP and Embedding services."""
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Dict, Any
 from datetime import datetime
+import httpx
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,6 +14,18 @@ router = APIRouter(tags=["service"])
 def get_manager(request: Request):
     """Get the LlamaCPP manager from app state."""
     return getattr(request.app.state, 'manager', None)
+
+
+def get_vllm_manager(request: Request):
+    """Get the vLLM manager from app state."""
+    return getattr(request.app.state, 'vllm_manager', None)
+
+
+def get_backend_manager(request: Request, backend: str = "llamacpp"):
+    """Get the appropriate backend manager by type."""
+    if backend == "vllm":
+        return get_vllm_manager(request)
+    return get_manager(request)
 
 
 def get_embedding_manager(request: Request):
@@ -77,11 +91,53 @@ async def get_service_status(request: Request):
     if manager is None:
         raise HTTPException(status_code=503, detail="Manager not available")
     status = manager.get_status()
-    
     if status.get("running"):
         health = await manager.get_llamacpp_health()
         status["llamacpp_health"] = health
     
+    return status
+
+
+@router.get("/api/v1/service/backends")
+async def get_backends_status(request: Request):
+    """Get status of all available inference backends."""
+    llamacpp_mgr = get_manager(request)
+    vllm_mgr = get_vllm_manager(request)
+
+    result = {
+        "active": "llamacpp",
+        "backends": {},
+    }
+
+    if llamacpp_mgr:
+        llamacpp_status = llamacpp_mgr.get_status()
+        if llamacpp_status.get("running"):
+            health = await llamacpp_mgr.get_llamacpp_health()
+            llamacpp_status["health"] = health
+            result["active"] = "llamacpp"
+        result["backends"]["llamacpp"] = llamacpp_status
+
+    if vllm_mgr:
+        vllm_status = vllm_mgr.get_status()
+        if vllm_status.get("running"):
+            health = await vllm_mgr.get_health()
+            vllm_status["health"] = health
+            result["active"] = "vllm"
+        result["backends"]["vllm"] = vllm_status
+
+    return result
+
+
+@router.get("/api/v1/service/vllm/status")
+async def get_vllm_status(request: Request):
+    """Get vLLM backend status."""
+    vllm_mgr = get_vllm_manager(request)
+    if vllm_mgr is None:
+        raise HTTPException(status_code=503, detail="vLLM manager not available")
+    status = vllm_mgr.get_status()
+    if status.get("running"):
+        health = await vllm_mgr.get_health()
+        status["health"] = health
     return status
 
 
@@ -205,34 +261,34 @@ async def validate_config(request: Request, config: Dict[str, Any]):
 
 @router.post("/api/v1/service/action")
 async def service_action(request: Request, payload: Dict[str, Any]):
-    """Perform a service action (start, stop, restart)."""
-    manager = get_manager(request)
-    if manager is None:
-        raise HTTPException(status_code=503, detail="Manager not available")
-    
+    """Perform a service action (start, stop, restart). Optionally specify backend."""
     action = payload.get("action")
     config = payload.get("config")
-    
-    # Apply config before start/restart if provided
-    if config and action in ("start", "restart"):
+    backend = payload.get("backend", "llamacpp")
+
+    mgr = get_backend_manager(request, backend)
+    if mgr is None:
+        raise HTTPException(status_code=503, detail=f"{backend} manager not available")
+
+    # Apply config before start/restart if provided (llamacpp only)
+    if backend == "llamacpp" and config and action in ("start", "restart"):
         merge_config = get_merge_config_func(request)
         if merge_config:
             logger.info(f"Applying config before {action}: model={config.get('model', {}).get('name')}/{config.get('model', {}).get('variant')}")
             merge_config(config)
         else:
-            # Fallback: directly update manager config
             logger.info(f"Directly updating manager config before {action}")
-            manager.config = {**manager.config, **config}
-    
+            mgr.config = {**mgr.config, **config}
+
     if action == "start":
-        success = await manager.start()
+        success = await mgr.start()
     elif action == "stop":
-        success = await manager.stop()
+        success = await mgr.stop()
     elif action == "restart":
-        success = await manager.restart()
+        success = await mgr.restart()
     else:
         raise HTTPException(status_code=400, detail="Unsupported action. Use 'start', 'stop', or 'restart'.")
-    return {"success": success, "status": manager.get_status()}
+    return {"success": success, "status": mgr.get_status(), "backend": backend}
 
 
 # Alias endpoints for frontend compatibility
@@ -270,6 +326,135 @@ async def get_status_alias(request: Request):
 async def service_action_alias(request: Request, payload: Dict[str, Any]):
     """Service action (frontend compatibility)."""
     return await service_action(request, payload)
+
+
+# =============================================================================
+# LLM Proxy - Routes to whichever inference backend is active
+# =============================================================================
+
+@router.api_route("/v1/chat/completions", methods=["POST"])
+async def proxy_chat_completions(request: Request):
+    """Proxy chat completion requests to the active inference backend."""
+    body = await request.body()
+    headers = dict(request.headers)
+    # Remove hop-by-hop headers that shouldn't be forwarded
+    for h in ("host", "content-length", "transfer-encoding"):
+        headers.pop(h, None)
+
+    # Determine which backend is active
+    llamacpp_mgr = get_manager(request)
+    vllm_mgr = get_vllm_manager(request)
+
+    if vllm_mgr and vllm_mgr.is_running():
+        target = f"http://vllm-api:8080"
+        # Inject vLLM API key if client didn't provide one
+        if "authorization" not in {k.lower() for k in headers}:
+            vllm_key = vllm_mgr.config.get("server", {}).get("api_key", "")
+            if vllm_key:
+                headers["Authorization"] = f"Bearer {vllm_key}"
+    elif llamacpp_mgr and llamacpp_mgr.is_running():
+        if llamacpp_mgr.use_docker:
+            target = f"http://llamacpp-api:8080"
+        else:
+            target = f"http://localhost:8080"
+    else:
+        raise HTTPException(status_code=503, detail="No inference backend is running. Start llama.cpp or vLLM first.")
+
+    url = f"{target}/v1/chat/completions"
+
+    # Check if this is a streaming request
+    try:
+        body_json = await request.json()
+        is_stream = body_json.get("stream", False)
+    except Exception:
+        is_stream = False
+
+    if is_stream:
+        return await _proxy_stream(request, url, body, headers)
+    else:
+        return await _proxy_non_stream(url, body, headers)
+
+
+@router.api_route("/v1/completions", methods=["POST"])
+async def proxy_completions(request: Request):
+    """Proxy text completion requests to the active inference backend."""
+    body = await request.body()
+    headers = dict(request.headers)
+    for h in ("host", "content-length", "transfer-encoding"):
+        headers.pop(h, None)
+
+    llamacpp_mgr = get_manager(request)
+    vllm_mgr = get_vllm_manager(request)
+
+    if vllm_mgr and vllm_mgr.is_running():
+        target = f"http://vllm-api:8080"
+        if "authorization" not in {k.lower() for k in headers}:
+            vllm_key = vllm_mgr.config.get("server", {}).get("api_key", "")
+            if vllm_key:
+                headers["Authorization"] = f"Bearer {vllm_key}"
+    elif llamacpp_mgr and llamacpp_mgr.is_running():
+        if llamacpp_mgr.use_docker:
+            target = f"http://llamacpp-api:8080"
+        else:
+            target = f"http://localhost:8080"
+    else:
+        raise HTTPException(status_code=503, detail="No inference backend is running.")
+
+    return await _proxy_non_stream(f"{target}/v1/completions", body, headers)
+
+
+async def _proxy_non_stream(url: str, body: bytes, headers: dict):
+    """Proxy a non-streaming request."""
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        try:
+            response = await client.post(url, content=body, headers=headers)
+            return JSONResponse(
+                content=response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text,
+                status_code=response.status_code,
+            )
+        except httpx.ConnectError:
+            raise HTTPException(status_code=502, detail="Cannot connect to inference backend")
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Inference backend timed out")
+
+
+async def _proxy_stream(request: Request, url: str, body: bytes, headers: dict):
+    """Proxy a streaming SSE request.
+
+    Checks the response status before streaming. If the backend returns an
+    error (e.g. model-not-found from vLLM), forwards it as a JSON error
+    instead of silently streaming a non-SSE body.
+    """
+    import json as _json
+
+    async with httpx.AsyncClient(timeout=10.0) as preflight:
+        # Read just the status + headers to detect errors early
+        preflight_req = preflight.build_request("POST", url, content=body, headers=headers)
+        preflight_resp = await preflight.send(preflight_req, stream=True)
+        if preflight_resp.status_code != 200:
+            error_body = await preflight_resp.aread()
+            await preflight_resp.aclose()
+            try:
+                error_json = _json.loads(error_body)
+            except Exception:
+                error_json = {"error": error_body.decode(errors="replace")}
+            raise HTTPException(
+                status_code=preflight_resp.status_code,
+                detail=error_json,
+            )
+        await preflight_resp.aclose()
+
+    async def stream_generator():
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with client.stream("POST", url, content=body, headers=headers) as response:
+                async for chunk in response.aiter_bytes():
+                    yield chunk
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # =============================================================================

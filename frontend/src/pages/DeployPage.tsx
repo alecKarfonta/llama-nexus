@@ -24,6 +24,9 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
+  ToggleButtonGroup,
+  ToggleButton,
+  Divider,
 } from '@mui/material'
 import {
   PlayArrow as StartIcon,
@@ -533,6 +536,8 @@ export const DeployPage: React.FC = () => {
   const [selectedTemplate, setSelectedTemplate] = useState<string>('')
   const [templatesDir, setTemplatesDir] = useState<string>('')
   const [templatesLoading, setTemplatesLoading] = useState<boolean>(false)
+  const [backend, setBackend] = useState<'llamacpp' | 'vllm'>('llamacpp')
+  const [vllmStatus, setVllmStatus] = useState<any | null>(null)
 
   // API Key management
   const [selectedApiKey, setSelectedApiKey] = useState<string>('')
@@ -804,6 +809,20 @@ export const DeployPage: React.FC = () => {
         const storedKeys = getStoredApiKeys()
         setAvailableApiKeys(storedKeys)
         setSelectedApiKey(persistedSettings.selectedApiKey || currentApiKey || '')
+
+        // Fetch vLLM backend status (best-effort)
+        try {
+          deployLog('init', 'Fetching vLLM status...')
+          const vllmRes = await fetch('/api/v1/service/vllm/status')
+          if (vllmRes.ok) {
+            const vllmData = await vllmRes.json()
+            deployLog('init', 'vLLM status:', vllmData)
+            setVllmStatus(vllmData)
+          }
+        } catch (e) {
+          deployLog('init', 'Failed to fetch vLLM status (non-fatal):', e)
+        }
+
         deployLog('init', 'Initialization complete')
 
       } catch (e) {
@@ -1055,8 +1074,8 @@ export const DeployPage: React.FC = () => {
         deployLog('action', 'Injected template selection into config', { selectedTemplate })
       }
 
-      deployLog('action', 'Sending action to backend', { action, config: configForAction?.model })
-      await apiService.performServiceAction(action === 'stop' ? { action } : { action, config: configForAction as any })
+      deployLog('action', 'Sending action to backend', { action, backend, config: configForAction?.model })
+      await apiService.performServiceAction(action === 'stop' ? { action, backend } : { action, backend, config: configForAction as any })
       deployLog('action', 'Action completed successfully')
 
       // Refresh current model info after action
@@ -1153,7 +1172,43 @@ export const DeployPage: React.FC = () => {
             Configure and deploy your AI models
           </Typography>
         </Box>
-        <Box display="flex" gap={1}>
+        <Box display="flex" gap={1} alignItems="center">
+          <ToggleButtonGroup
+            value={backend}
+            exclusive
+            onChange={(_, value) => {
+              if (value) {
+                setBackend(value)
+                deployLog('backend', `Switched backend to ${value}`)
+              }
+            }}
+            size="small"
+            sx={{
+              '& .MuiToggleButton-root': {
+                textTransform: 'none',
+                fontSize: '0.8125rem',
+                fontWeight: 500,
+                px: 1.5,
+                py: 0.5,
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: 'rgba(255, 255, 255, 0.2)',
+                color: 'text.secondary',
+                '&.Mui-selected': {
+                  bgcolor: 'primary.main',
+                  color: 'primary.contrastText',
+                  borderColor: 'primary.main',
+                  '&:hover': {
+                    bgcolor: 'primary.dark',
+                  },
+                },
+              },
+            }}
+          >
+            <ToggleButton value="llamacpp">llama.cpp</ToggleButton>
+            <ToggleButton value="vllm">vLLM</ToggleButton>
+          </ToggleButtonGroup>
+          <Divider orientation="vertical" flexItem sx={{ borderColor: 'rgba(255, 255, 255, 0.12)' }} />
           <Button
             variant="outlined"
             startIcon={<ResetIcon />}
@@ -3729,7 +3784,8 @@ export const DeployPage: React.FC = () => {
           <CardContent sx={{ pt: 0 }}>
             <LogViewer
               ref={logViewerRef}
-              containerName="llamacpp-api"
+              containerName={backend === 'vllm' ? 'vllm-api' : 'llamacpp-api'}
+              backend={backend}
               maxLines={500}
               height={500}
             />

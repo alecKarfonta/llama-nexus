@@ -654,11 +654,12 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 content: `Hello! I'm your AI assistant powered by ${modelInfo.name}. How can I help you today? I have access to various tools including weather lookup, calculator, code execution, and system information.`
               }
             ])
-            // Pre-fill model setting if not already set
+            // Always sync model setting from the active backend so the
+            // correct model ID is used in chat requests (e.g. vLLM served
+            // model name may differ from the llama.cpp config model name).
             setSettings((prev) => {
-              if (prev.model) return prev
+              if (prev.model === modelInfo.name) return prev
               const updated = { ...prev, model: modelInfo.name }
-              // Persist so subsequent loads keep the detected model
               try {
                 localStorage.setItem('chat-settings', JSON.stringify(updated))
               } catch (error) {
@@ -965,7 +966,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      let detail = ''
+      try { detail = await response.text() } catch { /* ignore */ }
+      throw new Error(`HTTP ${response.status}: ${response.statusText}${detail ? ' — ' + detail : ''}`);
     }
 
     if (!response.body) {
@@ -1173,8 +1176,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           const contentDelta = normalizeDeltaContent(value.choices?.[0]?.delta?.content)
 
           // Debug: log if we're getting reasoning_content
-          if (value.choices?.[0]?.delta?.reasoning_content) {
-            console.log('Reasoning content received:', value.choices[0].delta.reasoning_content)
+          if (value.choices?.[0]?.delta?.reasoning_content || value.choices?.[0]?.delta?.reasoning) {
+            console.log('Reasoning content received:', value.choices[0].delta.reasoning_content || value.choices[0].delta.reasoning)
           }
 
           if (contentDelta) {
@@ -1258,13 +1261,14 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             setPerformanceMetrics({ ...performanceRef.current })
           }
 
-          // Handle reasoning/thinking content (for models like DeepSeek R1, QwQ)
-          if (value.choices?.[0]?.delta?.reasoning_content) {
+          // Handle reasoning/thinking content (for models like DeepSeek R1, QwQ, Nemotron)
+          const reasoningDelta = value.choices?.[0]?.delta?.reasoning_content || value.choices?.[0]?.delta?.reasoning
+          if (reasoningDelta) {
             setMessages((prev: ChatMessage[]) => {
               const newMessages = [...prev]
               const lastMessage = newMessages[newMessages.length - 1]
               if (lastMessage.role === 'assistant') {
-                lastMessage.reasoning_content = (lastMessage.reasoning_content || '') + value.choices[0].delta.reasoning_content
+                lastMessage.reasoning_content = (lastMessage.reasoning_content || '') + reasoningDelta
               }
               return newMessages
             })
@@ -1336,8 +1340,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     const response = await createChatCompletion(request)
     const assistantMessage: ChatMessage = {
       ...response.choices[0].message,
-      // Include reasoning_content if present in the response
-      reasoning_content: response.choices[0].message.reasoning_content
+      // Include reasoning_content if present (also check 'reasoning' field from vLLM)
+      reasoning_content: response.choices[0].message.reasoning_content || response.choices[0].message.reasoning
     }
 
     // For tool calls, we need to capture the snapshot synchronously
@@ -2375,7 +2379,15 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     onClick={() => saveSettings({ ...settings, baseUrl: 'http://localhost:8600', endpoint: '/v1/chat/completions' })}
                     sx={{ fontSize: '0.75rem', textTransform: 'none' }}
                   >
-                    Local LlamaCPP (8600)
+                    LlamaCPP (8600)
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => saveSettings({ ...settings, baseUrl: 'http://localhost:8601', endpoint: '/v1/chat/completions' })}
+                    sx={{ fontSize: '0.75rem', textTransform: 'none' }}
+                  >
+                    vLLM (8601)
                   </Button>
                   <Button
                     size="small"

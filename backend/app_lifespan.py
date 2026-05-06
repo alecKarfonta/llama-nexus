@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from enhanced_logger import enhanced_logger as logger
 from app_state import (
     manager,
+    vllm_manager,
     download_manager,
     embedding_manager,
     stt_manager,
@@ -211,6 +212,7 @@ async def lifespan(app: FastAPI):
     app.state.benchmark_runner = benchmark_runner
     app.state.batch_processor = batch_processor
     app.state.manager = manager
+    app.state.vllm_manager = vllm_manager
     app.state.download_manager = download_manager
     app.state.merge_and_persist_config = _merge_and_persist_config
     app.state.token_tracker = token_tracker
