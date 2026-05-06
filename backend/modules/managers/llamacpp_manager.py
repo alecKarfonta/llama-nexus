@@ -43,6 +43,17 @@ class LlamaCPPManager:
         self.container_name = os.getenv("LLAMACPP_CONTAINER_NAME", "llamacpp-api")
         # Docker network to attach launched containers to (defaults to compose default)
         self.docker_network = os.getenv("DOCKER_NETWORK", "llama-nexus_default")
+        self.llamacpp_docker_image = os.getenv(
+            "LLAMACPP_DOCKER_IMAGE",
+            "llama-nexus-llamacpp-api:latest",
+        ).strip()
+        mv = os.getenv("LLAMACPP_MODELS_VOLUME", "").strip()
+        if mv:
+            self.models_volume_name = mv
+        elif self.docker_network.endswith("_default"):
+            self.models_volume_name = f"{self.docker_network[:-len('_default')]}_gpt_oss_models"
+        else:
+            self.models_volume_name = "llama-nexus_gpt_oss_models"
         
         # Reference to download manager for metadata access
         self.download_manager: Optional[ModelDownloadManager] = None
@@ -410,12 +421,17 @@ class LlamaCPPManager:
         logger.info(f"Built llamacpp command with {len(cmd)} arguments: '{cmd_str[:100]}...'" if len(cmd_str) > 100 else f"Built llamacpp command: '{cmd_str}'")
         
         # Validate Docker image exists
-        image_name = "llama-nexus-llamacpp-api"
+        image_name = self.llamacpp_docker_image
         try:
             docker_client.images.get(image_name)
             logger.info(f"Docker image validation successful for image_name='{image_name}'")
         except docker.errors.ImageNotFound:
-            error_msg = f"Docker image not found: {image_name}. Please build the image first."
+            error_msg = (
+                f"Docker image not found: {image_name}. "
+                "From the repository root build the llamacpp-api image "
+                "(this tags the inference image even if you do not run the optional `extra` profile): "
+                "`docker compose build llamacpp-api`"
+            )
             logger.error(f"Docker image validation failed: {error_msg}")
             raise HTTPException(status_code=500, detail=error_msg)
         
@@ -460,7 +476,7 @@ class LlamaCPPManager:
             "auto_remove": False,
             "network": self.docker_network,
             "volumes": {
-                "llamacpp-api_gpt_oss_models": {"bind": "/home/llamacpp/models", "mode": "rw"},
+                self.models_volume_name: {"bind": "/home/llamacpp/models", "mode": "rw"},
                 host_templates_dir: {"bind": "/home/llamacpp/templates", "mode": "ro"}
             },
             "environment": env_vars,
@@ -521,17 +537,26 @@ class LlamaCPPManager:
         cmd = self.build_command()
         logger.info(f"Built command: {' '.join(cmd)}")
         
-        # Check if image exists
-        image_name = "llama-nexus-llamacpp-api"
+        # Check if image exists (-q avoids fragile repository-only filters when tag matters)
+        image_name = self.llamacpp_docker_image
         image_check = await asyncio.create_subprocess_exec(
-            'docker', 'images', '--format', '{{.Repository}}:{{.Tag}}', image_name,
+            "docker",
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}}",
+            image_name,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await image_check.communicate()
-        
+
         if image_check.returncode != 0 or not stdout.decode().strip():
-            error_msg = f"Docker image not found: {image_name}. Please build the image first."
+            error_msg = (
+                f"Docker image not found: {image_name}. "
+                "From the repository root build the llamacpp-api image: "
+                "`docker compose build llamacpp-api`"
+            )
             logger.error(error_msg)
             raise HTTPException(status_code=500, detail=error_msg)
         
@@ -561,7 +586,7 @@ class LlamaCPPManager:
             '--shm-size', '16g',
             '-p', '8600:8080',
             '--network', self.docker_network,
-            '-v', 'llama-nexus_gpt_oss_models:/home/llamacpp/models',
+            '-v', f'{self.models_volume_name}:/home/llamacpp/models',
             '-v', f'{host_templates_dir}:/home/llamacpp/templates:ro',
             '-e', f'MODEL_NAME={model_name}',
             '-e', f'MODEL_VARIANT={variant}',

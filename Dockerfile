@@ -29,10 +29,12 @@ WORKDIR /build
 ARG SKIP_BUILD_FROM_SOURCE=false
 ARG LLAMACPP_VERSION=b8250
 ARG ENABLE_TURBOQUANT=false
-# CUDA architecture for the target GPU. Run `nvidia-smi --query-gpu=compute_cap --format=csv,noheader` on the host.
-# Common values: 60 (P100), 70 (V100), 75 (T4), 80 (A100), 86 (RTX 3090), 89 (RTX 4090), 90 (H100)
-# "native" will auto-detect at build time (only works if building on the target GPU machine).
-ARG CUDA_ARCH=native
+# CUDA architecture(s) passed to CMake. Run on the host: nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+# (use the major.minor as an integer SM, e.g. 8.6 -> 86). Common values: 75 (T4), 80 (A100), 86 (RTX 30xx),
+# 89 (RTX 40xx), 90 (H100). Default 86 suits Ampere builds.
+# IMPORTANT: Do not use "native" here when building Docker images — the builder usually has no GPU, so CMake
+# cannot detect SM and nvcc fails with: Unsupported gpu architecture 'compute_' .
+ARG CUDA_ARCH=86
 
 RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         echo "Skipping build, downloading pre-built binaries version: ${LLAMACPP_VERSION}" && \

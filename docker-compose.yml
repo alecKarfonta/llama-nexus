@@ -81,6 +81,12 @@ services:
       - USE_DOCKER=true
       - RUNNING_IN_DOCKER=true
       - LLAMACPP_CONTAINER_NAME=llamacpp-api
+      # Must match the named Docker network (see bottom of this file; override if COMPOSE_PROJECT_NAME differs)
+      - DOCKER_NETWORK=${DOCKER_NETWORK:-llama-nexus_default}
+      # Inference image: same tag as `llamacpp-api` service `image:` below (Deploy UI / SDK starts this image)
+      - LLAMACPP_DOCKER_IMAGE=${LLAMACPP_DOCKER_IMAGE:-llama-nexus-llamacpp-api:latest}
+      # Optional; if unset, derived from DOCKER_NETWORK as {project}_gpt_oss_models
+      - LLAMACPP_MODELS_VOLUME=${LLAMACPP_MODELS_VOLUME:-}
       - CUDA_DEVICES=0,2
       # Pass through HuggingFace token from host environment
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
@@ -168,7 +174,7 @@ services:
         SKIP_BUILD_FROM_SOURCE: "false"
         LLAMACPP_VERSION: "b8250"
         ENABLE_TURBOQUANT: "false"
-        CUDA_ARCH: ${CUDA_ARCH:-native}
+        CUDA_ARCH: ${CUDA_ARCH:-86}
     container_name: llamacpp-builder
     volumes:
       - llamacpp_bin:/output
@@ -184,12 +190,13 @@ services:
   llamacpp-api:
     profiles:
       - extra
+    image: ${LLAMACPP_DOCKER_IMAGE:-llama-nexus-llamacpp-api:latest}
     build:
       context: .
       dockerfile: Dockerfile
       args:
         ENABLE_TURBOQUANT: "false"
-        CUDA_ARCH: ${CUDA_ARCH:-native}
+        CUDA_ARCH: ${CUDA_ARCH:-86}
     container_name: llamacpp-api
     hostname: llamacpp
     ports:
@@ -339,7 +346,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        CUDA_ARCH: ${CUDA_ARCH:-native}
+        CUDA_ARCH: ${CUDA_ARCH:-86}
     container_name: llamacpp-embed
     hostname: llamacpp-embed
     ports:
