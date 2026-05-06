@@ -154,7 +154,7 @@ async def get_config(request: Request):
             "model": ["context_size", "gpu_layers"],
             "sampling": ["temperature", "top_p", "top_k", "min_p", "repeat_penalty", 
                         "frequency_penalty", "presence_penalty", "dry_multiplier"],
-            "performance": ["threads", "batch_size", "ubatch_size", "num_predict"],
+            "performance": ["threads", "batch_size", "ubatch_size", "num_predict", "parallel_slots", "ctx_checkpoints"],
             "server": ["api_key"],
             "template": ["directory", "selected"]
         }

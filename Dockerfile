@@ -29,6 +29,10 @@ WORKDIR /build
 ARG SKIP_BUILD_FROM_SOURCE=false
 ARG LLAMACPP_VERSION=b8250
 ARG ENABLE_TURBOQUANT=false
+# CUDA architecture for the target GPU. Run `nvidia-smi --query-gpu=compute_cap --format=csv,noheader` on the host.
+# Common values: 60 (P100), 70 (V100), 75 (T4), 80 (A100), 86 (RTX 3090), 89 (RTX 4090), 90 (H100)
+# "native" will auto-detect at build time (only works if building on the target GPU machine).
+ARG CUDA_ARCH=native
 
 RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         echo "Skipping build, downloading pre-built binaries version: ${LLAMACPP_VERSION}" && \
@@ -56,8 +60,8 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_CUDA=ON \
             -DLLAMA_CURL=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="120" && \
-        cmake --build build --config Release -j$(nproc) --clean-first \
+            -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" && \
+        cmake --build build --config Release -j8 --clean-first \
             --target llama-server llama-cli llama-gguf-split && \
         echo "Built llama.cpp version: $(./build/bin/llama-cli --version | head -1)"; \
     fi

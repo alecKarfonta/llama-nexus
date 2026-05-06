@@ -106,6 +106,7 @@ interface Config {
     main_gpu?: number;
     continuous_batching?: boolean;
     parallel_slots?: number;
+    ctx_checkpoints?: number;
     cache_type_k?: 'f16' | 'q8_0' | 'q4_0';
     cache_type_v?: 'f16' | 'q8_0' | 'q4_0';
   };
@@ -204,6 +205,7 @@ const DEFAULT_VALUES = {
     main_gpu: 0,
     continuous_batching: false,
     parallel_slots: 1,
+    ctx_checkpoints: '' as unknown as number,
     cache_type_k: 'q4_0',
     cache_type_v: 'q4_0',
   },
@@ -2957,6 +2959,32 @@ export const DeployPage: React.FC = () => {
                   value={config.performance.parallel_slots || 1}
                   onChange={(e) => updateConfig('performance.parallel_slots', parseInt(e.target.value))}
                   helperText="Number of slots for processing requests (--parallel)"
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      fontSize: '0.875rem',
+                      borderRadius: 1,
+                      backgroundColor: 'background.default',
+                      '&.Mui-focused': {
+                        borderColor: 'primary.main'
+                      }
+                    },
+                    '& .MuiInputLabel-root': {
+                      fontSize: '0.875rem'
+                    }
+                  }}
+                />
+              </Grid>
+              <Grid item xs={12} md={3}>
+                <TextField
+                  label="Context Checkpoints"
+                  type="number"
+                  fullWidth
+                  value={config.performance.ctx_checkpoints ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? '' : parseInt(e.target.value);
+                    updateConfig('performance.ctx_checkpoints', val === '' ? undefined : val);
+                  }}
+                  helperText="Max context checkpoints per slot. 0 to disable (--ctx-checkpoints)"
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       fontSize: '0.875rem',

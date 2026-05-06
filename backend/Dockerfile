@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir "lm_eval[api]"
 
 # Copy application code
 COPY main.py app_*.py enhanced_logger.py training_worker.py entrypoint.sh harbor_local_openai_agent.py logprobs_proxy.py run_lm_eval_api.py ./
+COPY tool_call_tests.json* ./
 COPY modules/ modules/
 COPY routes/ routes/
 COPY scripts/ scripts/

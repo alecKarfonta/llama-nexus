@@ -167,6 +167,7 @@ services:
         SKIP_BUILD_FROM_SOURCE: "false"
         LLAMACPP_VERSION: "b8250"
         ENABLE_TURBOQUANT: "false"
+        CUDA_ARCH: ${CUDA_ARCH:-native}
     container_name: llamacpp-builder
     volumes:
       - llamacpp_bin:/output
@@ -187,6 +188,7 @@ services:
       dockerfile: Dockerfile
       args:
         ENABLE_TURBOQUANT: "false"
+        CUDA_ARCH: ${CUDA_ARCH:-native}
     container_name: llamacpp-api
     hostname: llamacpp
     ports:
@@ -335,6 +337,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        CUDA_ARCH: ${CUDA_ARCH:-native}
     container_name: llamacpp-embed
     hostname: llamacpp-embed
     ports:
@@ -459,11 +463,21 @@ services:
     hostname: lm-eval-worker
     volumes:
       - backend_data:/data
+      - gpt_oss_models:/home/llamacpp/models:ro
     environment:
       - REDIS_URL=redis://redis:6379/0
       - LM_EVAL_OUTPUT_DIR=/data/lm_eval_results
       - LLAMACPP_API_URL=http://llamacpp-api:8080
       - LM_EVAL_API_KEY=placeholder-api-key
+      - MODEL_PATH=/home/llamacpp/models/Qwen3.6-27B-Q6_K.gguf
+      - CUDA_VISIBLE_DEVICES=1,3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       redis:
         condition: service_healthy
@@ -473,7 +487,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 120s
 
   # Terminal-Bench Worker - Harbor-based agentic benchmark runner
   terminal-bench-worker:

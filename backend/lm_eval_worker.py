@@ -292,8 +292,9 @@ def run_evaluation(
         "base_url": f"{proxy_base_url}/v1/completions",
         "pretrained": "Qwen/Qwen2.5-7B",
         "header": {"Authorization": f"Bearer {api_key}"},
-        "num_concurrent": 32,
+        "num_concurrent": int(os.getenv("LM_EVAL_NUM_CONCURRENT", "4")),
         "max_length": 4096,
+        "tokenizer_backend": "remote",
     })
     
     cmd = [

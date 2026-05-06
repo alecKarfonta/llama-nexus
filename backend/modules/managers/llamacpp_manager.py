@@ -100,6 +100,7 @@ class LlamaCPPManager:
                 # which silently reserves KV cache × 4 (wastes ~4.5 GB on 256K context).
                 # Set higher only for multi-user / concurrent request workloads.
                 "parallel_slots": int(os.getenv("PARALLEL_SLOTS", "1")),
+                "ctx_checkpoints": optional_int("CTX_CHECKPOINTS"),
                 "split_mode": os.getenv("SPLIT_MODE"),
                 "main_gpu": optional_int("MAIN_GPU"),
                 "cache_type_k": os.getenv("CACHE_TYPE_K"),
@@ -232,8 +233,7 @@ class LlamaCPPManager:
         add_param_if_set(cmd, "--main-gpu", self.config["performance"].get("main_gpu"))
         add_param_if_set(cmd, "--cache-type-k", self.config["performance"].get("cache_type_k"))
         add_param_if_set(cmd, "--cache-type-v", self.config["performance"].get("cache_type_v"))
-        # Disable context checkpoints for benchmark throughput (avoids 149MB checkpoint thrashing)
-        cmd.extend(["--ctx-checkpoints", "0"])
+        add_param_if_set(cmd, "--ctx-checkpoints", self.config["performance"].get("ctx_checkpoints"))
         
         # Add optional sampling parameters
         add_param_if_set(cmd, "--temp", self.config["sampling"].get("temperature"))
