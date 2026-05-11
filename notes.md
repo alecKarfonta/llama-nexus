@@ -84,3 +84,13 @@ Add vLLM as an alternative inference backend alongside llama.cpp, with full life
 - [x] `/v1/models` via nginx returns 200
 - [ ] Deploy with llama.cpp backend from UI (inference image built; retry Deploy start)
 - [ ] Deploy with vLLM backend from UI (end-to-end test)
+
+## Git (2026-05-11)
+
+- Merged `origin/master` into local `master`; resolved conflicts in `frontend/src/pages/ChatPage.tsx` and `docs/archive/development-journal-2024-2026.md`; merged `notes.md` sections (deploy/CUDA + vLLM UX fixes).
+- Merge commit: `d30135b`. Pushed to `origin` (`master`).
+- `origin` was switched from HTTPS to SSH (`git@github.com:alecKarfonta/llama-nexus.git`) because HTTPS push failed with no stored credentials in this environment.
+
+
+
+
