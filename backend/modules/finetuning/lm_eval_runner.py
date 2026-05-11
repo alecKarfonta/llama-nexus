@@ -408,7 +408,7 @@ class LMEvalRunner:
         client.lpush("lm_eval:jobs", json.dumps(job_payload))
         
         # Listen for updates with timeout
-        timeout = 3600  # 1 hour max
+        timeout = 86400  # 24 hours max
         start_time = asyncio.get_event_loop().time()
         
         try:

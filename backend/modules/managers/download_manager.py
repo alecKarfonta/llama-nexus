@@ -132,15 +132,19 @@ class ModelDownloadManager:
                     seen_models.add(model_key)
                     # Get relative path for linking to local files
                     relative_path = str(entry.relative_to(self.models_dir))
-                    items.append({
+                    rec: Dict[str, Any] = {
                         "name": name,
                         "variant": variant or "unknown",
                         "size": total_size,
                         "status": "available",
                         "lastModified": datetime.fromtimestamp(latest_mtime).isoformat(),
                         "localPath": relative_path,
-                        "filename": entry.name
-                    })
+                        "filename": entry.name,
+                    }
+                    meta = self._load_model_metadata(name, variant or "unknown")
+                    if meta and meta.get("repo_id"):
+                        rec["repositoryId"] = meta["repo_id"]
+                    items.append(rec)
                     
             except Exception as e:
                 # Skip any unreadable files but log the error
@@ -225,6 +229,15 @@ class ModelDownloadManager:
                         model_info["finalLoss"] = training_metadata.get("final_loss")
                         model_info["totalSteps"] = training_metadata.get("total_steps")
                         model_info["loraConfig"] = training_metadata.get("lora_config")
+
+                    hf_repo_file = model_dir / ".hf_repo_id"
+                    try:
+                        if hf_repo_file.is_file():
+                            rid = hf_repo_file.read_text(encoding="utf-8").strip()
+                            if rid:
+                                model_info["repositoryId"] = rid
+                    except OSError:
+                        pass
                     
                     items.append(model_info)
             except Exception as e:
@@ -483,6 +496,10 @@ class ModelDownloadManager:
             # Download config.json and tokenizer files for metadata
             logger.info(f"Downloading Transformers model to {model_dir}")
             await self._download_transformers_metadata(repo_id, model_dir, cancel_event)
+            try:
+                (model_dir / ".hf_repo_id").write_text(repo_id, encoding="utf-8")
+            except OSError as e:
+                logger.warning("Could not write .hf_repo_id for %s: %s", model_dir, e)
         
         url = hf_hub_url(repo_id=repo_id, filename=filename)
         headers = {"User-Agent": "llama-nexus1.0"}
@@ -602,6 +619,10 @@ class ModelDownloadManager:
             model_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"Downloading multi-part Transformers model to {model_dir}")
             await self._download_transformers_metadata(repo_id, model_dir, cancel_event)
+            try:
+                (model_dir / ".hf_repo_id").write_text(repo_id, encoding="utf-8")
+            except OSError as e:
+                logger.warning("Could not write .hf_repo_id for %s: %s", model_dir, e)
         else:
             model_dir = self.models_dir
         

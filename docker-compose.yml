@@ -24,7 +24,8 @@ services:
     image: redis:7-alpine
     container_name: llama-nexus-redis
     ports:
-      - "6389:6379"
+      # Host 6381: avoid conflict when another stack (e.g. flux-redis) uses 6379
+      - "6381:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -49,7 +50,7 @@ services:
       - MODEL_VARIANT=Q6_K
       - MODEL_REPO=unsloth/Qwen3.6-27B-GGUF
       # Host path for chat templates so backend can mount it into the managed container
-      - TEMPLATES_HOST_DIR=/home/alec/git/llama-nexus/chat-templates
+      - TEMPLATES_HOST_DIR=${PWD}/chat-templates
       - CONTEXT_SIZE=256000
       - GPU_LAYERS=999
       - TEMPERATURE=0.15
@@ -74,12 +75,18 @@ services:
       - CACHE_TYPE_K=q8_0
       - CACHE_TYPE_V=q8_0
       - N_CPU_MOE=0
-      - API_KEY=placeholder-api-key
+      - API_KEY=${API_KEY:-placeholder-api-key}
       - TEMPLATE_PATH=/home/llamacpp/chat-template.jinja
       # Enable Docker mode and set container name
       - USE_DOCKER=true
       - RUNNING_IN_DOCKER=true
       - LLAMACPP_CONTAINER_NAME=llamacpp-api
+      # Must match the named Docker network (see bottom of this file; override if COMPOSE_PROJECT_NAME differs)
+      - DOCKER_NETWORK=${DOCKER_NETWORK:-llama-nexus_default}
+      # Inference image: same tag as `llamacpp-api` service `image:` below (Deploy UI / SDK starts this image)
+      - LLAMACPP_DOCKER_IMAGE=${LLAMACPP_DOCKER_IMAGE:-llama-nexus-llamacpp-api:latest}
+      # Optional; if unset, derived from DOCKER_NETWORK as {project}_gpt_oss_models
+      - LLAMACPP_MODELS_VOLUME=${LLAMACPP_MODELS_VOLUME:-}
       - CUDA_DEVICES=0,2
       # Pass through HuggingFace token from host environment
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
@@ -122,7 +129,7 @@ services:
       - VLM_MODEL_NAME=${VLM_MODEL_NAME:-Qwen_Qwen3-VL-4B-Thinking}
       - VLM_ENABLED=${VLM_ENABLED:-true}
       - USE_DEPLOYED_EMBEDDINGS=true
-      - EMBEDDING_SERVICE_API_KEY=llamacpp-embed
+      - EMBEDDING_SERVICE_API_KEY=${EMBEDDING_SERVICE_API_KEY:-llamacpp-embed}
       - DEFAULT_EMBEDDING_MODEL=nomic-embed-text-v1.5
     volumes:
       - backend_data:/data
@@ -136,6 +143,7 @@ services:
       - .:/home/alec/git/llama-nexus:ro
       # Mount Dockerfile separately as read-write for version management
       - ./Dockerfile:/home/alec/git/llama-nexus/Dockerfile
+      - ./Dockerfile.vllm:/home/alec/git/llama-nexus/Dockerfile.vllm
       # Conversation storage
       - conversation_data:/data/conversations
     shm_size: '16gb'
@@ -166,6 +174,7 @@ services:
         SKIP_BUILD_FROM_SOURCE: "false"
         LLAMACPP_VERSION: "b8250"
         ENABLE_TURBOQUANT: "false"
+        CUDA_ARCH: ${CUDA_ARCH:-86}
     container_name: llamacpp-builder
     volumes:
       - llamacpp_bin:/output
@@ -181,11 +190,13 @@ services:
   llamacpp-api:
     profiles:
       - extra
+    image: ${LLAMACPP_DOCKER_IMAGE:-llama-nexus-llamacpp-api:latest}
     build:
       context: .
       dockerfile: Dockerfile
       args:
         ENABLE_TURBOQUANT: "false"
+        CUDA_ARCH: ${CUDA_ARCH:-86}
     container_name: llamacpp-api
     hostname: llamacpp
     ports:
@@ -206,12 +217,32 @@ services:
       - MODEL_VARIANT=Q6_K
       - MODEL_REPO=unsloth/Qwen3.6-27B-GGUF
       - CONTEXT_SIZE=256000
+      # Empty = use the chat template embedded in the GGUF (required for Qwen3-family thinking
+      # models; custom templates often misprime <think> causing predicted_n=1 EOS replies).
+      - CHAT_TEMPLATE=
+      # Disable aggressive DRY + freq/presence penalties that caused intermittent empty replies.
+      - DRY_MULTIPLIER=0.0
+      - DRY_ALLOWED_LENGTH=2
+      - DRY_PENALTY_LAST_N=0
+      - FREQUENCY_PENALTY=0.0
+      - PRESENCE_PENALTY=0.0
+      - MIN_P=0.0
+      # CUDA optimizations - use '0' for single GPU or '0,1' for multiple
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
+      # Model configuration - Qwen3-VL-4B-Thinking (Vision-Language with Reasoning)
+      - MODEL_NAME=Qwen_Qwen3-VL-4B-Thinking
+      - MODEL_VARIANT=Q4_K_M
+      - MODEL_REPO=bartowski/Qwen_Qwen3-VL-4B-Thinking-GGUF
+      # MMPROJ_FILE should be set for VL models only
+      # - MMPROJ_FILE=mmproj-Qwen_Qwen3-VL-4B-Thinking-f16.gguf
+      - CONTEXT_SIZE=40960
       - GPU_LAYERS=999
       - TEMPERATURE=0.15
       - TOP_P=0.95
       - TOP_K=0
       - MIN_P=0.02
-      - API_KEY=placeholder-api-key
+      - API_KEY=${API_KEY:-placeholder-api-key}
       - BATCH_SIZE=1024
       - UBATCH_SIZE=512
       - THREADS=44
@@ -256,7 +287,7 @@ services:
       retries: 3
       start_period: 30s
 
-  # vLLM API Server - Native MXFP4 GPT-OSS-20B
+  # vLLM API Server - Nemotron-3-Nano-Omni multimodal (text, image, video, audio)
   vllm-api:
     build:
       context: .
@@ -266,8 +297,9 @@ services:
       - vllm
     hostname: vllm
     ports:
-      - "8601:8080" # vLLM API server port (different from llamacpp)
+      - "8601:8080"
     shm_size: '16gb'
+    ipc: host
     deploy:
       resources:
         reservations:
@@ -276,22 +308,25 @@ services:
               device_ids: [ 'all' ]
               capabilities: [ gpu ]
     environment:
-      - MODEL_NAME=openai/gpt-oss-20b
+      - MODEL_NAME=nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
+      - SERVED_MODEL_NAME=Nemotron-3-Nano-Omni-30B-A3B-Reasoning
       - HOST=0.0.0.0
       - PORT=8080
-      - API_KEY=placeholder-api-key
-      - MAX_MODEL_LEN=131072
-      - GPU_MEMORY_UTILIZATION=0.8
+      - API_KEY=${API_KEY:-placeholder-api-key}
+      - MAX_MODEL_LEN=16384
+      - GPU_MEMORY_UTILIZATION=0.95
       - TENSOR_PARALLEL_SIZE=1
-      - DTYPE=auto
-      - TRUST_REMOTE_CODE=true
-      - ENABLE_CHUNKED_PREFILL=true
+      - KV_CACHE_DTYPE=fp8
+      - REASONING_PARSER=nemotron_v3
+      - TOOL_CALL_PARSER=qwen3_coder
+      - VIDEO_PRUNING_RATE=0.5
+      - VIDEO_FPS=2
+      - VIDEO_NUM_FRAMES=256
+      - MAX_NUM_SEQS=16
       - MAX_NUM_BATCHED_TOKENS=8192
-      - MAX_NUM_SEQS=256
-      - SERVED_MODEL_NAME=gpt-oss-20b
-      # HuggingFace token for downloads
+      - ENABLE_CHUNKED_PREFILL=true
+      - 'LIMIT_MM_PER_PROMPT={"video":1,"image":5,"audio":1}'
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
-      # CUDA optimizations - use '0' for single GPU or '0,1' for multiple
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
     volumes:
@@ -303,13 +338,15 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 600s # vLLM takes longer to start due to model download
+      start_period: 600s
 
   # Llama.cpp Embedding Server - Optional RAG Embedding Service
   llamacpp-embed:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        CUDA_ARCH: ${CUDA_ARCH:-86}
     container_name: llamacpp-embed
     hostname: llamacpp-embed
     ports:
@@ -335,7 +372,7 @@ services:
       - GPU_LAYERS=999
       - HOST=0.0.0.0
       - PORT=8080
-      - API_KEY=llamacpp-embed
+      - API_KEY=${EMBEDDING_SERVICE_API_KEY:-llamacpp-embed}
       - THREADS=8
       - BATCH_SIZE=1024
       - UBATCH_SIZE=1024
@@ -423,7 +460,7 @@ services:
       retries: 3
       start_period: 60s
 
-  # LM-Eval Worker - GPU-accelerated model evaluation
+  # LM-Eval Worker - API-backed model evaluation (no local GPU needed)
   lm-eval-worker:
     build:
       context: ./backend
@@ -432,21 +469,16 @@ services:
     profiles:
       - eval  # Opt-in: start with 'docker compose --profile eval up -d'
     hostname: lm-eval-worker
-    shm_size: '16gb'
     volumes:
-      - gpt_oss_models:/home/llamacpp/models:ro
       - backend_data:/data
-      - huggingface_cache:/root/.cache/huggingface
+      - gpt_oss_models:/home/llamacpp/models:ro
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - MODELS_DIR=/home/llamacpp/models
       - LM_EVAL_OUTPUT_DIR=/data/lm_eval_results
-      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - LLAMACPP_API_URL=http://llamacpp-api:8080
       - LM_EVAL_API_KEY=placeholder-api-key
-      - OPENAI_API_KEY=placeholder-api-key
+      - MODEL_PATH=/home/llamacpp/models/Qwen3.6-27B-Q6_K.gguf
+      - CUDA_VISIBLE_DEVICES=1,3
     deploy:
       resources:
         reservations:

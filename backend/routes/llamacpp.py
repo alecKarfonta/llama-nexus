@@ -9,6 +9,9 @@ from enhanced_logger import enhanced_logger as logger
 
 router = APIRouter(prefix="/api/v1", tags=["llamacpp"])
 
+VLLM_GITHUB_REPO = "vllm-project/vllm"
+DOCKERFILE_VLLM_PATH = Path("/home/alec/git/llama-nexus/Dockerfile.vllm")
+
 
 def get_current_llamacpp_commit() -> str:
     """Get the current llama.cpp commit from Dockerfile"""
@@ -188,3 +191,205 @@ async def rebuild_llamacpp():
     except Exception as e:
         logger.error(f"Failed to rebuild containers: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to rebuild: {str(e)}")
+
+
+def get_current_vllm_openai_image_tag() -> str:
+    """Parse Dockerfile.vllm for vllm/vllm-openai image tag."""
+    try:
+        if not DOCKERFILE_VLLM_PATH.exists():
+            return "unknown"
+        content = DOCKERFILE_VLLM_PATH.read_text()
+        match = re.search(r"FROM\s+vllm/vllm-openai:([^\s]+)", content, re.IGNORECASE)
+        return match.group(1) if match else "unknown"
+    except Exception:
+        return "unknown"
+
+
+@router.get("/vllm/image-versions")
+async def get_vllm_image_versions():
+    """GitHub releases + recent commits for vLLM (Docker base image tags align with release tags)."""
+    try:
+        async with httpx.AsyncClient() as client:
+            releases_response = await client.get(
+                f"https://api.github.com/repos/{VLLM_GITHUB_REPO}/releases",
+                params={"per_page": 25},
+                timeout=30.0,
+            )
+            releases_response.raise_for_status()
+            releases = releases_response.json()
+
+            current_tag = get_current_vllm_openai_image_tag()
+
+            formatted_releases = []
+            for release in releases:
+                body_raw = release.get("body") or ""
+                formatted_releases.append(
+                    {
+                        "tag": release["tag_name"],
+                        "name": release["name"] or release["tag_name"],
+                        "published_at": release["published_at"],
+                        "body": body_raw[:200] + "..." if len(body_raw) > 200 else body_raw,
+                        "is_current": release["tag_name"] == current_tag,
+                    }
+                )
+
+            commits_response = await client.get(
+                f"https://api.github.com/repos/{VLLM_GITHUB_REPO}/commits",
+                params={"per_page": 15},
+                timeout=30.0,
+            )
+            commits_response.raise_for_status()
+            commits = commits_response.json()
+
+            formatted_commits = []
+            for commit in commits:
+                short = commit["sha"][:8]
+                formatted_commits.append(
+                    {
+                        "tag": commit["sha"],
+                        "name": f"{short} — {(commit['commit']['message'] or '').split(chr(10))[0][:72]}",
+                        "published_at": commit["commit"]["committer"]["date"],
+                        "body": commit["commit"]["message"] or "",
+                        "is_current": commit["sha"] == current_tag
+                        or short == current_tag
+                        or commit["sha"].startswith(current_tag),
+                    }
+                )
+
+            return {
+                "current_commit": current_tag,
+                "releases": formatted_releases,
+                "recent_commits": formatted_commits,
+            }
+    except Exception as e:
+        logger.error(f"Failed to fetch vLLM versions from GitHub: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch vLLM versions: {str(e)}")
+
+
+@router.get("/vllm/image-tag/{ref}/validate")
+async def validate_vllm_image_ref(ref: str):
+    """Resolve ref (tag, branch, or commit SHA) in vllm-project/vllm."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://api.github.com/repos/{VLLM_GITHUB_REPO}/commits/{ref}",
+                timeout=15.0,
+            )
+
+            if response.status_code == 404:
+                return {"valid": False, "error": "Ref not found in vLLM repository"}
+            if response.status_code != 200:
+                return {"valid": False, "error": f"GitHub API error: {response.status_code}"}
+
+            commit_data = response.json()
+
+            return {
+                "valid": True,
+                "commit": {
+                    "sha": commit_data["sha"],
+                    "short_sha": commit_data["sha"][:8],
+                    "message": (commit_data["commit"]["message"] or "").split("\n")[0][:100],
+                    "author": commit_data["commit"]["author"]["name"],
+                    "date": commit_data["commit"]["author"]["date"],
+                    "url": commit_data["html_url"],
+                },
+            }
+    except httpx.TimeoutException:
+        return {"valid": False, "error": "Timeout while validating ref"}
+    except Exception as e:
+        logger.error(f"Failed to validate vLLM ref {ref}: {e}")
+        return {"valid": False, "error": f"Validation error: {str(e)}"}
+
+
+@router.post("/vllm/image-tag/{image_tag}/apply")
+async def apply_vllm_openai_image_tag(image_tag: str):
+    """Set Dockerfile.vllm FROM vllm/vllm-openai:<image_tag>."""
+    try:
+        validation = await validate_vllm_image_ref(image_tag)
+        if not validation["valid"]:
+            raise HTTPException(status_code=400, detail=f"Invalid ref: {validation['error']}")
+
+        if not DOCKERFILE_VLLM_PATH.exists():
+            raise HTTPException(status_code=404, detail="Dockerfile.vllm not found")
+
+        content = DOCKERFILE_VLLM_PATH.read_text()
+
+        def _repl(m: re.Match) -> str:
+            return f"{m.group(1)}{image_tag}"
+
+        updated = re.sub(
+            r"(FROM\s+vllm/vllm-openai:)([^\s]+)",
+            _repl,
+            content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+        if updated == content:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not find FROM vllm/vllm-openai:<tag> line in Dockerfile.vllm",
+            )
+
+        DOCKERFILE_VLLM_PATH.write_text(updated)
+        logger.info(f"Updated Dockerfile.vllm to vllm/vllm-openai:{image_tag}")
+
+        return {
+            "message": f"Dockerfile.vllm updated to vllm/vllm-openai:{image_tag}",
+            "commit": image_tag,
+            "commit_info": validation.get("commit"),
+            "requires_rebuild": True,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update Dockerfile.vllm: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update Dockerfile.vllm: {str(e)}")
+
+
+@router.post("/vllm/rebuild")
+async def rebuild_vllm_api():
+    """Rebuild and recreate vllm-api via compose (profile vllm)."""
+    try:
+        compose_file = "/home/alec/git/llama-nexus/docker-compose.yml"
+
+        if not Path(compose_file).exists():
+            raise HTTPException(status_code=500, detail=f"Docker compose file not found: {compose_file}")
+
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "--profile",
+                "vllm",
+                "-f",
+                compose_file,
+                "up",
+                "-d",
+                "--build",
+                "vllm-api",
+            ],
+            cwd="/home/alec/git/llama-nexus",
+            capture_output=True,
+            text=True,
+            timeout=3600,
+        )
+
+        if result.returncode != 0:
+            logger.error(f"vLLM docker rebuild failed: {result.stderr}")
+            raise HTTPException(status_code=500, detail=f"vLLM rebuild failed: {result.stderr}")
+
+        logger.info("vllm-api rebuilt successfully")
+
+        return {
+            "message": "vllm-api rebuilt successfully",
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="vLLM rebuild timed out after 60 minutes")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to rebuild vllm-api: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to rebuild vllm-api: {str(e)}")

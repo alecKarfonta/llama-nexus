@@ -31,6 +31,11 @@ def get_manager(request: Request):
     return getattr(request.app.state, 'manager', None)
 
 
+def get_vllm_manager(request: Request):
+    """Get the vLLM manager from app state."""
+    return getattr(request.app.state, 'vllm_manager', None)
+
+
 @router.get("")
 async def list_models(request: Request):
     """List all available models."""
@@ -46,7 +51,27 @@ async def list_models(request: Request):
 
 @router.get("/current")
 async def get_current_model(request: Request):
-    """Get information about the currently configured model."""
+    """Get information about the currently configured model.
+
+    Returns the model info from whichever inference backend is active.
+    When vLLM is running, returns the vLLM served model name so that
+    chat requests use the correct model ID.
+    """
+    # Prefer vLLM if it's running
+    vllm_mgr = get_vllm_manager(request)
+    if vllm_mgr and vllm_mgr.is_running():
+        vllm_status = vllm_mgr.get_status()
+        model_info = vllm_status.get("model", {})
+        return {
+            "name": model_info.get("served_name") or model_info.get("name", "vllm-model"),
+            "variant": "NVFP4",
+            "context_size": model_info.get("max_model_len", 16384),
+            "gpu_layers": 0,
+            "status": "loaded",
+            "backend": "vllm",
+        }
+
+    # Fall back to llama.cpp manager
     manager = get_manager(request)
     if manager is None:
         raise HTTPException(status_code=503, detail="Manager not available")
@@ -60,7 +85,8 @@ async def get_current_model(request: Request):
             "gpu_layers": model_config.get("gpu_layers"),
             "status": "loaded" if status.get("running") else "not_loaded",
             "file_path": f"/home/llamacpp/models/{model_config.get('name')}-{model_config.get('variant')}.gguf",
-            "estimated_vram_gb": 19 if "30B" in str(model_config.get("name", "")) else 8
+            "estimated_vram_gb": 19 if "30B" in str(model_config.get("name", "")) else 8,
+            "backend": "llamacpp",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

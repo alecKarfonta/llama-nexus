@@ -221,17 +221,21 @@ export const ModelsPage: React.FC = () => {
               const modelName = download.modelId.split('-').slice(0, -1).join('-')
               // Extract quantization from download ID
               const quantization = download.modelId.split('-').pop()
+              const variant = quantization || 'unknown'
 
               updatedModels.push({
-                id: prev.length + updatedModels.length + 1,
+                // Same stem the backend uses for downloads and DELETE /v1/models/{model_id}
+                id: download.modelId,
                 name: modelName,
+                variant,
+                size: 0,
                 framework: 'transformers' as any, // Cast to any or specific type if known
                 status: download.status === 'completed' ? 'available' : 'downloading',
                 downloadProgress: download.status === 'completed' ? undefined : download.progress,
                 parameters: modelName.includes('30B') ? '30B' :
                   modelName.includes('7B') ? '7B' :
                     modelName.includes('13B') ? '13B' : '?B',
-                quantization: quantization || 'unknown',
+                quantization: variant,
                 contextLength: 32768
               } as any) // Cast to any to bypass strict type checking for now
             }
@@ -284,7 +288,7 @@ export const ModelsPage: React.FC = () => {
   }
 
   // Model action handlers
-  const handleStartModel = async (id: number) => {
+  const handleStartModel = async (id: string | number) => {
     const model = models.find(m => m.id === id)
     if (!model) return
 
@@ -306,7 +310,7 @@ export const ModelsPage: React.FC = () => {
     }
   }
 
-  const handleStopModel = async (id: number) => {
+  const handleStopModel = async (id: string | number) => {
     const model = models.find(m => m.id === id)
     if (!model) return
 
@@ -437,7 +441,12 @@ export const ModelsPage: React.FC = () => {
 
     setDeletingModel(true)
     try {
-      const result = await apiService.deleteModel(modelToDelete.id)
+      const m = modelToDelete
+      const deleteKey =
+        typeof m.id === 'number'
+          ? `${m.name}:${m.variant ?? m.quantization ?? 'unknown'}`
+          : String(m.id)
+      const result = await apiService.deleteModel(deleteKey)
 
       setSnackbar({
         open: true,

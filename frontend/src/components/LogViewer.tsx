@@ -28,6 +28,7 @@ interface LogViewerProps {
   containerName?: string
   maxLines?: number
   height?: number | string
+  backend?: 'llamacpp' | 'vllm'
 }
 
 export interface LogViewerRef {
@@ -38,7 +39,8 @@ export interface LogViewerRef {
 export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
   containerName = 'llamacpp-api',
   maxLines = 500,
-  height = 400
+  height = 400,
+  backend = 'llamacpp'
 }, ref) => {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
@@ -96,7 +98,7 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
     setIsLoading(true)
     setError(null)
     try {
-      const response = await fetch('/api/v1/logs/container?lines=100')
+      const response = await fetch(`/api/v1/logs/container?lines=100&backend=${backend}`)
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`)
       }
@@ -119,7 +121,7 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
     setError(null)
     setIsStreaming(true)
 
-    const eventSource = new EventSource('/api/v1/logs/container/stream')
+    const eventSource = new EventSource(`/api/v1/logs/container/stream?backend=${backend}`)
     eventSourceRef.current = eventSource
 
     eventSource.onmessage = (event) => {

@@ -43,6 +43,17 @@ class LlamaCPPManager:
         self.container_name = os.getenv("LLAMACPP_CONTAINER_NAME", "llamacpp-api")
         # Docker network to attach launched containers to (defaults to compose default)
         self.docker_network = os.getenv("DOCKER_NETWORK", "llama-nexus_default")
+        self.llamacpp_docker_image = os.getenv(
+            "LLAMACPP_DOCKER_IMAGE",
+            "llama-nexus-llamacpp-api:latest",
+        ).strip()
+        mv = os.getenv("LLAMACPP_MODELS_VOLUME", "").strip()
+        if mv:
+            self.models_volume_name = mv
+        elif self.docker_network.endswith("_default"):
+            self.models_volume_name = f"{self.docker_network[:-len('_default')]}_gpt_oss_models"
+        else:
+            self.models_volume_name = "llama-nexus_gpt_oss_models"
         
         # Reference to download manager for metadata access
         self.download_manager: Optional[ModelDownloadManager] = None
@@ -100,6 +111,7 @@ class LlamaCPPManager:
                 # which silently reserves KV cache × 4 (wastes ~4.5 GB on 256K context).
                 # Set higher only for multi-user / concurrent request workloads.
                 "parallel_slots": int(os.getenv("PARALLEL_SLOTS", "1")),
+                "ctx_checkpoints": optional_int("CTX_CHECKPOINTS"),
                 "split_mode": os.getenv("SPLIT_MODE"),
                 "main_gpu": optional_int("MAIN_GPU"),
                 "cache_type_k": os.getenv("CACHE_TYPE_K"),
@@ -233,6 +245,7 @@ class LlamaCPPManager:
         add_param_if_set(cmd, "--main-gpu", self.config["performance"].get("main_gpu"))
         add_param_if_set(cmd, "--cache-type-k", self.config["performance"].get("cache_type_k"))
         add_param_if_set(cmd, "--cache-type-v", self.config["performance"].get("cache_type_v"))
+        add_param_if_set(cmd, "--ctx-checkpoints", self.config["performance"].get("ctx_checkpoints"))
         
         # Add optional sampling parameters
         add_param_if_set(cmd, "--temp", self.config["sampling"].get("temperature"))
@@ -409,12 +422,17 @@ class LlamaCPPManager:
         logger.info(f"Built llamacpp command with {len(cmd)} arguments: '{cmd_str[:100]}...'" if len(cmd_str) > 100 else f"Built llamacpp command: '{cmd_str}'")
         
         # Validate Docker image exists
-        image_name = "llama-nexus-llamacpp-api"
+        image_name = self.llamacpp_docker_image
         try:
             docker_client.images.get(image_name)
             logger.info(f"Docker image validation successful for image_name='{image_name}'")
         except docker.errors.ImageNotFound:
-            error_msg = f"Docker image not found: {image_name}. Please build the image first."
+            error_msg = (
+                f"Docker image not found: {image_name}. "
+                "From the repository root build the llamacpp-api image "
+                "(this tags the inference image even if you do not run the optional `extra` profile): "
+                "`docker compose build llamacpp-api`"
+            )
             logger.error(f"Docker image validation failed: {error_msg}")
             raise HTTPException(status_code=500, detail=error_msg)
         
@@ -459,7 +477,7 @@ class LlamaCPPManager:
             "auto_remove": False,
             "network": self.docker_network,
             "volumes": {
-                "llamacpp-api_gpt_oss_models": {"bind": "/home/llamacpp/models", "mode": "rw"},
+                self.models_volume_name: {"bind": "/home/llamacpp/models", "mode": "rw"},
                 host_templates_dir: {"bind": "/home/llamacpp/templates", "mode": "ro"}
             },
             "environment": env_vars,
@@ -520,17 +538,26 @@ class LlamaCPPManager:
         cmd = self.build_command()
         logger.info(f"Built command: {' '.join(cmd)}")
         
-        # Check if image exists
-        image_name = "llama-nexus-llamacpp-api"
+        # Check if image exists (-q avoids fragile repository-only filters when tag matters)
+        image_name = self.llamacpp_docker_image
         image_check = await asyncio.create_subprocess_exec(
-            'docker', 'images', '--format', '{{.Repository}}:{{.Tag}}', image_name,
+            "docker",
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}}",
+            image_name,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await image_check.communicate()
-        
+
         if image_check.returncode != 0 or not stdout.decode().strip():
-            error_msg = f"Docker image not found: {image_name}. Please build the image first."
+            error_msg = (
+                f"Docker image not found: {image_name}. "
+                "From the repository root build the llamacpp-api image: "
+                "`docker compose build llamacpp-api`"
+            )
             logger.error(error_msg)
             raise HTTPException(status_code=500, detail=error_msg)
         
@@ -560,7 +587,7 @@ class LlamaCPPManager:
             '--shm-size', '16g',
             '-p', '8600:8080',
             '--network', self.docker_network,
-            '-v', 'llama-nexus_gpt_oss_models:/home/llamacpp/models',
+            '-v', f'{self.models_volume_name}:/home/llamacpp/models',
             '-v', f'{host_templates_dir}:/home/llamacpp/templates:ro',
             '-e', f'MODEL_NAME={model_name}',
             '-e', f'MODEL_VARIANT={variant}',
@@ -1045,5 +1072,95 @@ class LlamaCPPManager:
         
         return status
     
+    def get_field_metadata(self) -> Dict[str, Any]:
+        """Return metadata describing which config fields exist for llama.cpp,
+        their scope, and cross-framework mapping information."""
+        return {
+            "model": {
+                "name": {"scope": "shared", "type": "text", "description": "Model file name (without extension)", "llamacpp_flag": "--model", "vllm_equivalent": "model.name"},
+                "variant": {"scope": "llamacpp", "type": "text", "description": "GGUF quantization variant (e.g., Q4_K_M)", "llamacpp_flag": "(part of filename)", "vllm_equivalent": None, "note": "vLLM uses HuggingFace model names, not GGUF variants"},
+                "context_size": {"scope": "llamacpp", "type": "number", "description": "Context window size in tokens.", "llamacpp_flag": "--ctx-size", "vllm_equivalent": "performance.max_model_len", "mapping_note": "llama.cpp: context_size, vLLM: max_model_len", "min": 512, "max": 1000000},
+                "gpu_layers": {"scope": "llamacpp", "type": "number", "description": "Number of model layers to offload to GPU. -1 for all, 0 for CPU only.", "llamacpp_flag": "--n-gpu-layers", "vllm_equivalent": None, "note": "vLLM auto-offloads all layers; use gpu_memory_utilization to control VRAM usage", "min": -1, "max": 999},
+                "n_cpu_moe": {"scope": "llamacpp", "type": "number", "description": "Run MoE experts on CPU (0=GPU, >0=number of CPU MoE layers).", "llamacpp_flag": "--n-cpu-moe", "vllm_equivalent": None},
+                "flash_attn": {"scope": "llamacpp", "type": "select", "description": "Flash attention mode.", "llamacpp_flag": "--flash-attn", "options": ["auto", "on", "off"], "vllm_equivalent": None, "note": "vLLM uses flash attention by default when available"},
+                "mmproj": {"scope": "llamacpp", "type": "text", "description": "Vision projection model file for multimodal models.", "llamacpp_flag": "--mmproj", "vllm_equivalent": None},
+                "lora": {"scope": "llamacpp", "type": "text", "description": "Path to LoRA adapter file.", "llamacpp_flag": "--lora", "vllm_equivalent": None, "note": "vLLM handles LoRA differently via its own adapter system"},
+                "lora_base": {"scope": "llamacpp", "type": "text", "description": "Base model for LoRA adapter.", "llamacpp_flag": "--lora-base", "vllm_equivalent": None},
+                "kv_offload": {"scope": "llamacpp", "type": "boolean", "description": "Offload KV cache to CPU.", "llamacpp_flag": "--kv-offload / --no-kv-offload", "vllm_equivalent": None},
+                "defrag_thold": {"scope": "llamacpp", "type": "number", "description": "KV cache defragmentation threshold.", "llamacpp_flag": "--defrag-thold", "vllm_equivalent": None},
+            },
+            "sampling": {
+                "temperature": {"scope": "shared", "type": "number", "description": "Controls randomness in text generation.", "llamacpp_flag": "--temp", "vllm_flag": "per-request", "min": 0, "max": 2, "step": 0.1},
+                "top_p": {"scope": "shared", "type": "number", "description": "Nucleus sampling threshold.", "llamacpp_flag": "--top-p", "vllm_flag": "per-request", "min": 0, "max": 1, "step": 0.05},
+                "top_k": {"scope": "shared", "type": "number", "description": "Limits next token selection to K most probable tokens.", "llamacpp_flag": "--top-k", "vllm_flag": "per-request", "min": -1, "max": 200},
+                "min_p": {"scope": "llamacpp", "type": "number", "description": "Minimum probability threshold relative to most likely token.", "llamacpp_flag": "--min-p", "vllm_equivalent": None, "min": 0, "max": 1, "step": 0.01},
+                "repeat_penalty": {"scope": "shared", "type": "number", "description": "Penalizes repeated tokens.", "llamacpp_flag": "--repeat-penalty", "vllm_flag": "per-request (repetition_penalty)", "mapping_note": "llama.cpp: repeat_penalty, vLLM: repetition_penalty", "min": 0.1, "max": 2.0, "step": 0.1},
+                "repeat_last_n": {"scope": "llamacpp", "type": "number", "description": "Number of recent tokens for repetition penalty.", "llamacpp_flag": "--repeat-last-n", "vllm_equivalent": None, "min": -1, "max": 2048},
+                "frequency_penalty": {"scope": "shared", "type": "number", "description": "Penalizes tokens based on frequency.", "llamacpp_flag": "--frequency-penalty", "vllm_flag": "per-request", "min": -2.0, "max": 2.0, "step": 0.1},
+                "presence_penalty": {"scope": "shared", "type": "number", "description": "Penalizes tokens that have already appeared.", "llamacpp_flag": "--presence-penalty", "vllm_flag": "per-request", "min": -2.0, "max": 2.0, "step": 0.1},
+                "dry_multiplier": {"scope": "llamacpp", "type": "number", "description": "DRY (Don't Repeat Yourself) penalty strength.", "llamacpp_flag": "--dry-multiplier", "vllm_equivalent": None, "min": 0, "max": 5, "step": 0.1},
+                "dry_base": {"scope": "llamacpp", "type": "number", "description": "DRY penalty base value.", "llamacpp_flag": "--dry-base", "vllm_equivalent": None, "min": 1.0, "max": 4.0, "step": 0.1},
+                "dry_allowed_length": {"scope": "llamacpp", "type": "number", "description": "Minimum sequence length before DRY penalty.", "llamacpp_flag": "--dry-allowed-length", "vllm_equivalent": None, "min": 1, "max": 20},
+                "dry_penalty_last_n": {"scope": "llamacpp", "type": "number", "description": "Number of recent tokens for DRY penalty.", "llamacpp_flag": "--dry-penalty-last-n", "vllm_equivalent": None, "min": -1, "max": 2048},
+                "mirostat": {"scope": "llamacpp", "type": "select", "description": "Mirostat adaptive sampling mode.", "llamacpp_flag": "--mirostat", "options": ["", "0", "1", "2"], "vllm_equivalent": None},
+                "mirostat_lr": {"scope": "llamacpp", "type": "number", "description": "Mirostat learning rate.", "llamacpp_flag": "--mirostat-lr", "vllm_equivalent": None, "min": 0, "max": 1, "step": 0.01},
+                "mirostat_ent": {"scope": "llamacpp", "type": "number", "description": "Mirostat target entropy.", "llamacpp_flag": "--mirostat-ent", "vllm_equivalent": None, "min": 0, "max": 10, "step": 0.1},
+                "dynatemp_range": {"scope": "llamacpp", "type": "number", "description": "Dynamic temperature range.", "llamacpp_flag": "--dynatemp-range", "vllm_equivalent": None, "min": 0, "max": 5, "step": 0.1},
+                "dynatemp_exp": {"scope": "llamacpp", "type": "number", "description": "Dynamic temperature exponent.", "llamacpp_flag": "--dynatemp-exp", "vllm_equivalent": None, "min": 0, "max": 5, "step": 0.1},
+                "top_n_sigma": {"scope": "llamacpp", "type": "number", "description": "Top N-Sigma filtering threshold.", "llamacpp_flag": "--top-n-sigma", "vllm_equivalent": None, "min": 0, "max": 10, "step": 0.1},
+                "typical_p": {"scope": "llamacpp", "type": "number", "description": "Locally typical sampling threshold.", "llamacpp_flag": "--typical-p", "vllm_equivalent": None, "min": 0, "max": 1, "step": 0.05},
+                "xtc_probability": {"scope": "llamacpp", "type": "number", "description": "XTC sampling probability.", "llamacpp_flag": "--xtc-probability", "vllm_equivalent": None, "min": 0, "max": 1, "step": 0.05},
+                "xtc_threshold": {"scope": "llamacpp", "type": "number", "description": "XTC threshold for token removal.", "llamacpp_flag": "--xtc-threshold", "vllm_equivalent": None, "min": 0, "max": 1, "step": 0.05},
+            },
+            "performance": {
+                "threads": {"scope": "llamacpp", "type": "number", "description": "Number of computation threads.", "llamacpp_flag": "--threads", "vllm_equivalent": None, "note": "vLLM manages threading internally"},
+                "threads_batch": {"scope": "llamacpp", "type": "number", "description": "Threads for batch processing.", "llamacpp_flag": "--threads-batch", "vllm_equivalent": None},
+                "batch_size": {"scope": "llamacpp", "type": "number", "description": "Batch size for prompt processing.", "llamacpp_flag": "--batch-size", "vllm_equivalent": "performance.max_num_batched_tokens"},
+                "ubatch_size": {"scope": "llamacpp", "type": "number", "description": "Micro batch size.", "llamacpp_flag": "--ubatch-size", "vllm_equivalent": None},
+                "num_predict": {"scope": "llamacpp", "type": "number", "description": "Maximum tokens to predict.", "llamacpp_flag": "--n-predict", "vllm_equivalent": None, "note": "vLLM controls this per-request via max_tokens"},
+                "num_keep": {"scope": "llamacpp", "type": "number", "description": "Number of tokens to keep from initial prompt.", "llamacpp_flag": "--keep", "vllm_equivalent": None},
+                "parallel_slots": {"scope": "llamacpp", "type": "number", "description": "Number of parallel slots (concurrent requests).", "llamacpp_flag": "--parallel", "vllm_equivalent": "performance.data_parallel_size", "mapping_note": "Roughly equivalent: more slots/replicas = more concurrency"},
+                "cache_type_k": {"scope": "llamacpp", "type": "select", "description": "KV cache data type for K.", "llamacpp_flag": "--cache-type-k", "options": ["f16", "q8_0", "q4_0"], "vllm_equivalent": "performance.kv_cache_dtype"},
+                "cache_type_v": {"scope": "llamacpp", "type": "select", "description": "KV cache data type for V.", "llamacpp_flag": "--cache-type-v", "options": ["f16", "q8_0", "q4_0"], "vllm_equivalent": "performance.kv_cache_dtype", "note": "llama.cpp has separate K and V types, vLLM uses one"},
+                "split_mode": {"scope": "llamacpp", "type": "select", "description": "How to split model across GPUs.", "llamacpp_flag": "--split-mode", "options": ["none", "layer", "row"], "vllm_equivalent": "performance.tensor_parallel_size"},
+                "continuous_batching": {"scope": "llamacpp", "type": "boolean", "description": "Enable continuous batching.", "llamacpp_flag": "--cont-batching", "vllm_equivalent": None, "note": "vLLM uses continuous batching by default"},
+                "memory_f32": {"scope": "llamacpp", "type": "boolean", "description": "Use float32 for memory.", "llamacpp_flag": "--memory-f32", "vllm_equivalent": None},
+                "mlock": {"scope": "llamacpp", "type": "boolean", "description": "Lock model in memory.", "llamacpp_flag": "--mlock", "vllm_equivalent": None},
+                "no_mmap": {"scope": "llamacpp", "type": "boolean", "description": "Disable memory mapping.", "llamacpp_flag": "--no-mmap", "vllm_equivalent": None},
+            },
+            "speculative": {
+                "model_draft": {"scope": "llamacpp", "type": "text", "description": "Draft model for speculative decoding.", "llamacpp_flag": "--model-draft", "vllm_equivalent": "speculative.method", "mapping_note": "llama.cpp uses a draft model, vLLM uses methods like MTP"},
+                "gpu_layers_draft": {"scope": "llamacpp", "type": "number", "description": "GPU layers for draft model.", "llamacpp_flag": "--gpu-layers-draft", "vllm_equivalent": None},
+                "ctx_size_draft": {"scope": "llamacpp", "type": "number", "description": "Context size for draft model.", "llamacpp_flag": "--ctx-size-draft", "vllm_equivalent": None},
+                "draft_max": {"scope": "llamacpp", "type": "number", "description": "Maximum draft tokens.", "llamacpp_flag": "--draft-max", "vllm_equivalent": "speculative.num_speculative_tokens"},
+                "draft_min": {"scope": "llamacpp", "type": "number", "description": "Minimum draft tokens.", "llamacpp_flag": "--draft-min", "vllm_equivalent": None},
+                "draft_p_min": {"scope": "llamacpp", "type": "number", "description": "Minimum draft probability.", "llamacpp_flag": "--draft-p-min", "vllm_equivalent": None},
+            },
+            "execution": {
+                "mode": {"scope": "llamacpp", "type": "select", "description": "Execution mode (GPU or CPU).", "llamacpp_flag": "(controls --n-gpu-layers)", "options": ["gpu", "cpu"], "vllm_equivalent": None, "note": "vLLM requires GPU"},
+                "cuda_devices": {"scope": "llamacpp", "type": "text", "description": "CUDA device visibility.", "llamacpp_flag": "env:CUDA_VISIBLE_DEVICES", "vllm_equivalent": None},
+            },
+            "context_extension": {
+                "yarn_ext_factor": {"scope": "llamacpp", "type": "number", "description": "YaRN extrapolation mix factor.", "llamacpp_flag": "--yarn-ext-factor", "vllm_equivalent": None},
+                "yarn_attn_factor": {"scope": "llamacpp", "type": "number", "description": "YaRN attention scaling.", "llamacpp_flag": "--yarn-attn-factor", "vllm_equivalent": None},
+                "yarn_beta_slow": {"scope": "llamacpp", "type": "number", "description": "YaRN high correction dimension.", "llamacpp_flag": "--yarn-beta-slow", "vllm_equivalent": None},
+                "yarn_beta_fast": {"scope": "llamacpp", "type": "number", "description": "YaRN low correction dimension.", "llamacpp_flag": "--yarn-beta-fast", "vllm_equivalent": None},
+                "group_attn_n": {"scope": "llamacpp", "type": "number", "description": "Group attention factor.", "llamacpp_flag": "--grp-attn-n", "vllm_equivalent": None},
+                "group_attn_w": {"scope": "llamacpp", "type": "number", "description": "Group attention width.", "llamacpp_flag": "--grp-attn-w", "vllm_equivalent": None},
+            },
+            "server": {
+                "host": {"scope": "shared", "type": "text", "description": "IP address to listen on.", "llamacpp_flag": "--host", "vllm_flag": "--host"},
+                "port": {"scope": "shared", "type": "number", "description": "Port to listen on.", "llamacpp_flag": "--port", "vllm_flag": "--port"},
+                "api_key": {"scope": "shared", "type": "text", "description": "API key for authentication.", "llamacpp_flag": "--api-key", "vllm_flag": "--api-key"},
+                "timeout": {"scope": "llamacpp", "type": "number", "description": "Server read/write timeout in seconds.", "llamacpp_flag": "--timeout", "vllm_equivalent": None},
+                "embedding": {"scope": "llamacpp", "type": "boolean", "description": "Enable embedding endpoint.", "llamacpp_flag": "--embeddings", "vllm_equivalent": None, "note": "vLLM supports embeddings natively"},
+                "metrics": {"scope": "llamacpp", "type": "boolean", "description": "Enable metrics endpoint.", "llamacpp_flag": "--metrics", "vllm_equivalent": None, "note": "vLLM exposes metrics at /metrics by default"},
+                "cache_prompt": {"scope": "llamacpp", "type": "boolean", "description": "Cache processed prompts.", "llamacpp_flag": "--cache-prompt / --no-cache-prompt", "vllm_equivalent": None},
+                "reasoning_format": {"scope": "llamacpp", "type": "select", "description": "Format for reasoning content extraction.", "llamacpp_flag": "--reasoning-format", "options": ["deepseek", "none"], "vllm_equivalent": "reasoning.reasoning_parser", "mapping_note": "llama.cpp: reasoning_format, vLLM: reasoning_parser"},
+                "reasoning_budget": {"scope": "llamacpp", "type": "number", "description": "Maximum reasoning tokens.", "llamacpp_flag": "--reasoning-budget", "vllm_equivalent": None},
+                "jinja": {"scope": "llamacpp", "type": "boolean", "description": "Enable Jinja template processing.", "llamacpp_flag": "--jinja", "vllm_equivalent": None},
+            },
+        }
+
     # --- End of LlamaCPPManager ---
 

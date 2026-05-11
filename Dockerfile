@@ -21,17 +21,26 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install huggingface_hub hf_transfer
 
 # Clone and build llama.cpp with CUDA support
+# Pin a revision so Docker cache does not keep an old llama.cpp without newer arch support.
+# Qwen3.6 35B MoE GGUFs use architecture qwen35moe — requires current llama.cpp (see src/models/qwen35moe.cpp).
+# Override at build time: docker compose build --build-arg LLAMA_CPP_REF=master llamacpp-api
+ARG LLAMA_CPP_REF=45cac7ca703fb9085eae62b9121fca01d20177f6
 WORKDIR /build
 ARG SKIP_BUILD_FROM_SOURCE=false
 ARG LLAMACPP_VERSION=b8250
 ARG ENABLE_TURBOQUANT=false
+# CUDA architecture(s) passed to CMake. Run on the host: nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+# (use the major.minor as an integer SM, e.g. 8.6 -> 86). Common values: 75 (T4), 80 (A100), 86 (RTX 30xx),
+# 89 (RTX 40xx), 90 (H100). Default 86 suits Ampere builds.
+# IMPORTANT: Do not use "native" here when building Docker images — the builder usually has no GPU, so CMake
+# cannot detect SM and nvcc fails with: Unsupported gpu architecture 'compute_' .
+ARG CUDA_ARCH=86
 
 RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         echo "Skipping build, downloading pre-built binaries version: ${LLAMACPP_VERSION}" && \
         mkdir -p /build/llama.cpp/build/bin && \
         curl -L -o llama.zip https://github.com/ggml-org/llama.cpp/releases/download/${LLAMACPP_VERSION}/llama-${LLAMACPP_VERSION}-bin-ubuntu-x64.zip && \
         unzip llama.zip -d extracted_llama && \
-        # Move binaries from extracted folder (structure varies, usually bin/) \
         find extracted_llama -name "llama-server" -exec cp {} /build/llama.cpp/build/bin/ \; && \
         find extracted_llama -name "llama-cli" -exec cp {} /build/llama.cpp/build/bin/ \; && \
         find extracted_llama -name "llama-gguf-split" -exec cp {} /build/llama.cpp/build/bin/ \; && \
@@ -45,15 +54,16 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         else \
             echo "Building standard llama.cpp..." && \
             git clone https://github.com/ggml-org/llama.cpp.git llama.cpp && \
-            cd llama.cpp; \
+            cd llama.cpp && \
+            git checkout ${LLAMA_CPP_REF}; \
         fi && \
         echo "Building llama.cpp version: $(git describe --tags --always)" && \
         cmake . -B build \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_CUDA=ON \
             -DLLAMA_CURL=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="86" && \
-        cmake --build build --config Release -j2 --clean-first \
+            -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" && \
+        cmake --build build --config Release -j8 --clean-first \
             --target llama-server llama-cli llama-gguf-split && \
         echo "Built llama.cpp version: $(./build/bin/llama-cli --version | head -1)"; \
     fi
