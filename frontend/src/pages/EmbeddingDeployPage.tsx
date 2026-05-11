@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import {
   Box,
   Grid,
@@ -27,6 +27,9 @@ import {
   Paper,
   IconButton,
   Tooltip,
+  Tabs,
+  Tab,
+  Divider,
 } from '@mui/material'
 import {
   PlayArrow as StartIcon,
@@ -39,7 +42,23 @@ import {
   Info as InfoIcon,
   CheckCircle as CheckIcon,
   Cancel as CancelIcon,
+  Speed as SpeedIcon,
+  Refresh as RefreshIcon,
+  Assessment as AssessmentIcon,
+  History as HistoryIcon,
 } from '@mui/icons-material'
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  ResponsiveContainer,
+  Legend,
+  LineChart,
+  Line,
+} from 'recharts'
 
 // Embedding model repository mappings
 const EMBEDDING_MODEL_REPOS = {
@@ -89,6 +108,32 @@ export const EmbeddingDeployPage: React.FC = () => {
   const [localModels, setLocalModels] = useState<any[]>([])
   
   const [loading, setLoading] = useState(true)
+
+  // Benchmark state
+  const [benchType, setBenchType] = useState<string>('embedding_throughput')
+  const [benchRunning, setBenchRunning] = useState(false)
+  const [benchResult, setBenchResult] = useState<any>(null)
+  const [benchError, setBenchError] = useState<string | null>(null)
+  const [benchHistory, setBenchHistory] = useState<any[]>([])
+  const [benchHistoryLoading, setBenchHistoryLoading] = useState(false)
+  const [benchTab, setBenchTab] = useState(0)
+  const [benchConfig, setBenchConfig] = useState({
+    collection_sizes: '100,1000,5000',
+    text_lengths: '50,200,500',
+    batch_sizes: '1,8,32,64',
+    search_top_k: '1,5,10,50',
+    search_iterations: 25,
+    runs: 1,
+  })
+
+  const BENCHMARK_TYPES = [
+    { id: 'embedding_throughput', name: 'Embedding Throughput', description: 'Raw embedding speed across batch sizes and text lengths' },
+    { id: 'insertion', name: 'Insertion', description: 'Embed + upsert documents at various collection sizes' },
+    { id: 'search', name: 'Search', description: 'Vector search latency at various collection sizes and top_k' },
+    { id: 'update', name: 'Update', description: 'Re-embed + re-upsert latency for existing documents' },
+    { id: 'deletion', name: 'Deletion', description: 'Single and batch delete latency' },
+    { id: 'full_pipeline', name: 'Full Pipeline', description: 'Complete lifecycle: insert, search, update, delete' },
+  ]
 
   useEffect(() => {
     const init = async () => {
@@ -422,6 +467,82 @@ export const EmbeddingDeployPage: React.FC = () => {
     if (isDownloading) return 'downloading'
     
     return 'not_downloaded'
+  }
+
+  // Benchmark functions
+  const loadBenchHistory = useCallback(async () => {
+    try {
+      setBenchHistoryLoading(true)
+      const res = await fetch('/api/v1/embedding-benchmark/results?limit=20')
+      if (res.ok) {
+        const data = await res.json()
+        setBenchHistory(data.results || [])
+      }
+    } catch (e) {
+      console.error('Failed to load benchmark history:', e)
+    } finally {
+      setBenchHistoryLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadBenchHistory()
+  }, [loadBenchHistory])
+
+  const runBenchmark = async () => {
+    try {
+      setBenchRunning(true)
+      setBenchError(null)
+      setBenchResult(null)
+
+      const parseNumList = (s: string) => s.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v))
+
+      const payload: any = {
+        type: benchType,
+        name: `${BENCHMARK_TYPES.find(t => t.id === benchType)?.name} - ${new Date().toLocaleString()}`,
+        runs: benchConfig.runs,
+        search_iterations: benchConfig.search_iterations,
+      }
+
+      if (['insertion', 'search', 'update', 'deletion', 'full_pipeline'].includes(benchType)) {
+        payload.collection_sizes = parseNumList(benchConfig.collection_sizes)
+      }
+      if (['embedding_throughput'].includes(benchType)) {
+        payload.text_lengths = parseNumList(benchConfig.text_lengths)
+        payload.batch_sizes = parseNumList(benchConfig.batch_sizes)
+      }
+      if (['search'].includes(benchType)) {
+        payload.search_top_k = parseNumList(benchConfig.search_top_k)
+      }
+
+      const res = await fetch('/api/v1/embedding-benchmark/run-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Benchmark failed' }))
+        throw new Error(err.detail || `Benchmark failed (${res.status})`)
+      }
+
+      const data = await res.json()
+      setBenchResult(data)
+      await loadBenchHistory()
+    } catch (e) {
+      setBenchError(e instanceof Error ? e.message : 'Benchmark failed')
+    } finally {
+      setBenchRunning(false)
+    }
+  }
+
+  const deleteBenchResult = async (id: string) => {
+    try {
+      await fetch(`/api/v1/embedding-benchmark/results/${id}`, { method: 'DELETE' })
+      await loadBenchHistory()
+    } catch (e) {
+      console.error('Failed to delete benchmark result:', e)
+    }
   }
 
   if (loading) {
@@ -1073,6 +1194,546 @@ export const EmbeddingDeployPage: React.FC = () => {
               </CardContent>
             </Card>
           )}
+
+          {/* Performance Benchmark */}
+          <Card sx={{
+            mb: 3,
+            borderRadius: 2,
+            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+            border: '1px solid',
+            borderColor: 'divider',
+          }}>
+            <CardContent>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                <SpeedIcon color="primary" />
+                <Typography variant="h6" sx={{ fontSize: '1.125rem', fontWeight: 600 }}>
+                  Performance Benchmark
+                </Typography>
+              </Box>
+
+              {/* Config Row */}
+              <Grid container spacing={2} sx={{ mb: 3 }}>
+                <Grid item xs={12} md={4}>
+                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>Benchmark Type</Typography>
+                  <Select
+                    fullWidth
+                    size="small"
+                    value={benchType}
+                    onChange={(e) => setBenchType(e.target.value)}
+                  >
+                    {BENCHMARK_TYPES.map(t => (
+                      <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>
+                    ))}
+                  </Select>
+                  <FormHelperText>{BENCHMARK_TYPES.find(t => t.id === benchType)?.description}</FormHelperText>
+                </Grid>
+
+                {['insertion', 'search', 'update', 'deletion', 'full_pipeline'].includes(benchType) && (
+                  <Grid item xs={12} md={4}>
+                    <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>Collection Sizes</Typography>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      value={benchConfig.collection_sizes}
+                      onChange={(e) => setBenchConfig({ ...benchConfig, collection_sizes: e.target.value })}
+                      placeholder="100, 1000, 5000"
+                      helperText="Comma-separated list"
+                    />
+                  </Grid>
+                )}
+
+                {benchType === 'embedding_throughput' && (
+                  <>
+                    <Grid item xs={6} md={3}>
+                      <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>Text Lengths (words)</Typography>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        value={benchConfig.text_lengths}
+                        onChange={(e) => setBenchConfig({ ...benchConfig, text_lengths: e.target.value })}
+                        placeholder="50, 200, 500"
+                      />
+                    </Grid>
+                    <Grid item xs={6} md={3}>
+                      <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>Batch Sizes</Typography>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        value={benchConfig.batch_sizes}
+                        onChange={(e) => setBenchConfig({ ...benchConfig, batch_sizes: e.target.value })}
+                        placeholder="1, 8, 32, 64"
+                      />
+                    </Grid>
+                  </>
+                )}
+
+                {benchType === 'search' && (
+                  <Grid item xs={6} md={2}>
+                    <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>top_k Values</Typography>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      value={benchConfig.search_top_k}
+                      onChange={(e) => setBenchConfig({ ...benchConfig, search_top_k: e.target.value })}
+                      placeholder="1, 5, 10, 50"
+                    />
+                  </Grid>
+                )}
+
+                <Grid item xs={6} md={2}>
+                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>Runs</Typography>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="number"
+                    value={benchConfig.runs}
+                    onChange={(e) => setBenchConfig({ ...benchConfig, runs: parseInt(e.target.value) || 1 })}
+                    inputProps={{ min: 1, max: 10 }}
+                  />
+                </Grid>
+
+                <Grid item xs={12} md={2} sx={{ display: 'flex', alignItems: 'flex-end', pb: 1.5 }}>
+                  <Button
+                    variant="contained"
+                    fullWidth
+                    onClick={runBenchmark}
+                    disabled={benchRunning || !embeddingStatus?.running}
+                    startIcon={benchRunning ? <CircularProgress size={18} /> : <StartIcon />}
+                    sx={{ minHeight: 40 }}
+                  >
+                    {benchRunning ? 'Running...' : 'Run'}
+                  </Button>
+                </Grid>
+              </Grid>
+
+              {!embeddingStatus?.running && (
+                <Alert severity="warning" sx={{ mb: 2 }}>
+                  Start the embedding service before running benchmarks.
+                </Alert>
+              )}
+
+              {benchError && (
+                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setBenchError(null)}>
+                  {benchError}
+                </Alert>
+              )}
+
+              {benchRunning && (
+                <Box sx={{ mb: 2 }}>
+                  <LinearProgress />
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 1, textAlign: 'center' }}>
+                    Running benchmark... This may take several minutes depending on collection sizes.
+                  </Typography>
+                </Box>
+              )}
+
+              {/* Results Tabs */}
+              <Tabs value={benchTab} onChange={(_, v) => setBenchTab(v)} sx={{ mb: 2 }}>
+                <Tab label="Latest Result" icon={<AssessmentIcon />} iconPosition="start" />
+                <Tab label={`History (${benchHistory.length})`} icon={<HistoryIcon />} iconPosition="start" />
+              </Tabs>
+
+              {/* Latest Result Tab */}
+              {benchTab === 0 && benchResult && (
+                <Box>
+                  {benchResult.type === 'embedding_throughput' && (() => {
+                    const br = benchResult.metrics?.batch_results || {}
+                    const chartData: any[] = []
+                    Object.entries(br).forEach(([tlen, batches]: [string, any]) => {
+                      Object.entries(batches).forEach(([bsize, data]: [string, any]) => {
+                        chartData.push({
+                          name: `${tlen}w/b${bsize}`,
+                          textsPerSec: data.texts_per_second,
+                          perTextMs: data.per_text_ms?.mean || 0,
+                          textLen: tlen,
+                          batchSize: bsize,
+                        })
+                      })
+                    })
+                    return (
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                          Throughput by Text Length / Batch Size
+                        </Typography>
+                        <ResponsiveContainer width="100%" height={300}>
+                          <BarChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                            <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                            <YAxis yAxisId="left" label={{ value: 'texts/sec', angle: -90, position: 'insideLeft' }} />
+                            <YAxis yAxisId="right" orientation="right" label={{ value: 'ms/text', angle: 90, position: 'insideRight' }} />
+                            <RechartsTooltip />
+                            <Legend />
+                            <Bar yAxisId="left" dataKey="textsPerSec" name="Texts/sec" fill="#4fc3f7" radius={[4, 4, 0, 0]} />
+                            <Bar yAxisId="right" dataKey="perTextMs" name="ms/text" fill="#ffb74d" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                        <TableContainer component={Paper} sx={{ mt: 2 }} variant="outlined">
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Text Length</TableCell>
+                                <TableCell>Batch Size</TableCell>
+                                <TableCell align="right">Texts/sec</TableCell>
+                                <TableCell align="right">ms/text</TableCell>
+                                <TableCell align="right">Total ms (mean)</TableCell>
+                                <TableCell align="right">Tokens</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {Object.entries(br).flatMap(([tlen, batches]: [string, any]) =>
+                                Object.entries(batches).map(([bsize, data]: [string, any]) => (
+                                  <TableRow key={`${tlen}-${bsize}`}>
+                                    <TableCell>{tlen} words</TableCell>
+                                    <TableCell>{data.batch_size}</TableCell>
+                                    <TableCell align="right">{data.texts_per_second?.toFixed(1)}</TableCell>
+                                    <TableCell align="right">{data.per_text_ms?.mean?.toFixed(2)}</TableCell>
+                                    <TableCell align="right">{data.total_latency_ms?.mean?.toFixed(1)}</TableCell>
+                                    <TableCell align="right">{data.token_count}</TableCell>
+                                  </TableRow>
+                                ))
+                              )}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      </Box>
+                    )
+                  })()}
+
+                  {benchResult.type === 'insertion' && (() => {
+                    const ir = benchResult.metrics?.insertion_results || {}
+                    const chartData = Object.entries(ir).map(([size, data]: [string, any]) => ({
+                      name: `${parseInt(size).toLocaleString()}`,
+                      docsPerSec: data.docs_per_second,
+                      embedMs: data.embedding_time_ms?.mean || 0,
+                      upsertMs: data.upsert_time_ms?.mean || 0,
+                      msPerDoc: data.avg_ms_per_doc,
+                    }))
+                    return (
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ mb: 1 }}>Insertion Performance by Collection Size</Typography>
+                        <ResponsiveContainer width="100%" height={300}>
+                          <BarChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                            <XAxis dataKey="name" label={{ value: 'Collection Size', position: 'insideBottom', offset: -5 }} />
+                            <YAxis yAxisId="left" label={{ value: 'docs/sec', angle: -90, position: 'insideLeft' }} />
+                            <YAxis yAxisId="right" orientation="right" label={{ value: 'ms', angle: 90, position: 'insideRight' }} />
+                            <RechartsTooltip />
+                            <Legend />
+                            <Bar yAxisId="left" dataKey="docsPerSec" name="Docs/sec" fill="#81c784" radius={[4, 4, 0, 0]} />
+                            <Bar yAxisId="right" dataKey="embedMs" name="Embed (ms)" fill="#4fc3f7" radius={[4, 4, 0, 0]} />
+                            <Bar yAxisId="right" dataKey="upsertMs" name="Upsert (ms)" fill="#ffb74d" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                        <TableContainer component={Paper} sx={{ mt: 2 }} variant="outlined">
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Size</TableCell>
+                                <TableCell align="right">Total (ms)</TableCell>
+                                <TableCell align="right">Embed (ms)</TableCell>
+                                <TableCell align="right">Upsert (ms)</TableCell>
+                                <TableCell align="right">Docs/sec</TableCell>
+                                <TableCell align="right">ms/doc</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {Object.entries(ir).map(([size, data]: [string, any]) => (
+                                <TableRow key={size}>
+                                  <TableCell>{parseInt(size).toLocaleString()}</TableCell>
+                                  <TableCell align="right">{data.total_time_ms?.toFixed(0)}</TableCell>
+                                  <TableCell align="right">{data.embedding_time_ms?.mean?.toFixed(0)}</TableCell>
+                                  <TableCell align="right">{data.upsert_time_ms?.mean?.toFixed(0)}</TableCell>
+                                  <TableCell align="right">{data.docs_per_second?.toFixed(1)}</TableCell>
+                                  <TableCell align="right">{data.avg_ms_per_doc?.toFixed(2)}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      </Box>
+                    )
+                  })()}
+
+                  {benchResult.type === 'search' && (() => {
+                    const sr = benchResult.metrics?.search_results || {}
+                    const chartData: any[] = []
+                    Object.entries(sr).forEach(([size, data]: [string, any]) => {
+                      Object.entries(data.search_results || {}).forEach(([tk, sd]: [string, any]) => {
+                        chartData.push({
+                          name: `${parseInt(size).toLocaleString()} / k=${sd.top_k}`,
+                          p50: sd.search_only_ms?.p50,
+                          p95: sd.search_only_ms?.p95,
+                          p99: sd.search_only_ms?.p99,
+                          qps: sd.queries_per_second,
+                          size: parseInt(size),
+                          topK: sd.top_k,
+                        })
+                      })
+                    })
+                    return (
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ mb: 1 }}>Search Latency (ms) by Collection Size / top_k</Typography>
+                        <ResponsiveContainer width="100%" height={350}>
+                          <BarChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                            <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-25} textAnchor="end" height={60} />
+                            <YAxis label={{ value: 'ms', angle: -90, position: 'insideLeft' }} />
+                            <RechartsTooltip />
+                            <Legend />
+                            <Bar dataKey="p50" name="p50" fill="#4fc3f7" radius={[2, 2, 0, 0]} />
+                            <Bar dataKey="p95" name="p95" fill="#ffb74d" radius={[2, 2, 0, 0]} />
+                            <Bar dataKey="p99" name="p99" fill="#ef5350" radius={[2, 2, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                        <TableContainer component={Paper} sx={{ mt: 2 }} variant="outlined">
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Collection</TableCell>
+                                <TableCell>top_k</TableCell>
+                                <TableCell align="right">p50 (ms)</TableCell>
+                                <TableCell align="right">p95 (ms)</TableCell>
+                                <TableCell align="right">p99 (ms)</TableCell>
+                                <TableCell align="right">Mean (ms)</TableCell>
+                                <TableCell align="right">QPS</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {Object.entries(sr).flatMap(([size, data]: [string, any]) =>
+                                Object.entries(data.search_results || {}).map(([tk, sd]: [string, any]) => (
+                                  <TableRow key={`${size}-${tk}`}>
+                                    <TableCell>{parseInt(size).toLocaleString()}</TableCell>
+                                    <TableCell>{sd.top_k}</TableCell>
+                                    <TableCell align="right">{sd.search_only_ms?.p50?.toFixed(2)}</TableCell>
+                                    <TableCell align="right">{sd.search_only_ms?.p95?.toFixed(2)}</TableCell>
+                                    <TableCell align="right">{sd.search_only_ms?.p99?.toFixed(2)}</TableCell>
+                                    <TableCell align="right">{sd.search_only_ms?.mean?.toFixed(2)}</TableCell>
+                                    <TableCell align="right">{sd.queries_per_second?.toFixed(0)}</TableCell>
+                                  </TableRow>
+                                ))
+                              )}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      </Box>
+                    )
+                  })()}
+
+                  {benchResult.type === 'full_pipeline' && (() => {
+                    const pr = benchResult.metrics?.pipeline_results || {}
+                    const chartData = Object.entries(pr).map(([size, data]: [string, any]) => ({
+                      name: parseInt(size).toLocaleString(),
+                      Insert: data.phases?.insert_ms,
+                      Search: data.phases?.search_total_ms,
+                      Update: data.phases?.update_ms,
+                      Delete: data.phases?.delete_ms,
+                    }))
+                    return (
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ mb: 1 }}>Pipeline Phase Breakdown (ms)</Typography>
+                        <ResponsiveContainer width="100%" height={300}>
+                          <BarChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                            <XAxis dataKey="name" label={{ value: 'Collection Size', position: 'insideBottom', offset: -5 }} />
+                            <YAxis label={{ value: 'ms', angle: -90, position: 'insideLeft' }} />
+                            <RechartsTooltip />
+                            <Legend />
+                            <Bar dataKey="Insert" stackId="a" fill="#4fc3f7" />
+                            <Bar dataKey="Search" stackId="a" fill="#81c784" />
+                            <Bar dataKey="Update" stackId="a" fill="#ffb74d" />
+                            <Bar dataKey="Delete" stackId="a" fill="#ef5350" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                        <TableContainer component={Paper} sx={{ mt: 2 }} variant="outlined">
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Size</TableCell>
+                                <TableCell align="right">Insert (ms)</TableCell>
+                                <TableCell align="right">Search (ms)</TableCell>
+                                <TableCell align="right">Update (ms)</TableCell>
+                                <TableCell align="right">Delete (ms)</TableCell>
+                                <TableCell align="right">Total (ms)</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {Object.entries(pr).map(([size, data]: [string, any]) => (
+                                <TableRow key={size}>
+                                  <TableCell>{parseInt(size).toLocaleString()}</TableCell>
+                                  <TableCell align="right">{data.phases?.insert_ms?.toLocaleString()}</TableCell>
+                                  <TableCell align="right">{data.phases?.search_total_ms?.toLocaleString()}</TableCell>
+                                  <TableCell align="right">{data.phases?.update_ms?.toLocaleString()}</TableCell>
+                                  <TableCell align="right">{data.phases?.delete_ms?.toLocaleString()}</TableCell>
+                                  <TableCell align="right">{data.phases?.total_pipeline_ms?.toLocaleString()}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      </Box>
+                    )
+                  })()}
+
+                  {['update', 'deletion'].includes(benchResult.type) && (() => {
+                    const metrics = benchResult.metrics
+                    const key = benchResult.type === 'update' ? 'update_results' : 'deletion_results'
+                    const results = metrics?.[key] || {}
+                    const modelInfo = metrics?.model_info
+                    return (
+                      <Box>
+                        {modelInfo && (
+                          <Alert severity="info" sx={{ mb: 2 }}>
+                            Model: {modelInfo.name} ({modelInfo.dimensions}D, {modelInfo.provider})
+                          </Alert>
+                        )}
+                        <TableContainer component={Paper} variant="outlined">
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Collection Size</TableCell>
+                                {benchResult.type === 'update' ? (
+                                  <>
+                                    <TableCell align="right">Total (ms)</TableCell>
+                                    <TableCell align="right">Re-embed (ms)</TableCell>
+                                    <TableCell align="right">Upsert (ms)</TableCell>
+                                    <TableCell align="right">ms/update</TableCell>
+                                    <TableCell align="right">Updates/sec</TableCell>
+                                  </>
+                                ) : (
+                                  <>
+                                    <TableCell align="right">Single p50 (ms)</TableCell>
+                                    <TableCell align="right">Single p99 (ms)</TableCell>
+                                    <TableCell align="right">Batch p50 (ms)</TableCell>
+                                    <TableCell align="right">Single/sec</TableCell>
+                                    <TableCell align="right">Batch/sec</TableCell>
+                                  </>
+                                )}
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {Object.entries(results).map(([size, data]: [string, any]) => (
+                                <TableRow key={size}>
+                                  <TableCell>{data.collection_size?.toLocaleString()}</TableCell>
+                                  {benchResult.type === 'update' ? (
+                                    <>
+                                      <TableCell align="right">{data.total_time_ms?.toFixed(0)}</TableCell>
+                                      <TableCell align="right">{data.re_embed_time_ms?.mean?.toFixed(0)}</TableCell>
+                                      <TableCell align="right">{data.upsert_time_ms?.mean?.toFixed(0)}</TableCell>
+                                      <TableCell align="right">{data.avg_ms_per_update?.toFixed(2)}</TableCell>
+                                      <TableCell align="right">{data.updates_per_second?.toFixed(1)}</TableCell>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <TableCell align="right">{data.single_delete_ms?.p50?.toFixed(2)}</TableCell>
+                                      <TableCell align="right">{data.single_delete_ms?.p99?.toFixed(2)}</TableCell>
+                                      <TableCell align="right">{data.batch_delete_ms?.p50?.toFixed(2)}</TableCell>
+                                      <TableCell align="right">{data.deletes_per_second_single?.toFixed(0)}</TableCell>
+                                      <TableCell align="right">{data.deletes_per_second_batch?.toFixed(0)}</TableCell>
+                                    </>
+                                  )}
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      </Box>
+                    )
+                  })()}
+
+                  {benchResult && !benchResult.metrics && (
+                    <Typography color="text.secondary">No metrics returned.</Typography>
+                  )}
+                </Box>
+              )}
+
+              {benchTab === 0 && !benchResult && !benchRunning && (
+                <Box sx={{ textAlign: 'center', py: 4 }}>
+                  <AssessmentIcon sx={{ fontSize: 48, color: 'text.disabled', mb: 1 }} />
+                  <Typography color="text.secondary">
+                    Select a benchmark type and click Run to measure performance.
+                  </Typography>
+                </Box>
+              )}
+
+              {/* History Tab */}
+              {benchTab === 1 && (
+                <Box>
+                  <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 1 }}>
+                    <Button size="small" startIcon={<RefreshIcon />} onClick={loadBenchHistory} disabled={benchHistoryLoading}>
+                      Refresh
+                    </Button>
+                  </Box>
+                  {benchHistoryLoading && <LinearProgress sx={{ mb: 1 }} />}
+                  {benchHistory.length === 0 ? (
+                    <Typography color="text.secondary" sx={{ textAlign: 'center', py: 4 }}>
+                      No benchmark results yet. Run a benchmark to see results here.
+                    </Typography>
+                  ) : (
+                    <TableContainer component={Paper} variant="outlined">
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>ID</TableCell>
+                            <TableCell>Name</TableCell>
+                            <TableCell>Type</TableCell>
+                            <TableCell>Status</TableCell>
+                            <TableCell>Created</TableCell>
+                            <TableCell align="right">Actions</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {benchHistory.map((r) => (
+                            <TableRow key={r.id}>
+                              <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>{r.id}</TableCell>
+                              <TableCell>{r.name || '-'}</TableCell>
+                              <TableCell>
+                                <Chip label={r.type} size="small" variant="outlined" />
+                              </TableCell>
+                              <TableCell>
+                                <Chip
+                                  label={r.status}
+                                  size="small"
+                                  color={r.status === 'completed' ? 'success' : r.status === 'failed' ? 'error' : 'warning'}
+                                />
+                              </TableCell>
+                              <TableCell sx={{ fontSize: '0.8rem' }}>{r.created_at}</TableCell>
+                              <TableCell align="right">
+                                <Tooltip title="Load result">
+                                  <IconButton size="small" onClick={async () => {
+                                    try {
+                                      const res = await fetch(`/api/v1/embedding-benchmark/results/${r.id}`)
+                                      if (res.ok) {
+                                        const data = await res.json()
+                                        if (data.metrics) {
+                                          setBenchResult({
+                                            benchmark_id: data.id,
+                                            type: data.type,
+                                            metrics: JSON.parse(data.metrics),
+                                          })
+                                          setBenchTab(0)
+                                        }
+                                      }
+                                    } catch (e) { console.error(e) }
+                                  }}>
+                                    <AssessmentIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                                <Tooltip title="Delete">
+                                  <IconButton size="small" onClick={() => deleteBenchResult(r.id)}>
+                                    <DeleteIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </Box>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Info */}
           <Card sx={{

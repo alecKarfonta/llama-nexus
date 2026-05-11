@@ -1,5 +1,45 @@
 # Llama Nexus Deployment Notes
 
+## Embedding Benchmark Service (May 10, 2026)
+
+### Overview
+Added a comprehensive embedding + vector store performance benchmark service at `/api/v1/embedding-benchmark/`.
+
+### Benchmark Types
+- **embedding_throughput** -- Raw embedding generation speed across batch sizes and text lengths
+- **insertion** -- Embed + upsert documents into Qdrant at various collection sizes
+- **search** -- Vector search latency at various collection sizes and top_k values
+- **update** -- Re-embed + re-upsert latency for existing documents
+- **deletion** -- Single and batch delete latency at various collection sizes
+- **full_pipeline** -- Complete lifecycle: insert -> search -> update -> delete
+
+### Endpoints
+- `POST /api/v1/embedding-benchmark/run` -- Async (returns ID immediately)
+- `POST /api/v1/embedding-benchmark/run-sync` -- Synchronous (waits for results)
+- `GET /api/v1/embedding-benchmark/results` -- List results
+- `GET /api/v1/embedding-benchmark/results/{id}` -- Get specific result
+- `DELETE /api/v1/embedding-benchmark/results/{id}` -- Delete result
+- `GET /api/v1/embedding-benchmark/types` -- List benchmark types
+
+### Follow-up Fix (May 11, 2026)
+- Fixed benchmark persistence bug for sync runs: results now save correctly to history.
+- Root cause: `_save_result` used `UPDATE` only, so `/run-sync` had no existing row to update.
+- Fix: switched to SQLite upsert (`INSERT ... ON CONFLICT(id) DO UPDATE`) in `backend/routes/embedding_benchmark.py`.
+- Verified: `run-sync` now returns completed result, `GET /results/{id}` returns the saved record, and `/results` includes the new run.
+
+### Files Changed
+- `backend/routes/embedding_benchmark.py` -- New route (benchmark logic, DB, test data generation)
+- `backend/routes/__init__.py` -- Registered new router
+- `backend/app_factory.py` -- Registered new router
+
+### Known Issue: Embedding Port Mismatch
+The `EMBEDDING_SERVICE_URL` env var points to port 8080 but the embedding server is started on port 8602.
+The benchmark route works around this by reading the actual port from the embedding manager config.
+
+### Also Fixed Today
+- Fixed `--flash-attn` missing value in `embedding_manager.py` (line 99) and `start.sh` (line 185)
+  that was causing the embedding server to fail with "unknown value for --flash-attn: '--cont-batching'"
+
 ## Hybrid Processing UI (Dec 15, 2024)
 
 ### Overview
@@ -5611,3 +5651,47 @@ timeouts and command-loop inefficiency.
 - Primary remaining limiter is model responsiveness under Terminal-Bench task
   pressure; next practical step is tuning Harbor/agent timeout budget and/or
   reducing model first-token latency under benchmark load.
+
+## Qwen3.5-27B with Vision (May 2, 2026)
+
+### Goal
+Switch from Qwen3.6-27B to Qwen3.5-27B with native vision/multimodal support enabled via the mmproj projector.
+
+### What was done
+1. Resolved merge conflict in docker-compose.yml (no actual markers, clean YAML)
+2. Pulled latest llama-nexus (13 remote commits merged)
+3. Downloaded Qwen3.5-27B-Q6_K.gguf (22.4GB) and mmproj-F16.gguf (927MB) from `unsloth/Qwen3.5-27B-GGUF`
+4. Updated docker-compose.yml:
+   - MODEL_NAME: Qwen3.6-27B -> Qwen3.5-27B
+   - MODEL_REPO: unsloth/Qwen3.6-27B-GGUF -> unsloth/Qwen3.5-27B-GGUF
+   - Added MMPROJ_FILE=mmproj-F16.gguf
+   - CONTEXT_SIZE: 256000 -> 65536 (to fit 2x RTX 5070 Ti 16GB with vision encoder)
+   - PARALLEL_SLOTS: 2 -> 1 (save memory for vision)
+   - VLM_MODEL_NAME updated to Qwen3.5-27B
+5. Launched model successfully - vision confirmed working (image encoding/decoding in logs)
+
+### Current configuration
+- Model: Qwen3.5-27B-Q6_K (22.4GB GGUF)
+- Vision: mmproj-F16.gguf (927MB)
+- Context: 65536 tokens
+- GPUs: 0,2 (RTX 5070 Ti, ~13-14GB each)
+- Parallel slots: 1
+
+### Key files
+- Model files in volume: /home/llamacpp/models/Qwen3.5-27B-Q6_K.gguf, mmproj-F16.gguf
+- Config: docker-compose.yml (backend-api environment section)
+- Backend handles --mmproj flag via MMPROJ_FILE env var (llamacpp_manager.py line 82, 198-221)
+
+## VLM Memory % vs Launch Flags (May 11, 2026)
+
+### Goal
+Understand why a user-set "VLM memory usage 90%" still appears as 95% at launch.
+
+### Findings
+- The active `llamacpp-api` launch command currently includes `--top-p 0.95`.
+- The active command does not include any `--gpu-memory-utilization` style flag.
+- `llamacpp-api` is running (llama.cpp path), while `vllm-api` is not currently running.
+- In this codebase, `0.95` in the observed launch command maps to sampling `top_p`, not a GPU memory utilization setting.
+
+### Likely Cause
+- The value being observed as `95%` is from `top_p=0.95`, not from a VLM memory budget parameter.

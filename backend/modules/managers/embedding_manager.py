@@ -39,8 +39,8 @@ class EmbeddingManager:
             },
             "performance": {
                 "threads": int(os.getenv("EMBED_THREADS", "-1")),
-                "batch_size": int(os.getenv("EMBED_BATCH_SIZE", "512")),
-                "ubatch_size": int(os.getenv("EMBED_UBATCH_SIZE", "512")),
+                "batch_size": int(os.getenv("EMBED_BATCH_SIZE", "1024")),
+                "ubatch_size": int(os.getenv("EMBED_UBATCH_SIZE", "1024")),
                 "pooling_type": os.getenv("EMBED_POOLING_TYPE", "mean"),
             },
             "execution": {
@@ -96,7 +96,7 @@ class EmbeddingManager:
             "--pooling", self.config["performance"]["pooling_type"],
             "--embeddings",
             "--metrics",
-            "--flash-attn",
+            "--flash-attn", "auto",
             "--cont-batching",
         ]
         

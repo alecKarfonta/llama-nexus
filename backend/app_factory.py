@@ -17,6 +17,7 @@ import routes.models as models
 import routes.templates as templates
 import routes.tokens as tokens
 import routes.benchmark as benchmark
+import routes.embedding_benchmark as embedding_benchmark
 import routes.conversations as conversations
 import routes.registry as registry
 import routes.prompts as prompts
@@ -125,6 +126,7 @@ def create_app(lifespan_handler) -> FastAPI:
     app.include_router(templates.router)
     app.include_router(tokens.router)
     app.include_router(benchmark.router)
+    app.include_router(embedding_benchmark.router)
     app.include_router(conversations.router)
     app.include_router(registry.router)
     app.include_router(prompts.router)

@@ -10,6 +10,7 @@ from .conversations import router as conversations_router
 from .registry import router as registry_router
 from .prompts import router as prompts_router
 from .benchmark import router as benchmark_router
+from .embedding_benchmark import router as embedding_benchmark_router
 from .batch import router as batch_router
 from .models import router as models_router
 from .templates import router as templates_router
@@ -32,6 +33,7 @@ __all__ = [
     'registry_router',
     'prompts_router',
     'benchmark_router',
+    'embedding_benchmark_router',
     'batch_router',
     'models_router',
     'templates_router',
