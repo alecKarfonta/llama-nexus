@@ -1,8 +1,14 @@
 # Notes
 
-## Current Goal: vLLM Backend Support
+## Current Goal
 
-Add vLLM as an alternative inference backend alongside llama.cpp, with full lifecycle management through the DeployPage UI.
+Primary inference: **Qwen3.6-27B** (GGUF via llama.cpp / Deploy backend **llama.cpp**), matching `docker-compose.yml` (`MODEL_REPO=unsloth/Qwen3.6-27B-GGUF`, variant **Q6_K**).
+
+Secondary: vLLM (profile `vllm`) where GPU supports it; bundled Nemotron NVFP4 requires **compute capability ≥ 8.9** (not RTX 3090-class Ampere).
+
+### Homelab nginx (mlapi.us modular, stocker repo)
+
+- Added **reader**: `https://mlapi.us/reader/` proxies to `http://192.168.1.77:8012/` via `stocker/config/nginx-modular/apps/reader.conf` and an include in `mlapi.us.conf`. Deploy with `install.sh` or copy the new file and reload nginx (`nginx -t && systemctl reload nginx`).
 
 ## What We Did
 
@@ -32,13 +38,18 @@ Add vLLM as an alternative inference backend alongside llama.cpp, with full life
 
 ## Issues Found and Fixed
 
-### 0. Deploy launch: "Docker image not found: llama-nexus-llamacpp-api" (FIXED)
+### 2026-05-16: Redis compose port conflict on 6381 (FIXED)
+- **Problem**: `docker compose up -d --build` failed while starting `llama-nexus-redis` because host port `6381` was already allocated.
+- **Fix**: Changed the Redis host port mapping in `docker-compose.yml` from `6381:6379` to `6382:6379`. Internal service URLs remain `redis://redis:6379/0`, so containers still talk to Redis on the Docker network normally.
+- **Retry**: Run `docker compose up -d --build` again from the repo root.
+
+### Deploy launch: "Docker image not found: llama-nexus-llamacpp-api" (FIXED)
 - **Problem**: Inference image is built from the `llamacpp-api` Compose service; plain `docker compose build` without naming that service skips profile-only services, so the image never existed. SDK path also mounted the wrong volume name (`llamacpp-api_gpt_oss_models`).
 - **Fix**: `docker-compose.yml` sets explicit `image:` for `llamacpp-api`. Backend reads `LLAMACPP_DOCKER_IMAGE` and derives `LLAMACPP_MODELS_VOLUME` from `DOCKER_NETWORK` (strip `_default`, append `_gpt_oss_models`). Error text now says to run `docker compose build llamacpp-api`.
 - **User action**: From repo root once: `docker compose build llamacpp-api`, then `docker compose build backend-api && docker compose up -d backend-api` (or full stack) so the backend picks up env/code. The image name is `llama-nexus-llamacpp-api:latest`; the backend must use the **same Docker daemon** where that image was built (typical when using the mounted Docker socket).
 - **2026-05-06**: Ran `docker compose build llamacpp-api` successfully (~11 min); `docker images` shows `llama-nexus-llamacpp-api:latest`.
 
-### 1. llama.cpp Docker build: `nvcc fatal : Unsupported gpu architecture 'compute_'` (FIXED)
+### llama.cpp Docker build: `nvcc fatal : Unsupported gpu architecture 'compute_'` (FIXED)
 - **Problem**: Dockerfile used `CUDA_ARCH=native` (via compose default). During `docker build` the builder typically has **no GPU**, so CMake’s native SM detection is empty and nvcc gets `compute_`.
 - **Fix**: Default `CUDA_ARCH` to `86` (Ampere / RTX 30xx) in `Dockerfile` and `docker-compose.yml`. Override in `.env` for other GPUs (e.g. `89` for RTX 4090, `90` for H100).
 
@@ -54,7 +65,7 @@ Add vLLM as an alternative inference backend alongside llama.cpp, with full life
 - **Cause**: The GGUF model/template card always accessed `config.model.*`. With **vLLM** selected, `config.model` could be missing or incomplete (for example from persisted settings), which threw during render and prevented everything below—including tab panels—from mounting.
 - **Fix**: Render GGUF picker, templates, and "Download more models" only when `backend === 'llamacpp'`. For vLLM, show a short HF model summary card instead. Validate `cfgJson.config` after a successful vLLM config fetch. Reset `vllmReloading` when switching away from vLLM so the loading banner cannot stick. Clamp deploy tab index when switching backends so `Tabs` `value` stays within range (llama.cpp 0–6, vLLM 0–8).
 
-### 2. VLLMManager `docker compose` not found (FIXED)
+### VLLMManager `docker compose` not found (FIXED)
 - **Problem**: `docker compose --profile vllm up -d vllm-api` ran inside backend container which has no compose file.
 - **Fix**: Changed to `docker start vllm-api` / `docker stop vllm-api` which works via the Docker socket mount.
 
@@ -73,6 +84,15 @@ Add vLLM as an alternative inference backend alongside llama.cpp, with full life
 ### 5. Model Manager delete returned 404 for `/v1/models/7` (FIXED)
 - **Problem**: Active downloads merged into the models list in `ModelsPage.tsx` used a synthetic numeric `id` (`prev.length + …`). Delete called `DELETE /v1/models/7`; the backend expects a model key (file stem or `name:variant`), so it returned 404 (no files for model `7`).
 - **Fix**: Synthetic rows now use `id: download.modelId` (matches backend download / filesystem stem). Delete confirmation maps legacy numeric `id` to `${name}:${variant|quantization}`. Start/stop handlers accept `string | number` for `id`.
+
+### 2026-05-13: Inference choice — Qwen3.6-27B (llama.cpp)
+- Use Deploy/backend backend **llama.cpp**, not vLLM default Nemotron, on Ampere (e.g. RTX 3090 Ti): Nemotron NVFP4 needs **sm_89+**.
+- Stack: `docker compose up -d` (core), `docker start llamacpp-api` or `docker compose --profile extra up -d llamacpp-api`, ensure GGUF present (`Qwen3.6-27B-Q6_K.gguf` on shared volume).
+
+### 2026-05-11: UI errors / 502 (not backend crash)
+- **Symptom**: Deploy page and API calls failed; nginx logs showed `connect() failed (111: Connection refused)` to `http://172.19.0.6:8700/...`.
+- **Cause**: `llamacpp-backend` was healthy at **172.19.0.2**, but nginx had a **stale upstream** (old container IP after recreate). Same class of issue as the "Frontend 502 errors after backend restart" note above.
+- **Fix**: `docker compose restart llamacpp-frontend`. Verified `GET /v1/service/status` via `:3002` returns 200.
 
 ## Testing Checklist
 - [x] Backend builds: `docker compose build backend-api`

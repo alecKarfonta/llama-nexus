@@ -5,8 +5,8 @@ echo "📊 Model: ${MODEL_NAME} with optimized configuration"
 echo "🔌 OpenAI compatible endpoints will be available on port 8080"
 
 # Set required defaults for container startup
-MODEL_NAME=${MODEL_NAME:-"Qwen3-Coder-30B-A3B-Instruct"}
-MODEL_VARIANT=${MODEL_VARIANT:-"Q4_K_M"}
+MODEL_NAME=${MODEL_NAME:-"Qwen3.6-27B"}
+MODEL_VARIANT=${MODEL_VARIANT:-"Q6_K"}
 HOST=${HOST:-"0.0.0.0"}
 PORT=${PORT:-"8080"}
 API_KEY=${API_KEY:-"placeholder-api-key"}

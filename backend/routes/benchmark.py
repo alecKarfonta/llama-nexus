@@ -663,6 +663,7 @@ async def context_scaling_test(request: Request, body: ContextScalingRequest):
     """
     try:
         endpoint = get_llm_endpoint(request, body.endpoint)
+        api_key = get_llm_api_key(request, body.endpoint)
     except HTTPException as e:
         raise e
     
@@ -691,6 +692,7 @@ async def context_scaling_test(request: Request, body: ContextScalingRequest):
                 prompt=test_prompt,
                 max_tokens=body.max_tokens,
                 temperature=0.7,
+                api_key=api_key,
                 stream=True
             )
             
@@ -753,6 +755,7 @@ async def throughput_test(request: Request, body: ThroughputRequest):
     """
     try:
         endpoint = get_llm_endpoint(request, body.endpoint)
+        api_key = get_llm_api_key(request, body.endpoint)
     except HTTPException as e:
         raise e
     
@@ -769,6 +772,7 @@ async def throughput_test(request: Request, body: ThroughputRequest):
                     prompt=body.prompt,
                     max_tokens=body.max_tokens,
                     temperature=0.7,
+                    api_key=api_key,
                     stream=False  # Non-streaming for throughput testing
                 )
             except Exception as e:

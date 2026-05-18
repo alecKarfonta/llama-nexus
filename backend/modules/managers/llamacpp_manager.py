@@ -88,8 +88,8 @@ class LlamaCPPManager:
 
         return {
             "model": {
-                "name": os.getenv("MODEL_NAME", "Qwen3-Coder-30B-A3B-Instruct"),
-                "variant": os.getenv("MODEL_VARIANT", "Q4_K_M"),
+                "name": os.getenv("MODEL_NAME", "Qwen3.6-27B"),
+                "variant": os.getenv("MODEL_VARIANT", "Q6_K"),
                 "mmproj": os.getenv("MMPROJ_FILE"),
                 "context_size": int(os.getenv("CONTEXT_SIZE", "128000")),
                 "gpu_layers": int(os.getenv("GPU_LAYERS", "999")),

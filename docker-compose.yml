@@ -1,6 +1,8 @@
 services:
   # Qdrant Vector Database for RAG
   qdrant:
+    profiles:
+      - embed
     image: qdrant/qdrant:latest
     container_name: llama-nexus-qdrant
     ports:
@@ -24,8 +26,8 @@ services:
     image: redis:7-alpine
     container_name: llama-nexus-redis
     ports:
-      # Host 6381: avoid conflict when another stack (e.g. flux-redis) uses 6379
-      - "6381:6379"
+      # Host 6382: avoid conflicts with other local Redis stacks on 6379/6381
+      - "6382:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -160,8 +162,6 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-      qdrant:
-        condition: service_healthy
     restart: unless-stopped
 
   # Build container for LlamaCPP binaries
@@ -227,16 +227,6 @@ services:
       - FREQUENCY_PENALTY=0.0
       - PRESENCE_PENALTY=0.0
       - MIN_P=0.0
-      # CUDA optimizations - use '0' for single GPU or '0,1' for multiple
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
-      # Model configuration - Qwen3-VL-4B-Thinking (Vision-Language with Reasoning)
-      - MODEL_NAME=Qwen_Qwen3-VL-4B-Thinking
-      - MODEL_VARIANT=Q4_K_M
-      - MODEL_REPO=bartowski/Qwen_Qwen3-VL-4B-Thinking-GGUF
-      # MMPROJ_FILE should be set for VL models only
-      # - MMPROJ_FILE=mmproj-Qwen_Qwen3-VL-4B-Thinking-f16.gguf
-      - CONTEXT_SIZE=40960
       - GPU_LAYERS=999
       - TEMPERATURE=0.15
       - TOP_P=0.95
@@ -289,12 +279,12 @@ services:
 
   # vLLM API Server - Nemotron-3-Nano-Omni multimodal (text, image, video, audio)
   vllm-api:
+    profiles:
+      - vllm
     build:
       context: .
       dockerfile: Dockerfile.vllm
     container_name: vllm-api
-    profiles:
-      - vllm
     hostname: vllm
     ports:
       - "8601:8080"
@@ -342,6 +332,8 @@ services:
 
   # Llama.cpp Embedding Server - Optional RAG Embedding Service
   llamacpp-embed:
+    profiles:
+      - embed
     build:
       context: .
       dockerfile: Dockerfile
@@ -393,6 +385,8 @@ services:
     entrypoint: [ "/bin/bash", "/start-embed.sh" ]
 
   training:
+    profiles:
+      - training  
     build:
       context: ./backend
       dockerfile: Dockerfile.training
@@ -427,12 +421,12 @@ services:
 
   # Quantization Worker - Model Quantization Service
   quantization-worker:
+    profiles:
+      - quantize
     build:
       context: ./backend
       dockerfile: Dockerfile.quantization
     container_name: quantization-worker
-    profiles:
-      - quantize
     hostname: quantization-worker
     shm_size: '16gb'
     runtime: nvidia
@@ -462,12 +456,12 @@ services:
 
   # LM-Eval Worker - API-backed model evaluation (no local GPU needed)
   lm-eval-worker:
+    profiles:
+      - eval
     build:
       context: ./backend
       dockerfile: Dockerfile.lm-eval
     container_name: lm-eval-worker
-    profiles:
-      - eval  # Opt-in: start with 'docker compose --profile eval up -d'
     hostname: lm-eval-worker
     volumes:
       - backend_data:/data
@@ -499,12 +493,12 @@ services:
 
   # Terminal-Bench Worker - Harbor-based agentic benchmark runner
   terminal-bench-worker:
+    profiles:
+      - eval
     build:
       context: ./backend
       dockerfile: Dockerfile.terminal-bench
     container_name: terminal-bench-worker
-    profiles:
-      - eval
     hostname: terminal-bench-worker
     shm_size: '16gb'
     command: [ "python3", "/app/lm_eval_worker.py" ]
@@ -560,12 +554,12 @@ services:
   # Start with: docker compose --profile streaming-stt up -d streaming-stt
   # =============================================================
   streaming-stt:
+    profiles:
+      - streaming-stt 
     build:
       context: ./streaming-stt
       dockerfile: Dockerfile
     container_name: streaming-stt
-    profiles:
-      - streaming-stt # Opt-in: requires GPU, doesn't start by default
     ports:
       - "8609:8009"
     # NVIDIA NeMo Framework requires these settings for proper SHMEM allocation
@@ -620,10 +614,10 @@ services:
   # Start with: docker compose --profile graphrag up -d
   # ========================================
   neo4j:
+    profiles:
+      - graphrag  
     image: neo4j:5.11
     container_name: llama-nexus-neo4j
-    profiles:
-      - graphrag
     ports:
       - "7474:7474"  # HTTP Browser
       - "7687:7687"  # Bolt
@@ -650,12 +644,12 @@ services:
   # Opt-in: Start with docker compose --profile graphrag-ner up -d
   # ========================================
   graphrag-ner:
+    profiles:
+      - graphrag
     build:
       context: ./services/ner_api
       dockerfile: Dockerfile
     container_name: llama-nexus-ner
-    profiles:
-      - graphrag-ner
     ports:
       - "8711:8001"
     environment:
@@ -678,12 +672,12 @@ services:
   # Opt-in: Start with docker compose --profile graphrag-rel up -d
   # ========================================
   graphrag-rel:
+    profiles:
+      - graphrag-rel
     build:
       context: ./services/rel_api
       dockerfile: Dockerfile
     container_name: llama-nexus-rel
-    profiles:
-      - graphrag-rel
     ports:
       - "8712:8002"
     environment:
@@ -706,12 +700,12 @@ services:
   # Opt-in: Start with docker compose --profile graphrag-code up -d
   # ========================================
   graphrag-code:
+    profiles:
+      - graphrag
     build:
       context: ./services/code_rag
       dockerfile: Dockerfile
     container_name: llama-nexus-code-rag
-    profiles:
-      - graphrag-code
     ports:
       - "8713:8000"
     environment:
