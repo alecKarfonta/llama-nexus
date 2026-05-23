@@ -13,8 +13,8 @@ import re
 @dataclass
 class ChunkingConfig:
     """Configuration for chunking"""
-    chunk_size: int = 512  # Target chunk size in tokens/characters
-    chunk_overlap: int = 50  # Overlap between chunks
+    chunk_size: int = 800  # Target chunk size in tokens/characters
+    chunk_overlap: int = 80  # Overlap between chunks
     min_chunk_size: int = 5  # Minimum chunk size
     max_chunk_size: int = 2048  # Maximum chunk size
     

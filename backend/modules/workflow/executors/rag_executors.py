@@ -93,8 +93,8 @@ class ChunkerExecutor(NodeExecutor):
         documents = inputs.get("documents", [])
         
         strategy = self.get_config_value("strategy", "fixed")
-        chunk_size = self.get_config_value("chunkSize", 512)
-        overlap = self.get_config_value("overlap", 50)
+        chunk_size = self.get_config_value("chunkSize", 800)
+        overlap = self.get_config_value("overlap", 80)
         
         context.log(f"Chunking {len(documents)} documents with {strategy} strategy")
         

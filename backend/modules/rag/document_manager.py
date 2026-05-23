@@ -26,6 +26,9 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CHUNK_SIZE = 800
+DEFAULT_CHUNK_OVERLAP = 80
+
 
 class DocumentStatus(str, Enum):
     """Document processing status"""
@@ -62,8 +65,8 @@ class Domain:
     description: str = ""
     parent_id: Optional[str] = None
     # Domain-specific settings
-    chunk_size: int = 512
-    chunk_overlap: int = 50
+    chunk_size: int = DEFAULT_CHUNK_SIZE
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
     embedding_model: str = "nomic-embed-text-v1.5"
     # Metadata
     document_count: int = 0
@@ -182,7 +185,9 @@ class DocumentManager:
         if self._initialized:
             return
         
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=30) as db:
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA busy_timeout=30000")
             # Domains table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS domains (
@@ -190,8 +195,8 @@ class DocumentManager:
                     name TEXT NOT NULL,
                     description TEXT DEFAULT '',
                     parent_id TEXT,
-                    chunk_size INTEGER DEFAULT 512,
-                    chunk_overlap INTEGER DEFAULT 50,
+                    chunk_size INTEGER DEFAULT 800,
+                    chunk_overlap INTEGER DEFAULT 80,
                     embedding_model TEXT DEFAULT 'nomic-embed-text',
                     document_count INTEGER DEFAULT 0,
                     total_chunks INTEGER DEFAULT 0,
@@ -279,6 +284,17 @@ class DocumentManager:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_vector ON chunks(vector_id)")
+
+            # Move domains that still have the historical defaults to the safer
+            # embedding-friendly defaults. Preserve explicitly customized domains.
+            await db.execute(
+                """
+                UPDATE domains
+                SET chunk_size = ?, chunk_overlap = ?, updated_at = ?
+                WHERE chunk_size = 512 AND chunk_overlap = 50
+                """,
+                (DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP, datetime.utcnow().isoformat())
+            )
             
             await db.commit()
             
@@ -465,7 +481,8 @@ class DocumentManager:
         if document.content:
             document.content_hash = hashlib.md5(document.content.encode()).hexdigest()
         
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=30) as db:
+            await db.execute("PRAGMA busy_timeout=30000")
             await db.execute("""
                 INSERT INTO documents (id, domain_id, name, doc_type, status, content,
                     content_hash, source_path, source_url, chunk_count, token_count,
@@ -562,7 +579,8 @@ class DocumentManager:
         if document.content:
             document.content_hash = hashlib.md5(document.content.encode()).hexdigest()
         
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=30) as db:
+            await db.execute("PRAGMA busy_timeout=30000")
             await db.execute("""
                 UPDATE documents SET
                     name = ?, domain_id = ?, doc_type = ?, status = ?,
@@ -584,7 +602,8 @@ class DocumentManager:
     
     async def delete_document(self, document_id: str) -> bool:
         """Delete document and its chunks"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=30) as db:
+            await db.execute("PRAGMA busy_timeout=30000")
             # Get domain_id for count update
             cursor = await db.execute(
                 "SELECT domain_id FROM documents WHERE id = ?",
@@ -657,7 +676,8 @@ class DocumentManager:
         
         now = datetime.utcnow().isoformat()
         
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=30) as db:
+            await db.execute("PRAGMA busy_timeout=30000")
             await db.executemany("""
                 INSERT OR REPLACE INTO chunks (id, document_id, content, chunk_index,
                     total_chunks, start_char, end_char, token_count, page_number, section_header,

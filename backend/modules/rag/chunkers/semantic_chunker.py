@@ -83,13 +83,19 @@ class SemanticChunker(Chunker):
                     current_length = 0
                     current_start = position
             
-            # Handle units larger than max chunk size
-            if unit_length > self.config.max_chunk_size:
+            # Handle units larger than the effective hard limit. The embedder can
+            # reject a single oversized paragraph/sentence, even if preserving
+            # semantic boundaries would otherwise be preferable.
+            hard_limit = min(self.config.chunk_size, self.config.max_chunk_size)
+            if unit_length > hard_limit:
                 # Split large unit into smaller pieces
                 sub_chunks = self._split_large_unit(unit, position, index, metadata, headers)
                 chunks.extend(sub_chunks)
                 index += len(sub_chunks)
                 position += unit_length
+                current_chunk = []
+                current_length = 0
+                current_start = position
                 continue
             
             current_chunk.append(unit)
@@ -147,6 +153,48 @@ class SemanticChunker(Chunker):
         index = start_index
         
         for sentence in sentences:
+            if len(sentence) > self.config.chunk_size:
+                if current_chunk:
+                    chunk_content = ' '.join(current_chunk)
+                    chunk_metadata = {
+                        **(metadata or {}),
+                        'chunking_strategy': 'semantic_split',
+                    }
+                    if self.config.extract_headers:
+                        header = self._find_nearest_header(current_start, headers)
+                        if header:
+                            chunk_metadata['section_header'] = header
+                    chunks.append(Chunk(
+                        content=chunk_content,
+                        index=index,
+                        start_char=current_start,
+                        end_char=position,
+                        metadata=chunk_metadata
+                    ))
+                    index += 1
+                    current_chunk = []
+                    current_length = 0
+
+                for start in range(0, len(sentence), self.config.chunk_size):
+                    piece = sentence[start:start + self.config.chunk_size].strip()
+                    if not piece:
+                        continue
+                    chunk_metadata = {
+                        **(metadata or {}),
+                        'chunking_strategy': 'semantic_forced_split',
+                    }
+                    chunks.append(Chunk(
+                        content=piece,
+                        index=index,
+                        start_char=position + start,
+                        end_char=position + start + len(piece),
+                        metadata=chunk_metadata
+                    ))
+                    index += 1
+                position += len(sentence) + 1
+                current_start = position
+                continue
+
             if current_length + len(sentence) > self.config.chunk_size and current_chunk:
                 chunk_content = ' '.join(current_chunk)
                 

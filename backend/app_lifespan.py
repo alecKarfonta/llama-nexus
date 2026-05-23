@@ -1,5 +1,7 @@
 import os
 import json
+import asyncio
+from types import SimpleNamespace
 from pathlib import Path
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
@@ -167,8 +169,63 @@ async def lifespan(app: FastAPI):
             app.state.document_discovery = DocumentDiscovery(f"{rag_db_path}/discovery.db")
             await app.state.document_discovery.initialize()
 
-            # Set up background processing function reference (defined later in this file)
-            # This will be set after app creation since the function needs app reference
+            # Set up background document processing. FastAPI background tasks run in
+            # this API process, so serialize indexing to avoid SQLite writer lock races.
+            from routes import rag as rag_routes
+            app.state.rag_processing_lock = asyncio.Lock()
+
+            async def process_document_background(*args, **kwargs):
+                async with app.state.rag_processing_lock:
+                    await rag_routes.process_document_background(*args, **kwargs)
+
+            app.state.process_document_background = process_document_background
+
+            async def drain_pending_documents():
+                """Continuously process pending RAG documents in the API process."""
+                from modules.rag.document_manager import DocumentStatus
+
+                interval_seconds = int(os.getenv("RAG_PENDING_WORKER_INTERVAL_SECONDS", "5"))
+                batch_size = int(os.getenv("RAG_PENDING_WORKER_BATCH_SIZE", "1"))
+                request_like = SimpleNamespace(app=app)
+
+                logger.info(
+                    "RAG pending document worker started "
+                    f"(batch_size={batch_size}, interval={interval_seconds}s)"
+                )
+
+                while True:
+                    try:
+                        if not app.state.document_manager or not app.state.vector_store:
+                            await asyncio.sleep(interval_seconds)
+                            continue
+
+                        docs, total = await app.state.document_manager.list_documents(
+                            status=DocumentStatus.PENDING,
+                            limit=batch_size,
+                        )
+
+                        if not docs:
+                            await asyncio.sleep(interval_seconds)
+                            continue
+
+                        logger.info(f"RAG pending worker processing {len(docs)} of {total} pending documents")
+                        for doc in docs:
+                            await app.state.process_document_background(
+                                request_like,
+                                doc.id,
+                                "semantic",
+                                800,
+                                80,
+                                DEFAULT_EMBEDDING_MODEL,
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as worker_error:
+                        logger.error(f"RAG pending document worker error: {worker_error}")
+                        await asyncio.sleep(interval_seconds)
+
+            if os.getenv("RAG_AUTO_INDEX_PENDING", "true").lower() in ("true", "1", "yes"):
+                app.state.rag_pending_worker_task = asyncio.create_task(drain_pending_documents())
             
             # Pre-warm the default embedding model to avoid cold start on first request
             # This loads the model into memory during startup (~4-5s) instead of first query
@@ -244,6 +301,14 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down LlamaCPP Management API")
+    rag_pending_worker_task = getattr(app.state, "rag_pending_worker_task", None)
+    if rag_pending_worker_task:
+        rag_pending_worker_task.cancel()
+        try:
+            await rag_pending_worker_task
+        except asyncio.CancelledError:
+            pass
+
     if not manager.use_docker and manager.process and manager.process.poll() is None:
         await manager.stop()
     

@@ -12,6 +12,11 @@ import uuid
 import os
 import logging
 
+from modules.rag.chunkers.base import ChunkingConfig
+from modules.rag.chunkers.fixed_chunker import FixedChunker
+from modules.rag.chunkers.recursive_chunker import RecursiveChunker
+from modules.rag.chunkers.semantic_chunker import SemanticChunker
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/rag", tags=["rag"])
@@ -81,6 +86,14 @@ def create_embedder(request: Request, model_name: Optional[str] = None):
     # Resolve model aliases
     resolved_model = resolve_embedding_model_name(model_name)
     return embedder_factory(model_name=resolved_model)
+
+
+async def read_json_body(request: Request) -> dict:
+    """Read an optional JSON body without turning empty requests into 500s."""
+    try:
+        return await request.json()
+    except Exception:
+        return {}
 
 
 @router.post("/search")
@@ -510,7 +523,7 @@ async def create_rag_domain(request: Request):
     if not rag['document_manager']:
         raise HTTPException(status_code=503, detail="Document manager not initialized")
     
-    data = await request.json()
+    data = await read_json_body(request)
     from modules.rag.document_manager import Domain
     
     domain = Domain(
@@ -518,8 +531,8 @@ async def create_rag_domain(request: Request):
         name=data.get('name', 'New Domain'),
         description=data.get('description', ''),
         parent_id=data.get('parent_id'),
-        chunk_size=data.get('chunk_size', 512),
-        chunk_overlap=data.get('chunk_overlap', 50),
+        chunk_size=data.get('chunk_size', 800),
+        chunk_overlap=data.get('chunk_overlap', 80),
         embedding_model=data.get('embedding_model', 'nomic-embed-text-v1.5')
     )
     
@@ -562,7 +575,7 @@ async def update_rag_domain(request: Request, domain_id: str):
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found")
     
-    data = await request.json()
+    data = await read_json_body(request)
     
     if 'name' in data:
         domain.name = data['name']
@@ -603,7 +616,7 @@ async def reindex_domain(request: Request, domain_id: str, background_tasks: Bac
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found")
     
-    data = await request.json()
+    data = await read_json_body(request)
     
     from modules.rag.document_manager import DocumentStatus
     docs, total = await rag['document_manager'].list_documents(
@@ -631,12 +644,15 @@ async def reindex_domain(request: Request, domain_id: str, background_tasks: Bac
             if doc.status != DocumentStatus.PENDING:
                 background_tasks.add_task(
                     process_func,
+                    request,
                     doc.id,
                     data.get('chunking_strategy', 'semantic'),
                     data.get('chunk_size'),
                     data.get('chunk_overlap'),
                     data.get('embedding_model')
                 )
+    else:
+        raise HTTPException(status_code=503, detail="Document processing worker not available")
     
     return {
         "status": "queued",
@@ -699,7 +715,7 @@ async def update_chunk_metadata(request: Request, chunk_id: str):
     if not rag['document_manager']:
         raise HTTPException(status_code=503, detail="Document manager not initialized")
     
-    data = await request.json()
+    data = await read_json_body(request)
     metadata_update = data.get('metadata')
     
     if metadata_update is None:
@@ -1034,6 +1050,7 @@ async def create_rag_document(request: Request, background_tasks: BackgroundTask
         if process_func:
             background_tasks.add_task(
                 process_func,
+                request,
                 result.id,
                 data.get('chunking_strategy', 'semantic'),
                 data.get('chunk_size'),
@@ -1041,6 +1058,8 @@ async def create_rag_document(request: Request, background_tasks: BackgroundTask
                 data.get('embedding_model')
             )
             logger.info(f"Queued document {result.id} for background processing")
+        else:
+            raise HTTPException(status_code=503, detail="Document processing worker not available")
     
     return {"document": result.to_dict(), "auto_processing": auto_process}
 
@@ -1061,8 +1080,8 @@ async def upload_rag_document(request: Request, background_tasks: BackgroundTask
     if not file:
         raise HTTPException(status_code=400, detail="No file provided")
     
-    chunk_size = int(form.get('chunk_size', 512))
-    chunk_overlap = int(form.get('chunk_overlap', 50))
+    chunk_size = int(form.get('chunk_size', 800))
+    chunk_overlap = int(form.get('chunk_overlap', 80))
     domain_id = form.get('domain_id')
     build_knowledge_graph = str(form.get('build_knowledge_graph', 'false')).lower() in ('true', '1', 'yes')
     
@@ -1138,6 +1157,7 @@ async def upload_rag_document(request: Request, background_tasks: BackgroundTask
     if process_func:
         background_tasks.add_task(
             process_func,
+            request,
             result.id,
             'semantic',
             chunk_size,
@@ -1145,6 +1165,8 @@ async def upload_rag_document(request: Request, background_tasks: BackgroundTask
             None
         )
         logger.info(f"Queued uploaded document {result.id} for background processing")
+    else:
+        raise HTTPException(status_code=503, detail="Document processing worker not available")
     
     # Auto-extract to Knowledge Graph if requested and GraphRAG is enabled
     if build_knowledge_graph and GRAPHRAG_ENABLED and GRAPHRAG_URL:
@@ -1287,7 +1309,7 @@ async def process_document(request: Request, document_id: str, background_tasks:
     if not rag['document_manager'] or not rag['vector_store']:
         raise HTTPException(status_code=503, detail="RAG components not initialized")
     
-    data = await request.json()
+    data = await read_json_body(request)
     
     doc = await rag['document_manager'].get_document(document_id)
     if not doc:
@@ -1300,12 +1322,15 @@ async def process_document(request: Request, document_id: str, background_tasks:
         if process_func:
             background_tasks.add_task(
                 process_func,
+                request,
                 document_id,
                 data.get('chunking_strategy', 'semantic'),
                 data.get('chunk_size'),
                 data.get('chunk_overlap'),
                 data.get('embedding_model')
             )
+        else:
+            raise HTTPException(status_code=503, detail="Document processing worker not available")
         return {
             "status": "queued",
             "document_id": document_id,
@@ -1332,7 +1357,7 @@ async def reprocess_document(request: Request, document_id: str, background_task
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    data = await request.json()
+    data = await read_json_body(request)
     
     # Delete existing vectors
     domain = await rag['document_manager'].get_domain(doc.domain_id)
@@ -1366,12 +1391,15 @@ async def reprocess_document(request: Request, document_id: str, background_task
     if process_func:
         background_tasks.add_task(
             process_func,
+            request,
             document_id,
             data.get('chunking_strategy', 'semantic'),
             data.get('chunk_size'),
             data.get('chunk_overlap'),
             data.get('embedding_model')
         )
+    else:
+        raise HTTPException(status_code=503, detail="Document processing worker not available")
     
     return {
         "status": "queued",
@@ -1492,7 +1520,7 @@ async def _auto_extract_knowledge(document_id: str, domain: str, document_manage
         if not doc:
             logger.error(f"KG extraction: document {document_id} not found")
             return
-        if doc.status == DocumentStatus.PROCESSED:
+        if doc.status == DocumentStatus.READY:
             break
         if doc.status == DocumentStatus.ERROR:
             logger.warning(f"KG extraction: document {document_id} failed processing, skipping KG")
@@ -1654,7 +1682,7 @@ async def batch_process_documents(request: Request, background_tasks: Background
     if not rag['document_manager'] or not rag['vector_store']:
         raise HTTPException(status_code=503, detail="RAG components not initialized")
     
-    data = await request.json()
+    data = await read_json_body(request)
     document_ids = data.get('document_ids', [])
     
     if not document_ids:
@@ -1674,12 +1702,15 @@ async def batch_process_documents(request: Request, background_tasks: Background
         for doc_id in document_ids:
             background_tasks.add_task(
                 process_func,
+                request,
                 doc_id,
                 data.get('chunking_strategy', 'semantic'),
                 data.get('chunk_size'),
                 data.get('chunk_overlap'),
                 data.get('embedding_model')
             )
+    else:
+        raise HTTPException(status_code=503, detail="Document processing worker not available")
     
     return {
         "status": "queued",
@@ -1696,7 +1727,7 @@ async def process_all_pending(request: Request, background_tasks: BackgroundTask
     if not rag['document_manager'] or not rag['vector_store']:
         raise HTTPException(status_code=503, detail="RAG components not initialized")
     
-    data = await request.json()
+    data = await read_json_body(request)
     domain_id = data.get('domain_id')
     
     from modules.rag.document_manager import DocumentStatus
@@ -1719,12 +1750,15 @@ async def process_all_pending(request: Request, background_tasks: BackgroundTask
         for doc in docs:
             background_tasks.add_task(
                 process_func,
+                request,
                 doc.id,
                 data.get('chunking_strategy', 'semantic'),
                 data.get('chunk_size'),
                 data.get('chunk_overlap'),
                 data.get('embedding_model')
             )
+    else:
+        raise HTTPException(status_code=503, detail="Document processing worker not available")
     
     return {
         "status": "queued",
@@ -1751,7 +1785,7 @@ async def reindex_all_documents(request: Request, background_tasks: BackgroundTa
     if not rag['document_manager'] or not rag['vector_store']:
         raise HTTPException(status_code=503, detail="RAG components not initialized")
     
-    data = await request.json()
+    data = await read_json_body(request)
     domain_id = data.get('domain_id')
     embedding_model = data.get('embedding_model')
     chunking_strategy = data.get('chunking_strategy', 'semantic')
@@ -1825,12 +1859,15 @@ async def reindex_all_documents(request: Request, background_tasks: BackgroundTa
         for doc in docs:
             background_tasks.add_task(
                 process_func,
+                request,
                 doc.id,
                 chunking_strategy,
                 None,  # chunk_size
                 None,  # chunk_overlap  
                 embedding_model
             )
+    else:
+        raise HTTPException(status_code=503, detail="Document processing worker not available")
     
     return {
         "status": "queued",
@@ -3207,9 +3244,11 @@ async def process_document_background(
         
         # Fallback to standard chunking if GraphRAG not used
         if raw_chunks is None:
+            effective_chunk_size = chunk_size or (domain.chunk_size if domain else 800)
             config = ChunkingConfig(
-                chunk_size=chunk_size or (domain.chunk_size if domain else 512),
-                chunk_overlap=chunk_overlap or (domain.chunk_overlap if domain else 50)
+                chunk_size=effective_chunk_size,
+                chunk_overlap=chunk_overlap or (domain.chunk_overlap if domain else 80),
+                max_chunk_size=effective_chunk_size
             )
             
             if chunking_strategy == 'fixed':
@@ -3249,7 +3288,7 @@ async def process_document_background(
         # KEY FIX: Use domain.embedding_model when embedding_model is None
         model_name = embedding_model or (domain.embedding_model if domain else 'nomic-embed-text-v1.5')
         logger.info(f"Using embedding model: {model_name} for document {document_id}")
-        embedder = create_embedder(model_name=model_name)
+        embedder = create_embedder(request, model_name=model_name)
         
         # ==========================================
         # VLM Visual Processing for PDF Documents
@@ -3456,6 +3495,7 @@ async def process_document_background(
         doc.chunk_count = len(chunks)
         doc.token_count = embed_result.token_count
         doc.processed_at = datetime.utcnow().isoformat()
+        doc.error_message = None
         await rag['document_manager'].update_document(doc)
         
         logger.info(f"Successfully processed document {document_id}: {len(chunks)} chunks ({len(raw_chunks)} text + {len(visual_descriptions)} visual)")
