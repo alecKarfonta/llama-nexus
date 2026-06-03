@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from enhanced_logger import enhanced_logger as logger
-from app_state import manager, vllm_manager
+from app_state import manager, vllm_manager, _merge_and_persist_config
 import os
 
 try:
@@ -259,45 +259,49 @@ async def get_current_model():
 
 @router.get("/config/presets")
 async def get_config_presets():
-    """Get available configuration presets"""
-    return [
+    """Get available configuration presets (full deploy + sampling-only)."""
+    from modules.llamacpp_deploy_presets import LLAMACPP_DEPLOY_PRESETS, SAMPLING_PRESETS
+
+    deploy = [
         {
-            "id": "balanced",
-            "name": "Balanced",
-            "description": "Good balance between quality and speed",
-            "config": {"sampling": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05}}
-        },
-        {
-            "id": "creative",
-            "name": "Creative",
-            "description": "More creative and varied outputs",
-            "config": {"sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 40, "repeat_penalty": 1.0}}
-        },
-        {
-            "id": "precise",
-            "name": "Precise",
-            "description": "More deterministic and focused outputs",
-            "config": {"sampling": {"temperature": 0.3, "top_p": 0.5, "top_k": 10, "repeat_penalty": 1.1}}
-        },
-        {
-            "id": "fast",
-            "name": "Fast Inference",
-            "description": "Optimized for speed",
-            "config": {"performance": {"batch_size": 512, "ubatch_size": 128, "num_predict": 2048}}
+            "id": p["id"],
+            "name": p["name"],
+            "description": p["description"],
+            "category": p["category"],
+            "preset_type": "deploy",
+            "config": p["config"],
         }
+        for p in LLAMACPP_DEPLOY_PRESETS
     ]
+    sampling = [
+        {
+            "id": p["id"],
+            "name": p["name"],
+            "description": p["description"],
+            "category": p["category"],
+            "preset_type": "sampling",
+            "config": p["config"],
+        }
+        for p in SAMPLING_PRESETS
+    ]
+    return deploy + sampling
 
 @router.post("/config/presets/{preset_id}/apply")
 async def apply_config_preset(preset_id: str):
-    """Apply a configuration preset"""
+    """Apply a configuration preset (deep-merge into current llama.cpp config)."""
     presets = await get_config_presets()
     preset = next((p for p in presets if p["id"] == preset_id), None)
-    
+
     if not preset:
         raise HTTPException(status_code=404, detail=f"Preset {preset_id} not found")
-    
-    updated_config = manager.update_config(preset["config"])
-    return {"status": "success", "preset": preset_id}
+
+    _merge_and_persist_config(preset["config"])
+    return {
+        "status": "success",
+        "preset": preset_id,
+        "config": manager.config,
+        "command": " ".join(manager.build_command()),
+    }
 
 @router.post("/vram/estimate")
 async def estimate_vram_api(request: Request):

@@ -189,6 +189,19 @@ class LlamaCPPManager:
                     cmd_list.extend([flag, str(value)])
                 else:
                     cmd_list.extend([flag, value])
+
+        def add_dry_sampling_params(cmd_list, sampling: Dict[str, Any]):
+            """Emit DRY flags only when DRY is enabled (non-zero multiplier)."""
+            multiplier = sampling.get("dry_multiplier")
+            if multiplier is None or multiplier == 0 or multiplier == 0.0:
+                return
+            add_param_if_set(cmd_list, "--dry-multiplier", multiplier)
+            add_param_if_set(cmd_list, "--dry-base", sampling.get("dry_base"))
+            add_param_if_set(cmd_list, "--dry-allowed-length", sampling.get("dry_allowed_length"))
+            penalty_last_n = sampling.get("dry_penalty_last_n")
+            # 0 disables DRY range checking in llama.cpp — omit (same as default off)
+            if penalty_last_n is not None and penalty_last_n != 0:
+                add_param_if_set(cmd_list, "--dry-penalty-last-n", penalty_last_n)
         
         cmd = [
             "llama-server",
@@ -269,10 +282,7 @@ class LlamaCPPManager:
         add_param_if_set(cmd, "--repeat-last-n", self.config["sampling"].get("repeat_last_n"))
         add_param_if_set(cmd, "--frequency-penalty", self.config["sampling"].get("frequency_penalty"))
         add_param_if_set(cmd, "--presence-penalty", self.config["sampling"].get("presence_penalty"))
-        add_param_if_set(cmd, "--dry-multiplier", self.config["sampling"].get("dry_multiplier"))
-        add_param_if_set(cmd, "--dry-base", self.config["sampling"].get("dry_base"))
-        add_param_if_set(cmd, "--dry-allowed-length", self.config["sampling"].get("dry_allowed_length"))
-        add_param_if_set(cmd, "--dry-penalty-last-n", self.config["sampling"].get("dry_penalty_last_n"))
+        add_dry_sampling_params(cmd, self.config["sampling"])
         
         # Add advanced sampling parameters
         add_param_if_set(cmd, "--top-n-sigma", self.config["sampling"].get("top_n_sigma"))

@@ -48,6 +48,14 @@ import axios, { AxiosError } from 'axios'
 import LlamaCppCommitSelector from '@/components/LlamaCppCommitSelector'
 import LogViewer, { LogViewerRef } from '@/components/LogViewer'
 import { settingsManager } from '@/utils/settings'
+import {
+  LLAMACPP_DEPLOY_PRESETS,
+  SAMPLING_PRESETS,
+  DEPLOY_PRESET_CHIP_COLOR,
+  SAMPLING_PRESET_CHIP_COLOR,
+  type LlamaCppDeployPreset,
+  type SamplingPreset,
+} from '@/config/llamacppDeployPresets'
 
 function formatServiceActionError(err: unknown): string {
   if (axios.isAxiosError(err)) {
@@ -468,73 +476,31 @@ function mergeVllmApiWithDefaults(raw: unknown): VllmConfig | null {
   }
 }
 
-// Parameter Presets for different use cases
-interface ParameterPreset {
-  name: string;
-  description: string;
-  category: 'coding' | 'creative' | 'balanced' | 'precise';
-  sampling: Partial<Config['sampling']>;
-  performance?: Partial<Config['performance']>;
+/** Deep-merge preset partials into an existing deploy config */
+function mergeDeployPresetConfig(base: Config, preset: LlamaCppDeployPreset['config']): Config {
+  const next: Config = {
+    ...base,
+    model: { ...base.model, ...(preset.model ?? {}) },
+    sampling: { ...base.sampling, ...(preset.sampling ?? {}) },
+    performance: { ...base.performance, ...(preset.performance ?? {}) },
+    server: { ...base.server, ...(preset.server ?? {}) },
+  }
+  if (preset.speculative !== undefined) {
+    next.speculative = {
+      model_draft: '',
+      gpu_layers_draft: undefined,
+      ctx_size_draft: undefined,
+      draft_max: undefined,
+      draft_min: undefined,
+      draft_p_min: undefined,
+      ...preset.speculative,
+    }
+  }
+  if (preset.server?.reasoning_budget === 0) {
+    next.server = { ...next.server, reasoning_format: undefined }
+  }
+  return next
 }
-
-const PARAMETER_PRESETS: ParameterPreset[] = [
-  {
-    name: 'Balanced',
-    description: 'Good general-purpose settings for most tasks',
-    category: 'balanced',
-    sampling: {
-      temperature: 0.7,
-      top_p: 0.8,
-      top_k: 20,
-      min_p: 0.03,
-      repeat_penalty: 1.05,
-      frequency_penalty: 0.3,
-      presence_penalty: 0.2,
-    },
-  },
-  {
-    name: 'Coding',
-    description: 'Optimized for code generation with higher precision',
-    category: 'coding',
-    sampling: {
-      temperature: 0.2,
-      top_p: 0.95,
-      top_k: 40,
-      min_p: 0.05,
-      repeat_penalty: 1.1,
-      frequency_penalty: 0.1,
-      presence_penalty: 0.0,
-    },
-  },
-  {
-    name: 'Creative',
-    description: 'Higher creativity for storytelling and brainstorming',
-    category: 'creative',
-    sampling: {
-      temperature: 1.0,
-      top_p: 0.9,
-      top_k: 50,
-      min_p: 0.02,
-      repeat_penalty: 1.15,
-      frequency_penalty: 0.5,
-      presence_penalty: 0.5,
-    },
-  },
-  {
-    name: 'Precise',
-    description: 'Maximum determinism for factual and analytical tasks',
-    category: 'precise',
-    sampling: {
-      temperature: 0.1,
-      top_p: 0.5,
-      top_k: 10,
-      min_p: 0.1,
-      repeat_penalty: 1.0,
-      frequency_penalty: 0.0,
-      presence_penalty: 0.0,
-    },
-  },
-];
 
 // LocalStorage key for persisting deployment settings (llama.cpp config, API keys, backend toggle, vLLM snapshot)
 const DEPLOY_SETTINGS_KEY = 'llama-nexus-deploy-settings'
@@ -607,6 +573,53 @@ const saveApiKeys = (keys: string[]) => {
   }
 };
 
+/** Paths for optional llama.cpp params — cleared fields must be sent as null so merge drops them. */
+const OPTIONAL_LLAMACPP_PATHS: string[] = (() => {
+  const paths: string[] = []
+  for (const [section, fields] of Object.entries(DEFAULT_VALUES)) {
+    if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
+      for (const key of Object.keys(fields as object)) {
+        paths.push(`${section}.${key}`)
+      }
+    }
+  }
+  return paths
+})()
+
+function setAtPath(obj: Record<string, unknown>, parts: string[], value: unknown) {
+  let ref: Record<string, unknown> = obj
+  for (let i = 0; i < parts.length - 1; i++) {
+    const p = parts[i]
+    if (typeof ref[p] !== 'object' || ref[p] === null || Array.isArray(ref[p])) {
+      ref[p] = {}
+    }
+    ref = ref[p] as Record<string, unknown>
+  }
+  ref[parts[parts.length - 1]] = value
+}
+
+/** Serialize config for backend preview/save — explicit null clears optional params on merge. */
+function prepareConfigForBackend(cfg: Config): Record<string, unknown> {
+  const out = JSON.parse(
+    JSON.stringify(cfg, (_key, value) => (value === undefined ? null : value))
+  ) as Record<string, unknown>
+  for (const path of OPTIONAL_LLAMACPP_PATHS) {
+    const parts = path.split('.')
+    let src: unknown = cfg
+    for (const p of parts) {
+      if (src == null || typeof src !== 'object') {
+        src = undefined
+        break
+      }
+      src = (src as Record<string, unknown>)[p]
+    }
+    if (src === undefined) {
+      setAtPath(out, parts, null)
+    }
+  }
+  return out
+}
+
 // Reusable component for parameter inputs with descriptions and reset functionality
 interface ParameterFieldProps {
   label: string;
@@ -638,7 +651,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
   onReset,
 }) => {
   const isEmpty = value === '' || value === null || value === undefined;
-  const isDefault = value === defaultValue || (isEmpty && defaultValue === '');
+  const isDefault = isEmpty;
 
   return (
     <Box sx={{ position: 'relative' }}>
@@ -646,7 +659,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
         <>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
             <Typography gutterBottom sx={{ fontSize: '0.875rem', mb: 0 }}>{label}</Typography>
-            <Tooltip title={isEmpty ? `Set to default (${defaultValue})` : `Clear (use llama-server default)`}>
+            <Tooltip title={isEmpty ? 'Using llama-server default (not in command)' : 'Clear — omit from command (llama-server default)'}>
               <IconButton
                 size="small"
                 onClick={() => onReset(path)}
@@ -664,7 +677,7 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
           <Select
             fullWidth
             value={value || ''}
-            onChange={(e) => onChange(path, e.target.value === '' ? undefined : e.target.value)}
+            onChange={(e) => onChange(path, e.target.value === '' ? null : e.target.value)}
             sx={{
               fontSize: '0.875rem',
               '& .MuiOutlinedInput-root': {
@@ -693,10 +706,10 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
           onChange={(e) => {
             const inputValue = e.target.value;
             if (inputValue === '') {
-              onChange(path, undefined);
+              onChange(path, null);
             } else if (type === 'number') {
               const numValue = step && step < 1 ? parseFloat(inputValue) : parseInt(inputValue);
-              onChange(path, isNaN(numValue) ? undefined : numValue);
+              onChange(path, isNaN(numValue) ? null : numValue);
             } else {
               onChange(path, inputValue);
             }
@@ -704,10 +717,10 @@ const ParameterField: React.FC<ParameterFieldProps> = ({
           inputProps={{ min, max, step }}
           InputProps={{
             endAdornment: (
-              <Tooltip title={isEmpty ? `Set to default (${defaultValue})` : `Clear (use llama-server default)`}>
+              <Tooltip title={isEmpty ? 'Using llama-server default (not in command)' : 'Clear — omit from command (llama-server default)'}>
                 <IconButton
                   size="small"
-                  onClick={() => onChange(path, undefined)}
+                  onClick={() => onChange(path, null)}
                   sx={{
                     opacity: 1,
                     transition: 'opacity 0.2s',
@@ -787,7 +800,8 @@ export const DeployPage: React.FC = () => {
   // Ref for LogViewer to control logs
   const logViewerRef = useRef<LogViewerRef>(null)
 
-  // Parameter preset selection
+  // Preset selection (full deploy + sampling-only)
+  const [selectedDeployPreset, setSelectedDeployPreset] = useState<string | null>(null)
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null)
 
   // Log component mount
@@ -978,29 +992,43 @@ export const DeployPage: React.FC = () => {
     }
   }
 
-  // Apply a parameter preset
-  const applyPreset = (preset: ParameterPreset) => {
-    deployLog('preset', `Applying preset: ${preset.name}`, { sampling: preset.sampling })
+  const applyDeployPreset = (preset: LlamaCppDeployPreset) => {
+    deployLog('deployPreset', `Applying deploy preset: ${preset.id}`, preset.config)
+    if (!config) {
+      deployLog('deployPreset', 'ABORT: config is null')
+      return
+    }
+    const nextConfig = mergeDeployPresetConfig(config, preset.config)
+    setConfig(nextConfig)
+    if (preset.config.template?.selected !== undefined) {
+      setSelectedTemplate(preset.config.template.selected)
+    }
+    setSelectedDeployPreset(preset.id)
+    setSelectedPreset(null)
+    saveDeploySettings(nextConfig, selectedApiKey)
+    updateCommandPreview(nextConfig)
+    deployLog('deployPreset', 'Deploy preset applied successfully')
+  }
+
+  const applySamplingPreset = (preset: SamplingPreset) => {
+    deployLog('preset', `Applying sampling preset: ${preset.name}`, { sampling: preset.sampling })
     if (!config) {
       deployLog('preset', 'ABORT: config is null')
-      return;
+      return
     }
-
-    setConfig({
+    const nextConfig = {
       ...config,
       sampling: {
         ...config.sampling,
         ...preset.sampling,
       },
-      ...(preset.performance && {
-        performance: {
-          ...config.performance,
-          ...preset.performance,
-        },
-      }),
-    });
-    setSelectedPreset(preset.name);
-    deployLog('preset', 'Preset applied successfully')
+    }
+    setConfig(nextConfig)
+    setSelectedPreset(preset.name)
+    setSelectedDeployPreset(null)
+    saveDeploySettings(nextConfig, selectedApiKey)
+    updateCommandPreview(nextConfig)
+    deployLog('preset', 'Sampling preset applied successfully')
   }
 
   // Fetch VRAM estimation when config changes
@@ -1249,9 +1277,7 @@ export const DeployPage: React.FC = () => {
     deployLog('commandPreview', 'Updating command preview', { modelName: configToPreview?.model?.name, backend })
     try {
       // Convert undefined values to null so they get properly serialized and handled by backend
-      const configForPreview = JSON.parse(JSON.stringify(configToPreview, (key, value) => {
-        return value === undefined ? null : value
-      }))
+      const configForPreview = prepareConfigForBackend(configToPreview)
 
       // Send the config to backend to get command preview without saving
       deployLog('commandPreview', 'Sending preview request to backend')
@@ -1358,8 +1384,8 @@ export const DeployPage: React.FC = () => {
   )
 
   const resetToDefault = (path: string) => {
-    // Set to undefined so backend skips the parameter (uses llama-server defaults)
-    updateConfig(path, undefined)
+    // null → backend merge clears the key; param omitted from llama-server command
+    updateConfig(path, null)
   }
 
   const getDefaultValue = (path: string) => {
@@ -1488,9 +1514,7 @@ export const DeployPage: React.FC = () => {
       setSaving(true)
 
       // Convert undefined values to null for proper backend handling
-      const configForSave = JSON.parse(JSON.stringify(config, (key, value) => {
-        return value === undefined ? null : value
-      }))
+      const configForSave = prepareConfigForBackend(config)
 
       deployLog('save', 'Sending save request', { model: configForSave.model })
       const data = await (async () => {
@@ -1537,9 +1561,7 @@ export const DeployPage: React.FC = () => {
       if (backend === 'vllm' && vllmConfig) {
         configForAction = JSON.parse(JSON.stringify(vllmConfig))
       } else if (config) {
-        configForAction = JSON.parse(JSON.stringify(config, (key, value) => {
-          return value === undefined ? null : value
-        }))
+        configForAction = prepareConfigForBackend(config)
       }
 
       // Ensure the current template selection is included in the config
@@ -1958,14 +1980,16 @@ export const DeployPage: React.FC = () => {
                 const sectionDefaults = DEFAULT_VALUES[section as keyof typeof DEFAULT_VALUES];
                 if (sectionDefaults && resetConfig[section as keyof Config]) {
                   Object.keys(sectionDefaults).forEach(key => {
-                    // Set to undefined so backend uses llama-server defaults
-                    (resetConfig[section as keyof Config] as any)[key] = undefined;
+                    // null → backend merge clears optional params (omitted from command)
+                    (resetConfig[section as keyof Config] as any)[key] = null;
                   });
                 }
               });
 
               deployLog('reset', 'Config reset to defaults', { modelName: resetConfig.model?.name })
               setConfig(resetConfig);
+              setSelectedDeployPreset(null);
+              setSelectedPreset(null);
               saveDeploySettings(resetConfig, selectedApiKey);
 
               // Update command line preview
@@ -2192,6 +2216,32 @@ export const DeployPage: React.FC = () => {
         <CardContent>
           {backend === 'llamacpp' && (
           <>
+          <Box sx={{ mb: 2.5 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontSize: '0.75rem' }}>
+              One-Click Presets
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              {LLAMACPP_DEPLOY_PRESETS.map((preset) => (
+                <Tooltip key={preset.id} title={preset.description}>
+                  <Chip
+                    label={preset.name}
+                    size="small"
+                    variant={selectedDeployPreset === preset.id ? 'filled' : 'outlined'}
+                    color={DEPLOY_PRESET_CHIP_COLOR[preset.category]}
+                    onClick={() => applyDeployPreset(preset)}
+                    sx={{
+                      cursor: 'pointer',
+                      fontWeight: selectedDeployPreset === preset.id ? 600 : 400,
+                      '&:hover': { opacity: 0.85 },
+                    }}
+                  />
+                </Tooltip>
+              ))}
+            </Box>
+            <FormHelperText sx={{ mt: 0.75, fontSize: '0.6875rem' }}>
+              Conversation-optimized for 4×3090 Ti — thinking off, GGUF jinja, f16 KV, short n-predict. Pick a preset then Save + Restart.
+            </FormHelperText>
+          </Box>
           <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Model</Typography>
           <Grid container spacing={2}>
             <Grid item xs={12} md={6}>
@@ -3345,18 +3395,14 @@ export const DeployPage: React.FC = () => {
                   Quick Presets:
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                  {PARAMETER_PRESETS.map((preset) => (
+                  {SAMPLING_PRESETS.map((preset) => (
                     <Tooltip key={preset.name} title={preset.description}>
                       <Chip
                         label={preset.name}
                         size="small"
                         variant={selectedPreset === preset.name ? 'filled' : 'outlined'}
-                        color={
-                          preset.category === 'coding' ? 'info' :
-                            preset.category === 'creative' ? 'secondary' :
-                              preset.category === 'precise' ? 'success' : 'primary'
-                        }
-                        onClick={() => applyPreset(preset)}
+                        color={SAMPLING_PRESET_CHIP_COLOR[preset.category]}
+                        onClick={() => applySamplingPreset(preset)}
                         sx={{
                           cursor: 'pointer',
                           fontWeight: selectedPreset === preset.name ? 600 : 400,

@@ -32,6 +32,6 @@
       "@/pages/*": ["src/pages/*"]
     }
   },
-  "include": ["src", "vite-env.d.ts", "src/types/react-app-env.d.ts", "src/types/mui.d.ts", "src/types/react-shim.d.ts", "src/types/jsx-runtime.d.ts"],
+  "include": ["src", "vite-env.d.ts"],
   "types": ["vite/client", "react", "react-dom"]
 }

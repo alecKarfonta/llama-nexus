@@ -58,6 +58,8 @@ def _merge_and_persist_config(new_config: Dict[str, Any]):
     except Exception as e:
         logger.error(f"Failed to persist configuration: {e}")
 
+    return manager.config
+
 # RAG Embedding Configuration
 USE_DEPLOYED_EMBEDDINGS = os.getenv("USE_DEPLOYED_EMBEDDINGS", "false").lower() == "true"
 EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "http://llamacpp-embed:8080/v1")
