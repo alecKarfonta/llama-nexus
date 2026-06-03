@@ -132,6 +132,17 @@ async def lifespan(app: FastAPI):
                     else:
                         # For categories without required fields, add empty dict
                         saved_config[category] = {}
+
+            execution = saved_config.get("execution", {})
+            mode = execution.get("mode")
+            if mode not in (None, "gpu", "cpu"):
+                logger.warning(
+                    f"Unknown execution.mode={mode!r} in saved config; resetting to 'gpu' for managed Docker launches"
+                )
+                execution["mode"] = "gpu"
+            if not str(execution.get("cuda_devices") or "").strip():
+                execution["cuda_devices"] = default_config["execution"]["cuda_devices"]
+            saved_config["execution"] = execution
             manager.config = saved_config
 
     # Initialize RAG system

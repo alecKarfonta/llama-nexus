@@ -1,11 +1,13 @@
 """LlamaCPP commit management routes."""
 from fastapi import APIRouter, HTTPException
 from pathlib import Path
+import os
 import re
 import subprocess
 import httpx
 
 from enhanced_logger import enhanced_logger as logger
+from app_state import vllm_manager
 
 router = APIRouter(prefix="/api/v1", tags=["llamacpp"])
 
@@ -351,10 +353,13 @@ async def apply_vllm_openai_image_tag(image_tag: str):
 async def rebuild_vllm_api():
     """Rebuild and recreate vllm-api via compose (profile vllm)."""
     try:
-        compose_file = "/home/alec/git/llama-nexus/docker-compose.yml"
+        project_dir = os.getenv("PROJECT_DIR", "/home/alec/git/llama-nexus")
+        compose_file = os.path.join(project_dir, "docker-compose.yml")
 
         if not Path(compose_file).exists():
             raise HTTPException(status_code=500, detail=f"Docker compose file not found: {compose_file}")
+
+        rebuild_env = {**os.environ, **vllm_manager.compose_launch_environment()}
 
         result = subprocess.run(
             [
@@ -369,7 +374,8 @@ async def rebuild_vllm_api():
                 "--build",
                 "vllm-api",
             ],
-            cwd="/home/alec/git/llama-nexus",
+            cwd=project_dir,
+            env=rebuild_env,
             capture_output=True,
             text=True,
             timeout=3600,

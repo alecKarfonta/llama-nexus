@@ -79,7 +79,8 @@ services:
       - N_CPU_MOE=0
       - API_KEY=${API_KEY:-placeholder-api-key}
       - TEMPLATE_PATH=/home/llamacpp/chat-template.jinja
-      # Enable Docker mode and set container name
+      # Docker socket + compose project root (read-only mount at this path)
+      - PROJECT_DIR=/home/alec/git/llama-nexus
       - USE_DOCKER=true
       - RUNNING_IN_DOCKER=true
       - LLAMACPP_CONTAINER_NAME=llamacpp-api
@@ -287,7 +288,7 @@ services:
     container_name: vllm-api
     hostname: vllm
     ports:
-      - "8601:8080"
+      - "${VLLM_PUBLISHED_PORT:-8601}:${PORT:-8080}"
     shm_size: '16gb'
     ipc: host
     deploy:
@@ -298,25 +299,43 @@ services:
               device_ids: [ 'all' ]
               capabilities: [ gpu ]
     environment:
-      - MODEL_NAME=nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
-      - SERVED_MODEL_NAME=Nemotron-3-Nano-Omni-30B-A3B-Reasoning
-      - HOST=0.0.0.0
-      - PORT=8080
+      # Values substituted from the host env at `docker compose` time.
+      # The backend merges Deploy / VLLMManager.config here when starting or rebuilding vLLM.
+      - MODEL_NAME=${MODEL_NAME:-nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4}
+      - SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-Nemotron-3-Nano-Omni-30B-A3B-Reasoning}
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-8080}
       - API_KEY=${API_KEY:-placeholder-api-key}
-      - MAX_MODEL_LEN=16384
-      - GPU_MEMORY_UTILIZATION=0.95
-      - TENSOR_PARALLEL_SIZE=1
-      - KV_CACHE_DTYPE=fp8
-      - REASONING_PARSER=nemotron_v3
-      - TOOL_CALL_PARSER=qwen3_coder
-      - VIDEO_PRUNING_RATE=0.5
-      - VIDEO_FPS=2
-      - VIDEO_NUM_FRAMES=256
-      - MAX_NUM_SEQS=16
-      - MAX_NUM_BATCHED_TOKENS=8192
-      - ENABLE_CHUNKED_PREFILL=true
-      - 'LIMIT_MM_PER_PROMPT={"video":1,"image":5,"audio":1}'
-      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-16384}
+      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.95}
+      - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
+      - PIPELINE_PARALLEL_SIZE=${PIPELINE_PARALLEL_SIZE:-1}
+      - DATA_PARALLEL_SIZE=${DATA_PARALLEL_SIZE:-1}
+      - KV_CACHE_DTYPE=${KV_CACHE_DTYPE:-fp8}
+      - REASONING_PARSER=${REASONING_PARSER:-nemotron_v3}
+      - REASONING_PARSER_PLUGIN=${REASONING_PARSER_PLUGIN:-}
+      - TOOL_CALL_PARSER=${TOOL_CALL_PARSER:-qwen3_coder}
+      - VIDEO_PRUNING_RATE=${VIDEO_PRUNING_RATE:-0.5}
+      - VIDEO_FPS=${VIDEO_FPS:-2}
+      - VIDEO_NUM_FRAMES=${VIDEO_NUM_FRAMES:-256}
+      - MAX_NUM_SEQS=${MAX_NUM_SEQS:-16}
+      - MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-8192}
+      - VLLM_DTYPE=${VLLM_DTYPE:-auto}
+      - VLLM_QUANTIZATION=${VLLM_QUANTIZATION:-}
+      - MOE_BACKEND=${MOE_BACKEND:-}
+      - MAMBA_SSM_CACHE_DTYPE=${MAMBA_SSM_CACHE_DTYPE:-}
+      - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-true}
+      - VLLM_ENABLE_CHUNKED_PREFILL=${VLLM_ENABLE_CHUNKED_PREFILL:-true}
+      - VLLM_ASYNC_SCHEDULING=${VLLM_ASYNC_SCHEDULING:-true}
+      - TRUST_REMOTE_CODE=${TRUST_REMOTE_CODE:-true}
+      - VLLM_ENABLE_AUTO_TOOL_CHOICE=${VLLM_ENABLE_AUTO_TOOL_CHOICE:-true}
+      - VLLM_SPECULATIVE_CONFIG=${VLLM_SPECULATIVE_CONFIG:-}
+      - VLLM_NVFP4_GEMM_BACKEND=${VLLM_NVFP4_GEMM_BACKEND:-marlin}
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=${VLLM_ALLOW_LONG_MAX_MODEL_LEN:-1}
+      - VLLM_FLASHINFER_ALLREDUCE_BACKEND=${VLLM_FLASHINFER_ALLREDUCE_BACKEND:-trtllm}
+      - VLLM_USE_FLASHINFER_MOE_FP4=${VLLM_USE_FLASHINFER_MOE_FP4:-0}
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
+      - HF_TOKEN=${HF_TOKEN:-}
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
     volumes:

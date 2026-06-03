@@ -44,9 +44,24 @@ import {
 } from '@mui/icons-material'
 import { apiService } from '@/services/api'
 import type { ModelInfo } from '@/types/api'
+import axios, { AxiosError } from 'axios'
 import LlamaCppCommitSelector from '@/components/LlamaCppCommitSelector'
 import LogViewer, { LogViewerRef } from '@/components/LogViewer'
 import { settingsManager } from '@/utils/settings'
+
+function formatServiceActionError(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    const ax = err as AxiosError<{ detail?: unknown }>
+    const det = ax.response?.data?.detail
+    if (typeof det === 'string') return det
+    if (Array.isArray(det)) {
+      return det.map((x: { msg?: string }) => (typeof x?.msg === 'string' ? x.msg : JSON.stringify(x))).join('; ')
+    }
+    if (det != null) return String(det)
+    return ax.message || 'Request failed'
+  }
+  return err instanceof Error ? err.message : String(err)
+}
 
 // Local Config type mirrors backend snake_case fields to avoid camelCase/casing drift
 interface Config {
@@ -797,6 +812,22 @@ export const DeployPage: React.FC = () => {
     writeDeployStorage({ deployBackend: backend })
   }, [backend])
 
+  const refreshVllmStatus = useCallback(async () => {
+    try {
+      const r = await fetch('/api/v1/service/vllm/status')
+      if (r.ok) setVllmStatus(await r.json())
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  useEffect(() => {
+    if (backend !== 'vllm') return undefined
+    refreshVllmStatus()
+    const id = window.setInterval(() => refreshVllmStatus(), 5000)
+    return () => window.clearInterval(id)
+  }, [backend, refreshVllmStatus])
+
   // Reload config when backend selection changes
   useEffect(() => {
     if (loading) return
@@ -826,7 +857,11 @@ export const DeployPage: React.FC = () => {
           deployLog('backend', 'Loaded config for backend:', activeBackend)
           if (activeBackend === 'vllm') {
             const persisted = loadDeploySettings()
-            const raw = persisted.vllmConfig ?? cfgJson.config
+            // Server (/data/vllm_deploy_config.json + in-memory) is authoritative so Save/Start survive refresh.
+            const raw =
+              cfgJson.config != null && typeof cfgJson.config === 'object'
+                ? cfgJson.config
+                : persisted.vllmConfig
             const merged = mergeVllmApiWithDefaults(raw)
             if (merged == null) {
               setVllmReloadError('Server returned an invalid or empty vLLM configuration')
@@ -836,6 +871,7 @@ export const DeployPage: React.FC = () => {
               setVllmConfig(merged)
               setOriginalVllmConfig(JSON.parse(JSON.stringify(merged)))
               setVllmReloadError(null)
+              writeDeployStorage({ vllmConfig: merged })
             }
           } else {
             setConfig(cfgJson.config)
@@ -1531,7 +1567,7 @@ export const DeployPage: React.FC = () => {
       await apiService.performServiceAction(action === 'stop' ? { action, backend } : { action, backend, config: configForAction as any })
       deployLog('action', 'Action completed successfully')
 
-      // Refresh current model info after action
+      if (backend === 'vllm') await refreshVllmStatus()
       try {
         deployLog('action', 'Refreshing current model info')
         const res = await fetch(`/api/v1/models/current`)
@@ -1546,7 +1582,7 @@ export const DeployPage: React.FC = () => {
       setSuccess(`Service ${action}ed successfully`)
     } catch (e) {
       deployLog('action', 'Action failed:', e)
-      setError(e instanceof Error ? e.message : `Failed to ${action}`)
+      setError(formatServiceActionError(e))
     } finally {
       setActionLoading(null)
     }
@@ -1875,6 +1911,21 @@ export const DeployPage: React.FC = () => {
                 <ToggleButton value="llamacpp">llama.cpp</ToggleButton>
                 <ToggleButton value="vllm">vLLM</ToggleButton>
               </ToggleButtonGroup>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1, mt: 1.25 }}>
+                {backend === 'vllm' && vllmStatus && (
+                  <Chip
+                    size="small"
+                    label={vllmStatus.running ? 'vLLM: running' : 'vLLM: stopped'}
+                    color={vllmStatus.running ? 'success' : 'default'}
+                    variant={vllmStatus.running ? 'filled' : 'outlined'}
+                  />
+                )}
+                {backend === 'vllm' && vllmStatus?.last_action_error ? (
+                  <Tooltip title={vllmStatus.last_action_error}>
+                    <Chip size="small" label="Deploy warning" color="warning" variant="outlined" />
+                  </Tooltip>
+                ) : null}
+              </Box>
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1.25, fontSize: '0.75rem', maxWidth: 380 }}>
                 Backend choice and draft settings are remembered in this browser (same storage as llama.cpp deploy fields). After pulling UI changes: rebuild{' '}
                 <code style={{ fontSize: '0.7rem' }}>llamacpp-frontend</code> and hard-refresh (Ctrl+Shift+R).

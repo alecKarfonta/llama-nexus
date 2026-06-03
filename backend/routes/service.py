@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Dict, Any
 from datetime import datetime
+import copy
 import httpx
 import logging
 
@@ -26,6 +27,29 @@ def get_backend_manager(request: Request, backend: str = "llamacpp"):
     if backend == "vllm":
         return get_vllm_manager(request)
     return get_manager(request)
+
+
+async def _stop_other_backend_if_running(request: Request, backend: str) -> None:
+    """Ensure only one inference backend is active at a time."""
+    other_backend = "vllm" if backend == "llamacpp" else "llamacpp"
+    other_mgr = get_backend_manager(request, other_backend)
+    if other_mgr is None:
+        return
+    other_status = other_mgr.get_status() if hasattr(other_mgr, "get_status") else {}
+    if not other_status.get("running"):
+        return
+
+    logger.info("Stopping %s before %s to keep single active deployment", other_backend, backend)
+    stopped = await other_mgr.stop()
+    if stopped:
+        return
+
+    detail = f"Failed to stop {other_backend} before starting {backend}"
+    if other_backend == "vllm":
+        vm = get_vllm_manager(request)
+        if vm and vm.last_action_error:
+            detail = f"{detail}: {vm.last_action_error}"
+    raise HTTPException(status_code=500, detail=detail)
 
 
 def get_embedding_manager(request: Request):
@@ -205,6 +229,7 @@ async def update_config(request: Request, config: Dict[str, Any], backend: str =
             raise HTTPException(status_code=503, detail="vLLM manager not available")
         try:
             _deep_merge_config(mgr.config, config)
+            mgr.persist_deploy_config()
             return {
                 "success": True,
                 "config": mgr.config,
@@ -247,15 +272,10 @@ async def preview_config(request: Request, payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="Config is required")
 
     try:
-        original_config = mgr.config.copy()
+        original_config = copy.deepcopy(mgr.config)
 
-        # Deep merge for nested dicts
-        temp_config = original_config.copy()
-        for key, value in config.items():
-            if isinstance(value, dict) and isinstance(temp_config.get(key), dict):
-                temp_config[key] = {**temp_config[key], **value}
-            else:
-                temp_config[key] = value
+        temp_config = copy.deepcopy(mgr.config)
+        _deep_merge_config(temp_config, config)
 
         mgr.config = temp_config
         command = " ".join(mgr.build_command())
@@ -349,13 +369,12 @@ async def service_action(request: Request, payload: Dict[str, Any]):
                 logger.info(f"Directly updating manager config before {action}")
                 mgr.config = {**mgr.config, **config}
         elif backend == "vllm":
-            # Deep merge for vLLM nested config
             logger.info(f"Applying vLLM config before {action}")
-            for key, value in config.items():
-                if isinstance(value, dict) and isinstance(mgr.config.get(key), dict):
-                    mgr.config[key] = {**mgr.config[key], **value}
-                else:
-                    mgr.config[key] = value
+            _deep_merge_config(mgr.config, config)
+            mgr.persist_deploy_config()
+
+    if action in ("start", "restart"):
+        await _stop_other_backend_if_running(request, backend)
 
     if action == "start":
         success = await mgr.start()
@@ -365,7 +384,14 @@ async def service_action(request: Request, payload: Dict[str, Any]):
         success = await mgr.restart()
     else:
         raise HTTPException(status_code=400, detail="Unsupported action. Use 'start', 'stop', or 'restart'.")
-    return {"success": success, "status": mgr.get_status(), "backend": backend}
+    if not success:
+        parts = [f"{backend} failed to {action}"]
+        if backend == "vllm":
+            vm = get_vllm_manager(request)
+            if vm and vm.last_action_error:
+                parts.append(vm.last_action_error)
+        raise HTTPException(status_code=500, detail=" — ".join(parts))
+    return {"success": True, "status": mgr.get_status(), "backend": backend}
 
 
 # Alias endpoints for frontend compatibility
@@ -423,7 +449,7 @@ async def proxy_chat_completions(request: Request):
     vllm_mgr = get_vllm_manager(request)
 
     if vllm_mgr and vllm_mgr.is_running():
-        target = f"http://vllm-api:8080"
+        target = vllm_mgr.internal_http_base()
         # Inject vLLM API key if client didn't provide one
         if "authorization" not in {k.lower() for k in headers}:
             vllm_key = vllm_mgr.config.get("server", {}).get("api_key", "")
@@ -464,7 +490,7 @@ async def proxy_completions(request: Request):
     vllm_mgr = get_vllm_manager(request)
 
     if vllm_mgr and vllm_mgr.is_running():
-        target = f"http://vllm-api:8080"
+        target = vllm_mgr.internal_http_base()
         if "authorization" not in {k.lower() for k in headers}:
             vllm_key = vllm_mgr.config.get("server", {}).get("api_key", "")
             if vllm_key:

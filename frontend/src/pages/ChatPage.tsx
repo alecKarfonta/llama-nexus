@@ -194,6 +194,24 @@ function sanitizeTokensPerSecond(v: unknown): number | undefined {
   return n
 }
 
+function estimateDeltaTokens(text: string): number {
+  const newTokens = text.split(/[\s\n]+/).filter((t: string) => t.length > 0).length
+  return Math.max(1, newTokens)
+}
+
+/** Generation-phase tok/s (after first token, excluding prefill). */
+function computeGenerationTps(
+  tokens: number,
+  startMs: number,
+  firstTokenMs: number | null,
+  endMs: number,
+): number | null {
+  const genStart = firstTokenMs ?? startMs
+  const genTimeSec = (endMs - genStart) / 1000
+  if (tokens <= 0 || genTimeSec <= 0) return null
+  return sanitizeTokensPerSecond(tokens / genTimeSec) ?? null
+}
+
 /** Only OpenAI delta string content — never __verbose (can inject timing garbage into chat). */
 function normalizeDeltaContent(raw: unknown): string {
   if (raw == null) return ''
@@ -201,6 +219,19 @@ function normalizeDeltaContent(raw: unknown): string {
   const t = raw
   if (/^\s*\d+(?:\.\d+)?\s*(?:tok\/s|tokens?\s*\/\s*s)/i.test(t.trim())) return ''
   return t
+}
+
+/** Direct port URLs bypass the backend router (8600=llama.cpp, 8601=vLLM). */
+function isDirectInferencePortBaseUrl(baseUrl: string): boolean {
+  const trimmed = baseUrl?.trim()
+  if (!trimmed) return false
+  try {
+    const u = new URL(trimmed)
+    const port = u.port || (u.protocol === 'https:' ? '443' : '80')
+    return port === '8600' || port === '8601'
+  } catch {
+    return /:8600\b|:8601\b/.test(trimmed)
+  }
 }
 
 export const ChatPage: React.FC<ChatPageProps> = () => {
@@ -219,6 +250,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   };
 
   const [currentModelName, setCurrentModelName] = useState<string>('AI Model')
+  const [activeInferenceBackend, setActiveInferenceBackend] = useState<string | null>(null)
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -656,6 +688,26 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     restoreLastConversation();
   }, []);
 
+  // Use backend LLM proxy (not :8600/:8601) so chat follows whichever backend is deployed
+  useEffect(() => {
+    const alignConnectionWithActiveBackend = async () => {
+      try {
+        const backends = await apiService.getBackendsStatus()
+        setActiveInferenceBackend(backends.active || null)
+
+        const current = loadSettings()
+        if (!isDirectInferencePortBaseUrl(current.baseUrl)) return
+
+        const updated = { ...current, baseUrl: '' }
+        localStorage.setItem('chat-settings', JSON.stringify(updated))
+        setSettings(updated)
+      } catch (error) {
+        console.warn('Failed to align chat connection with active backend:', error)
+      }
+    }
+    alignConnectionWithActiveBackend()
+  }, [])
+
   // Fetch current model info on mount
   useEffect(() => {
     const fetchCurrentModel = async () => {
@@ -1049,6 +1101,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         top_k: settings.topK,
         max_tokens: settings.maxTokens,
         stream: settings.streamResponse,
+        ...(settings.streamResponse ? { stream_options: { include_usage: true } } : {}),
         tools: selectedToolsForRequest.length > 0 ? selectedToolsForRequest : undefined,
         tool_choice: selectedToolsForRequest.length > 0 ? 'auto' : undefined,
       }
@@ -1220,6 +1273,61 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
         let fullResponseText = ''
 
+        const applyUsage = (usage?: { prompt_tokens?: number; completion_tokens?: number }) => {
+          if (!usage) return
+          if (usage.prompt_tokens != null) {
+            performanceRef.current = {
+              ...performanceRef.current,
+              promptTokens: usage.prompt_tokens,
+            }
+          }
+          if (usage.completion_tokens != null && usage.completion_tokens > 0) {
+            tokenCount = usage.completion_tokens
+            performanceRef.current = {
+              ...performanceRef.current,
+              tokensGenerated: tokenCount,
+            }
+          }
+        }
+
+        const recordGenerationDelta = (deltaText: string) => {
+          if (!deltaText) return
+          if (!firstTokenReceived) {
+            firstTokenReceived = true
+            const firstTokenTime = performance.now()
+            performanceRef.current = {
+              ...performanceRef.current,
+              firstTokenTime,
+              timeToFirstToken: firstTokenTime - startTime,
+            }
+            setPerformanceMetrics({ ...performanceRef.current })
+          }
+
+          tokenCount += estimateDeltaTokens(deltaText)
+          const currentTime = performance.now()
+          const tps = computeGenerationTps(
+            tokenCount,
+            startTime,
+            performanceRef.current.firstTokenTime,
+            currentTime,
+          )
+          performanceRef.current = {
+            ...performanceRef.current,
+            tokensGenerated: tokenCount,
+            tokensPerSecond: tps,
+          }
+          setPerformanceMetrics({ ...performanceRef.current })
+
+          setMessages((prev: ChatMessage[]) => {
+            const newMessages = [...prev]
+            const lastMessage = newMessages[newMessages.length - 1]
+            if (lastMessage.role === 'assistant' && tps != null) {
+              lastMessage.tokensPerSecond = tps
+            }
+            return newMessages
+          })
+        }
+
         // TTS sentence chunking - send sentences as they complete for lower latency
         let ttsSentenceBuffer = ''
         const shouldStreamTTS = settings.voiceModeEnabled && settings.ttsEnabled && ttsServiceAvailable
@@ -1256,18 +1364,36 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
         while (true) {
           const { done, value } = await reader.read()
+          applyUsage(value?.usage)
+
           if (done) {
             console.log('Stream ended naturally')
-            // Finalize performance metrics
+            // Finalize performance metrics (generation phase, not including prefill)
             const endTime = performance.now()
-            const totalTime = (endTime - startTime) / 1000
+            const finalTps = computeGenerationTps(
+              tokenCount,
+              startTime,
+              performanceRef.current.firstTokenTime,
+              endTime,
+            )
             performanceRef.current = {
               ...performanceRef.current,
               endTime,
-              tokensPerSecond:
-                sanitizeTokensPerSecond(tokenCount > 0 && totalTime > 0 ? tokenCount / totalTime : null) ?? null,
+              tokensGenerated: tokenCount,
+              tokensPerSecond: finalTps,
             }
             setPerformanceMetrics({ ...performanceRef.current })
+
+            if (finalTps != null) {
+              setMessages((prev: ChatMessage[]) => {
+                const newMessages = [...prev]
+                const lastMessage = newMessages[newMessages.length - 1]
+                if (lastMessage.role === 'assistant') {
+                  lastMessage.tokensPerSecond = finalTps
+                }
+                return newMessages
+              })
+            }
 
             // Flush any remaining TTS content
             processTTSBuffer(true)
@@ -1313,42 +1439,13 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           }
 
           if (contentDelta) {
-            // Track first token time
-            if (!firstTokenReceived) {
-              firstTokenReceived = true
-              const firstTokenTime = performance.now()
-              performanceRef.current = {
-                ...performanceRef.current,
-                firstTokenTime,
-                timeToFirstToken: firstTokenTime - startTime,
-              }
-              setPerformanceMetrics({ ...performanceRef.current })
-            }
-
-            // Count tokens (rough estimate: split by whitespace and punctuation)
-            const newTokens = contentDelta.split(/[\s\n]+/).filter((t: string) => t.length > 0).length
-            tokenCount += Math.max(1, newTokens) // At least 1 token per chunk
-
-            // Accumulate for full response tracking
+            recordGenerationDelta(contentDelta)
             fullResponseText += contentDelta
 
-            // Feed TTS buffer and process any complete sentences
             if (shouldStreamTTS) {
               ttsSentenceBuffer += contentDelta
               processTTSBuffer(false)
             }
-
-            // Update metrics periodically
-            const currentTime = performance.now()
-            const elapsedTime = (currentTime - startTime) / 1000
-            const tpsClient = elapsedTime > 0 ? tokenCount / elapsedTime : undefined
-            const nextTps = sanitizeTokensPerSecond(tpsClient)
-            performanceRef.current = {
-              ...performanceRef.current,
-              tokensGenerated: tokenCount,
-              tokensPerSecond: nextTps ?? null,
-            }
-            setPerformanceMetrics({ ...performanceRef.current })
 
             setMessages((prev: ChatMessage[]) => {
               const newMessages = [...prev]
@@ -1401,35 +1498,13 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             // If there is no normal content delta, treat reasoning as the streamed response
             // (e.g. Qwen3 puts ALL output in reasoning_content)
             if (!contentDelta) {
-              if (!firstTokenReceived) {
-                firstTokenReceived = true
-                const firstTokenTime = performance.now()
-                performanceRef.current = {
-                  ...performanceRef.current,
-                  firstTokenTime,
-                  timeToFirstToken: firstTokenTime - startTime,
-                }
-                setPerformanceMetrics({ ...performanceRef.current })
-              }
-
-              const newTokens = reasoningDelta.split(/[\s\n]+/).filter((t: string) => t.length > 0).length
-              tokenCount += Math.max(1, newTokens)
-
+              recordGenerationDelta(reasoningDelta)
               fullResponseText += reasoningDelta
 
               if (shouldStreamTTS) {
                 ttsSentenceBuffer += reasoningDelta
                 processTTSBuffer(false)
               }
-
-              const currentTime = performance.now()
-              const elapsedTime = (currentTime - startTime) / 1000
-              performanceRef.current = {
-                ...performanceRef.current,
-                tokensGenerated: tokenCount,
-                tokensPerSecond: tokenCount / elapsedTime,
-              }
-              setPerformanceMetrics({ ...performanceRef.current })
             }
 
             setMessages((prev: ChatMessage[]) => {
@@ -1505,11 +1580,31 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   }
 
   const handleNonStreamingResponse = async (request: ChatCompletionRequest) => {
+    const startTime = performance.now()
     const response = await createChatCompletion(request)
+    const endTime = performance.now()
+    const usage = response.usage
+    const completionTokens = usage?.completion_tokens ?? 0
+    const finalTps = computeGenerationTps(completionTokens, startTime, startTime, endTime)
+    if (completionTokens > 0 || finalTps != null) {
+      performanceRef.current = {
+        ...performanceRef.current,
+        startTime,
+        endTime,
+        firstTokenTime: startTime,
+        timeToFirstToken: 0,
+        tokensGenerated: completionTokens,
+        tokensPerSecond: finalTps,
+        promptTokens: usage?.prompt_tokens ?? performanceRef.current.promptTokens,
+      }
+      setPerformanceMetrics({ ...performanceRef.current })
+    }
+
     const assistantMessage: ChatMessage = {
       ...response.choices[0].message,
       // Include reasoning_content if present (also check 'reasoning' field from vLLM)
-      reasoning_content: response.choices[0].message.reasoning_content || response.choices[0].message.reasoning
+      reasoning_content: response.choices[0].message.reasoning_content || response.choices[0].message.reasoning,
+      ...(finalTps != null ? { tokensPerSecond: finalTps } : {}),
     }
 
     // If content is empty but reasoning_content exists, use it as the visible content
@@ -1852,6 +1947,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         top_k: settings.topK,
         max_tokens: settings.maxTokens,
         stream: settings.streamResponse,
+        ...(settings.streamResponse ? { stream_options: { include_usage: true } } : {}),
         tools: selectedToolsForRequest.length > 0 ? selectedToolsForRequest : undefined,
         tool_choice: selectedToolsForRequest.length > 0 ? 'auto' : undefined,
       }
@@ -2430,6 +2526,18 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             <Typography variant="h6" gutterBottom sx={{ mt: 2, mb: 1 }}>
               Connection Settings
             </Typography>
+            {activeInferenceBackend && !settings.baseUrl && (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                Routing via backend proxy to active inference:{' '}
+                <Chip
+                  size="small"
+                  label={activeInferenceBackend === 'vllm' ? 'vLLM' : 'llama.cpp'}
+                  color="primary"
+                  variant="outlined"
+                  sx={{ ml: 0.5, height: 22 }}
+                />
+              </Typography>
+            )}
             <Grid container spacing={3} sx={{ mb: 3 }}>
               <Grid item xs={12} sm={6}>
                 <TextField
@@ -2542,11 +2650,11 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                 <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
                   <Button
                     size="small"
-                    variant="outlined"
+                    variant="contained"
                     onClick={() => saveSettings({ ...settings, baseUrl: '', endpoint: '/v1/chat/completions' })}
                     sx={{ fontSize: '0.75rem', textTransform: 'none' }}
                   >
-                    Local (Current Domain)
+                    Active backend (recommended)
                   </Button>
                   <Button
                     size="small"
@@ -2554,7 +2662,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     onClick={() => saveSettings({ ...settings, baseUrl: 'http://localhost:8600', endpoint: '/v1/chat/completions' })}
                     sx={{ fontSize: '0.75rem', textTransform: 'none' }}
                   >
-                    LlamaCPP (8600)
+                    LlamaCPP direct (8600)
                   </Button>
                   <Button
                     size="small"
@@ -2562,7 +2670,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                     onClick={() => saveSettings({ ...settings, baseUrl: 'http://localhost:8601', endpoint: '/v1/chat/completions' })}
                     sx={{ fontSize: '0.75rem', textTransform: 'none' }}
                   >
-                    vLLM (8601)
+                    vLLM direct (8601)
                   </Button>
                   <Button
                     size="small"

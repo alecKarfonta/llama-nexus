@@ -222,6 +222,12 @@ export interface ConfigUpdateRequest {
   validateOnly?: boolean;
 }
 
+export interface ServiceActionResponse {
+  success: boolean;
+  status: unknown;
+  backend?: string;
+}
+
 export interface ServiceActionRequest {
   action: 'start' | 'stop' | 'restart' | 'reload';
   backend?: 'llamacpp' | 'vllm';
@@ -254,6 +260,7 @@ export interface ChatCompletionRequest {
   frequency_penalty?: number;
   presence_penalty?: number;
   repeat_penalty?: number;
+  stream_options?: { include_usage?: boolean };
 }
 
 export interface ChatCompletionResponse {
@@ -288,6 +295,11 @@ export interface ChatCompletionChunk {
     };
     finish_reason: 'stop' | 'length' | 'content_filter' | 'tool_calls' | null;
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
 }
 
 // Function/Tool Calling Types

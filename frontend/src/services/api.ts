@@ -15,6 +15,7 @@ import type {
   ServiceStatus,
   ResourceMetrics,
   ServiceActionRequest,
+  ServiceActionResponse,
   ApiResponse,
   ModelDownload,
   ConfigurationPreset,
@@ -461,8 +462,9 @@ class ApiService {
     }
   }
 
-  async performServiceAction(request: ServiceActionRequest): Promise<void> {
-    await this.client.post('/v1/service/action', request);
+  async performServiceAction(request: ServiceActionRequest): Promise<ServiceActionResponse> {
+    const { data } = await this.client.post<ServiceActionResponse>('/v1/service/action', request);
+    return data;
   }
 
   async getBackendsStatus(): Promise<{

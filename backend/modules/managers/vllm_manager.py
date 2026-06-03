@@ -17,6 +17,17 @@ from collections import deque
 
 from enhanced_logger import enhanced_logger as logger
 
+VLLM_DEPLOY_CONFIG_PATH = os.getenv("VLLM_DEPLOY_CONFIG_PATH", "/data/vllm_deploy_config.json")
+
+
+def _deep_merge_dict(base: Dict[str, Any], incoming: Dict[str, Any]) -> None:
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge_dict(base[key], value)
+        else:
+            base[key] = value
+
+
 try:
     import docker
     DOCKER_AVAILABLE = True
@@ -41,6 +52,45 @@ class VLLMManager:
         self.websocket_clients = []
         self._log_reader_task = None
         self.broadcast_ws_event = None  # Wired up externally
+        self.last_action_error: Optional[str] = None
+        self._load_persisted_config_if_any()
+
+    def _load_persisted_config_if_any(self) -> None:
+        path = VLLM_DEPLOY_CONFIG_PATH
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+            if isinstance(data, dict):
+                _deep_merge_dict(self.config, data)
+                logger.info("Loaded persisted vLLM Deploy config from %s", path)
+        except Exception as e:
+            logger.warning("Could not load persisted vLLM config from %s: %s", path, e)
+
+    def persist_deploy_config(self) -> None:
+        """Write current config to disk (survives backend-api container restart)."""
+        path = VLLM_DEPLOY_CONFIG_PATH
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fp:
+                json.dump(self.config, fp, indent=2)
+        except OSError as e:
+            logger.warning("Could not persist vLLM Deploy config to %s: %s", path, e)
+
+    def server_listen_port(self) -> int:
+        """TCP port vLLM listens on inside the container (matches Deploy Server.port)."""
+        raw = (self.config.get("server") or {}).get("port", 8080)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 8080
+
+    def internal_http_base(self) -> str:
+        """Base URL for sibling containers on the compose network."""
+        return f"http://{self.container_name}:{self.server_listen_port()}"
 
     def load_default_config(self) -> Dict[str, Any]:
         return {
@@ -176,12 +226,13 @@ class VLLMManager:
 
         # Quantization
         quant = model.get("quantization", "")
-        if quant:
+        if quant and str(quant).strip().lower() not in ("", "none"):
             cmd.extend(["--quantization", quant])
 
         # Reasoning
         rp = reasoning.get("reasoning_parser", "")
-        if rp:
+        rp_lc = str(rp).strip().lower() if rp else ""
+        if rp and rp_lc != "none":
             cmd.extend(["--reasoning-parser", rp])
         rp_plugin = reasoning.get("reasoning_parser_plugin", "")
         if rp_plugin:
@@ -195,7 +246,7 @@ class VLLMManager:
             cmd.extend(["--tool-call-parser", tcp])
 
         # Speculative decoding
-        spec_method = speculative.get("method", "")
+        spec_method = str(speculative.get("method") or "").strip()
         if spec_method:
             spec_config = {"method": spec_method}
             spec_tokens = speculative.get("num_speculative_tokens", 0)
@@ -305,47 +356,190 @@ class VLLMManager:
             },
         }
 
+    def compose_launch_environment(self) -> Dict[str, str]:
+        """Env merged into ``docker compose`` when starting/recreating ``vllm-api``.
+
+        Keys align with ``docker-compose.yml`` substitutions and ``scripts/start-vllm.sh``.
+        """
+        cfg = self.config
+        model = cfg.get("model") or {}
+        perf = cfg.get("performance") or {}
+        server = cfg.get("server") or {}
+        moe = cfg.get("moe") or {}
+        reasoning = cfg.get("reasoning") or {}
+        speculative = cfg.get("speculative") or {}
+        tools = cfg.get("tools") or {}
+        media = cfg.get("media") or {}
+        env_section = cfg.get("environment") or {}
+
+        def tf_perf(key: str, default: bool = True) -> str:
+            v = perf.get(key)
+            if v is None:
+                return "true" if default else "false"
+            return "true" if bool(v) else "false"
+
+        def tf_server(key: str, default: bool = True) -> str:
+            v = server.get(key)
+            if v is None:
+                return "true" if default else "false"
+            return "true" if bool(v) else "false"
+
+        def tf_tools(key: str, default: bool = True) -> str:
+            v = tools.get(key)
+            if v is None:
+                return "true" if default else "false"
+            return "true" if bool(v) else "false"
+
+        gpu_mu = perf.get("gpu_memory_utilization")
+        if gpu_mu is None:
+            gpu_mu = 0.95
+
+        port_raw = server.get("port", 8080)
+        try:
+            port_int = int(port_raw)
+        except (TypeError, ValueError):
+            port_int = 8080
+
+        out: Dict[str, str] = {
+            "MODEL_NAME": str(model.get("name") or "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"),
+            "SERVED_MODEL_NAME": str(model.get("served_name") or "Nemotron-3-Nano-Omni-30B-A3B-Reasoning"),
+            "HOST": str(server.get("host") or "0.0.0.0"),
+            "PORT": str(port_int),
+            "API_KEY": str(server.get("api_key") or "placeholder-api-key"),
+            "MAX_MODEL_LEN": str(int(perf.get("max_model_len") or 16384)),
+            "GPU_MEMORY_UTILIZATION": str(gpu_mu),
+            "TENSOR_PARALLEL_SIZE": str(int(perf.get("tensor_parallel_size") or 1)),
+            "PIPELINE_PARALLEL_SIZE": str(int(perf.get("pipeline_parallel_size") or 1)),
+            "DATA_PARALLEL_SIZE": str(int(perf.get("data_parallel_size") or 1)),
+            "KV_CACHE_DTYPE": str(perf.get("kv_cache_dtype") or "fp8"),
+            "MAX_NUM_SEQS": str(int(perf.get("max_num_seqs") or 16)),
+            "MAX_NUM_BATCHED_TOKENS": str(int(perf.get("max_num_batched_tokens") or 8192)),
+            "VLLM_DTYPE": str(model.get("dtype") or "auto"),
+            "VLLM_QUANTIZATION": str(model.get("quantization") or ""),
+            "REASONING_PARSER": str(reasoning.get("reasoning_parser") or ""),
+            "REASONING_PARSER_PLUGIN": str(reasoning.get("reasoning_parser_plugin") or ""),
+            "TOOL_CALL_PARSER": str(tools.get("tool_call_parser") or ""),
+            "VIDEO_PRUNING_RATE": str(
+                media["video_pruning_rate"]
+                if media.get("video_pruning_rate") is not None
+                else 0.5
+            ),
+            "VIDEO_FPS": str(int(media.get("video_fps") or 2)),
+            "VIDEO_NUM_FRAMES": str(int(media.get("video_num_frames") or 256)),
+            "MOE_BACKEND": str(moe.get("moe_backend") or ""),
+            "MAMBA_SSM_CACHE_DTYPE": str(moe.get("mamba_ssm_cache_dtype") or ""),
+            "VLLM_ENFORCE_EAGER": tf_perf("enforce_eager", True),
+            "VLLM_ENABLE_CHUNKED_PREFILL": tf_perf("enable_chunked_prefill", True),
+            "VLLM_ASYNC_SCHEDULING": tf_perf("async_scheduling", True),
+            "TRUST_REMOTE_CODE": tf_server("trust_remote_code", True),
+            "VLLM_ENABLE_AUTO_TOOL_CHOICE": tf_tools("enable_auto_tool_choice", True),
+            "VLLM_NVFP4_GEMM_BACKEND": str(env_section.get("vllm_nvfp4_gemm_backend") or "marlin"),
+            "VLLM_ALLOW_LONG_MAX_MODEL_LEN": str(env_section.get("vllm_allow_long_max_model_len") or "1"),
+            "VLLM_FLASHINFER_ALLREDUCE_BACKEND": str(env_section.get("vllm_flashinfer_allreduce_backend") or "trtllm"),
+            "VLLM_USE_FLASHINFER_MOE_FP4": str(env_section.get("vllm_use_flashinfer_moe_fp4") or "0"),
+        }
+
+        spec_method = str(speculative.get("method") or "").strip()
+        if spec_method:
+            spec_cfg: Dict[str, Any] = {"method": spec_method}
+            ntok = speculative.get("num_speculative_tokens") or 0
+            try:
+                ntok_int = int(ntok)
+            except (TypeError, ValueError):
+                ntok_int = 0
+            if ntok_int:
+                spec_cfg["num_speculative_tokens"] = ntok_int
+            smoe = str(speculative.get("speculative_moe_backend") or "").strip()
+            if smoe:
+                spec_cfg["moe_backend"] = smoe
+            out["VLLM_SPECULATIVE_CONFIG"] = json.dumps(spec_cfg, separators=(",", ":"))
+        else:
+            out["VLLM_SPECULATIVE_CONFIG"] = ""
+
+        hf = str(env_section.get("hf_token") or "").strip()
+        if hf:
+            out["HUGGINGFACE_TOKEN"] = hf
+            out["HF_TOKEN"] = hf
+
+        return out
+
     async def start(self) -> bool:
         """Start the vLLM container.
 
-        Tries docker start first (for existing stopped containers),
-        then falls back to docker compose if the container doesn't exist.
+        Prefer ``docker compose up --force-recreate`` from the project directory
+        so the merged ``compose_launch_environment()`` matches ``VLLMManager.config``.
+        Falls back to ``docker start`` when no compose file is available (legacy setups).
         """
+        compose_err: Optional[str] = None
         try:
             logger.info("Starting vLLM service...")
+            project_dir = os.getenv("PROJECT_DIR", "/home/alec/git/llama-nexus")
+            compose_path = os.path.join(project_dir, "docker-compose.yml")
+            launch_env = {**os.environ, **self.compose_launch_environment()}
 
-            # First, try docker start (works for existing containers managed by compose)
+            if os.path.isfile(compose_path):
+                compose_cmd = [
+                    "docker",
+                    "compose",
+                    "-f",
+                    compose_path,
+                    "--profile",
+                    "vllm",
+                    "up",
+                    "-d",
+                    "--force-recreate",
+                    "vllm-api",
+                ]
+                proc = subprocess.run(
+                    compose_cmd,
+                    cwd=project_dir,
+                    env=launch_env,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if proc.returncode == 0:
+                    self.start_time = datetime.now()
+                    self.last_action_error = None
+                    logger.info(
+                        "vLLM container started via docker compose "
+                        f"(MODEL_NAME={launch_env.get('MODEL_NAME')}, PORT={launch_env.get('PORT')})"
+                    )
+                    self._start_log_reader()
+                    return True
+                compose_err = (proc.stderr or proc.stdout or "").strip() or f"exit code {proc.returncode}"
+                logger.warning("docker compose failed (%s), trying docker start...", compose_err[:500])
+
             proc = subprocess.run(
                 ["docker", "start", self.container_name],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             if proc.returncode == 0:
                 self.start_time = datetime.now()
-                logger.info("vLLM container started successfully")
+                if compose_err:
+                    self.last_action_error = (
+                        "docker compose did not apply Deploy env; container started with docker start only — "
+                        "settings may be stale until compose succeeds. Compose output: "
+                        + compose_err[:4000]
+                    )
+                    logger.warning(self.last_action_error)
+                else:
+                    self.last_action_error = None
+                logger.info("vLLM container started via docker start (compose unavailable or failed)")
                 self._start_log_reader()
                 return True
 
-            # If container doesn't exist, try docker compose
-            logger.info(f"docker start failed ({proc.stderr.strip()}), trying docker compose...")
-            compose_file = os.getenv("COMPOSE_FILE", "")
-            compose_cmd = ["docker", "compose"]
-            if compose_file:
-                compose_cmd.extend(["-f", compose_file])
-            compose_cmd.extend(["--profile", "vllm", "up", "-d", "vllm-api"])
-
-            proc = subprocess.run(
-                compose_cmd,
-                capture_output=True, text=True, timeout=120,
-            )
-            if proc.returncode == 0:
-                self.start_time = datetime.now()
-                logger.info("vLLM container started via docker compose")
-                self._start_log_reader()
-                return True
-            else:
-                logger.error(f"Failed to start vLLM: {proc.stderr}")
-                return False
+            tail = (proc.stderr or proc.stdout or "").strip()
+            msg = tail or "docker start failed"
+            if compose_err:
+                msg = f"compose: {compose_err[:2000]}; docker start: {msg}"
+            self.last_action_error = msg[:8000]
+            logger.error(f"Failed to start vLLM: {msg}")
+            return False
         except Exception as e:
+            self.last_action_error = str(e)[:8000]
             logger.error(f"Failed to start vLLM: {e}")
             return False
 
@@ -358,8 +552,15 @@ class VLLMManager:
                 capture_output=True, text=True, timeout=60,
             )
             self.start_time = None
-            return proc.returncode == 0
+            if proc.returncode != 0:
+                err = (proc.stderr or proc.stdout or "").strip() or "docker stop failed"
+                self.last_action_error = err[:8000]
+                logger.error("Failed to stop vLLM: %s", err)
+                return False
+            self.last_action_error = None
+            return True
         except Exception as e:
+            self.last_action_error = str(e)[:8000]
             logger.error(f"Failed to stop vLLM: {e}")
             return False
 
@@ -390,7 +591,7 @@ class VLLMManager:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"http://{self.container_name}:8080/health", timeout=5.0,
+                    f"{self.internal_http_base()}/health", timeout=5.0,
                 )
                 return {
                     "healthy": response.status_code == 200,
@@ -409,6 +610,7 @@ class VLLMManager:
             "container": self.container_name,
             "uptime": (datetime.now() - self.start_time).total_seconds() if self.start_time and running else 0,
             "start_time": self.start_time.isoformat() if self.start_time else None,
+            "last_action_error": self.last_action_error,
             "config": self.config,
             "model": {
                 "name": self.config.get("model", {}).get("name"),

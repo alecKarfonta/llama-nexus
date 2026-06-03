@@ -91,7 +91,37 @@ export default defineConfig({
           'Authorization': 'Bearer placeholder-api-key'
         }
       },
-      // LlamaCPP API endpoints (chat, completions, models) -> LlamaCPP API
+      // LLM proxy — route through backend so active backend (llama.cpp or vLLM) is selected
+      '/v1/chat/completions': {
+        target: process.env.VITE_BACKEND_URL || 'http://192.168.1.77:8700',
+        changeOrigin: true,
+        headers: {
+          'Authorization': 'Bearer placeholder-api-key'
+        }
+      },
+      '/v1/completions': {
+        target: process.env.VITE_BACKEND_URL || 'http://192.168.1.77:8700',
+        changeOrigin: true,
+        headers: {
+          'Authorization': 'Bearer placeholder-api-key'
+        }
+      },
+      // Service management + model registry on backend API
+      '/v1/service': {
+        target: process.env.VITE_BACKEND_URL || 'http://192.168.1.77:8700',
+        changeOrigin: true,
+        headers: {
+          'Authorization': 'Bearer placeholder-api-key'
+        }
+      },
+      '/v1/models': {
+        target: process.env.VITE_BACKEND_URL || 'http://192.168.1.77:8700',
+        changeOrigin: true,
+        headers: {
+          'Authorization': 'Bearer placeholder-api-key'
+        }
+      },
+      // LlamaCPP API endpoints (metrics, embeddings, etc.) -> LlamaCPP API
       '/api': {
         target: process.env.VITE_API_BASE_URL || 'http://192.168.1.77:8600',
         changeOrigin: true,
@@ -100,16 +130,7 @@ export default defineConfig({
           'Authorization': 'Bearer placeholder-api-key'
         }
       },
-      // Model management endpoints to backend API
-      '/v1/models': {
-        target: process.env.VITE_BACKEND_URL || 'http://192.168.1.77:8700',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/v1\/models/, '/api/v1/models'),
-        headers: {
-          'Authorization': 'Bearer placeholder-api-key'
-        }
-      },
-      // Direct LlamaCPP API endpoints without /api prefix (except models)
+      // Remaining /v1/* (not chat/models/service) -> LlamaCPP API
       '/v1': {
         target: process.env.VITE_API_BASE_URL || 'http://192.168.1.77:8600',
         changeOrigin: true,

@@ -59,6 +59,20 @@ class LlamaCPPManager:
         self.download_manager: Optional[ModelDownloadManager] = None
         
         # Defer container log reading to runtime callers to avoid loop issues during import
+
+    def _execution_uses_gpu(self) -> bool:
+        """True when the managed container should receive GPU devices."""
+        mode = self.config.get("execution", {}).get("mode", "gpu")
+        if mode == "cpu":
+            return False
+        gpu_layers = self.config.get("model", {}).get("gpu_layers", 999)
+        return gpu_layers != 0
+
+    def _resolve_cuda_devices(self) -> str:
+        cuda_devices = self.config.get("execution", {}).get("cuda_devices", "all")
+        if cuda_devices is None or str(cuda_devices).strip() == "":
+            return os.getenv("CUDA_DEVICES", "all")
+        return str(cuda_devices)
         
     def load_default_config(self) -> Dict[str, Any]:
         """Load default configuration from environment or defaults"""
@@ -188,8 +202,7 @@ class LlamaCPPManager:
         add_param_if_set(cmd, "--ctx-size", self.config["model"].get("context_size"))
         
         # Override GPU layers based on execution mode
-        execution_mode = self.config.get("execution", {}).get("mode", "gpu")
-        if execution_mode == "cpu":
+        if not self._execution_uses_gpu():
             add_param_if_set(cmd, "--n-gpu-layers", 0)
         else:
             add_param_if_set(cmd, "--n-gpu-layers", self.config["model"].get("gpu_layers"))
@@ -444,9 +457,7 @@ class LlamaCPPManager:
             str(Path(__file__).resolve().parents[1] / "chat-templates")
         )
 
-        # Determine runtime and device visibility based on execution mode
-        execution_mode = self.config.get("execution", {}).get("mode", "gpu")
-        cuda_devices = self.config.get("execution", {}).get("cuda_devices", "all")
+        cuda_devices = self._resolve_cuda_devices()
         
         # Get repository info from metadata if available
         model_name = self.config['model']['name']
@@ -485,10 +496,11 @@ class LlamaCPPManager:
             "ports": {"8080/tcp": 8600}
         }
         
-        # Add GPU device requests for GPU mode
-        if execution_mode == "gpu":
+        # Attach GPU unless explicitly in CPU mode (or gpu_layers=0)
+        if self._execution_uses_gpu():
             env_vars["CUDA_VISIBLE_DEVICES"] = cuda_devices
             env_vars["NVIDIA_VISIBLE_DEVICES"] = cuda_devices
+            env_vars["NVIDIA_DRIVER_CAPABILITIES"] = "compute,utility"
             container_config["device_requests"] = [
                 docker.types.DeviceRequest(
                     driver='nvidia',
@@ -569,9 +581,7 @@ class LlamaCPPManager:
             str(Path(__file__).resolve().parents[1] / "chat-templates")
         )
         
-        # Determine runtime and device visibility based on execution mode
-        execution_mode = self.config.get("execution", {}).get("mode", "gpu")
-        cuda_devices = self.config.get("execution", {}).get("cuda_devices", "all")
+        cuda_devices = self._resolve_cuda_devices()
         
         # Get repository info from metadata if available
         model_name = self.config['model']['name']
@@ -600,10 +610,11 @@ class LlamaCPPManager:
         else:
             logger.warning(f"No repository metadata found for {model_name}-{variant}, container will use fallback logic")
         
-        # Add runtime and CUDA env vars only for GPU mode
-        if execution_mode == "gpu":
-            docker_cmd.extend(['--runtime', 'nvidia'])
+        # Attach GPU unless explicitly in CPU mode (or gpu_layers=0)
+        if self._execution_uses_gpu():
+            docker_cmd.extend(['--gpus', 'all'])
             docker_cmd.extend(['-e', f'NVIDIA_VISIBLE_DEVICES={cuda_devices}'])
+            docker_cmd.extend(['-e', f'CUDA_VISIBLE_DEVICES={cuda_devices}'])
             docker_cmd.extend(['-e', 'NVIDIA_DRIVER_CAPABILITIES=compute,utility'])
         
         docker_cmd.append(image_name)
@@ -973,6 +984,10 @@ class LlamaCPPManager:
                         
         except Exception as e:
             logger.error(f"Error reading Docker logs via CLI: {e}")
+
+    def is_running(self) -> bool:
+        """Check if the llamacpp service container or subprocess is running."""
+        return bool(self.get_status().get("running"))
 
     def get_status(self) -> Dict[str, Any]:
         """Get current status of llamacpp"""
