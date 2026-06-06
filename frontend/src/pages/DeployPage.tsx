@@ -47,6 +47,15 @@ import type { ModelInfo } from '@/types/api'
 import axios, { AxiosError } from 'axios'
 import LlamaCppCommitSelector from '@/components/LlamaCppCommitSelector'
 import LogViewer, { LogViewerRef } from '@/components/LogViewer'
+import { MtpConfigSection } from '@/components/deploy/MtpConfigSection'
+import { MtpStatsPanel } from '@/components/monitoring/MtpStatsPanel'
+import { useMtpStats } from '@/hooks/useMtpStats'
+import {
+  defaultMtpSettings,
+  modelMtpKey,
+  resolveMtpForModel,
+  saveMtpForModel,
+} from '@/utils/mtpModelSettings'
 import { settingsManager } from '@/utils/settings'
 import {
   LLAMACPP_DEPLOY_PRESETS,
@@ -139,6 +148,12 @@ interface Config {
     ctx_size_draft?: number;
     draft_max?: number;
     draft_min?: number;
+    draft_p_min?: number;
+  };
+  mtp?: {
+    enabled?: boolean;
+    draft_n_max?: number;
+    draft_n_min?: number;
     draft_p_min?: number;
   };
   execution?: {
@@ -349,6 +364,12 @@ const DEFAULT_VALUES = {
     draft_max: undefined,
     draft_min: undefined,
     draft_p_min: undefined,
+  },
+  mtp: {
+    enabled: false,
+    draft_n_max: 3,
+    draft_n_min: 0,
+    draft_p_min: 0.75,
   },
   execution: {
     mode: 'gpu' as const,
@@ -613,7 +634,7 @@ function prepareConfigForBackend(cfg: Config): Record<string, unknown> {
       }
       src = (src as Record<string, unknown>)[p]
     }
-    if (src === undefined) {
+    if (src === undefined || src === null) {
       setAtPath(out, parts, null)
     }
   }
@@ -799,6 +820,10 @@ export const DeployPage: React.FC = () => {
 
   // Ref for LogViewer to control logs
   const logViewerRef = useRef<LogViewerRef>(null)
+
+  const [llamacppMtpSupported, setLlamacppMtpSupported] = useState<boolean | null>(null)
+  const [llamacppBuildTag, setLlamacppBuildTag] = useState<string | undefined>()
+  const prevModelMtpKey = useRef('')
 
   // Preset selection (full deploy + sampling-only)
   const [selectedDeployPreset, setSelectedDeployPreset] = useState<string | null>(null)
@@ -1041,6 +1066,10 @@ export const DeployPage: React.FC = () => {
         ? `${config.model.name}-${config.model.variant}`
         : config.model.name;
 
+      const selectedModel = models.find(
+        (m) => m.name === config.model?.name && m.variant === config.model?.variant,
+      );
+
       const response = await fetch('/api/v1/vram/estimate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1049,6 +1078,9 @@ export const DeployPage: React.FC = () => {
           context_size: config.model?.context_size || 4096,
           batch_size: config.performance?.batch_size || 1,
           gpu_layers: config.model?.gpu_layers ?? -1,
+          parallel_slots: config.performance?.parallel_slots ?? 1,
+          mtp_enabled: config.mtp?.enabled === true,
+          mtp_nextn_layers: selectedModel?.mtpNextnLayers ?? 1,
           available_vram_gb: 24, // Default, could be detected
         }),
       });
@@ -1074,10 +1106,11 @@ export const DeployPage: React.FC = () => {
   }, [
     config?.model?.name,
     config?.model?.variant,
-    config?.performance?.contextSize,
-    config?.performance?.batchSize,
-    config?.performance?.gpuLayers,
-    config?.performance?.flashAttention,
+    config?.model?.context_size,
+    config?.performance?.batch_size,
+    config?.model?.gpu_layers,
+    config?.performance?.parallel_slots,
+    config?.mtp?.enabled,
   ]);
 
   useEffect(() => {
@@ -1149,10 +1182,28 @@ export const DeployPage: React.FC = () => {
         if (!configToUse.execution) {
           configToUse.execution = { mode: 'gpu', cuda_devices: 'all' }
         }
+        if (!configToUse.mtp) {
+          configToUse.mtp = { ...defaultMtpSettings() }
+        }
+        if (configToUse.model?.name) {
+          const resolvedMtp = resolveMtpForModel(
+            configToUse.model.name,
+            configToUse.model.variant || '',
+          )
+          configToUse.mtp = { ...defaultMtpSettings(), ...configToUse.mtp, ...resolvedMtp }
+        }
+        if (configToUse.model?.name) {
+          prevModelMtpKey.current = modelMtpKey(configToUse.model.name, configToUse.model.variant || '')
+        }
 
         setConfig(configToUse)
         setOriginalConfig(JSON.parse(JSON.stringify(cfgJson.config)))
-        setCommandLine(cfgJson.command || '')
+        // Sync template dropdown with the config we are editing (not stale server-only state)
+        if (configToUse.template?.selected !== undefined) {
+          setSelectedTemplate(configToUse.template.selected || '')
+        }
+        // Command preview must match the config shown in the form (localStorage may differ from server)
+        void updateCommandPreview(configToUse as Config)
 
         // Fetch field metadata for the current backend
         try {
@@ -1208,6 +1259,17 @@ export const DeployPage: React.FC = () => {
           deployLog('init', 'Failed to fetch vLLM status (non-fatal):', e)
         }
 
+        try {
+          const statusRes = await fetch('/api/v1/service/status')
+          if (statusRes.ok) {
+            const sd = await statusRes.json()
+            setLlamacppMtpSupported(sd.mtp_supported === true)
+            setLlamacppBuildTag(sd.llamacpp_build?.tag ?? sd.llamacpp_build?.cli_version)
+          }
+        } catch (e) {
+          deployLog('init', 'Failed to fetch llamacpp build status (non-fatal):', e)
+        }
+
         deployLog('init', 'Initialization complete')
 
       } catch (e) {
@@ -1219,6 +1281,22 @@ export const DeployPage: React.FC = () => {
     }
     init()
   }, [])
+
+  // Restore per-model MTP settings when the selected GGUF changes
+  useEffect(() => {
+    if (!config?.model?.name) return
+    const key = modelMtpKey(config.model.name, config.model.variant || '')
+    if (prevModelMtpKey.current === key) return
+    prevModelMtpKey.current = key
+    const resolved = resolveMtpForModel(config.model.name, config.model.variant || '')
+    setConfig((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        mtp: { ...defaultMtpSettings(), ...resolved },
+      }
+    })
+  }, [config?.model?.name, config?.model?.variant])
 
   const availableModelNames = useMemo(() => {
     const names = Array.from(new Set(models.map((m) => m.name))).sort()
@@ -1236,6 +1314,24 @@ export const DeployPage: React.FC = () => {
     deployLog('variants', `Computed variants for ${config.model.name}:`, { count: uniqueVariants.length, variants: uniqueVariants })
     return uniqueVariants
   }, [models, config?.model?.name]) // Only depend on the model name, not the entire config
+
+  const selectedDeployModel = useMemo(() => {
+    if (!config?.model?.name) return null
+    return (
+      models.find((m) => m.name === config.model.name && m.variant === config.model.variant) ??
+      models.find((m) => m.name === config.model.name) ??
+      null
+    )
+  }, [models, config?.model?.name, config?.model?.variant])
+
+  const mtpStatsWatch =
+    backend === 'llamacpp' &&
+    config?.mtp?.enabled === true &&
+    currentModel?.status === 'loaded'
+  const { stats: mtpStats, connected: mtpStatsConnected } = useMtpStats({
+    enabled: mtpStatsWatch,
+    backend,
+  })
 
   const availableVllmVariantsForSelected = useMemo(() => {
     const served = (vllmConfig?.model?.served_name || '').trim()
@@ -1338,6 +1434,10 @@ export const DeployPage: React.FC = () => {
     deployLog('updateConfig', `Config updated: ${path}`, { oldValue, newValue: value })
     console.log('Calling setConfig with new config:', next)
     setConfig(next)
+
+    if (path.startsWith('mtp.') && next.model?.name) {
+      saveMtpForModel(next.model.name, next.model.variant || '', next.mtp ?? {})
+    }
 
     // Save to localStorage for persistence
     deployLog('updateConfig', 'Saving to localStorage')
@@ -3244,7 +3344,20 @@ export const DeployPage: React.FC = () => {
                 />
               </Grid>
 
-              {/* Speculative Decoding - Collapsible */}
+              {/* Multi-Token Prediction (MTP) */}
+              <Grid item xs={12}>
+                <MtpConfigSection
+                  mtp={config.mtp}
+                  modelMtpCapable={selectedDeployModel?.mtpCapable === true}
+                  backendMtpSupported={llamacppMtpSupported}
+                  backendBuildLabel={llamacppBuildTag}
+                  parallelSlots={config.performance?.parallel_slots ?? 1}
+                  selectedModel={selectedDeployModel}
+                  onChange={updateConfig}
+                />
+              </Grid>
+
+              {/* Classic draft-model speculative decoding */}
               <Grid item xs={12}>
                 <Accordion
                   disableGutters
@@ -3257,7 +3370,7 @@ export const DeployPage: React.FC = () => {
                   }}
                 >
                   <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                    <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Speculative Decoding</Typography>
+                    <Typography sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Speculative Decoding (draft model)</Typography>
                     <Typography variant="caption" color="text.secondary" sx={{ ml: 1, mt: 0.3 }}>(advanced)</Typography>
                   </AccordionSummary>
                   <AccordionDetails>
@@ -5210,6 +5323,13 @@ export const DeployPage: React.FC = () => {
             }}
           />
           <CardContent sx={{ pt: 0 }}>
+            {backend === 'llamacpp' && config?.mtp?.enabled && (
+              <MtpStatsPanel
+                stats={mtpStats}
+                connected={mtpStatsConnected}
+                compact
+              />
+            )}
             <LogViewer
               ref={logViewerRef}
               containerName={backend === 'vllm' ? 'vllm-api' : 'llamacpp-api'}

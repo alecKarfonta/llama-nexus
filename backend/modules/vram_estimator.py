@@ -21,6 +21,7 @@ class VRAMEstimate:
     kv_cache_mb: float
     compute_buffer_mb: float
     overhead_mb: float
+    mtp_overhead_mb: float
     total_mb: float
     total_gb: float
     fits_in_vram: bool
@@ -258,6 +259,37 @@ def calculate_compute_buffer(
     return max(buffer_mb, 256)
 
 
+def calculate_mtp_vram_overhead_mb(
+    *,
+    model_weights_mb: float,
+    num_layers: int,
+    context_size: int,
+    hidden_size: int,
+    num_heads: int,
+    kv_heads: int,
+    n_parallel: int,
+    kv_cache_type: str,
+    mtp_nextn_layers: int = 1,
+    flash_attention: bool = True,
+) -> float:
+    """Approximate extra VRAM for MTP: ~nextn layers of weights + draft KV cache."""
+    layers = max(int(mtp_nextn_layers), 1)
+    total_layers = max(num_layers, 1)
+    extra_weights = model_weights_mb * (layers / total_layers)
+    extra_kv = calculate_kv_cache_vram(
+        context_size=context_size,
+        hidden_size=hidden_size,
+        num_layers=layers,
+        num_heads=num_heads,
+        kv_heads=kv_heads,
+        n_parallel=n_parallel,
+        kv_cache_type=kv_cache_type,
+    )
+    if flash_attention:
+        extra_kv *= 0.7
+    return extra_weights + extra_kv
+
+
 def estimate_vram(
     model_name: str = '',
     params_b: Optional[float] = None,
@@ -268,6 +300,9 @@ def estimate_vram(
     kv_cache_type: str = 'f16',
     available_vram_gb: float = 24.0,
     flash_attention: bool = True,
+    mtp_enabled: bool = False,
+    mtp_nextn_layers: int = 1,
+    parallel_slots: int = 1,
 ) -> VRAMEstimate:
     """
     Estimate VRAM requirements for model deployment.
@@ -343,6 +378,25 @@ def estimate_vram(
     # Flash attention reduces KV cache memory usage
     if flash_attention:
         kv_cache_mb *= 0.7  # Approximate reduction
+
+    mtp_overhead_mb = 0.0
+    if mtp_enabled:
+        mtp_overhead_mb = calculate_mtp_vram_overhead_mb(
+            model_weights_mb=model_weights_mb,
+            num_layers=num_layers,
+            context_size=context_size,
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            kv_heads=kv_heads,
+            n_parallel=max(parallel_slots, 1),
+            kv_cache_type=kv_cache_type,
+            mtp_nextn_layers=mtp_nextn_layers,
+            flash_attention=flash_attention,
+        )
+        warnings.append(
+            f"MTP enabled: estimated +{mtp_overhead_mb:,.0f} MB for draft heads/KV "
+            f"({mtp_nextn_layers} nextn layer(s))"
+        )
     
     compute_buffer_mb = calculate_compute_buffer(
         context_size=context_size,
@@ -354,7 +408,7 @@ def estimate_vram(
     overhead_mb = 512 + (model_weights_mb * 0.05)  # 512MB base + 5% of model
     
     # Calculate total
-    total_mb = model_weights_mb + kv_cache_mb + compute_buffer_mb + overhead_mb
+    total_mb = model_weights_mb + kv_cache_mb + compute_buffer_mb + overhead_mb + mtp_overhead_mb
     total_gb = total_mb / 1024
     
     # Check if it fits
@@ -384,6 +438,7 @@ def estimate_vram(
         kv_cache_mb=round(kv_cache_mb, 2),
         compute_buffer_mb=round(compute_buffer_mb, 2),
         overhead_mb=round(overhead_mb, 2),
+        mtp_overhead_mb=round(mtp_overhead_mb, 2),
         total_mb=round(total_mb, 2),
         total_gb=round(total_gb, 2),
         fits_in_vram=fits_in_vram,

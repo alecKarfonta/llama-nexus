@@ -345,7 +345,13 @@ async def list_repo_files(repo_id: str, revision: str = "main"):
             
             model_files = [f for f in files if is_model_file(f)]
             logger.info(f"Found {len(model_files)} model files in repo {repo_id}")
-            return {"success": True, "data": {"files": model_files}, "timestamp": datetime.now().isoformat()}
+            from modules.mtp_hf_hints import enrich_repo_files_response
+
+            return {
+                "success": True,
+                "data": enrich_repo_files_response(repo_id, model_files),
+                "timestamp": datetime.now().isoformat(),
+            }
         except Exception as e:
             logger.error(f"Error listing repo files for {repo_id}: {str(e)}")
             raise HTTPException(status_code=502, detail=str(e))

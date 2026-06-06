@@ -1,0 +1,27 @@
+{
+  "_comment": "Per-model-family MTP deploy defaults. Regenerate with: python3 scripts/mtp_report.py --bench 'results/mtp_bench_*.jsonl' --write-ui-defaults",
+  "default": {
+    "enabled": false,
+    "draft_n_max": 3,
+    "draft_n_min": 0,
+    "draft_p_min": 0.75
+  },
+  "qwen3.6": {
+    "enabled": true,
+    "draft_n_max": 3,
+    "draft_n_min": 0,
+    "draft_p_min": 0.75
+  },
+  "qwen3.6-moe": {
+    "enabled": true,
+    "draft_n_max": 3,
+    "draft_n_min": 0,
+    "draft_p_min": 0.75
+  },
+  "glm": {
+    "enabled": true,
+    "draft_n_max": 3,
+    "draft_n_min": 0,
+    "draft_p_min": 0.8
+  }
+}

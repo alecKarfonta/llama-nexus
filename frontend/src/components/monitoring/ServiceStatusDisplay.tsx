@@ -50,6 +50,13 @@ interface ServiceStatus {
     status_code?: number;
     error?: string;
   };
+  llamacpp_build?: {
+    tag?: string;
+    build_number?: number;
+    cli_version?: string;
+    mtp_supported?: boolean;
+  };
+  mtp_supported?: boolean;
 }
 
 export const ServiceStatusDisplay: React.FC = () => {
@@ -260,6 +267,21 @@ export const ServiceStatusDisplay: React.FC = () => {
                   <InfoRow label="Uptime" value={status.uptime ? formatUptime(status.uptime) : 'N/A'} />
                   <InfoRow label="Mode" value={status.mode || 'subprocess'} />
                 </>
+              )}
+              <InfoRow
+                label="llama.cpp build"
+                value={
+                  status?.llamacpp_build?.tag ||
+                  status?.llamacpp_build?.cli_version ||
+                  'unknown'
+                }
+              />
+              {status?.mtp_supported != null && (
+                <InfoRow
+                  label="MTP capable build"
+                  value={status.mtp_supported ? 'yes' : 'no — upgrade to b9193+'}
+                  color={status.mtp_supported ? 'success.main' : 'warning.main'}
+                />
               )}
             </Box>
           </Box>

@@ -63,15 +63,16 @@ services:
       - REPEAT_LAST_N=64
       - FREQUENCY_PENALTY=0
       - PRESENCE_PENALTY=0
-      - DRY_MULTIPLIER=0.4
-      - DRY_ALLOWED_LENGTH=3
-      - DRY_PENALTY_LAST_N=510
+      # DRY off by default — omit from deploy command unless explicitly set in UI
+      - DRY_MULTIPLIER=0.0
+      - DRY_ALLOWED_LENGTH=2
+      - DRY_PENALTY_LAST_N=0
       - BATCH_SIZE=1024
       - UBATCH_SIZE=512
       - THREADS=44
       - NUM_PREDICT=16000
       - NUM_KEEP=256
-      - PARALLEL_SLOTS=2
+      - PARALLEL_SLOTS=1
       - SPLIT_MODE=layer
       - MAIN_GPU=2
       - CACHE_TYPE_K=q8_0
@@ -173,7 +174,9 @@ services:
       target: builder
       args:
         SKIP_BUILD_FROM_SOURCE: "false"
-        LLAMACPP_VERSION: "b8250"
+        LLAMACPP_VERSION: "b9193"
+        LLAMACPP_BUILD_TAG: "b9193"
+        LLAMA_CPP_REF: "b9193"
         ENABLE_TURBOQUANT: "false"
         CUDA_ARCH: ${CUDA_ARCH:-86}
     container_name: llamacpp-builder
@@ -198,6 +201,9 @@ services:
       args:
         ENABLE_TURBOQUANT: "false"
         CUDA_ARCH: ${CUDA_ARCH:-86}
+        LLAMA_CPP_REF: "b9193"
+        LLAMACPP_BUILD_TAG: "b9193"
+        LLAMACPP_VERSION: "b9193"
     container_name: llamacpp-api
     hostname: llamacpp
     ports:
@@ -209,7 +215,8 @@ services:
       - ./chat-templates:/home/llamacpp/templates:ro
     environment:
       - TEMPLATE_DIR=/home/llamacpp/templates
-      - CHAT_TEMPLATE=builtin-gpt-oss
+      # Empty = use chat template embedded in the GGUF
+      - CHAT_TEMPLATE=
       # CUDA optimizations - Qwen3.6-27B Q6_K is split across two GPUs
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,2}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0,2}
@@ -218,9 +225,6 @@ services:
       - MODEL_VARIANT=Q6_K
       - MODEL_REPO=unsloth/Qwen3.6-27B-GGUF
       - CONTEXT_SIZE=256000
-      # Empty = use the chat template embedded in the GGUF (required for Qwen3-family thinking
-      # models; custom templates often misprime <think> causing predicted_n=1 EOS replies).
-      - CHAT_TEMPLATE=
       # Disable aggressive DRY + freq/presence penalties that caused intermittent empty replies.
       - DRY_MULTIPLIER=0.0
       - DRY_ALLOWED_LENGTH=2
@@ -239,12 +243,17 @@ services:
       - THREADS=44
       - NUM_PREDICT=16000
       - NUM_KEEP=256
-      - PARALLEL_SLOTS=2
+      - PARALLEL_SLOTS=1
       - SPLIT_MODE=layer
       - MAIN_GPU=2
       - CACHE_TYPE_K=q8_0
       - CACHE_TYPE_V=q8_0
       - N_CPU_MOE=0
+      # MTP (Multi-Token Prediction) — opt-in; requires MTP-converted GGUF + image b9193+
+      - MTP_ENABLED=${MTP_ENABLED:-false}
+      - MTP_DRAFT_N_MAX=${MTP_DRAFT_N_MAX:-3}
+      - MTP_DRAFT_N_MIN=${MTP_DRAFT_N_MIN:-0}
+      - MTP_DRAFT_P_MIN=${MTP_DRAFT_P_MIN:-0.75}
       # HuggingFace token for downloads
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
     restart: unless-stopped

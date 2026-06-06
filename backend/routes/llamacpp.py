@@ -15,17 +15,29 @@ VLLM_GITHUB_REPO = "vllm-project/vllm"
 DOCKERFILE_VLLM_PATH = Path("/home/alec/git/llama-nexus/Dockerfile.vllm")
 
 
+def _dockerfile_path() -> Path:
+    env_path = os.getenv("LLAMA_NEXUS_ROOT", "").strip()
+    if env_path:
+        candidate = Path(env_path) / "Dockerfile"
+        if candidate.exists():
+            return candidate
+    return Path(__file__).resolve().parents[2] / "Dockerfile"
+
+
 def get_current_llamacpp_commit() -> str:
-    """Get the current llama.cpp commit from Dockerfile"""
+    """Get the pinned llama.cpp ref from Dockerfile (LLAMA_CPP_REF or git checkout)."""
     try:
-        dockerfile_path = Path("/home/alec/git/llama-nexus/Dockerfile")
+        dockerfile_path = _dockerfile_path()
         if not dockerfile_path.exists():
             return "unknown"
-        
+
         content = dockerfile_path.read_text()
-        match = re.search(r'git checkout ([^\s&\\]+)', content)
-        if match:
-            return match.group(1)
+        ref_match = re.search(r"^ARG LLAMA_CPP_REF=([^\s]+)", content, re.MULTILINE)
+        if ref_match:
+            return ref_match.group(1)
+        checkout_match = re.search(r"git checkout ([^\s&\\]+)", content)
+        if checkout_match:
+            return checkout_match.group(1)
         return "unknown"
     except Exception:
         return "unknown"
@@ -129,20 +141,32 @@ async def apply_llamacpp_commit(commit_id: str):
         if not validation["valid"]:
             raise HTTPException(status_code=400, detail=f"Invalid commit: {validation['error']}")
         
-        dockerfile_path = Path("/home/alec/git/llama-nexus/Dockerfile")
-        
+        dockerfile_path = _dockerfile_path()
+
         if not dockerfile_path.exists():
             raise HTTPException(status_code=404, detail="Dockerfile not found")
-        
+
         content = dockerfile_path.read_text()
-        updated_content = re.sub(
-            r'git checkout [^\s&\\]+',
-            f'git checkout {commit_id}',
-            content
+        updated_content, count = re.subn(
+            r"^ARG LLAMA_CPP_REF=[^\s]+",
+            f"ARG LLAMA_CPP_REF={commit_id}",
+            content,
+            count=1,
+            flags=re.MULTILINE,
         )
-        
+        if count == 0:
+            updated_content, count = re.subn(
+                r"git checkout [^\s&\\]+",
+                f"git checkout {commit_id}",
+                content,
+                count=1,
+            )
+
         if updated_content == content:
-            raise HTTPException(status_code=400, detail="Could not find git checkout line in Dockerfile")
+            raise HTTPException(
+                status_code=400,
+                detail="Could not find LLAMA_CPP_REF or git checkout line in Dockerfile",
+            )
         
         dockerfile_path.write_text(updated_content)
         logger.info(f"Updated Dockerfile to use llama.cpp commit: {commit_id}")

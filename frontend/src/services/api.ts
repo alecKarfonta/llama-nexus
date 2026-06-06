@@ -266,7 +266,11 @@ class ApiService {
           lastModified: model.lastModified ? new Date(model.lastModified) : undefined,
           // Local file information
           localPath: model.localPath,
-          filename: model.filename
+          filename: model.filename,
+          mtpCapable: model.mtpCapable === true || model.mtp_capable === true,
+          mtpNextnLayers: model.mtpNextnLayers ?? model.mtp_nextn_layers ?? 0,
+          ggufArchitecture: model.ggufArchitecture,
+          mtpScanError: model.mtpScanError,
         };
       });
     }
@@ -327,12 +331,24 @@ class ApiService {
     return response.data;
   }
 
-  async listRepoFiles(repoId: string, revision: string = 'main'): Promise<string[]> {
+  async listRepoFiles(
+    repoId: string,
+    revision: string = 'main',
+  ): Promise<{
+    files: string[];
+    mtp?: { repo_likely_converted?: boolean; caveat?: string };
+    file_hints?: Record<string, { filename_suggests_mtp?: boolean; note?: string }>;
+  }> {
     const response = await this.backendClient.get<ApiResponse<{ files: string[] }>>('/v1/models/repo-files', {
       params: { repo_id: repoId, revision }
     });
-    const files = (response.data as any)?.data?.files || [];
-    return Array.isArray(files) ? files : [];
+    const data = (response.data as any)?.data || {};
+    const files = Array.isArray(data.files) ? data.files : [];
+    return {
+      files,
+      mtp: data.mtp,
+      file_hints: data.file_hints,
+    };
   }
 
   async downloadModel(request: ModelDownloadRequest): Promise<ModelDownload> {
@@ -409,10 +425,11 @@ class ApiService {
       const data = statusResponse.data;
 
       // Transform backend response to frontend format
+      const buildTag = data.llamacpp_build?.tag ?? data.llamacpp_build?.cli_version;
       return {
         health: data.running ? 'healthy' : 'stopped',
         uptime: data.uptime || 0,
-        version: '1.0.0', // Backend doesn't provide version yet
+        version: buildTag || data.llamacpp_build_number?.toString() || 'unknown',
         modelLoaded: data.running && !!data.model?.name,
         modelName: data.model?.name || undefined,
         timestamp: new Date(),

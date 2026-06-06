@@ -37,10 +37,12 @@ def _merge_and_persist_config(new_config: Dict[str, Any]):
     """
     import copy
     
-    # Deep merge helper
+    # Deep merge helper — explicit null clears a key (omit from llama-server command)
     def deep_merge(d1, d2):
         for k, v in d2.items():
-            if isinstance(v, dict) and k in d1 and isinstance(d1[k], dict):
+            if v is None:
+                d1.pop(k, None)
+            elif isinstance(v, dict) and k in d1 and isinstance(d1[k], dict):
                 deep_merge(d1[k], v)
             else:
                 d1[k] = copy.deepcopy(v)

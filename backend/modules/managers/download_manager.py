@@ -12,6 +12,12 @@ from collections import deque
 import re
 
 from huggingface_hub import hf_hub_url, HfApi
+
+from modules.gguf_metadata import (
+    MtpGgufInfo,
+    gguf_header_path_for_filename,
+    scan_gguf_mtp,
+)
 from enhanced_logger import enhanced_logger as logger
 from modules.managers.base import DOCKER_AVAILABLE, docker_client
 
@@ -52,23 +58,78 @@ class ModelDownloadManager:
         base = filename[:-5] if filename.endswith('.gguf') else Path(filename).stem
         return base
 
-    def _save_model_metadata(self, model_name: str, variant: str, repo_id: str, filename: str):
-        """Save model metadata to track repository source."""
+    def _resolve_gguf_path(self, filename: str) -> Optional[Path]:
+        header = gguf_header_path_for_filename(self.models_dir, filename)
+        return header if header.is_file() else None
+
+    def _scan_gguf_mtp_fields(self, gguf_path: Optional[Path]) -> Dict[str, Any]:
+        if not gguf_path:
+            return {
+                "mtp_capable": False,
+                "mtp_nextn_layers": 0,
+                "mtp_scan_error": "gguf file not found",
+            }
+        info: MtpGgufInfo = scan_gguf_mtp(gguf_path)
+        payload = {
+            "mtp_capable": info.mtp_capable,
+            "mtp_nextn_layers": info.mtp_nextn_layers,
+            "mtp_scanned_at": datetime.now().isoformat(),
+        }
+        if info.architecture:
+            payload["gguf_architecture"] = info.architecture
+        if info.error:
+            payload["mtp_scan_error"] = info.error
+        return payload
+
+    def _merge_mtp_into_model_record(self, rec: Dict[str, Any], mtp_fields: Dict[str, Any]) -> None:
+        rec["mtpCapable"] = mtp_fields.get("mtp_capable", False)
+        rec["mtpNextnLayers"] = mtp_fields.get("mtp_nextn_layers", 0)
+        if mtp_fields.get("gguf_architecture"):
+            rec["ggufArchitecture"] = mtp_fields["gguf_architecture"]
+        if mtp_fields.get("mtp_scan_error"):
+            rec["mtpScanError"] = mtp_fields["mtp_scan_error"]
+
+    def _mtp_fields_from_metadata(self, meta: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not meta or "mtp_scanned_at" not in meta:
+            return None
+        return {
+            "mtp_capable": bool(meta.get("mtp_capable", False)),
+            "mtp_nextn_layers": int(meta.get("mtp_nextn_layers") or 0),
+            "gguf_architecture": meta.get("gguf_architecture"),
+            "mtp_scan_error": meta.get("mtp_scan_error"),
+        }
+
+    def _save_model_metadata(
+        self,
+        model_name: str,
+        variant: str,
+        repo_id: str,
+        filename: str,
+        *,
+        gguf_path: Optional[Path] = None,
+    ):
+        """Save model metadata to track repository source and GGUF MTP capability."""
+        if gguf_path is None:
+            gguf_path = self._resolve_gguf_path(filename)
+
         metadata = {
             "model_name": model_name,
             "variant": variant,
             "repo_id": repo_id,
             "filename": filename,
             "downloaded_at": datetime.now().isoformat(),
-            "source": "huggingface"
+            "source": "huggingface",
         }
-        
-        # Use model_name-variant as the metadata filename
+        metadata.update(self._scan_gguf_mtp_fields(gguf_path))
+
         metadata_file = self.metadata_dir / f"{model_name}-{variant}.json"
         try:
             with open(metadata_file, 'w') as f:
                 json.dump(metadata, f, indent=2)
-            logger.info(f"Saved metadata for {model_name}-{variant} from {repo_id}")
+            logger.info(
+                f"Saved metadata for {model_name}-{variant} from {repo_id} "
+                f"(mtp_capable={metadata.get('mtp_capable')})"
+            )
         except Exception as e:
             logger.warning(f"Failed to save metadata for {model_name}-{variant}: {e}")
 
@@ -144,6 +205,21 @@ class ModelDownloadManager:
                     meta = self._load_model_metadata(name, variant or "unknown")
                     if meta and meta.get("repo_id"):
                         rec["repositoryId"] = meta["repo_id"]
+
+                    mtp_fields = self._mtp_fields_from_metadata(meta)
+                    if mtp_fields is None:
+                        header_path = entry if entry.is_file() else self._resolve_gguf_path(entry.name)
+                        mtp_fields = self._scan_gguf_mtp_fields(header_path)
+                        if meta is not None:
+                            try:
+                                merged = {**meta, **mtp_fields, "mtp_scanned_at": datetime.now().isoformat()}
+                                metadata_file = self.metadata_dir / f"{name}-{variant or 'unknown'}.json"
+                                with open(metadata_file, "w") as f:
+                                    json.dump(merged, f, indent=2)
+                            except Exception as e:
+                                logger.debug(f"Could not persist MTP scan for {name}-{variant}: {e}")
+                    self._merge_mtp_into_model_record(rec, mtp_fields)
+
                     items.append(rec)
                     
             except Exception as e:
@@ -566,7 +642,13 @@ class ModelDownloadManager:
                 try:
                     model_name, variant = self._parse_name_variant(filename)
                     if model_name and variant:
-                        self._save_model_metadata(model_name, variant, repo_id, filename)
+                        self._save_model_metadata(
+                            model_name,
+                            variant,
+                            repo_id,
+                            filename,
+                            gguf_path=dest_path if dest_path.suffix.lower() == ".gguf" else None,
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to save metadata for {filename}: {e}")
         except asyncio.CancelledError:
@@ -713,7 +795,14 @@ class ModelDownloadManager:
                     first_part = part_files[0]
                     model_name, variant = self._parse_name_variant(first_part)
                     if model_name and variant:
-                        self._save_model_metadata(model_name, variant, repo_id, first_part)
+                        first_path = model_dir / first_part
+                        self._save_model_metadata(
+                            model_name,
+                            variant,
+                            repo_id,
+                            first_part,
+                            gguf_path=first_path if first_path.is_file() else None,
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to save metadata for multipart download: {e}")
                     

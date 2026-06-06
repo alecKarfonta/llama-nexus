@@ -200,6 +200,7 @@ async def get_config(request: Request, backend: str = "llamacpp"):
             "sampling": ["temperature", "top_p", "top_k", "min_p", "repeat_penalty",
                         "frequency_penalty", "presence_penalty", "dry_multiplier"],
             "performance": ["threads", "batch_size", "ubatch_size", "num_predict", "parallel_slots", "ctx_checkpoints"],
+            "mtp": ["enabled", "draft_n_max", "draft_n_min", "draft_p_min"],
             "server": ["api_key"],
             "template": ["directory", "selected"]
         }
@@ -207,9 +208,11 @@ async def get_config(request: Request, backend: str = "llamacpp"):
 
 
 def _deep_merge_config(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
-    """Deep-merge incoming into base (mutates base)."""
+    """Deep-merge incoming into base (mutates base). Explicit null removes a key."""
     for key, value in incoming.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
+        if value is None:
+            base.pop(key, None)
+        elif isinstance(value, dict) and isinstance(base.get(key), dict):
             _deep_merge_config(base[key], value)
         else:
             base[key] = value
@@ -339,6 +342,11 @@ async def validate_config(request: Request, config: Dict[str, Any]):
                 errors.append("temperature must be >= 0")
             elif temp > 2:
                 warnings.append("temperature > 2 may produce incoherent output")
+
+    if hasattr(manager, "validate_mtp_config"):
+        mtp_result = manager.validate_mtp_config(config)
+        errors.extend(mtp_result.get("errors", []))
+        warnings.extend(mtp_result.get("warnings", []))
     
     return {
         "valid": len(errors) == 0,

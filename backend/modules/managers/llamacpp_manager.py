@@ -16,6 +16,19 @@ from huggingface_hub import hf_hub_url, HfApi
 from enhanced_logger import enhanced_logger as logger
 from modules.managers.base import DOCKER_AVAILABLE, docker_client
 
+try:
+    import docker
+except ImportError:
+    docker = None  # type: ignore[assignment]
+from modules.llamacpp_build_info import build_info_from_tag_and_version
+from modules.mtp_deploy import (
+    mtp_env_from_config,
+    mtp_enabled_in_config,
+    normalize_mtp_config,
+    validate_mtp_deployment,
+)
+from modules.mtp_log_parser import parse_mtp_stats_from_log_line
+
 
 class LlamaCPPManager:
     """Manages LlamaCPP instance lifecycle and configuration"""
@@ -73,6 +86,27 @@ class LlamaCPPManager:
         if cuda_devices is None or str(cuda_devices).strip() == "":
             return os.getenv("CUDA_DEVICES", "all")
         return str(cuda_devices)
+
+    def _docker_gpu_attachment(self, cuda_devices: str) -> Dict[str, Any]:
+        """
+        Build Docker GPU attachment for requested host GPU indices.
+
+        ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` aligns CUDA ordinals with ``nvidia-smi``
+        indices on mixed GPU topologies (e.g. 5070 + 5060 rigs).
+        """
+        dev = str(cuda_devices or "all").strip()
+        env = {
+            "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+        }
+        caps = [["gpu", "compute", "utility"]]
+        device_requests = [
+            docker.types.DeviceRequest(driver="nvidia", count=-1, capabilities=caps)
+        ]
+        if dev and dev.lower() != "all":
+            env["CUDA_VISIBLE_DEVICES"] = dev
+            env["NVIDIA_VISIBLE_DEVICES"] = dev
+        return {"gpus": "all", "device_requests": device_requests, "env": env}
         
     def load_default_config(self) -> Dict[str, Any]:
         """Load default configuration from environment or defaults"""
@@ -132,7 +166,13 @@ class LlamaCPPManager:
                 "cache_type_v": os.getenv("CACHE_TYPE_V"),
             },
             "speculative": {
-                # Empty by default — speculative decoding is disabled unless configured
+                # Empty by default — classic draft-model speculation (separate GGUF)
+            },
+            "mtp": {
+                "enabled": os.getenv("MTP_ENABLED", "false").lower() in ("1", "true", "yes"),
+                "draft_n_max": int(os.getenv("MTP_DRAFT_N_MAX", "3")),
+                "draft_n_min": int(os.getenv("MTP_DRAFT_N_MIN", "0")),
+                "draft_p_min": float(os.getenv("MTP_DRAFT_P_MIN", "0.75")),
             },
             "execution": {
                 "mode": os.getenv("EXECUTION_MODE", "gpu"),  # "gpu" or "cpu"
@@ -375,7 +415,15 @@ class LlamaCPPManager:
                 flash_attn_value = "auto"
         cmd.extend(["--flash-attn", flash_attn_value])
         
-        # Add speculative decoding parameters if section exists
+        # Multi-Token Prediction (built-in draft heads in the same GGUF)
+        if mtp_enabled_in_config(self.config):
+            mtp = normalize_mtp_config(self.config)
+            cmd.extend(["--spec-type", "draft-mtp"])
+            add_param_if_set(cmd, "--spec-draft-n-max", mtp.get("draft_n_max"))
+            add_param_if_set(cmd, "--spec-draft-n-min", mtp.get("draft_n_min"))
+            add_param_if_set(cmd, "--spec-draft-p-min", mtp.get("draft_p_min"))
+
+        # Classic speculative decoding (separate draft model file)
         if "speculative" in self.config:
             spec = self.config["speculative"]
             add_param_if_set(cmd, "--model-draft", spec.get("model_draft"))
@@ -404,6 +452,48 @@ class LlamaCPPManager:
             ])
         
         return cmd
+
+    def _model_mtp_capable(self) -> bool:
+        """Whether the configured model GGUF has MTP heads (from registry metadata)."""
+        model_name = self.config.get("model", {}).get("name")
+        variant = self.config.get("model", {}).get("variant")
+        if not model_name or not variant or not self.download_manager:
+            return False
+        meta = self.download_manager._load_model_metadata(model_name, variant)
+        return bool(meta and meta.get("mtp_capable"))
+
+    def validate_mtp_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Validate MTP settings; returns {errors, warnings}."""
+        cfg = dict(self.config)
+        if config:
+            for section in ("model", "performance", "mtp", "sampling", "server"):
+                if section in config and isinstance(config[section], dict):
+                    cfg[section] = {**cfg.get(section, {}), **config[section]}
+        cfg["mtp"] = normalize_mtp_config(cfg)
+        build_info = self.get_llamacpp_build_info()
+        errors, warnings = validate_mtp_deployment(
+            cfg,
+            model_mtp_capable=self._model_mtp_capable_for_config(cfg),
+            llamacpp_build_number=build_info.get("build_number"),
+            mtp_supported_build=build_info.get("mtp_supported"),
+        )
+        return {"errors": errors, "warnings": warnings, "valid": len(errors) == 0}
+
+    def _model_mtp_capable_for_config(self, config: Dict[str, Any]) -> bool:
+        model_name = config.get("model", {}).get("name")
+        variant = config.get("model", {}).get("variant")
+        if not model_name or not variant or not self.download_manager:
+            return False
+        meta = self.download_manager._load_model_metadata(model_name, variant)
+        return bool(meta and meta.get("mtp_capable"))
+
+    def _ensure_mtp_valid_or_raise(self, config: Optional[Dict[str, Any]] = None) -> None:
+        result = self.validate_mtp_config(config)
+        if not result["valid"]:
+            raise HTTPException(
+                status_code=400,
+                detail="; ".join(result["errors"]),
+            )
     
     async def start_docker(self) -> bool:
         """Start llamacpp in Docker container"""
@@ -439,6 +529,8 @@ class LlamaCPPManager:
         except docker.errors.NotFound:
             logger.info(f"No existing container found with container_name='{self.container_name}'")
         
+        self._ensure_mtp_valid_or_raise()
+
         # Build and validate command
         cmd = self.build_command()
         cmd_str = ' '.join(cmd)
@@ -480,6 +572,7 @@ class LlamaCPPManager:
         env_vars = {
             "MODEL_NAME": model_name,
             "MODEL_VARIANT": variant,
+            **mtp_env_from_config(self.config),
         }
         
         # Only set MODEL_REPO if we have metadata for it
@@ -508,16 +601,9 @@ class LlamaCPPManager:
         
         # Attach GPU unless explicitly in CPU mode (or gpu_layers=0)
         if self._execution_uses_gpu():
-            env_vars["CUDA_VISIBLE_DEVICES"] = cuda_devices
-            env_vars["NVIDIA_VISIBLE_DEVICES"] = cuda_devices
-            env_vars["NVIDIA_DRIVER_CAPABILITIES"] = "compute,utility"
-            container_config["device_requests"] = [
-                docker.types.DeviceRequest(
-                    driver='nvidia',
-                    count=-1,
-                    capabilities=[['gpu', 'compute', 'utility']]
-                )
-            ]
+            gpu_attach = self._docker_gpu_attachment(cuda_devices)
+            env_vars.update(gpu_attach["env"])
+            container_config["device_requests"] = gpu_attach["device_requests"]
         
         # Run container with the command
         self.docker_container = docker_client.containers.run(**container_config)
@@ -556,6 +642,8 @@ class LlamaCPPManager:
         )
         await remove_process.communicate()  # Don't care about the result
         
+        self._ensure_mtp_valid_or_raise()
+
         # Build command
         cmd = self.build_command()
         logger.info(f"Built command: {' '.join(cmd)}")
@@ -601,6 +689,7 @@ class LlamaCPPManager:
         if self.download_manager:
             model_repo = self.download_manager.get_model_repository(model_name, variant)
         
+        mtp_env = mtp_env_from_config(self.config)
         docker_cmd = [
             'docker', 'run', '-d',
             '--name', self.container_name,
@@ -611,6 +700,10 @@ class LlamaCPPManager:
             '-v', f'{host_templates_dir}:/home/llamacpp/templates:ro',
             '-e', f'MODEL_NAME={model_name}',
             '-e', f'MODEL_VARIANT={variant}',
+            '-e', f'MTP_ENABLED={mtp_env["MTP_ENABLED"]}',
+            '-e', f'MTP_DRAFT_N_MAX={mtp_env["MTP_DRAFT_N_MAX"]}',
+            '-e', f'MTP_DRAFT_N_MIN={mtp_env["MTP_DRAFT_N_MIN"]}',
+            '-e', f'MTP_DRAFT_P_MIN={mtp_env["MTP_DRAFT_P_MIN"]}',
         ]
         
         # Only set MODEL_REPO if we have metadata for it
@@ -622,10 +715,10 @@ class LlamaCPPManager:
         
         # Attach GPU unless explicitly in CPU mode (or gpu_layers=0)
         if self._execution_uses_gpu():
-            docker_cmd.extend(['--gpus', 'all'])
-            docker_cmd.extend(['-e', f'NVIDIA_VISIBLE_DEVICES={cuda_devices}'])
-            docker_cmd.extend(['-e', f'CUDA_VISIBLE_DEVICES={cuda_devices}'])
-            docker_cmd.extend(['-e', 'NVIDIA_DRIVER_CAPABILITIES=compute,utility'])
+            gpu_attach = self._docker_gpu_attachment(cuda_devices)
+            docker_cmd.extend(['--gpus', gpu_attach["gpus"]])
+            for key, value in gpu_attach["env"].items():
+                docker_cmd.extend(['-e', f'{key}={value}'])
         
         docker_cmd.append(image_name)
         docker_cmd.extend(cmd)
@@ -697,6 +790,8 @@ class LlamaCPPManager:
             # Pre-flight checks
             logger.log_operation_start("LlamaCPP subprocess startup", mode="subprocess")
             
+            self._ensure_mtp_valid_or_raise()
+
             # Build and validate command
             cmd = self.build_command()
             cmd_str = ' '.join(cmd)
@@ -943,11 +1038,20 @@ class LlamaCPPManager:
     
     async def add_log_line(self, line: str):
         """Add a log line and broadcast to websocket clients"""
+        timestamp = datetime.now().isoformat()
         # Add to buffer
         self.log_buffer.append({
             "message": line,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": timestamp,
         })
+
+        mtp_stats = parse_mtp_stats_from_log_line(line)
+        if mtp_stats is not None:
+            self.log_buffer.append({
+                "message": line,
+                "timestamp": timestamp,
+                "mtp_stats": mtp_stats,
+            })
         
         # Broadcast to websocket clients
         disconnected_clients = []
@@ -956,8 +1060,14 @@ class LlamaCPPManager:
                 await client.send_json({
                     "type": "log",
                     "data": line,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": timestamp,
                 })
+                if mtp_stats is not None:
+                    await client.send_json({
+                        "type": "mtp_stats",
+                        "data": mtp_stats,
+                        "timestamp": timestamp,
+                    })
             except Exception:
                 disconnected_clients.append(client)
         
@@ -995,60 +1105,185 @@ class LlamaCPPManager:
         except Exception as e:
             logger.error(f"Error reading Docker logs via CLI: {e}")
 
-    def is_running(self) -> bool:
-        """Check if the llamacpp service container or subprocess is running."""
-        return bool(self.get_status().get("running"))
-
-    def get_status(self) -> Dict[str, Any]:
-        """Get current status of llamacpp"""
-        is_running = False
-        pid: Optional[int] = None
-        
+    def _probe_running(self) -> bool:
+        """Check if the llamacpp service container or subprocess is running (no status payload)."""
         if self.use_docker:
             if DOCKER_AVAILABLE and docker_client:
                 try:
                     container = docker_client.containers.get(self.container_name)
-                    is_running = container.status == "running"
-                    if is_running:
-                        pid = container.attrs.get('State', {}).get('Pid')
+                    return container.status == "running"
+                except Exception:
+                    return False
+            try:
+                result = subprocess.run(
+                    ['docker', 'ps', '--filter', f'name={self.container_name}', '--format', '{{.Names}}'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    container_names = result.stdout.strip().split('\n')
+                    return self.container_name in container_names and bool(result.stdout.strip())
+            except Exception as e:
+                logger.warning(f"Error checking Docker container status: {e}")
+            return False
+        return self.process is not None and self.process.poll() is None
+
+    def is_running(self) -> bool:
+        """Check if the llamacpp service container or subprocess is running."""
+        return self._probe_running()
+
+    def _env_dict_from_docker_config(self, config: Dict[str, Any]) -> Dict[str, str]:
+        env_list = config.get("Env") or []
+        result: Dict[str, str] = {}
+        for entry in env_list:
+            if isinstance(entry, str) and "=" in entry:
+                key, value = entry.split("=", 1)
+                result[key] = value
+        return result
+
+    def _docker_cat_file(self, target: str, path: str) -> Optional[str]:
+        try:
+            result = subprocess.run(
+                ["docker", "exec", target, "cat", path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return None
+
+    def _read_llamacpp_build_from_container_attrs(
+        self,
+        attrs: Dict[str, Any],
+        *,
+        exec_target: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        config = attrs.get("Config") or {}
+        labels = config.get("Labels") or {}
+        env = self._env_dict_from_docker_config(config)
+        tag = env.get("LLAMACPP_BUILD_TAG") or labels.get("org.opencontainers.image.version")
+        cli_version: Optional[str] = None
+        if exec_target:
+            cli_version = self._docker_cat_file(exec_target, "/etc/llama-nexus/llama-cli-version")
+            if not tag:
+                tag = self._docker_cat_file(exec_target, "/etc/llama-nexus/llamacpp-build-tag")
+        else:
+            try:
+                version_path = Path("/etc/llama-nexus/llama-cli-version")
+                if version_path.is_file():
+                    cli_version = version_path.read_text(encoding="utf-8").strip()
+                tag_path = Path("/etc/llama-nexus/llamacpp-build-tag")
+                if not tag and tag_path.is_file():
+                    tag = tag_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+        return build_info_from_tag_and_version(tag, cli_version)
+
+    def _read_llamacpp_build_from_docker_image(self) -> Dict[str, Any]:
+        if not (DOCKER_AVAILABLE and docker_client):
+            return build_info_from_tag_and_version(None)
+        try:
+            image = docker_client.images.get(self.llamacpp_docker_image)
+            return self._read_llamacpp_build_from_container_attrs(image.attrs)
+        except Exception as exc:
+            logger.debug(f"Could not inspect llama.cpp image build info: {exc}")
+            return build_info_from_tag_and_version(None)
+
+    def get_llamacpp_build_info(self, *, running: Optional[bool] = None) -> Dict[str, Any]:
+        """Resolve pinned llama.cpp build tag/version from the inference image or container."""
+        if self.use_docker:
+            running = self._probe_running() if running is None else running
+            exec_target = self.container_name if running else None
+            if DOCKER_AVAILABLE and docker_client:
+                try:
+                    container = docker_client.containers.get(self.container_name)
+                    return self._read_llamacpp_build_from_container_attrs(
+                        container.attrs,
+                        exec_target=exec_target,
+                    )
                 except Exception:
                     pass
             else:
                 try:
                     result = subprocess.run(
-                        ['docker', 'ps', '--filter', f'name={self.container_name}', '--format', '{{.Names}}'],
+                        [
+                            "docker",
+                            "inspect",
+                            self.container_name,
+                            "--format",
+                            "{{json .Config}}",
+                        ],
                         capture_output=True,
                         text=True,
-                        timeout=5
+                        timeout=10,
                     )
-                    if result.returncode == 0:
-                        container_names = result.stdout.strip().split('\n')
-                        is_running = self.container_name in container_names and bool(result.stdout.strip())
-                        if is_running:
-                            pid_result = subprocess.run(
-                                ['docker', 'inspect', '--format', '{{.State.Pid}}', self.container_name],
-                                capture_output=True,
-                                text=True,
-                                timeout=5
-                            )
-                            if pid_result.returncode == 0:
-                                try:
-                                    pid = int(pid_result.stdout.strip())
-                                except Exception:
-                                    pass
-                except Exception as e:
-                    logger.warning(f"Error checking Docker container status: {e}")
-        else:
-            is_running = self.process is not None and self.process.poll() is None
-            if is_running and self.process is not None:
+                    if result.returncode == 0 and result.stdout.strip():
+                        config = json.loads(result.stdout)
+                        return self._read_llamacpp_build_from_container_attrs(
+                            {"Config": config},
+                            exec_target=exec_target,
+                        )
+                except Exception as exc:
+                    logger.debug(f"docker inspect build info failed: {exc}")
+            return self._read_llamacpp_build_from_docker_image()
+
+        cli_version: Optional[str] = None
+        try:
+            result = subprocess.run(
+                ["llama-cli", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                cli_version = result.stdout.strip().splitlines()[0] if result.stdout else None
+        except Exception:
+            pass
+        return build_info_from_tag_and_version(None, cli_version)
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get current status of llamacpp"""
+        is_running = self._probe_running()
+        pid: Optional[int] = None
+
+        if is_running:
+            if self.use_docker:
+                if DOCKER_AVAILABLE and docker_client:
+                    try:
+                        container = docker_client.containers.get(self.container_name)
+                        pid = container.attrs.get('State', {}).get('Pid')
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        pid_result = subprocess.run(
+                            ['docker', 'inspect', '--format', '{{.State.Pid}}', self.container_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        if pid_result.returncode == 0:
+                            pid = int(pid_result.stdout.strip())
+                    except Exception:
+                        pass
+            elif self.process is not None:
                 pid = self.process.pid
-        
+
+        llamacpp_build = self.get_llamacpp_build_info(running=is_running)
+
         status: Dict[str, Any] = {
             "running": is_running,
             "pid": pid,
             "uptime": (datetime.now() - self.start_time).total_seconds() if self.start_time and is_running else 0,
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "mode": "docker" if self.use_docker else "subprocess",
+            "llamacpp_build": llamacpp_build,
+            "llamacpp_build_number": llamacpp_build.get("build_number"),
+            "mtp_supported": llamacpp_build.get("mtp_supported", False),
             "config": self.config,
             "model": {
                 "name": self.config.get("model", {}).get("name"),
@@ -1152,6 +1387,12 @@ class LlamaCPPManager:
                 "memory_f32": {"scope": "llamacpp", "type": "boolean", "description": "Use float32 for memory.", "llamacpp_flag": "--memory-f32", "vllm_equivalent": None},
                 "mlock": {"scope": "llamacpp", "type": "boolean", "description": "Lock model in memory.", "llamacpp_flag": "--mlock", "vllm_equivalent": None},
                 "no_mmap": {"scope": "llamacpp", "type": "boolean", "description": "Disable memory mapping.", "llamacpp_flag": "--no-mmap", "vllm_equivalent": None},
+            },
+            "mtp": {
+                "enabled": {"scope": "llamacpp", "type": "boolean", "description": "Enable Multi-Token Prediction (MTP) using built-in GGUF heads.", "llamacpp_flag": "--spec-type draft-mtp", "vllm_equivalent": "speculative.method", "mapping_note": "Requires mtp_capable GGUF and llama.cpp b9193+"},
+                "draft_n_max": {"scope": "llamacpp", "type": "number", "description": "Max MTP draft tokens per step (--spec-draft-n-max). Sweet spot 2–4.", "llamacpp_flag": "--spec-draft-n-max", "min": 1, "max": 16},
+                "draft_n_min": {"scope": "llamacpp", "type": "number", "description": "Min MTP draft tokens (--spec-draft-n-min).", "llamacpp_flag": "--spec-draft-n-min", "min": 0, "max": 16},
+                "draft_p_min": {"scope": "llamacpp", "type": "number", "description": "Min draft confidence (--spec-draft-p-min). Higher = fewer drafts, often better acceptance.", "llamacpp_flag": "--spec-draft-p-min", "min": 0, "max": 1, "step": 0.05},
             },
             "speculative": {
                 "model_draft": {"scope": "llamacpp", "type": "text", "description": "Draft model for speculative decoding.", "llamacpp_flag": "--model-draft", "vllm_equivalent": "speculative.method", "mapping_note": "llama.cpp uses a draft model, vLLM uses methods like MTP"},

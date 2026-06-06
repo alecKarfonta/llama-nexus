@@ -39,11 +39,26 @@ async def websocket_logs(websocket: WebSocket):
 
     log_mgr = _get_log_manager(backend)
 
-    # Send all recent logs immediately upon connection
+    # Send all recent logs immediately upon connection (buffer entries are dicts)
     recent_logs = log_mgr.get_logs(100)
-    for log_line in recent_logs:
+    for log_entry in recent_logs:
         try:
-            await websocket.send_text(log_line)
+            if isinstance(log_entry, dict):
+                message = log_entry.get("message", "")
+                timestamp = log_entry.get("timestamp")
+                if log_entry.get("mtp_stats"):
+                    await websocket.send_json({
+                        "type": "mtp_stats",
+                        "data": log_entry["mtp_stats"],
+                        "timestamp": timestamp,
+                    })
+                await websocket.send_json({
+                    "type": "log",
+                    "data": message,
+                    "timestamp": timestamp,
+                })
+            else:
+                await websocket.send_text(str(log_entry))
         except Exception:
             pass
 

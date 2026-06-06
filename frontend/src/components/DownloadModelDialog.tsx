@@ -34,6 +34,8 @@ export const DownloadModelDialog: React.FC<DownloadModelDialogProps> = ({
 }) => {
   const [repositoryId, setRepositoryId] = useState('')
   const [availableFiles, setAvailableFiles] = useState<string[]>([])
+  const [mtpRepoHint, setMtpRepoHint] = useState<{ likely?: boolean; caveat?: string } | null>(null)
+  const [mtpFileHints, setMtpFileHints] = useState<Record<string, { filename_suggests_mtp?: boolean; note?: string }>>({})
   const [selectedFile, setSelectedFile] = useState('')
   const [priority, setPriority] = useState<'low' | 'normal' | 'high'>('normal')
   const [loading, setLoading] = useState(false)
@@ -44,6 +46,8 @@ export const DownloadModelDialog: React.FC<DownloadModelDialogProps> = ({
   useEffect(() => {
     if (!repositoryId || repositoryId.split('/').length < 2) {
       setAvailableFiles([])
+      setMtpRepoHint(null)
+      setMtpFileHints({})
       setSelectedFile('')
       return
     }
@@ -52,9 +56,10 @@ export const DownloadModelDialog: React.FC<DownloadModelDialogProps> = ({
       setLoadingFiles(true)
       setError(null)
       try {
-        const files = await apiService.listRepoFiles(repositoryId)
-        // Filter for model files (GGUF, safetensors, etc.)
-        const modelFiles = files.filter(f => 
+        const listing = await apiService.listRepoFiles(repositoryId)
+        setMtpRepoHint(listing.mtp ?? null)
+        setMtpFileHints(listing.file_hints ?? {})
+        const modelFiles = listing.files.filter(f => 
           f.endsWith('.gguf') || 
           f.endsWith('.safetensors') || 
           f.endsWith('.bin') ||
@@ -80,6 +85,8 @@ export const DownloadModelDialog: React.FC<DownloadModelDialogProps> = ({
     setRepositoryId('')
     setSelectedFile('')
     setAvailableFiles([])
+    setMtpRepoHint(null)
+    setMtpFileHints({})
     setPriority('normal')
     setError(null)
     onClose()
@@ -131,6 +138,15 @@ export const DownloadModelDialog: React.FC<DownloadModelDialogProps> = ({
             and select the model file you want to download.
           </Alert>
 
+          {mtpRepoHint?.caveat && (
+            <Alert severity={mtpRepoHint.likely ? 'success' : 'warning'} sx={{ fontSize: '0.875rem' }}>
+              {mtpRepoHint.likely
+                ? 'This repository looks like an MTP-converted GGUF release. '
+                : 'For Multi-Token Prediction (MTP), you need GGUF files that include prediction heads — not every GGUF of an MTP-trained model family. '}
+              {mtpRepoHint.caveat}
+            </Alert>
+          )}
+
           <TextField
             label="Repository ID"
             value={repositoryId}
@@ -166,12 +182,20 @@ export const DownloadModelDialog: React.FC<DownloadModelDialogProps> = ({
               options={availableFiles}
               value={selectedFile}
               onChange={(_, newValue) => setSelectedFile(newValue || '')}
+              getOptionLabel={(option) => {
+                const hint = mtpFileHints[option]
+                return hint?.filename_suggests_mtp ? `${option} (MTP filename hint)` : option
+              }}
               renderInput={(params) => (
                 <TextField
                   {...params}
                   label="Model File"
                   placeholder="Select a model file"
-                  helperText={`${availableFiles.length} model file(s) available`}
+                  helperText={
+                    selectedFile && mtpFileHints[selectedFile]?.note
+                      ? mtpFileHints[selectedFile].note
+                      : `${availableFiles.length} model file(s) available`
+                  }
                   required
                 />
               )}

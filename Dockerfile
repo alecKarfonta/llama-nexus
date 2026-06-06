@@ -22,12 +22,14 @@ RUN pip3 install huggingface_hub hf_transfer
 
 # Clone and build llama.cpp with CUDA support
 # Pin a revision so Docker cache does not keep an old llama.cpp without newer arch support.
+# b9193+ includes merged MTP (Multi-Token Prediction) via ggml-org/llama.cpp PR #22673.
 # Qwen3.6 35B MoE GGUFs use architecture qwen35moe — requires current llama.cpp (see src/models/qwen35moe.cpp).
-# Override at build time: docker compose build --build-arg LLAMA_CPP_REF=master llamacpp-api
-ARG LLAMA_CPP_REF=45cac7ca703fb9085eae62b9121fca01d20177f6
+# Override at build time: docker compose build --build-arg LLAMA_CPP_REF=b9496 llamacpp-api
+ARG LLAMA_CPP_REF=b9193
+ARG LLAMACPP_BUILD_TAG=b9193
 WORKDIR /build
 ARG SKIP_BUILD_FROM_SOURCE=false
-ARG LLAMACPP_VERSION=b8250
+ARG LLAMACPP_VERSION=b9193
 ARG ENABLE_TURBOQUANT=false
 # CUDA architecture(s) passed to CMake. Run on the host: nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 # (use the major.minor as an integer SM, e.g. 8.6 -> 86). Common values: 75 (T4), 80 (A100), 86 (RTX 30xx),
@@ -44,6 +46,9 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         find extracted_llama -name "llama-server" -exec cp {} /build/llama.cpp/build/bin/ \; && \
         find extracted_llama -name "llama-cli" -exec cp {} /build/llama.cpp/build/bin/ \; && \
         find extracted_llama -name "llama-gguf-split" -exec cp {} /build/llama.cpp/build/bin/ \; && \
+        echo "${LLAMACPP_BUILD_TAG}" > /build/llamacpp-build-tag.txt && \
+        /build/llama.cpp/build/bin/llama-cli --version 2>/dev/null | head -1 > /build/llama-cli-version.txt || \
+            echo "llama.cpp ${LLAMACPP_VERSION}" > /build/llama-cli-version.txt && \
         rm -rf llama.zip extracted_llama; \
     else \
         if [ "$ENABLE_TURBOQUANT" = "true" ]; then \
@@ -61,15 +66,23 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         cmake . -B build \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_CUDA=ON \
+            -DGGML_CUDA_FA=ON \
+            -DGGML_CUDA_FA_ALL_QUANTS=ON \
             -DLLAMA_CURL=ON \
             -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" && \
         cmake --build build --config Release -j8 --clean-first \
             --target llama-server llama-cli llama-gguf-split && \
-        echo "Built llama.cpp version: $(./build/bin/llama-cli --version | head -1)"; \
+        echo "${LLAMACPP_BUILD_TAG}" > /build/llamacpp-build-tag.txt && \
+        ./build/bin/llama-cli --version 2>/dev/null | head -1 > /build/llama-cli-version.txt || true && \
+        echo "Built llama.cpp version: $(cat /build/llama-cli-version.txt 2>/dev/null || echo unknown)"; \
     fi
 
 # Runtime stage
 FROM nvidia/cuda:13.0.0-runtime-ubuntu22.04
+
+ARG LLAMACPP_BUILD_TAG=b9193
+LABEL org.opencontainers.image.version="${LLAMACPP_BUILD_TAG}"
+ENV LLAMACPP_BUILD_TAG=${LLAMACPP_BUILD_TAG}
 
 # Fix CUDA forward compatibility error on certain driver versions
 RUN rm -rf /usr/local/cuda/compat
@@ -96,6 +109,8 @@ RUN useradd -m -u 1000 llamacpp && \
 COPY --from=builder /build/llama.cpp/build/bin/llama-server /usr/local/bin/
 COPY --from=builder /build/llama.cpp/build/bin/llama-cli /usr/local/bin/
 COPY --from=builder /build/llama.cpp/build/bin/llama-gguf-split /usr/local/bin/
+COPY --from=builder /build/llamacpp-build-tag.txt /etc/llama-nexus/llamacpp-build-tag
+COPY --from=builder /build/llama-cli-version.txt /etc/llama-nexus/llama-cli-version
 
 # Copy configuration files
 COPY scripts/start.sh /start.sh

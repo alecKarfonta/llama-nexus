@@ -210,6 +210,17 @@ if [ $# -eq 0 ]; then
         CMD_ARGS+=("--jinja" "--chat-template-file" "$TEMPLATE_PATH")
     fi
 
+    # Multi-Token Prediction (MTP) — requires MTP-converted GGUF + llama.cpp b9193+
+    if [[ "${MTP_ENABLED:-false}" == "true" || "${MTP_ENABLED}" == "1" ]]; then
+        CMD_ARGS+=(
+            "--spec-type" "draft-mtp"
+            "--spec-draft-n-max" "${MTP_DRAFT_N_MAX:-3}"
+            "--spec-draft-n-min" "${MTP_DRAFT_N_MIN:-0}"
+            "--spec-draft-p-min" "${MTP_DRAFT_P_MIN:-0.75}"
+        )
+        echo "⚡ MTP speculative decoding enabled (draft-n-max=${MTP_DRAFT_N_MAX:-3})"
+    fi
+
     echo "🚀 Starting llama-server with command:"
     printf '%s ' "${CMD_ARGS[@]}"
     echo ""

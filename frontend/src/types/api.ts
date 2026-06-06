@@ -47,6 +47,11 @@ export interface ModelInfo {
     lora_dropout?: number;
     target_modules?: string[];
   };
+  /** True when GGUF metadata includes MTP (NextN) prediction heads. */
+  mtpCapable?: boolean;
+  mtpNextnLayers?: number;
+  ggufArchitecture?: string;
+  mtpScanError?: string;
 }
 
 export interface ModelDownload {

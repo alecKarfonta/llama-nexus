@@ -894,6 +894,16 @@ export const ModelsPage: React.FC = () => {
                           {model.parameters && (
                             <Chip label={model.parameters} size="small" variant="outlined" sx={{ fontSize: '0.7rem', height: 20 }} />
                           )}
+                          {model.mtpCapable && (
+                            <Chip
+                              label={model.mtpNextnLayers ? `MTP ×${model.mtpNextnLayers}` : 'MTP'}
+                              size="small"
+                              color="success"
+                              variant="outlined"
+                              sx={{ fontSize: '0.65rem', height: 18 }}
+                              title="GGUF includes NextN prediction heads (verified from file metadata)"
+                            />
+                          )}
                         </Box>
 
                         {/* Download Progress */}

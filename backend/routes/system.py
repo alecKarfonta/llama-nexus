@@ -320,11 +320,15 @@ async def estimate_vram_api(request: Request):
         kv_cache_type=data.get("kv_cache_type", "f16"),
         available_vram_gb=data.get("available_vram_gb", 24.0),
         flash_attention=data.get("flash_attention", True),
+        mtp_enabled=bool(data.get("mtp_enabled", False)),
+        mtp_nextn_layers=int(data.get("mtp_nextn_layers") or 1),
+        parallel_slots=int(data.get("parallel_slots") or 1),
     )
     
     return {
         "model_weights_mb": estimate.model_weights_mb,
         "kv_cache_mb": estimate.kv_cache_mb,
+        "mtp_overhead_mb": estimate.mtp_overhead_mb,
         "compute_buffer_mb": estimate.compute_buffer_mb,
         "overhead_mb": estimate.overhead_mb,
         "total_mb": estimate.total_mb,
