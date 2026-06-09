@@ -1,0 +1,26 @@
+{
+  "label": "27b-3gpu-q6k",
+  "url": "http://localhost:8603",
+  "model": "qwen3.6-27b",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 20.0,
+      "decode_tps_p50": 20.0,
+      "ttft_ms_mean": 398.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 20.0,
+      "decode_tps_p50": 20.0,
+      "ttft_ms_mean": 392.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 20.1,
+      "decode_tps_p50": 20.0,
+      "ttft_ms_mean": 385.0,
+      "n": 3
+    }
+  }
+}

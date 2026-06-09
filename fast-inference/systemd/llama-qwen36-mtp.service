@@ -1,0 +1,29 @@
+# /etc/systemd/system/llama-qwen36-mtp.service
+# The early llama.cpp MTP implementation has a known intermittent crash
+# (reports of dying after ~15-25 min under load). Until that's fixed upstream,
+# run it supervised with auto-restart. cache-reuse + clients retrying makes
+# the blip nearly invisible on a stream overlay.
+#
+#   sudo cp llama-qwen36-mtp.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now llama-qwen36-mtp
+
+[Unit]
+Description=llama-server Qwen3.6-35B-A3B MTP
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+Environment=MODEL_DIR=/home/alec/models
+Environment=PORT=8080
+Environment=GPUS=0
+Environment=SPEC=on
+Environment=NMAX=3
+ExecStart=/home/alec/fast-inference/10_llamacpp_qwen36_35b_mtp.sh
+Restart=on-failure
+RestartSec=5
+# llama-server can take a while to mlock a 20GB model
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

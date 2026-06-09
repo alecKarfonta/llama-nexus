@@ -1,0 +1,26 @@
+{
+  "label": "baseline",
+  "url": "http://localhost:8604",
+  "model": "qwen3.6-35b-mtp",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 83.9,
+      "decode_tps_p50": 83.8,
+      "ttft_ms_mean": 233.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 84.4,
+      "decode_tps_p50": 84.5,
+      "ttft_ms_mean": 215.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 84.0,
+      "decode_tps_p50": 84.5,
+      "ttft_ms_mean": 249.0,
+      "n": 3
+    }
+  }
+}

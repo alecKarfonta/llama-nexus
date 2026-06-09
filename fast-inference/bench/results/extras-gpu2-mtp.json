@@ -1,0 +1,26 @@
+{
+  "label": "extras-gpu2-mtp",
+  "url": "http://localhost:8603",
+  "model": "qwen3.6-27b-mtp",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 48.9,
+      "decode_tps_p50": 48.7,
+      "ttft_ms_mean": 454.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 49.7,
+      "decode_tps_p50": 50.4,
+      "ttft_ms_mean": 459.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 42.6,
+      "decode_tps_p50": 42.1,
+      "ttft_ms_mean": 471.0,
+      "n": 3
+    }
+  }
+}

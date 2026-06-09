@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import {
   Box,
   Typography,
@@ -451,6 +451,8 @@ export const ConstraintEditor: React.FC<ConstraintEditorProps> = ({
   const [activeTab, setActiveTab] = useState(0)
   const [schemaName, setSchemaName] = useState('response')
   const [copied, setCopied] = useState(false)
+  const [grammarText, setGrammarText] = useState('')
+  const [grammarEdited, setGrammarEdited] = useState(false)
 
   // Generate JSON Schema
   const jsonSchema = {
@@ -484,8 +486,21 @@ export const ConstraintEditor: React.FC<ConstraintEditorProps> = ({
     setTimeout(() => setCopied(false), 2000)
   }
 
+  useEffect(() => {
+    if (!grammarEdited) {
+      setGrammarText(generateGbnfGrammar(properties))
+    }
+  }, [properties, grammarEdited])
+
+  useEffect(() => {
+    if (!open) {
+      setGrammarEdited(false)
+    }
+  }, [open])
+
   const handleApply = () => {
-    onApply(jsonSchema)
+    const grammar = grammarText.trim() || generateGbnfGrammar(properties)
+    onApply(jsonSchema, grammar)
     onClose()
   }
 
@@ -653,23 +668,36 @@ export const ConstraintEditor: React.FC<ConstraintEditorProps> = ({
         {activeTab === 2 && (
           <Box>
             <Alert severity="info" sx={{ mb: 2 }}>
-              GBNF (GGML BNF) grammar is automatically generated from your JSON Schema.
-              This grammar constrains the model to produce valid JSON matching your schema.
+              GBNF grammar is generated from your schema by default. Edit below to supply raw
+              GBNF (advanced). Sent as the <code>grammar</code> field alongside{' '}
+              <code>response_format</code>.
             </Alert>
-            <Box
-              sx={{
-                bgcolor: 'rgba(0, 0, 0, 0.3)',
-                borderRadius: 2,
-                p: 2,
-                fontFamily: 'monospace',
-                fontSize: '0.75rem',
-                overflow: 'auto',
-                maxHeight: 400,
-                whiteSpace: 'pre',
+            <TextField
+              fullWidth
+              multiline
+              minRows={12}
+              value={grammarText}
+              onChange={(e) => {
+                setGrammarEdited(true)
+                setGrammarText(e.target.value)
               }}
-            >
-              {generateGbnfGrammar(properties)}
-            </Box>
+              placeholder={generateGbnfGrammar(properties)}
+              InputProps={{
+                sx: { fontFamily: 'monospace', fontSize: '0.75rem' },
+              }}
+            />
+            {grammarEdited && (
+              <Button
+                size="small"
+                sx={{ mt: 1 }}
+                onClick={() => {
+                  setGrammarEdited(false)
+                  setGrammarText(generateGbnfGrammar(properties))
+                }}
+              >
+                Regenerate from schema
+              </Button>
+            )}
           </Box>
         )}
       </DialogContent>
@@ -688,8 +716,8 @@ export const ConstraintEditor: React.FC<ConstraintEditorProps> = ({
   )
 }
 
-// Generate GBNF grammar from properties (simplified)
-function generateGbnfGrammar(properties: SchemaProperty[]): string {
+/** Generate GBNF grammar from properties (simplified). */
+export function generateGbnfGrammar(properties: SchemaProperty[]): string {
   let grammar = `# GBNF Grammar for structured output\n\n`
   grammar += `root ::= "{" ws `
   

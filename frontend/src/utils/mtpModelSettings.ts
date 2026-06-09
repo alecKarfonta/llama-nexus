@@ -2,8 +2,11 @@
 
 import mtpRecommendedDefaults from '@/config/mtpRecommendedDefaults.json';
 
+import type { MtpWorkloadProfile } from '@/utils/mtpWorkloadProfiles';
+
 export interface MtpModelSettings {
   enabled: boolean;
+  workload_profile: MtpWorkloadProfile;
   draft_n_max: number;
   draft_n_min: number;
   draft_p_min: number;
@@ -13,6 +16,7 @@ const STORAGE_KEY = 'llama-nexus-mtp-by-model';
 
 const DEFAULTS: MtpModelSettings = {
   enabled: false,
+  workload_profile: 'chat',
   draft_n_max: 3,
   draft_n_min: 0,
   draft_p_min: 0.75,
@@ -54,8 +58,13 @@ type RecommendedFile = Record<
 export function recommendedMtpForFamily(family: string): MtpModelSettings {
   const table = mtpRecommendedDefaults as RecommendedFile;
   const rec = table[family] ?? table.default ?? {};
+  const profile = rec.workload_profile as MtpWorkloadProfile | undefined;
   return {
     enabled: Boolean(rec.enabled ?? DEFAULTS.enabled),
+    workload_profile:
+      profile && ['chat', 'agent', 'throughput', 'custom'].includes(profile)
+        ? profile
+        : DEFAULTS.workload_profile,
     draft_n_max: Number(rec.draft_n_max ?? DEFAULTS.draft_n_max),
     draft_n_min: Number(rec.draft_n_min ?? DEFAULTS.draft_n_min),
     draft_p_min: Number(rec.draft_p_min ?? DEFAULTS.draft_p_min),
@@ -66,8 +75,13 @@ export function loadMtpForModel(name: string, variant: string): MtpModelSettings
   if (!name) return null;
   const entry = readAll()[modelMtpKey(name, variant)];
   if (!entry || typeof entry !== 'object') return null;
+  const profile = entry.workload_profile as MtpWorkloadProfile | undefined;
   return {
     enabled: Boolean(entry.enabled),
+    workload_profile:
+      profile && ['chat', 'agent', 'throughput', 'custom'].includes(profile)
+        ? profile
+        : DEFAULTS.workload_profile,
     draft_n_max: Number(entry.draft_n_max ?? DEFAULTS.draft_n_max),
     draft_n_min: Number(entry.draft_n_min ?? DEFAULTS.draft_n_min),
     draft_p_min: Number(entry.draft_p_min ?? DEFAULTS.draft_p_min),

@@ -1,0 +1,26 @@
+{
+  "label": "mtp-n2",
+  "url": "http://localhost:8603",
+  "model": "qwen3.6-27b-mtp",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 43.3,
+      "decode_tps_p50": 43.1,
+      "ttft_ms_mean": 394.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 44.1,
+      "decode_tps_p50": 44.1,
+      "ttft_ms_mean": 399.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 38.6,
+      "decode_tps_p50": 38.6,
+      "ttft_ms_mean": 407.0,
+      "n": 3
+    }
+  }
+}

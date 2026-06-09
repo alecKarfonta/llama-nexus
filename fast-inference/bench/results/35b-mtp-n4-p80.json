@@ -1,0 +1,26 @@
+{
+  "label": "35b-mtp-n4-p80",
+  "url": "http://localhost:8604",
+  "model": "qwen3.6-35b-mtp",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 106.3,
+      "decode_tps_p50": 106.3,
+      "ttft_ms_mean": 247.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 114.8,
+      "decode_tps_p50": 118.8,
+      "ttft_ms_mean": 296.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 70.2,
+      "decode_tps_p50": 78.4,
+      "ttft_ms_mean": 201.0,
+      "n": 3
+    }
+  }
+}

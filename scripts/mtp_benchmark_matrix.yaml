@@ -1,0 +1,54 @@
+# MTP benchmark matrix — 4× 3090 Ti reference box
+# Paths use ${MODELS_DIR} (default: ./models). Override: export MODELS_DIR=/path/to/models
+#
+# Run:
+#   python3 scripts/mtp_bench.py --matrix scripts/mtp_benchmark_matrix.yaml
+#   ./scripts/mtp_bench.sh
+
+models_dir: "${MODELS_DIR:-./models}"
+
+models:
+  # Dense Qwen3.6 27B MTP GGUF — quant sweep
+  - id: qwen36-27b-q4km
+    path: "${MODELS_DIR}/Qwen3.6-27B-Q4_K_M.gguf"
+    family: qwen3.6
+    quant: Q4_K_M
+  - id: qwen36-27b-q6k
+    path: "${MODELS_DIR}/Qwen3.6-27B-Q6_K.gguf"
+    family: qwen3.6
+    quant: Q6_K
+  - id: qwen36-27b-q8
+    path: "${MODELS_DIR}/Qwen3.6-27B-Q8_0.gguf"
+    family: qwen3.6
+    quant: Q8_0
+
+  # MoE Qwen3.6 35B-A3B MTP GGUF
+  - id: qwen36-35b-a3b-q4km
+    path: "${MODELS_DIR}/Qwen3.6-35B-A3B-Q4_K_M.gguf"
+    family: qwen3.6-moe
+    quant: Q4_K_M
+
+  # GLM-4.6 MTP (optional — comment out if VRAM insufficient)
+  # - id: glm46-mtp
+  #   path: "${MODELS_DIR}/GLM-4.6-MTP-Q4_K_M.gguf"
+  #   family: glm
+  #   quant: Q4_K_M
+
+# Concurrency: single-stream vs multi-slot penalty
+parallel_slots: [1, 4]
+
+# MTP sweep (roadmap Phase 4)
+mtp_draft_n_max: [2, 3, 4, 5]
+mtp_draft_p_min: [0.5, 0.75, 0.9]
+mtp_draft_n_min: 0
+
+# KV cache — production default
+cache_types: [q8_0]
+cache_type_v: q8_0
+
+n_ctx: 8192
+n_gpu_layers: 99
+max_tokens: 256
+repetitions: 1
+run_baseline: true
+port_base: 18080

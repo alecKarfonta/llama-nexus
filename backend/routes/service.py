@@ -4,8 +4,11 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Dict, Any
 from datetime import datetime
 import copy
+import json
 import httpx
 import logging
+
+from modules.chat_proxy import chat_proxy_body_unchanged, parse_chat_proxy_body
 
 logger = logging.getLogger(__name__)
 
@@ -200,8 +203,8 @@ async def get_config(request: Request, backend: str = "llamacpp"):
             "sampling": ["temperature", "top_p", "top_k", "min_p", "repeat_penalty",
                         "frequency_penalty", "presence_penalty", "dry_multiplier"],
             "performance": ["threads", "batch_size", "ubatch_size", "num_predict", "parallel_slots", "ctx_checkpoints"],
-            "mtp": ["enabled", "draft_n_max", "draft_n_min", "draft_p_min"],
-            "server": ["api_key"],
+            "mtp": ["enabled", "workload_profile", "draft_n_max", "draft_n_min", "draft_p_min"],
+            "server": ["api_key", "chat_template_kwargs", "cache_reuse", "reasoning_budget", "jinja"],
             "template": ["directory", "selected"]
         }
     }
@@ -445,8 +448,13 @@ async def service_action_alias(request: Request, payload: Dict[str, Any]):
 
 @router.api_route("/v1/chat/completions", methods=["POST"])
 async def proxy_chat_completions(request: Request):
-    """Proxy chat completion requests to the active inference backend."""
+    """Proxy chat completion requests to the active inference backend.
+
+    Passthrough contract: tools, tool_choice, response_format, and grammar are
+    forwarded unchanged in the request body (see modules/chat_proxy.py).
+    """
     body = await request.body()
+    body = chat_proxy_body_unchanged(body)
     headers = dict(request.headers)
     # Remove hop-by-hop headers that shouldn't be forwarded
     for h in ("host", "content-length", "transfer-encoding"):
@@ -468,17 +476,22 @@ async def proxy_chat_completions(request: Request):
             target = f"http://llamacpp-api:8080"
         else:
             target = f"http://localhost:8080"
+        if "authorization" not in {k.lower() for k in headers}:
+            llamacpp_key = llamacpp_mgr.config.get("server", {}).get("api_key", "")
+            if llamacpp_key:
+                headers["Authorization"] = f"Bearer {llamacpp_key}"
     else:
         raise HTTPException(status_code=503, detail="No inference backend is running. Start llama.cpp or vLLM first.")
 
     url = f"{target}/v1/chat/completions"
 
-    # Check if this is a streaming request
-    try:
-        body_json = await request.json()
-        is_stream = body_json.get("stream", False)
-    except Exception:
-        is_stream = False
+    is_stream = False
+    if body:
+        try:
+            body_json = parse_chat_proxy_body(body)
+            is_stream = bool(body_json.get("stream", False))
+        except (json.JSONDecodeError, ValueError):
+            is_stream = False
 
     if is_stream:
         return await _proxy_stream(request, url, body, headers)
@@ -508,6 +521,10 @@ async def proxy_completions(request: Request):
             target = f"http://llamacpp-api:8080"
         else:
             target = f"http://localhost:8080"
+        if "authorization" not in {k.lower() for k in headers}:
+            llamacpp_key = llamacpp_mgr.config.get("server", {}).get("api_key", "")
+            if llamacpp_key:
+                headers["Authorization"] = f"Bearer {llamacpp_key}"
     else:
         raise HTTPException(status_code=503, detail="No inference backend is running.")
 

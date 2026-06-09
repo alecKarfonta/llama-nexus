@@ -1,0 +1,26 @@
+{
+  "label": "27b-2gpu",
+  "url": "http://localhost:8603",
+  "model": "qwen3.6-27b",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 22.2,
+      "decode_tps_p50": 22.2,
+      "ttft_ms_mean": 439.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 22.2,
+      "decode_tps_p50": 22.1,
+      "ttft_ms_mean": 444.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 22.2,
+      "decode_tps_p50": 22.2,
+      "ttft_ms_mean": 414.0,
+      "n": 3
+    }
+  }
+}

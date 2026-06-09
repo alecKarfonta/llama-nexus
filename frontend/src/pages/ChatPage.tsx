@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, ChangeEvent, KeyboardEvent } from 'react'
 import { flushSync } from 'react-dom'
 import {
+  Alert,
   Box,
   Card,
   CardContent,
@@ -62,12 +63,17 @@ import {
   ExpandLess as ExpandLessIcon,
   Tune as TuneIcon,
   CallSplit as ForkIcon,
+  Code as CodeIcon,
 } from '@mui/icons-material'
 import { useVoiceInput } from '@/hooks/useVoiceInput'
 import { useTTS } from '@/hooks/useTTS'
 import { apiService } from '@/services/api'
 import { ToolsService, ExtendedTool } from '@/services/tools'
-import { MarkdownRenderer, RAGSettingsPanel, RAGContextBlock, RAGChunk, GraphContextBlock, EntityExplorer, ConversationEntities, UnifiedContextBlock, UnifiedChunk, QualitySignals, RetrievalFeedbackBar } from '@/components/chat'
+import { MarkdownRenderer, RAGSettingsPanel, RAGContextBlock, RAGChunk, GraphContextBlock, EntityExplorer, ConversationEntities, UnifiedContextBlock, UnifiedChunk, QualitySignals, RetrievalFeedbackBar, ConstraintEditor } from '@/components/chat'
+import {
+  buildChatOutputConstraints,
+  structuredOutputConflictsWithTools,
+} from '@/utils/chatOutputConstraints'
 import { ConversationSidebar } from '@/components/chat/ConversationSidebar'
 import type { ChatMessage, ChatCompletionRequest, Tool, ToolCall, ConversationListItem } from '@/types/api'
 
@@ -111,6 +117,11 @@ interface ChatSettings {
   ragShowContext: boolean       // show retrieved context in UI
   // GraphRAG settings
   graphEnabled: boolean         // augment with knowledge graph context
+  // Structured output (JSON schema + GBNF grammar)
+  enableStructuredOutput: boolean
+  structuredOutputSchema: Record<string, unknown> | null
+  structuredOutputGrammar: string | null
+  structuredOutputSchemaName: string
 }
 
 interface PerformanceMetrics {
@@ -161,6 +172,11 @@ const defaultSettings: ChatSettings = {
   ragShowContext: true,
   // GraphRAG settings
   graphEnabled: false,
+  // Structured output
+  enableStructuredOutput: false,
+  structuredOutputSchema: null,
+  structuredOutputGrammar: null,
+  structuredOutputSchemaName: 'response',
 }
 
 const initialPerformanceMetrics: PerformanceMetrics = {
@@ -251,6 +267,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
   const [currentModelName, setCurrentModelName] = useState<string>('AI Model')
   const [activeInferenceBackend, setActiveInferenceBackend] = useState<string | null>(null)
+  const [deployWorkloadProfile, setDeployWorkloadProfile] = useState<string | null>(null)
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -264,6 +281,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const [error, setError] = useState(null)
   const [availableTools, setAvailableTools] = useState<ExtendedTool[]>(ToolsService.getBuiltInToolsExtended())
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false)
+  const [constraintEditorOpen, setConstraintEditorOpen] = useState(false)
 
   // Conversation management state
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -694,13 +712,31 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       try {
         const backends = await apiService.getBackendsStatus()
         setActiveInferenceBackend(backends.active || null)
+        const llamacpp = backends.backends?.llamacpp
+        const profile = llamacpp?.config?.mtp?.workload_profile
+        setDeployWorkloadProfile(typeof profile === 'string' ? profile : null)
 
         const current = loadSettings()
-        if (!isDirectInferencePortBaseUrl(current.baseUrl)) return
+        let updated = { ...current }
 
-        const updated = { ...current, baseUrl: '' }
-        localStorage.setItem('chat-settings', JSON.stringify(updated))
-        setSettings(updated)
+        if (!isDirectInferencePortBaseUrl(current.baseUrl)) {
+          updated.baseUrl = ''
+        }
+
+        // Sync API key from deployed backend when using the UI proxy (empty baseUrl).
+        if (!updated.baseUrl) {
+          const deployKey =
+            llamacpp?.config?.server?.api_key ||
+            (await apiService.getServiceConfig().catch(() => null))?.server?.api_key
+          if (deployKey && !updated.apiKey) {
+            updated.apiKey = deployKey
+          }
+        }
+
+        if (JSON.stringify(updated) !== JSON.stringify(current)) {
+          localStorage.setItem('chat-settings', JSON.stringify(updated))
+          setSettings(updated)
+        }
       } catch (error) {
         console.warn('Failed to align chat connection with active backend:', error)
       }
@@ -1104,6 +1140,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         ...(settings.streamResponse ? { stream_options: { include_usage: true } } : {}),
         tools: selectedToolsForRequest.length > 0 ? selectedToolsForRequest : undefined,
         tool_choice: selectedToolsForRequest.length > 0 ? 'auto' : undefined,
+        ...buildChatOutputConstraints(settings),
       }
 
       if (settings.streamResponse) {
@@ -1121,6 +1158,20 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message')
       console.error('Chat error:', err)
+      // Drop empty assistant placeholder left by a failed stream/non-stream attempt.
+      setMessages((prev: ChatMessage[]) => {
+        if (prev.length === 0) return prev
+        const last = prev[prev.length - 1]
+        if (
+          last.role === 'assistant' &&
+          !last.content &&
+          !last.reasoning_content &&
+          !(last.tool_calls && last.tool_calls.length > 0)
+        ) {
+          return prev.slice(0, -1)
+        }
+        return prev
+      })
     } finally {
       setIsLoading(false)
       // Auto-save after each assistant reply
@@ -1950,6 +2001,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         ...(settings.streamResponse ? { stream_options: { include_usage: true } } : {}),
         tools: selectedToolsForRequest.length > 0 ? selectedToolsForRequest : undefined,
         tool_choice: selectedToolsForRequest.length > 0 ? 'auto' : undefined,
+        ...buildChatOutputConstraints(settings),
       }
 
       if (settings.streamResponse) {
@@ -1990,6 +2042,37 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       case 'tool': return 'info'
       default: return 'secondary'
     }
+  }
+
+  const handleApplyConstraints = (schema: object, grammar?: string) => {
+    const record = schema as Record<string, unknown>
+    saveSettings({
+      ...settings,
+      enableStructuredOutput: true,
+      structuredOutputSchema: record,
+      structuredOutputSchemaName:
+        typeof record.title === 'string' ? record.title : 'response',
+      structuredOutputGrammar: grammar?.trim() ? grammar : null,
+    })
+  }
+
+  const toggleStructuredOutput = () => {
+    const next = !settings.enableStructuredOutput
+    if (next && !settings.structuredOutputSchema) {
+      setConstraintEditorOpen(true)
+      return
+    }
+    saveSettings({ ...settings, enableStructuredOutput: next })
+  }
+
+  const clearStructuredOutput = () => {
+    saveSettings({
+      ...settings,
+      enableStructuredOutput: false,
+      structuredOutputSchema: null,
+      structuredOutputGrammar: null,
+      structuredOutputSchemaName: 'response',
+    })
   }
 
   const toggleToolSelection = (toolName: string) => {
@@ -2153,12 +2236,22 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
       display: 'flex',
       flexDirection: 'column',
       p: { xs: 2, sm: 3, md: 4 },
+      width: '100%',
+      minWidth: 0,
       maxWidth: '100%',
       overflow: 'hidden'
     }}>
       {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      <Box sx={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: { xs: 'flex-start', sm: 'center' },
+        flexWrap: 'wrap',
+        gap: 1,
+        mb: 2,
+        minWidth: 0,
+      }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, minWidth: 0, flex: '1 1 200px' }}>
           <Tooltip title="Conversation History">
             <IconButton
               onClick={() => setSidebarOpen(true)}
@@ -2236,6 +2329,41 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
                 Reasoning: {settings.reasoningLevel}
               </Typography>
+              {settings.enableTools && (
+                <Tooltip
+                  title={
+                    deployWorkloadProfile === 'agent'
+                      ? 'Tools mode active. Deploy uses Agent workload (MTP n8, thinking off).'
+                      : 'Tools mode active. For best tool-call latency, set Deploy → MTP → Agent workload profile.'
+                  }
+                >
+                  <Chip
+                    icon={<ToolIcon sx={{ fontSize: '0.875rem !important' }} />}
+                    label="Tools mode"
+                    size="small"
+                    color={deployWorkloadProfile === 'agent' ? 'success' : 'warning'}
+                    variant="outlined"
+                    component="a"
+                    href="/deploy"
+                    clickable
+                    sx={{ fontSize: '0.75rem', height: 22 }}
+                  />
+                </Tooltip>
+              )}
+              {settings.enableStructuredOutput && settings.structuredOutputSchema && (
+                <Tooltip title="Structured JSON output — click to edit schema">
+                  <Chip
+                    icon={<CodeIcon sx={{ fontSize: '0.875rem !important' }} />}
+                    label={`JSON: ${settings.structuredOutputSchemaName}`}
+                    size="small"
+                    color="info"
+                    variant="outlined"
+                    onClick={() => setConstraintEditorOpen(true)}
+                    clickable
+                    sx={{ fontSize: '0.75rem', height: 22 }}
+                  />
+                </Tooltip>
+              )}
               {saveStatus === 'saving' && (
                 <Chip label="Saving..." size="small" sx={{ fontSize: '0.7rem', height: 20, bgcolor: 'action.hover' }} />
               )}
@@ -2245,7 +2373,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             </Box>
           </Box>
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0, flexWrap: 'wrap' }}>
           {/* TTS Quick Launch Button - shown when TTS is not available */}
           {!ttsServiceAvailable && (
             <Tooltip title="Start Text-to-Speech Service">
@@ -2826,6 +2954,19 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               </FormControl>
             </Box>
 
+            {settings.enableTools &&
+              deployWorkloadProfile !== 'agent' &&
+              activeInferenceBackend === 'llamacpp' && (
+                <Alert severity="info" sx={{ mb: 2, fontSize: '0.8125rem' }}>
+                  Deploy is not using the Agent workload profile. On the{' '}
+                  <a href="/deploy" style={{ color: 'inherit' }}>
+                    Deploy page
+                  </a>
+                  , select MTP → <strong>Agent</strong> for ~3× faster tool calls (MTP n8, thinking
+                  off).
+                </Alert>
+              )}
+
             {settings.enableTools && (
               <Grid container spacing={2}>
                 <Grid item xs={12}>
@@ -2933,6 +3074,55 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   </Typography>
                 </Grid>
               </Grid>
+            )}
+
+            <Divider sx={{ my: 3 }} />
+
+            {/* Structured output */}
+            <Typography variant="h6" gutterBottom>
+              Structured Output
+            </Typography>
+            <Box sx={{ mb: 2 }}>
+              <Button
+                variant={settings.enableStructuredOutput ? 'contained' : 'outlined'}
+                startIcon={<CodeIcon />}
+                onClick={toggleStructuredOutput}
+                sx={{ mr: 1, mb: 1 }}
+              >
+                {settings.enableStructuredOutput ? 'Structured Output On' : 'Enable Structured Output'}
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => setConstraintEditorOpen(true)}
+                sx={{ mb: 1 }}
+              >
+                Edit JSON Schema
+              </Button>
+              {settings.structuredOutputSchema && (
+                <Button
+                  variant="text"
+                  size="small"
+                  color="inherit"
+                  onClick={clearStructuredOutput}
+                  sx={{ mb: 1 }}
+                >
+                  Clear
+                </Button>
+              )}
+            </Box>
+            {settings.enableStructuredOutput && settings.structuredOutputSchema && (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontSize: '0.8rem' }}>
+                Requests include <code>response_format: json_schema</code>
+                {settings.structuredOutputGrammar ? ' and a custom GBNF grammar.' : '.'}
+              </Typography>
+            )}
+            {structuredOutputConflictsWithTools(settings) && (
+              <Alert severity="warning" sx={{ mb: 2, fontSize: '0.8125rem' }}>
+                Tools and structured output are both enabled. llama.cpp uses a single grammar slot —
+                tool lazy-grammar may conflict with custom JSON constraints. Disable one for reliable
+                behavior.
+              </Alert>
             )}
 
             <Divider sx={{ my: 3 }} />
@@ -3871,7 +4061,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         p: 2,
         borderRadius: 1,
         bgcolor: 'background.paper',
-        border: '1px solid rgba(255, 255, 255, 0.1)'
+        border: '1px solid rgba(255, 255, 255, 0.1)',
+        width: '100%',
+        minWidth: 0,
       }}>
         {/* Image Preview Section */}
         {uploadedImages.length > 0 && (
@@ -3919,7 +4111,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           </Box>
         )}
 
-        <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-end' }}>
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end', width: '100%', minWidth: 0 }}>
           {/* Hidden file input */}
           <input
             ref={fileInputRef}
@@ -3937,6 +4129,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               disabled={isLoading}
               size="small"
               sx={{
+                flexShrink: 0,
                 color: 'text.secondary',
                 '&:hover': { color: 'primary.main' }
               }}
@@ -3952,6 +4145,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               disabled={isLoading || isTranscribing}
               size="small"
               sx={{
+                flexShrink: 0,
                 color: isRecording ? 'error.main' : 'text.secondary',
                 '&:hover': { color: isRecording ? 'error.dark' : 'primary.main' },
                 animation: isRecording ? 'pulse 1.5s ease-in-out infinite' : 'none',
@@ -3967,7 +4161,6 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
           <TextField
             ref={inputRef}
-            fullWidth
             multiline
             maxRows={4}
             value={input}
@@ -3976,7 +4169,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             placeholder="Type your message... (Press Enter to send, Shift+Enter for new line)"
             disabled={isLoading}
             sx={{
-              flexGrow: 1,
+              flex: '1 1 0',
+              minWidth: 0,
+              width: 0,
               '& .MuiOutlinedInput-root': {
                 fontSize: '0.875rem',
                 borderRadius: 1,
@@ -3992,7 +4187,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             onClick={handleSendMessage}
             disabled={(!input.trim() && uploadedImages.length === 0) || isLoading}
             sx={{
-              minWidth: 100,
+              flexShrink: 0,
+              minWidth: { xs: 44, sm: 100 },
+              px: { xs: 1, sm: 2 },
               borderRadius: 1,
               fontWeight: 500,
               fontSize: '0.8125rem',
@@ -4000,11 +4197,16 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
               boxShadow: 'none',
               '&:hover': {
                 boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)'
-              }
+              },
+              '& .MuiButton-startIcon': {
+                margin: { xs: 0, sm: '0 -4px 0 8px' },
+              },
             }}
             startIcon={isLoading ? <CircularProgress size={16} /> : <SendIcon />}
           >
-            {isLoading ? 'Sending' : 'Send'}
+            <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>
+              {isLoading ? 'Sending' : 'Send'}
+            </Box>
           </Button>
         </Box>
       </Paper>
@@ -4083,6 +4285,13 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
           )}
         </DialogActions>
       </Dialog>
+
+      <ConstraintEditor
+        open={constraintEditorOpen}
+        onClose={() => setConstraintEditorOpen(false)}
+        onApply={handleApplyConstraints}
+        initialSchema={settings.structuredOutputSchema ?? undefined}
+      />
 
       {/* Conversation Sidebar */}
       <ConversationSidebar

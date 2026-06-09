@@ -1,0 +1,26 @@
+{
+  "label": "extras-kv-q8",
+  "url": "http://localhost:8603",
+  "model": "qwen3.6-27b-mtp",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 47.7,
+      "decode_tps_p50": 47.2,
+      "ttft_ms_mean": 430.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 49.0,
+      "decode_tps_p50": 48.6,
+      "ttft_ms_mean": 425.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 42.1,
+      "decode_tps_p50": 42.2,
+      "ttft_ms_mean": 431.0,
+      "n": 3
+    }
+  }
+}

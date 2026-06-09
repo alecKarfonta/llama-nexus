@@ -47,6 +47,7 @@ import type { ModelInfo } from '@/types/api'
 import axios, { AxiosError } from 'axios'
 import LlamaCppCommitSelector from '@/components/LlamaCppCommitSelector'
 import LogViewer, { LogViewerRef } from '@/components/LogViewer'
+import { AgentToolsConfigSection } from '@/components/deploy/AgentToolsConfigSection'
 import { MtpConfigSection } from '@/components/deploy/MtpConfigSection'
 import { MtpStatsPanel } from '@/components/monitoring/MtpStatsPanel'
 import { useMtpStats } from '@/hooks/useMtpStats'
@@ -56,6 +57,10 @@ import {
   resolveMtpForModel,
   saveMtpForModel,
 } from '@/utils/mtpModelSettings'
+import {
+  applyMtpWorkloadProfile,
+  type MtpWorkloadProfile,
+} from '@/utils/mtpWorkloadProfiles'
 import { settingsManager } from '@/utils/settings'
 import {
   LLAMACPP_DEPLOY_PRESETS,
@@ -152,6 +157,7 @@ interface Config {
   };
   mtp?: {
     enabled?: boolean;
+    workload_profile?: MtpWorkloadProfile;
     draft_n_max?: number;
     draft_n_min?: number;
     draft_p_min?: number;
@@ -184,6 +190,7 @@ interface Config {
     reasoning_format?: 'deepseek' | 'none';
     reasoning_budget?: number;
     jinja?: boolean;
+    chat_template_kwargs?: Record<string, unknown> | null;
     sleep_idle_seconds?: number;
   };
 }
@@ -367,6 +374,7 @@ const DEFAULT_VALUES = {
   },
   mtp: {
     enabled: false,
+    workload_profile: 'chat' as MtpWorkloadProfile,
     draft_n_max: 3,
     draft_n_min: 0,
     draft_p_min: 0.75,
@@ -822,6 +830,7 @@ export const DeployPage: React.FC = () => {
   const logViewerRef = useRef<LogViewerRef>(null)
 
   const [llamacppMtpSupported, setLlamacppMtpSupported] = useState<boolean | null>(null)
+  const [llamacppLlguidanceEnabled, setLlamacppLlguidanceEnabled] = useState<boolean | null>(null)
   const [llamacppBuildTag, setLlamacppBuildTag] = useState<string | undefined>()
   const prevModelMtpKey = useRef('')
 
@@ -1191,6 +1200,11 @@ export const DeployPage: React.FC = () => {
             configToUse.model.variant || '',
           )
           configToUse.mtp = { ...defaultMtpSettings(), ...configToUse.mtp, ...resolvedMtp }
+          const profile = (configToUse.mtp.workload_profile ?? 'chat') as MtpWorkloadProfile
+          const applied = applyMtpWorkloadProfile(profile, configToUse)
+          configToUse.mtp = applied.mtp
+          configToUse.performance = { ...configToUse.performance, ...applied.performance }
+          configToUse.server = { ...configToUse.server, ...applied.server }
         }
         if (configToUse.model?.name) {
           prevModelMtpKey.current = modelMtpKey(configToUse.model.name, configToUse.model.variant || '')
@@ -1264,6 +1278,11 @@ export const DeployPage: React.FC = () => {
           if (statusRes.ok) {
             const sd = await statusRes.json()
             setLlamacppMtpSupported(sd.mtp_supported === true)
+            const llg =
+              sd.llguidance_enabled ?? sd.llamacpp_build?.llguidance_enabled
+            setLlamacppLlguidanceEnabled(
+              llg === true ? true : llg === false ? false : null
+            )
             setLlamacppBuildTag(sd.llamacpp_build?.tag ?? sd.llamacpp_build?.cli_version)
           }
         } catch (e) {
@@ -1291,9 +1310,16 @@ export const DeployPage: React.FC = () => {
     const resolved = resolveMtpForModel(config.model.name, config.model.variant || '')
     setConfig((prev) => {
       if (!prev) return prev
-      return {
+      const base: Config = {
         ...prev,
         mtp: { ...defaultMtpSettings(), ...resolved },
+      }
+      const applied = applyMtpWorkloadProfile(resolved.workload_profile, base)
+      return {
+        ...base,
+        mtp: applied.mtp,
+        performance: { ...base.performance, ...applied.performance },
+        server: { ...base.server, ...applied.server },
       }
     })
   }, [config?.model?.name, config?.model?.variant])
@@ -1445,6 +1471,43 @@ export const DeployPage: React.FC = () => {
 
     // Update command line preview in real-time
     deployLog('updateConfig', 'Updating command preview')
+    updateCommandPreview(next)
+  }
+
+  const switchMtpToCustomProfile = () => {
+    if (config?.mtp?.workload_profile === 'custom') return
+    updateConfig('mtp.workload_profile', 'custom')
+  }
+
+  const handleMtpWorkloadProfileChange = (profile: MtpWorkloadProfile) => {
+    if (!config) return
+    const next: Config = JSON.parse(JSON.stringify(config))
+    const applied = applyMtpWorkloadProfile(profile, next)
+    next.mtp = applied.mtp
+    next.performance = { ...next.performance, ...applied.performance }
+    next.server = { ...next.server, ...applied.server }
+    setConfig(next)
+    if (next.model?.name) {
+      saveMtpForModel(next.model.name, next.model.variant || '', next.mtp ?? {})
+    }
+    saveDeploySettings(next, selectedApiKey)
+    updateCommandPreview(next)
+  }
+
+  const handleMtpEnabledChange = (enabled: boolean) => {
+    if (!config) return
+    const next: Config = JSON.parse(JSON.stringify(config))
+    next.mtp = {
+      ...defaultMtpSettings(),
+      ...next.mtp,
+      workload_profile: 'custom',
+      enabled,
+    }
+    setConfig(next)
+    if (next.model?.name) {
+      saveMtpForModel(next.model.name, next.model.variant || '', next.mtp ?? {})
+    }
+    saveDeploySettings(next, selectedApiKey)
     updateCommandPreview(next)
   }
 
@@ -3354,6 +3417,19 @@ export const DeployPage: React.FC = () => {
                   parallelSlots={config.performance?.parallel_slots ?? 1}
                   selectedModel={selectedDeployModel}
                   onChange={updateConfig}
+                  onWorkloadProfileChange={handleMtpWorkloadProfileChange}
+                  onMtpEnabledChange={handleMtpEnabledChange}
+                />
+              </Grid>
+
+              <Grid item xs={12}>
+                <AgentToolsConfigSection
+                  server={config.server}
+                  workloadProfile={config.mtp?.workload_profile}
+                  grammarGbnfSupported
+                  llguidanceEnabled={llamacppLlguidanceEnabled}
+                  onChange={updateConfig}
+                  onSwitchToCustomProfile={switchMtpToCustomProfile}
                 />
               </Grid>
 

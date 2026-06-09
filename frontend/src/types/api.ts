@@ -266,6 +266,15 @@ export interface ChatCompletionRequest {
   presence_penalty?: number;
   repeat_penalty?: number;
   stream_options?: { include_usage?: boolean };
+  response_format?: {
+    type: 'json_schema' | 'json_object' | 'text';
+    json_schema?: {
+      name?: string;
+      schema: object;
+      strict?: boolean;
+    };
+  };
+  grammar?: string;
 }
 
 export interface ChatCompletionResponse {

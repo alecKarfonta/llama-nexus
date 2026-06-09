@@ -1,0 +1,31 @@
+{
+  "label": "tools-on-mtp-n2",
+  "url": "http://localhost:8603",
+  "model": "qwen3.6-27b-mtp",
+  "use_tools": true,
+  "runs": 3,
+  "results": {
+    "weather": {
+      "decode_tps_mean": 54.4,
+      "decode_tps_p50": 54.4,
+      "ttft_ms_mean": 181.0,
+      "tool_call_valid_pct": 100.0,
+      "n": 3
+    },
+    "overlay": {
+      "decode_tps_mean": 56.1,
+      "decode_tps_p50": 56.1,
+      "ttft_ms_mean": 186.0,
+      "tool_call_valid_pct": 100.0,
+      "n": 3
+    },
+    "command": {
+      "decode_tps_mean": 54.5,
+      "decode_tps_p50": 54.7,
+      "ttft_ms_mean": 177.0,
+      "tool_call_valid_pct": 100.0,
+      "n": 3
+    }
+  },
+  "mtp_stats": null
+}

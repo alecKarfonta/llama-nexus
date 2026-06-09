@@ -74,7 +74,7 @@ services:
       - NUM_KEEP=256
       - PARALLEL_SLOTS=1
       - SPLIT_MODE=layer
-      - MAIN_GPU=2
+      - MAIN_GPU=0
       - CACHE_TYPE_K=q8_0
       - CACHE_TYPE_V=q8_0
       - N_CPU_MOE=0
@@ -91,7 +91,8 @@ services:
       - LLAMACPP_DOCKER_IMAGE=${LLAMACPP_DOCKER_IMAGE:-llama-nexus-llamacpp-api:latest}
       # Optional; if unset, derived from DOCKER_NETWORK as {project}_gpt_oss_models
       - LLAMACPP_MODELS_VOLUME=${LLAMACPP_MODELS_VOLUME:-}
-      - CUDA_DEVICES=0,2
+      - CUDA_DEVICES=0,1
+      - TENSOR_SPLIT=1,1
       # Pass through HuggingFace token from host environment
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
       # Enable colored logging
@@ -178,6 +179,7 @@ services:
         LLAMACPP_BUILD_TAG: "b9193"
         LLAMA_CPP_REF: "b9193"
         ENABLE_TURBOQUANT: "false"
+        CMAKE_BUILD_JOBS: ${CMAKE_BUILD_JOBS:-2}
         CUDA_ARCH: ${CUDA_ARCH:-86}
     container_name: llamacpp-builder
     volumes:
@@ -200,6 +202,8 @@ services:
       dockerfile: Dockerfile
       args:
         ENABLE_TURBOQUANT: "false"
+        ENABLE_LLGUIDANCE: ${ENABLE_LLGUIDANCE:-false}
+        CMAKE_BUILD_JOBS: ${CMAKE_BUILD_JOBS:-2}
         CUDA_ARCH: ${CUDA_ARCH:-86}
         LLAMA_CPP_REF: "b9193"
         LLAMACPP_BUILD_TAG: "b9193"
@@ -245,7 +249,7 @@ services:
       - NUM_KEEP=256
       - PARALLEL_SLOTS=1
       - SPLIT_MODE=layer
-      - MAIN_GPU=2
+      - MAIN_GPU=0
       - CACHE_TYPE_K=q8_0
       - CACHE_TYPE_V=q8_0
       - N_CPU_MOE=0

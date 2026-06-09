@@ -1,0 +1,26 @@
+{
+  "label": "27b-3gpu-mtp-on",
+  "url": "http://localhost:8603",
+  "model": "qwen3.6-27b-mtp",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 38.0,
+      "decode_tps_p50": 39.0,
+      "ttft_ms_mean": 448.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 45.6,
+      "decode_tps_p50": 47.3,
+      "ttft_ms_mean": 412.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 33.6,
+      "decode_tps_p50": 32.9,
+      "ttft_ms_mean": 431.0,
+      "n": 3
+    }
+  }
+}

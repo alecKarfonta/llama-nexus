@@ -1,0 +1,26 @@
+{
+  "label": "extras-spec-ngram",
+  "url": "http://localhost:8603",
+  "model": "qwen3.6-27b-mtp",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 27.1,
+      "decode_tps_p50": 27.2,
+      "ttft_ms_mean": 411.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 27.1,
+      "decode_tps_p50": 27.6,
+      "ttft_ms_mean": 404.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 27.5,
+      "decode_tps_p50": 27.5,
+      "ttft_ms_mean": 414.0,
+      "n": 3
+    }
+  }
+}

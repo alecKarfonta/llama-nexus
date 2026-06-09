@@ -20,8 +20,13 @@ try:
     import docker
 except ImportError:
     docker = None  # type: ignore[assignment]
-from modules.llamacpp_build_info import build_info_from_tag_and_version
+from modules.llamacpp_build_info import (
+    build_info_from_tag_and_version,
+    parse_llguidance_enabled,
+)
 from modules.mtp_deploy import (
+    apply_mtp_workload_profile,
+    chat_template_kwargs_cli_value,
     mtp_env_from_config,
     mtp_enabled_in_config,
     normalize_mtp_config,
@@ -100,13 +105,26 @@ class LlamaCPPManager:
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
         }
         caps = [["gpu", "compute", "utility"]]
-        device_requests = [
-            docker.types.DeviceRequest(driver="nvidia", count=-1, capabilities=caps)
-        ]
         if dev and dev.lower() != "all":
+            device_ids = [d.strip() for d in dev.split(",") if d.strip()]
+            device_requests = [
+                docker.types.DeviceRequest(
+                    driver="nvidia",
+                    device_ids=device_ids,
+                    capabilities=caps,
+                )
+            ]
             env["CUDA_VISIBLE_DEVICES"] = dev
             env["NVIDIA_VISIBLE_DEVICES"] = dev
-        return {"gpus": "all", "device_requests": device_requests, "env": env}
+        else:
+            device_requests = [
+                docker.types.DeviceRequest(driver="nvidia", count=-1, capabilities=caps)
+            ]
+        # Docker CLI requires quoted form: --gpus '"device=0,1"' (bare device=0,1 errors).
+        gpus_cli = "all"
+        if dev and dev.lower() != "all":
+            gpus_cli = f'"device={dev}"'
+        return {"device_requests": device_requests, "env": env, "gpus_cli": gpus_cli}
         
     def load_default_config(self) -> Dict[str, Any]:
         """Load default configuration from environment or defaults"""
@@ -161,6 +179,7 @@ class LlamaCPPManager:
                 "parallel_slots": int(os.getenv("PARALLEL_SLOTS", "1")),
                 "ctx_checkpoints": optional_int("CTX_CHECKPOINTS"),
                 "split_mode": os.getenv("SPLIT_MODE"),
+                "tensor_split": os.getenv("TENSOR_SPLIT"),
                 "main_gpu": optional_int("MAIN_GPU"),
                 "cache_type_k": os.getenv("CACHE_TYPE_K"),
                 "cache_type_v": os.getenv("CACHE_TYPE_V"),
@@ -170,6 +189,7 @@ class LlamaCPPManager:
             },
             "mtp": {
                 "enabled": os.getenv("MTP_ENABLED", "false").lower() in ("1", "true", "yes"),
+                "workload_profile": os.getenv("MTP_WORKLOAD_PROFILE", "chat"),
                 "draft_n_max": int(os.getenv("MTP_DRAFT_N_MAX", "3")),
                 "draft_n_min": int(os.getenv("MTP_DRAFT_N_MIN", "0")),
                 "draft_p_min": float(os.getenv("MTP_DRAFT_P_MIN", "0.75")),
@@ -190,9 +210,10 @@ class LlamaCPPManager:
     
     def build_command(self) -> List[str]:
         """Build llamacpp server command from configuration"""
+        config = apply_mtp_workload_profile(self.config)
         # Try different filename patterns to find the actual model file
-        model_name = self.config['model']['name']
-        variant = self.config['model']['variant']
+        model_name = config['model']['name']
+        variant = config['model']['variant']
         
         # Try different filename patterns including merged multi-part files
         possible_paths = [
@@ -246,9 +267,9 @@ class LlamaCPPManager:
         cmd = [
             "llama-server",
             "--model", model_path,
-            "--host", self.config["server"]["host"],
-            "--port", str(self.config["server"]["port"]),
-            "--api-key", self.config["server"]["api_key"],
+            "--host", config["server"]["host"],
+            "--port", str(config["server"]["port"]),
+            "--api-key", config["server"]["api_key"],
         ]
         
         # Add optional model parameters only if they are set
@@ -305,7 +326,7 @@ class LlamaCPPManager:
         add_param_if_set(cmd, "--batch-size", self.config["performance"].get("batch_size"))
         add_param_if_set(cmd, "--ubatch-size", self.config["performance"].get("ubatch_size"))
         add_param_if_set(cmd, "--keep", self.config["performance"].get("num_keep"))
-        add_param_if_set(cmd, "--parallel", self.config["performance"].get("parallel_slots"))
+        add_param_if_set(cmd, "--parallel", config["performance"].get("parallel_slots"))
         add_param_if_set(cmd, "--split-mode", self.config["performance"].get("split_mode"))
         add_param_if_set(cmd, "--tensor-split", self.config["performance"].get("tensor_split"))
         add_param_if_set(cmd, "--main-gpu", self.config["performance"].get("main_gpu"))
@@ -339,7 +360,7 @@ class LlamaCPPManager:
         add_param_if_set(cmd, "--timeout", self.config["server"].get("timeout"))
         add_param_if_set(cmd, "--system-prompt-file", self.config["server"].get("system_prompt_file"))
         add_param_if_set(cmd, "--log-format", self.config["server"].get("log_format"))
-        add_param_if_set(cmd, "--cache-reuse", self.config["server"].get("cache_reuse"))
+        add_param_if_set(cmd, "--cache-reuse", config["server"].get("cache_reuse"))
         add_param_if_set(cmd, "--reasoning-format", self.config["server"].get("reasoning_format"))
         add_param_if_set(cmd, "--reasoning-budget", self.config["server"].get("reasoning_budget"))
         add_param_if_set(cmd, "--sleep-idle-seconds", self.config["server"].get("sleep_idle_seconds"))
@@ -377,11 +398,17 @@ class LlamaCPPManager:
             cmd.append("--no-kv-offload")
         
         # Jinja templates (only add if explicitly set; template-file logic below handles --jinja for custom templates)
-        jinja = self.config["server"].get("jinja")
+        jinja = config["server"].get("jinja")
         if jinja is True:
             cmd.append("--jinja")
         elif jinja is False:
             cmd.append("--no-jinja")
+
+        chat_kwargs = chat_template_kwargs_cli_value(config.get("server") or {})
+        if chat_kwargs:
+            if "--jinja" not in cmd and "--no-jinja" not in cmd:
+                cmd.append("--jinja")
+            add_param_if_set(cmd, "--chat-template-kwargs", chat_kwargs)
         
         # Add NUMA parameter if set
         add_param_if_set(cmd, "--numa", self.config["performance"].get("numa"))
@@ -416,8 +443,8 @@ class LlamaCPPManager:
         cmd.extend(["--flash-attn", flash_attn_value])
         
         # Multi-Token Prediction (built-in draft heads in the same GGUF)
-        if mtp_enabled_in_config(self.config):
-            mtp = normalize_mtp_config(self.config)
+        if mtp_enabled_in_config(config):
+            mtp = normalize_mtp_config(config)
             cmd.extend(["--spec-type", "draft-mtp"])
             add_param_if_set(cmd, "--spec-draft-n-max", mtp.get("draft_n_max"))
             add_param_if_set(cmd, "--spec-draft-n-min", mtp.get("draft_n_min"))
@@ -469,6 +496,7 @@ class LlamaCPPManager:
             for section in ("model", "performance", "mtp", "sampling", "server"):
                 if section in config and isinstance(config[section], dict):
                     cfg[section] = {**cfg.get(section, {}), **config[section]}
+        cfg = apply_mtp_workload_profile(cfg)
         cfg["mtp"] = normalize_mtp_config(cfg)
         build_info = self.get_llamacpp_build_info()
         errors, warnings = validate_mtp_deployment(
@@ -716,7 +744,7 @@ class LlamaCPPManager:
         # Attach GPU unless explicitly in CPU mode (or gpu_layers=0)
         if self._execution_uses_gpu():
             gpu_attach = self._docker_gpu_attachment(cuda_devices)
-            docker_cmd.extend(['--gpus', gpu_attach["gpus"]])
+            docker_cmd.extend(['--gpus', gpu_attach["gpus_cli"]])
             for key, value in gpu_attach["env"].items():
                 docker_cmd.extend(['-e', f'{key}={value}'])
         
@@ -1181,17 +1209,50 @@ class LlamaCPPManager:
                     tag = tag_path.read_text(encoding="utf-8").strip()
             except Exception:
                 pass
-        return build_info_from_tag_and_version(tag, cli_version)
+        llguidance_raw: Optional[str] = None
+        if exec_target:
+            llguidance_raw = self._docker_cat_file(
+                exec_target, "/etc/llama-nexus/llamacpp-llguidance-enabled"
+            )
+        else:
+            try:
+                llg_path = Path("/etc/llama-nexus/llamacpp-llguidance-enabled")
+                if llg_path.is_file():
+                    llguidance_raw = llg_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+        return build_info_from_tag_and_version(
+            tag,
+            cli_version,
+            llguidance_enabled=parse_llguidance_enabled(llguidance_raw),
+        )
 
     def _read_llamacpp_build_from_docker_image(self) -> Dict[str, Any]:
-        if not (DOCKER_AVAILABLE and docker_client):
-            return build_info_from_tag_and_version(None)
+        if DOCKER_AVAILABLE and docker_client:
+            try:
+                image = docker_client.images.get(self.llamacpp_docker_image)
+                return self._read_llamacpp_build_from_container_attrs(image.attrs)
+            except Exception as exc:
+                logger.debug(f"Could not inspect llama.cpp image build info: {exc}")
         try:
-            image = docker_client.images.get(self.llamacpp_docker_image)
-            return self._read_llamacpp_build_from_container_attrs(image.attrs)
+            result = subprocess.run(
+                [
+                    "docker",
+                    "inspect",
+                    self.llamacpp_docker_image,
+                    "--format",
+                    "{{json .Config}}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                config = json.loads(result.stdout)
+                return self._read_llamacpp_build_from_container_attrs({"Config": config})
         except Exception as exc:
-            logger.debug(f"Could not inspect llama.cpp image build info: {exc}")
-            return build_info_from_tag_and_version(None)
+            logger.debug(f"docker inspect image build info failed: {exc}")
+        return build_info_from_tag_and_version(None)
 
     def get_llamacpp_build_info(self, *, running: Optional[bool] = None) -> Dict[str, Any]:
         """Resolve pinned llama.cpp build tag/version from the inference image or container."""
@@ -1284,6 +1345,8 @@ class LlamaCPPManager:
             "llamacpp_build": llamacpp_build,
             "llamacpp_build_number": llamacpp_build.get("build_number"),
             "mtp_supported": llamacpp_build.get("mtp_supported", False),
+            "llguidance_enabled": llamacpp_build.get("llguidance_enabled", False),
+            "grammar_gbnf_supported": llamacpp_build.get("grammar_gbnf_supported", True),
             "config": self.config,
             "model": {
                 "name": self.config.get("model", {}).get("name"),
@@ -1390,7 +1453,8 @@ class LlamaCPPManager:
             },
             "mtp": {
                 "enabled": {"scope": "llamacpp", "type": "boolean", "description": "Enable Multi-Token Prediction (MTP) using built-in GGUF heads.", "llamacpp_flag": "--spec-type draft-mtp", "vllm_equivalent": "speculative.method", "mapping_note": "Requires mtp_capable GGUF and llama.cpp b9193+"},
-                "draft_n_max": {"scope": "llamacpp", "type": "number", "description": "Max MTP draft tokens per step (--spec-draft-n-max). Sweet spot 2–4.", "llamacpp_flag": "--spec-draft-n-max", "min": 1, "max": 16},
+                "workload_profile": {"scope": "llamacpp", "type": "select", "description": "Workload preset for MTP and server tuning (chat, agent, throughput, custom).", "options": ["chat", "agent", "throughput", "custom"]},
+                "draft_n_max": {"scope": "llamacpp", "type": "number", "description": "Max MTP draft tokens per step (--spec-draft-n-max). Chat: 2, agent/tools: 8.", "llamacpp_flag": "--spec-draft-n-max", "min": 1, "max": 16},
                 "draft_n_min": {"scope": "llamacpp", "type": "number", "description": "Min MTP draft tokens (--spec-draft-n-min).", "llamacpp_flag": "--spec-draft-n-min", "min": 0, "max": 16},
                 "draft_p_min": {"scope": "llamacpp", "type": "number", "description": "Min draft confidence (--spec-draft-p-min). Higher = fewer drafts, often better acceptance.", "llamacpp_flag": "--spec-draft-p-min", "min": 0, "max": 1, "step": 0.05},
             },
@@ -1425,6 +1489,8 @@ class LlamaCPPManager:
                 "reasoning_format": {"scope": "llamacpp", "type": "select", "description": "Format for reasoning content extraction.", "llamacpp_flag": "--reasoning-format", "options": ["deepseek", "none"], "vllm_equivalent": "reasoning.reasoning_parser", "mapping_note": "llama.cpp: reasoning_format, vLLM: reasoning_parser"},
                 "reasoning_budget": {"scope": "llamacpp", "type": "number", "description": "Maximum reasoning tokens.", "llamacpp_flag": "--reasoning-budget", "vllm_equivalent": None},
                 "jinja": {"scope": "llamacpp", "type": "boolean", "description": "Enable Jinja template processing.", "llamacpp_flag": "--jinja", "vllm_equivalent": None},
+                "chat_template_kwargs": {"scope": "llamacpp", "type": "text", "description": "JSON kwargs passed to the chat template (--chat-template-kwargs). Agent profile sets enable_thinking=false.", "llamacpp_flag": "--chat-template-kwargs"},
+                "cache_reuse": {"scope": "llamacpp", "type": "number", "description": "Reuse prefix KV cache across requests (--cache-reuse). Agent profile uses 1024.", "llamacpp_flag": "--cache-reuse"},
             },
         }
 

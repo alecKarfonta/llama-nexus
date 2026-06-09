@@ -2,7 +2,59 @@
 
 ## Current Goal
 
-Primary inference: **Qwen3.6-27B** (GGUF via llama.cpp / Deploy backend **llama.cpp**), matching `docker-compose.yml` (`MODEL_REPO=unsloth/Qwen3.6-27B-GGUF`, variant **Q6_K**).
+**fast-inference experiment** (`fast-inference/`): MTP speculative decoding with Qwen3.6 on the 4×16GB rig (2×5070 Ti + 2×5060 Ti). Using `llama-nexus-llamacpp-embed:latest` (b9193, has `draft-mtp`) on port **8603**, GPUs 0+1 layer-split. Downloaded `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` (22GB MTP) to `/home/alec/models/qwen3.6-35b-mtp/`.
+
+**First A/B (2026-06-08, ctx=65536, NMAX=3, 2 runs each):**
+| Profile | baseline | MTP | speedup |
+|---|---|---|---|
+| code | 83.7 tok/s | 109.1 | **1.30×** |
+| structured | 84.7 | 116.6 | **1.38×** |
+| chat (temp 0.7) | 83.1 | 90.1 | **1.08×** |
+
+Container: `fast-inference-mtp` (currently baseline / MTP off). Re-enable MTP: restart with `--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75`.
+
+**2026-06-08:** Stopped `speaker-moss-sfx-1` (MOSS-SoundEffect on GPU 3, ~15.8GB) to free VRAM for inference experiments. Restart: `cd /home/alec/git/speaker && docker compose --profile moss-sfx start moss-sfx`.
+
+**2026-06-08 27B 3-GPU experiment:** GPUs **0+1+3** via `--gpus '"device=0,1,3"'` (CUDA_VISIBLE_DEVICES alone only bound 2 GPUs!). Avoid GPU 2 (moss-realtime). Port **8603**, container `fast-inference-27b`.
+
+| Config | code tok/s | structured | chat | vs baseline |
+|---|---|---|---|---|
+| Q6_K, 2 GPU (accidental) | 22.2 | 22.2 | 22.2 | baseline |
+| Q6_K, 3 GPU | 20.0 | 20.0 | 20.1 | 0.90× (PCIe sync cost) |
+| Q4_K_M MTP, 3 GPU, MTP off | 25.2 | 25.2 | 25.1 | 1.14× |
+| **Q4_K_M MTP, 3 GPU, MTP on** | **38.0** | **45.6** | **33.6** | **1.7–2.0×** |
+
+**Winner (baseline):** `Qwen3.6-27B-Q4_K_M.gguf` (MTP) on GPUs 0,1,3 — ctx=180k, parallel=2, `NMAX=4`, q8_0 KV. ~38–46 tok/s interactive. Still slower than 35B-A3B MoE (~90–110 tok/s) but usable for quality/coding workloads.
+
+**2026-06-08 fast-inference 27B NMAX matrix** (`bench/run_matrix.sh`, GPUs 0,1,3, ctx=180k):
+
+| label | code | structured | chat | vs baseline |
+|---|---|---|---|---|
+| baseline (MTP off) | 25.2 | 25.1 | 25.0 | 1.00× |
+| **mtp-n2** | **43.3** | **44.1** | **38.6** | **1.54–1.76×** |
+| mtp-n3 | 42.7 | 42.0 | 36.8 | 1.47–1.69× |
+| mtp-n4 | 38.9 | 45.1 | 34.1 | 1.36–1.80× |
+| mtp-n4-p80 | 41.0 | 44.1 | 33.4 | 1.34–1.76× |
+
+**New 27B baseline:** `NMAX=2` (not 4) — narrower draft window wins on chat/code for this rig. Server on :8603 with mtp-n2 settings.
+
+**2026-06-08 fast-inference 35B NMAX matrix** (GPUs 0,1, ctx=65536, `35b-*.json`):
+
+| label | code | structured | chat | vs baseline |
+|---|---|---|---|---|
+| 35b-baseline | 83.8 | 85.1 | 84.3 | 1.00× |
+| **35b-mtp-n2** | **109.0** | 115.6 | **100.3** | **1.19–1.36×** |
+| 35b-mtp-n3 | 91.9 | **126.1** | 97.5 | 1.16–1.48× |
+| 35b-mtp-n4 | 109.3 | 122.4 | 83.7 | 0.99–1.44× |
+| 35b-mtp-n4-p80 | 106.3 | 114.8 | 70.2 | 0.83–1.35× |
+
+MoE: `NMAX=2` best overall; `NMAX=3` peaks structured; high `PMIN` hurts chat. Re-run: `cd fast-inference/bench && MODEL_SIZE=35b DOCKER=1 GPU_DEVICES=0,1 PORT=8604 RESULT_PREFIX=35b- ./run_matrix.sh`
+
+**2026-06-08 grammar+MTP tool-call experiment** (`bench/run_grammar_mtp.sh`): lazy tool grammar ~28 tok/s; **MTP n8 → 87 tok/s** (3.1×), 100% valid tool calls, 87.5% draft acceptance. On tool path use **NMAX=8** not n2.
+
+**2026-06-08 fast-inference extras** (`bench/run_extras.sh`): 2-GPU beats 3-GPU (~49 vs 44 tok/s MTP); KV q8_0≈f16; ngram-simple useless vs MTP (1.0× vs 1.7×); conc=4 same tok/s but TTFT ~17–19s vs ~0.4s. **2×5070+5060 on 0,1 is faster than 3-GPU** for 27B Q4_K_M.
+
+Primary inference (when not experimenting): **Qwen3.6-27B** (GGUF via llama.cpp / Deploy backend **llama.cpp**), matching `docker-compose.yml` (`MODEL_REPO=unsloth/Qwen3.6-27B-GGUF`, variant **Q6_K**).
 
 Secondary: vLLM (profile `vllm`) where GPU supports it; bundled Nemotron NVFP4 requires **compute capability ≥ 8.9** (not RTX 3090-class Ampere).
 
@@ -143,6 +195,81 @@ Secondary: vLLM (profile `vllm`) where GPU supports it; bundled Nemotron NVFP4 r
 - [x] `/v1/models` via nginx returns 200
 - [ ] Deploy with llama.cpp backend from UI (inference image built; retry Deploy start)
 - [ ] Deploy with vLLM backend from UI (end-to-end test)
+
+## Git / rebuild (2026-06-07)
+
+- `git pull`: already up to date.
+- Full `docker compose … up -d --build` with all profiles failed mid-build (~18 min) during parallel `llamacpp-api` CUDA compile + image export.
+- Retry without blocking on `extra` profile succeeded: rebuilt and recreated `backend-api`, `llamacpp-frontend`, `llamacpp-embed`, graphrag NER/REL, training, quantization, lm-eval, terminal-bench. Verified `GET /v1/service/status` (:8700) and frontend (:3002).
+- `llama-nexus-llamacpp-api:latest` image present from prior/partial build; inference container not started in this pass.
+
+## UI integration Phase 1 (2026-06-08)
+
+**Implemented:** MTP workload profiles (`chat` | `agent` | `throughput` | `custom`) end-to-end.
+
+- Backend: `mtp_deploy.py` — `apply_mtp_workload_profile()`, `chat_template_kwargs_cli_value()`, agent/chat presets
+- Backend: `llamacpp_manager.py` — `--chat-template-kwargs`, profile merge in `build_command` / validation
+- Frontend: `MtpConfigSection` workload ToggleButtonGroup, n_max slider 1–8, bench hints
+- Frontend: `mtpWorkloadProfiles.ts`, `mtpRecommendedDefaults.json` (qwen3.6 chat n2)
+- Tests: `backend/tests/test_mtp_deploy.py` — all passing
+
+**Exit check:** Deploy Agent profile → n8, `enable_thinking: false`, `cache_reuse: 1024`, `parallel_slots: 1`.
+
+## UI integration Phase 2 (2026-06-08)
+
+**Implemented:** Agent & tools server config + Chat tools hints + proxy audit.
+
+- `AgentToolsConfigSection` on Deploy Model tab — JSON editor for `chat_template_kwargs`, reasoning_budget, cache_reuse, lazy-grammar info panel
+- `chat_proxy.py` + `test_chat_proxy.py` — passthrough contract for `tools`, `tool_choice`, `response_format`, `grammar`
+- `service.py` proxy — parse body once via `parse_chat_proxy_body`; document passthrough
+- ChatPage — "Tools mode" chip in header; Deploy Agent profile hint when tools enabled on llama.cpp
+- `get_config` editable_fields extended for agent server + MTP workload fields
+
+## UI integration Phase 3 (2026-06-08)
+
+**Implemented:** Structured output from Chat + llguidance build path.
+
+- Chat: `ConstraintEditor` wired — toggle, JSON schema + GBNF on requests (`response_format` + `grammar`)
+- `chatOutputConstraints.ts` — builds OpenAI-compatible `json_schema` payload
+- Warning when tools + structured output both enabled (single grammar slot)
+- `ConstraintEditor` GBNF tab now editable (raw grammar advanced mode)
+- Dockerfile: opt-in `ENABLE_LLGUIDANCE=true` → `-DLLAMA_LLGUIDANCE=ON` + capability file
+- Status API: `llguidance_enabled`, `grammar_gbnf_supported` on `/v1/service/status`
+- Deploy Agent & Tools: GBNF / llguidance capability chips
+
+**Next:** Phase 4 GPU presets; optional `ENABLE_LLGUIDANCE=true` rebuild for jump-forward tier.
+
+## llamacpp-api b9193 (2026-06-08)
+
+- Root cause: `llama-nexus-llamacpp-api:latest` image missing; backend docker-py client failed → build info null
+- Immediate fix: tagged `llama-nexus-llamacpp-embed:latest` → `llama-nexus-llamacpp-api:latest` (b9193)
+- Backend fix: `_read_llamacpp_build_from_docker_image` subprocess fallback when docker-py unavailable
+- Dockerfile: `CMAKE_BUILD_JOBS=2` default (was `-j8`) to avoid CUDA compile OOM
+- Full `llamacpp-api` source rebuild in progress with `CMAKE_BUILD_JOBS=2`
+
+## Chat page layout fix (2026-06-09)
+
+**Bug:** On narrow viewports (sidebar open), message input textarea collapsed to ~13px wide — placeholder stacked vertically character-by-character.
+
+**Cause:** Flex row with `fullWidth` TextField + `flexGrow: 1` + Send `minWidth: 100`; `flex-basis: auto` let the field shrink below usable width.
+
+**Fix:** `flex: 1 1 0`, `minWidth: 0`, `width: 0` on TextField; `flexShrink: 0` on icon/send buttons; icon-only Send on xs; `minWidth: 0` on main content in `App.tsx`.
+
+## Deploy failure (2026-06-09)
+
+**Symptom:** `llamacpp-api` OOM on model load with `ctx-size 48000`, `cuda_devices 0,2`, `main_gpu 2`, no `--tensor-split`.
+
+**Root cause (not context size):**
+- `docker-compose.yml` had `CUDA_DEVICES=0,2` and `MAIN_GPU=2`. GPU 2 hosts `speaker-moss-realtime` (~12GB) → CUDA1 in container had ~3.5GB free; llama tried ~16.4GB on CUDA0 alone.
+- Lowering ctx to 48k did not help — failure was **weight allocation**, not KV cache.
+- 256k ctx works only on **free GPUs 0+1** with `--tensor-split` + q8_0 KV (experiments: 48k trivial, 128k comfortable, ~250k ceiling).
+
+**Fixes applied:**
+- Compose defaults: `CUDA_DEVICES=0,1`, `MAIN_GPU=0`, `TENSOR_SPLIT=1,1`.
+- `_docker_gpu_attachment`: `device_ids` + quoted CLI `--gpus '"device=0,1"'` (bare `device=0,1` breaks Docker).
+- `apply_mtp_workload_profile`: use `setdefault` so chat profile does not overwrite `mtp.enabled: false`.
+
+**256k note:** Full 256000 still OOMs compute buffers on this 5070+5060 pair with MTP; try ~128k–180k without MTP, or Q4_K_M MTP on 0,1,3 for experiment-backed 180k+MTP.
 
 ## Git (2026-05-11)
 

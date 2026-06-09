@@ -27,6 +27,8 @@ _deploy = _load("modules/mtp_deploy.py", "mtp_deploy_test")
 
 validate_mtp_deployment = _deploy.validate_mtp_deployment
 normalize_mtp_config = _deploy.normalize_mtp_config
+apply_mtp_workload_profile = _deploy.apply_mtp_workload_profile
+chat_template_kwargs_cli_value = _deploy.chat_template_kwargs_cli_value
 mtp_env_from_config = _deploy.mtp_env_from_config
 parse_mtp_stats_from_log_line = _log.parse_mtp_stats_from_log_line
 MTP_MIN_BUILD_NUMBER = _build.MTP_MIN_BUILD_NUMBER
@@ -36,6 +38,65 @@ def test_normalize_mtp_defaults():
     cfg = normalize_mtp_config({})
     assert cfg["enabled"] is False
     assert cfg["draft_n_max"] == 3
+    assert cfg["workload_profile"] == "chat"
+
+
+def test_apply_agent_profile_sets_n8_and_thinking_off():
+    cfg = apply_mtp_workload_profile(
+        {"mtp": {"workload_profile": "agent", "enabled": True}}
+    )
+    assert cfg["mtp"]["draft_n_max"] == 8
+    assert cfg["server"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert cfg["server"]["cache_reuse"] == 1024
+    assert cfg["performance"]["parallel_slots"] == 1
+
+
+def test_apply_chat_profile_sets_n2():
+    cfg = apply_mtp_workload_profile({"mtp": {"workload_profile": "chat"}})
+    assert cfg["mtp"]["draft_n_max"] == 2
+    assert cfg["mtp"]["enabled"] is True
+    assert cfg["server"]["chat_template_kwargs"] == {"preserve_thinking": True}
+
+
+def test_chat_profile_does_not_override_disabled_mtp():
+    cfg = apply_mtp_workload_profile(
+        {"mtp": {"workload_profile": "chat", "enabled": False}}
+    )
+    assert cfg["mtp"]["enabled"] is False
+    assert cfg["mtp"]["draft_n_max"] == 2
+
+
+def test_custom_profile_preserves_user_draft_n_max():
+    cfg = apply_mtp_workload_profile(
+        {
+            "mtp": {
+                "workload_profile": "custom",
+                "enabled": True,
+                "draft_n_max": 5,
+            }
+        }
+    )
+    assert cfg["mtp"]["draft_n_max"] == 5
+
+
+def test_validate_agent_warns_parallel_slots():
+    _, warnings = validate_mtp_deployment(
+        {
+            "mtp": {"workload_profile": "agent", "enabled": True},
+            "performance": {"parallel_slots": 4},
+        },
+        model_mtp_capable=True,
+        llamacpp_build_number=9193,
+    )
+    assert any("Agent workload" in w for w in warnings)
+    assert any("overridden to 1" in w for w in warnings)
+
+
+def test_chat_template_kwargs_cli_value():
+    assert (
+        chat_template_kwargs_cli_value({"chat_template_kwargs": {"enable_thinking": False}})
+        == '{"enable_thinking":false}'
+    )
 
 
 def test_validate_rejects_non_mtp_model():
@@ -63,7 +124,10 @@ def test_validate_rejects_old_build():
 
 def test_validate_warns_parallel_slots():
     _, warnings = validate_mtp_deployment(
-        {"mtp": {"enabled": True}, "performance": {"parallel_slots": 4}},
+        {
+            "mtp": {"enabled": True, "workload_profile": "custom"},
+            "performance": {"parallel_slots": 4},
+        },
         model_mtp_capable=True,
         llamacpp_build_number=9193,
     )
@@ -71,7 +135,9 @@ def test_validate_warns_parallel_slots():
 
 
 def test_mtp_env_mirror():
-    env = mtp_env_from_config({"mtp": {"enabled": True, "draft_n_max": 4}})
+    env = mtp_env_from_config(
+        {"mtp": {"enabled": True, "workload_profile": "custom", "draft_n_max": 4}}
+    )
     assert env["MTP_ENABLED"] == "true"
     assert env["MTP_DRAFT_N_MAX"] == "4"
 
@@ -87,6 +153,11 @@ def test_log_parser_acceptance_line():
 
 if __name__ == "__main__":
     test_normalize_mtp_defaults()
+    test_apply_agent_profile_sets_n8_and_thinking_off()
+    test_apply_chat_profile_sets_n2()
+    test_custom_profile_preserves_user_draft_n_max()
+    test_validate_agent_warns_parallel_slots()
+    test_chat_template_kwargs_cli_value()
     test_validate_rejects_non_mtp_model()
     test_validate_rejects_old_build()
     test_validate_warns_parallel_slots()

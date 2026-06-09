@@ -67,13 +67,15 @@ function App() {
             component="main"
             sx={{
               flexGrow: 1,
+              flexBasis: 0,
+              minWidth: 0,
               pt: '64px', // Account for new header height
-              ml: sidebarOpen ? '0px' : 0,
               transition: 'margin-left 0.3s ease-in-out',
               display: 'flex',
               flexDirection: 'column',
               minHeight: '100vh',
-              width: sidebarOpen ? 'calc(100% - 200px)' : '100%',
+              width: '100%',
+              maxWidth: '100%',
               position: 'relative',
               overflow: 'hidden',
               // Subtle background pattern

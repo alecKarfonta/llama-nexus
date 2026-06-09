@@ -26,9 +26,17 @@ def mtp_supported_for_build(build_number: Optional[int]) -> bool:
     return build_number is not None and build_number >= MTP_MIN_BUILD_NUMBER
 
 
+def parse_llguidance_enabled(raw: Optional[str]) -> bool:
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 def build_info_from_tag_and_version(
     tag: Optional[str],
     cli_version: Optional[str] = None,
+    *,
+    llguidance_enabled: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Normalized build payload for service status responses."""
     build_number = parse_llamacpp_build_number(tag)
@@ -40,4 +48,6 @@ def build_info_from_tag_and_version(
         "cli_version": (cli_version or "").strip() or None,
         "mtp_supported": mtp_supported_for_build(build_number),
         "mtp_min_build_number": MTP_MIN_BUILD_NUMBER,
+        "grammar_gbnf_supported": True,
+        "llguidance_enabled": bool(llguidance_enabled),
     }

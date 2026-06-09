@@ -1,0 +1,26 @@
+{
+  "label": "extras-conc4",
+  "url": "http://localhost:8603",
+  "model": "qwen3.6-27b-mtp",
+  "concurrency": 4,
+  "results": {
+    "code": {
+      "decode_tps_mean": 46.7,
+      "decode_tps_p50": 46.6,
+      "ttft_ms_mean": 17449.0,
+      "n": 12
+    },
+    "structured": {
+      "decode_tps_mean": 48.8,
+      "decode_tps_p50": 49.5,
+      "ttft_ms_mean": 16823.0,
+      "n": 12
+    },
+    "chat": {
+      "decode_tps_mean": 42.0,
+      "decode_tps_p50": 42.0,
+      "ttft_ms_mean": 19251.0,
+      "n": 12
+    }
+  }
+}

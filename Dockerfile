@@ -31,6 +31,13 @@ WORKDIR /build
 ARG SKIP_BUILD_FROM_SOURCE=false
 ARG LLAMACPP_VERSION=b9193
 ARG ENABLE_TURBOQUANT=false
+# Opt-in: requires Rust in builder; enables jump-forward grammar tier in llama-server
+ARG ENABLE_LLGUIDANCE=false
+# CUDA/nvcc compiles are memory-heavy — keep low to avoid OOM (override: CMAKE_BUILD_JOBS=4)
+ARG CMAKE_BUILD_JOBS=2
+RUN if [ "$ENABLE_LLGUIDANCE" = "true" ]; then \
+        apt-get update && apt-get install -y rustc cargo && rm -rf /var/lib/apt/lists/*; \
+    fi
 # CUDA architecture(s) passed to CMake. Run on the host: nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 # (use the major.minor as an integer SM, e.g. 8.6 -> 86). Common values: 75 (T4), 80 (A100), 86 (RTX 30xx),
 # 89 (RTX 40xx), 90 (H100). Default 86 suits Ampere builds.
@@ -47,6 +54,7 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         find extracted_llama -name "llama-cli" -exec cp {} /build/llama.cpp/build/bin/ \; && \
         find extracted_llama -name "llama-gguf-split" -exec cp {} /build/llama.cpp/build/bin/ \; && \
         echo "${LLAMACPP_BUILD_TAG}" > /build/llamacpp-build-tag.txt && \
+        echo "false" > /build/llamacpp-llguidance-enabled.txt && \
         /build/llama.cpp/build/bin/llama-cli --version 2>/dev/null | head -1 > /build/llama-cli-version.txt || \
             echo "llama.cpp ${LLAMACPP_VERSION}" > /build/llama-cli-version.txt && \
         rm -rf llama.zip extracted_llama; \
@@ -63,16 +71,20 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
             git checkout ${LLAMA_CPP_REF}; \
         fi && \
         echo "Building llama.cpp version: $(git describe --tags --always)" && \
+        LLGUIDANCE_CMAKE="" && \
+        if [ "$ENABLE_LLGUIDANCE" = "true" ]; then LLGUIDANCE_CMAKE="-DLLAMA_LLGUIDANCE=ON"; fi && \
         cmake . -B build \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_CUDA=ON \
             -DGGML_CUDA_FA=ON \
             -DGGML_CUDA_FA_ALL_QUANTS=ON \
             -DLLAMA_CURL=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" && \
-        cmake --build build --config Release -j8 --clean-first \
+            -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
+            ${LLGUIDANCE_CMAKE} && \
+        cmake --build build --config Release -j${CMAKE_BUILD_JOBS} \
             --target llama-server llama-cli llama-gguf-split && \
         echo "${LLAMACPP_BUILD_TAG}" > /build/llamacpp-build-tag.txt && \
+        echo "${ENABLE_LLGUIDANCE}" > /build/llamacpp-llguidance-enabled.txt && \
         ./build/bin/llama-cli --version 2>/dev/null | head -1 > /build/llama-cli-version.txt || true && \
         echo "Built llama.cpp version: $(cat /build/llama-cli-version.txt 2>/dev/null || echo unknown)"; \
     fi
@@ -111,6 +123,7 @@ COPY --from=builder /build/llama.cpp/build/bin/llama-cli /usr/local/bin/
 COPY --from=builder /build/llama.cpp/build/bin/llama-gguf-split /usr/local/bin/
 COPY --from=builder /build/llamacpp-build-tag.txt /etc/llama-nexus/llamacpp-build-tag
 COPY --from=builder /build/llama-cli-version.txt /etc/llama-nexus/llama-cli-version
+COPY --from=builder /build/llamacpp-llguidance-enabled.txt /etc/llama-nexus/llamacpp-llguidance-enabled
 
 # Copy configuration files
 COPY scripts/start.sh /start.sh
