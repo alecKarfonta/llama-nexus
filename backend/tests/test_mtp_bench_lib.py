@@ -2,15 +2,34 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
 
-_REPO = Path(__file__).resolve().parents[2]
-_LIB_PATH = _REPO / "scripts" / "mtp_bench_lib.py"
+# Resolve repository root. Inside the backend-api container the backend tree
+# is bind-mounted to /app and `parents[2]` resolves to "/", so we also honor
+# an explicit REPO_ROOT env var (the running backend container mounts the
+# repo at /home/alec/git/llama-nexus, and CI/containers can set this too).
+_FILE_DIR = Path(__file__).resolve().parent
+_REPO = Path(os.environ.get("REPO_ROOT") or "").resolve()
+if not _REPO.is_dir():
+    _REPO = _FILE_DIR.parents[2]
+# `mtp_bench_lib.py` lives at <repo>/scripts/mtp_bench_lib.py.
+_LIB_CANDIDATES = [
+    _REPO / "scripts" / "mtp_bench_lib.py",
+    _FILE_DIR.parents[0] / "scripts" / "mtp_bench_lib.py",  # backend/scripts (unlikely, fallback)
+    _FILE_DIR.parents[1] / "scripts" / "mtp_bench_lib.py",  # backend/../scripts (host checkout layout)
+]
+_LIB_PATH = next((p for p in _LIB_CANDIDATES if p.is_file()), _LIB_CANDIDATES[0])
 
 
 def _load_lib():
+    if not _LIB_PATH.is_file():
+        raise FileNotFoundError(
+            f"mtp_bench_lib.py not found. Tried: {[str(p) for p in _LIB_CANDIDATES]}. "
+            "Set REPO_ROOT to the llama-nexus checkout root if running inside a container."
+        )
     spec = importlib.util.spec_from_file_location("mtp_bench_lib", _LIB_PATH)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)

@@ -53,6 +53,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "graphrag_live: mark test as requiring live GraphRAG service"
     )
+    config.addinivalue_line(
+        "markers", "integration: mark test as an integration test (live services; skipped by default)"
+    )
 
 
 def pytest_addoption(parser):
@@ -63,10 +66,16 @@ def pytest_addoption(parser):
         default=False,
         help="Run tests against live GraphRAG service at http://localhost:18000"
     )
+    parser.addoption(
+        "--run-integration",
+        action="store_true",
+        default=False,
+        help="Run integration tests (live backend / container start-stop). Off by default.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip tests that require dependencies if they're missing."""
+    """Skip tests that require dependencies if they're missing, and honor --run-integration."""
     if _missing_deps:
         skip_marker = pytest.mark.skip(
             reason=f"Missing dependencies: {', '.join(_missing_deps)}. "
@@ -74,6 +83,21 @@ def pytest_collection_modifyitems(config, items):
         )
         for item in items:
             item.add_marker(skip_marker)
+
+    # Skip @pytest.mark.integration unless explicitly opted in via
+    # --run-integration (or RUN_INTEGRATION env var, which test_deployment.py
+    # already checks via module-level skipif as a backstop).
+    run_integration = (
+        config.getoption("--run-integration", default=False)
+        or os.getenv("RUN_INTEGRATION")
+    )
+    if not run_integration:
+        skip_integration = pytest.mark.skip(
+            reason="Integration test — pass --run-integration (or set RUN_INTEGRATION=1) to run"
+        )
+        for item in items:
+            if item.get_closest_marker("integration"):
+                item.add_marker(skip_integration)
 
 
 # Mock enhanced_logger for cleaner test output

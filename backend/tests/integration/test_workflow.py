@@ -1,12 +1,34 @@
 #!/usr/bin/env python3
 """
 Test script to validate the distillation and fine-tuning workflow improvements.
+
+This is a MANUAL smoke script, not a pytest module. Functions take a ``job_id``
+parameter meant to be passed by ``main()`` at runtime; pytest was auto-collecting
+them and failing on the missing ``job_id`` fixture. The module-level skip below
+keeps pytest quiet while preserving ``python tests/integration/test_workflow.py``
+invocation.
 """
 
 import requests
 import json
 import time
 from typing import Dict, Any
+
+# pytest is only needed when this file is collected by pytest (so the
+# module-level skip below silences false fixture errors). The script itself
+# is invoked with plain `python tests/integration/test_workflow.py`.
+try:
+    import pytest
+
+    # Whole-module skip: this script drives a live distillation workflow via
+    # HTTP and is invoked manually (see main()). pytest collection was
+    # producing false fixture errors because the test_*(job_id) helpers take
+    # a job_id parameter meant to be supplied by main().
+    pytestmark = pytest.mark.skip(
+        reason="Manual smoke script — run via `python tests/integration/test_workflow.py`",
+    )
+except ImportError:
+    pass
 
 BASE_URL = "http://localhost:8000"  # Adjust if needed
 

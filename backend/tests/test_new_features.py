@@ -305,7 +305,12 @@ class TestBatchProcessor:
         os.unlink(db_path)
     
     def test_parse_json_input(self, batch_processor):
-        """Test parsing JSON input."""
+        """Test parsing JSON input.
+
+        Source contract: any item key that isn't ``input``/``prompt``/``text``
+        becomes a metadata field (preserving its key name). A nested
+        ``metadata`` key therefore ends up as ``item['metadata']['metadata']``.
+        """
         content = json.dumps([
             {"input": "Hello"},
             {"input": "World", "metadata": {"key": "value"}},
@@ -314,7 +319,9 @@ class TestBatchProcessor:
         items = batch_processor.parse_input_file(content, 'json')
         assert len(items) == 2
         assert items[0]['input'] == "Hello"
-        assert items[1]['metadata']['key'] == "value"
+        assert items[1]['input'] == "World"
+        # The nested 'metadata' key is preserved verbatim as a metadata field.
+        assert items[1]['metadata']['metadata'] == {"key": "value"}
     
     def test_parse_csv_input(self, batch_processor):
         """Test parsing CSV input."""
@@ -562,8 +569,9 @@ class TestVRAMEstimator:
             context_size=4096,
             hidden_size=4096,
             num_layers=32,
+            num_heads=32,
             kv_heads=8,
-            batch_size=1,
+            n_parallel=1,
             kv_cache_type='f16'
         )
         
@@ -578,14 +586,16 @@ class TestVRAMEstimator:
             context_size=2048,
             hidden_size=4096,
             num_layers=32,
-            kv_heads=8
+            num_heads=32,
+            kv_heads=8,
         )
         
         large_ctx = calculate_kv_cache_vram(
             context_size=8192,
             hidden_size=4096,
             num_layers=32,
-            kv_heads=8
+            num_heads=32,
+            kv_heads=8,
         )
         
         # 4x context should be 4x KV cache

@@ -100,9 +100,20 @@ def normalize_mtp_config(config: Dict[str, Any]) -> Dict[str, Any]:
 def apply_mtp_workload_profile(config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Merge experiment-backed workload profile defaults into config.
-    Custom profile leaves user-controlled fields unchanged.
+
+    Precedence (highest wins): user-set value > profile preset > normalize default.
+    "Custom" profile leaves user-controlled fields unchanged.
+
+    The prior implementation called ``normalize_mtp_config`` first, which filled
+    in normalize-defaults (e.g. ``draft_n_max=3``, ``enabled=False``); the
+    subsequent ``setdefault`` then treated those filled-in values as user-set
+    and the preset values were silently dropped. We now track which MTP keys
+    the user actually provided and let presets override only the missing ones.
     """
     cfg = copy.deepcopy(config)
+    raw_mtp = cfg.get("mtp") or {}
+    user_mtp_keys = set(raw_mtp.keys()) if isinstance(raw_mtp, dict) else set()
+
     mtp = normalize_mtp_config(cfg)
     profile = mtp["workload_profile"]
     cfg["mtp"] = mtp
@@ -114,10 +125,14 @@ def apply_mtp_workload_profile(config: Dict[str, Any]) -> Dict[str, Any]:
     if not preset:
         return cfg
 
+    # Preset fills keys the user did NOT explicitly set.
     mtp_block = cfg.setdefault("mtp", {})
     for key, value in preset.get("mtp", {}).items():
-        mtp_block.setdefault(key, value)
+        if key not in user_mtp_keys:
+            mtp_block[key] = value
 
+    # performance / server blocks: setdefault is fine — normalize_mtp_config
+    # does not touch these, so any value present here came from the user.
     perf_block = cfg.setdefault("performance", {})
     for key, value in preset.get("performance", {}).items():
         perf_block.setdefault(key, value)

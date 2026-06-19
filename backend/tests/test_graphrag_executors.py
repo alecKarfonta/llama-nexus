@@ -408,22 +408,23 @@ class TestExecutorConfiguration:
     def test_get_config_value_default(self):
         """Test getting config value with default."""
         from modules.workflow.executors.graphrag_executors import GraphRAGSearchExecutor
-        
-        executor = GraphRAGSearchExecutor(node_id="test", config={})
-        
+
+        # NodeExecutor.__init__ takes only ``config`` (node_id was removed
+        # from the constructor signature).
+        executor = GraphRAGSearchExecutor(config={})
+
         # Should return default when key not in config
         value = executor.get_config_value("searchType", "auto")
         assert value == "auto"
-    
+
     def test_get_config_value_override(self):
         """Test getting config value with override."""
         from modules.workflow.executors.graphrag_executors import GraphRAGSearchExecutor
-        
+
         executor = GraphRAGSearchExecutor(
-            node_id="test",
             config={"searchType": "hybrid", "topK": 20}
         )
-        
+
         assert executor.get_config_value("searchType", "auto") == "hybrid"
         assert executor.get_config_value("topK", 10) == 20
 

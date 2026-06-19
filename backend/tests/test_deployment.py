@@ -4,8 +4,16 @@ Tests for model deployment endpoints.
 These tests cover the /api/v1/service/* endpoints for starting, stopping,
 and monitoring model deployments. Deployments can take 2-5 minutes.
 
-Run with: pytest test_deployment.py -v --timeout=600
+INTEGRATION TESTS — skipped by default. These make live HTTP calls against
+a running backend (default http://localhost:8700) and actually start/stop
+the inference container. Enable with:
+
+    pytest tests/test_deployment.py -v --timeout=600 -m integration --run-integration
+
+or set the env var RUN_INTEGRATION=1.
 """
+
+import os
 
 import pytest
 import httpx
@@ -15,10 +23,20 @@ from typing import Optional, Dict, Any
 
 
 # Configuration
-BACKEND_URL = "http://localhost:8700"
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8700")
 DEFAULT_TIMEOUT = 30  # seconds for regular API calls
 DEPLOYMENT_TIMEOUT = 360  # 6 minutes max for deployment
 HEALTH_CHECK_INTERVAL = 10  # seconds between status polls
+
+# Skip the entire module unless --run-integration is passed or RUN_INTEGRATION
+# is set. These tests hit a live backend and start/stop inference containers.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not os.environ.get("RUN_INTEGRATION"),
+        reason="Integration test — set RUN_INTEGRATION=1 or pass --run-integration",
+    ),
+]
 
 
 class DeploymentTestClient:
