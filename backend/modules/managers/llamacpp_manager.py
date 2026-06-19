@@ -27,6 +27,7 @@ from modules.llamacpp_build_info import (
 from modules.mtp_deploy import (
     apply_mtp_workload_profile,
     chat_template_kwargs_cli_value,
+    clamp_mtp_for_model_capability,
     mtp_env_from_config,
     mtp_enabled_in_config,
     normalize_mtp_config,
@@ -96,8 +97,18 @@ class LlamaCPPManager:
         """
         Build Docker GPU attachment for requested host GPU indices.
 
-        ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` aligns CUDA ordinals with ``nvidia-smi``
-        indices on mixed GPU topologies (e.g. 5070 + 5060 rigs).
+        When specific host GPUs are requested via ``DeviceRequest(device_ids=...)``
+        (SDK) or ``--gpus '"device=0,1"'`` (CLI), the NVIDIA Container Toolkit
+        mounts the requested ``/dev/nvidiaN`` nodes and **renumbers** them to
+        container-internal indices ``0,1,…``. Setting ``CUDA_VISIBLE_DEVICES`` or
+        ``NVIDIA_VISIBLE_DEVICES`` to the *host* indices in that case is a bug —
+        the runtime would only resolve the device(s) whose remapped index matches
+        a host index, silently dropping the rest (e.g. requesting host GPUs 1,3
+        with ``CUDA_VISIBLE_DEVICES=1,3`` yields a single visible device because
+        internal indices are 0,1).
+
+        ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` aligns the remapped ordinals with
+        ``nvidia-smi`` indices on mixed GPU topologies (e.g. 5070 + 5060 rigs).
         """
         dev = str(cuda_devices or "all").strip()
         env = {
@@ -114,8 +125,10 @@ class LlamaCPPManager:
                     capabilities=caps,
                 )
             ]
-            env["CUDA_VISIBLE_DEVICES"] = dev
-            env["NVIDIA_VISIBLE_DEVICES"] = dev
+            # Intentionally do NOT set CUDA_VISIBLE_DEVICES / NVIDIA_VISIBLE_DEVICES
+            # here: DeviceRequest/--gpus already selects + remaps the host GPUs to
+            # internal indices 0..N-1. Setting them to host indices would shrink
+            # the visible set (see docstring).
         else:
             device_requests = [
                 docker.types.DeviceRequest(driver="nvidia", count=-1, capabilities=caps)
@@ -211,6 +224,10 @@ class LlamaCPPManager:
     def build_command(self) -> List[str]:
         """Build llamacpp server command from configuration"""
         config = apply_mtp_workload_profile(self.config)
+        config = clamp_mtp_for_model_capability(
+            config,
+            model_mtp_capable=self._model_mtp_capable_for_config(config),
+        )
         # Try different filename patterns to find the actual model file
         model_name = config['model']['name']
         variant = config['model']['variant']

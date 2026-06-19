@@ -1,5 +1,25 @@
 # Notes
 
+## 2026-06-18 Multi-GPU deploy only attached one GPU (FIXED)
+
+**Symptom:** Last `Qwen3.6-27B-Q6_K` deploy targeting host GPUs 1+3 (both RTX 5060 Ti) crashed with `cudaMalloc failed: out of memory` — llama.cpp log only listed `CUDA0` (single GPU) instead of `CUDA0`+`CUDA1`, so the ~21 GB Q6_K couldn't split across two 16 GB cards.
+
+**Root cause:** `_docker_gpu_attachment` (`backend/modules/managers/llamacpp_manager.py`) attached GPUs via `DeviceRequest(device_ids=[...])` (SDK) / `--gpus '"device=1,3"'` (CLI), but also set `CUDA_VISIBLE_DEVICES=1,3` and `NVIDIA_VISIBLE_DEVICES=1,3` to the *host* indices. The NVIDIA Container Toolkit remaps the requested host GPUs to **internal** indices `0..N-1`, so `CUDA_VISIBLE_DEVICES=1,3` selects internal index `1` (the 2nd attached GPU) plus a non-existent internal index `3` → CUDA ends up with just one device. Same bug duplicated in `embedding_manager.py` (SDK + CLI paths).
+
+**Repro on this rig:** `docker run --rm --entrypoint bash --gpus '"device=1,3"' -e CUDA_VISIBLE_DEVICES=1,3 ...` → llama-server's `device_info` shows only `CUDA0`. Same command *without* `CUDA_VISIBLE_DEVICES` → shows `CUDA0` + `CUDA1`. Confirmed before/after the fix.
+
+**Fix:** drop the host-index `CUDA_VISIBLE_DEVICES` / `NVIDIA_VISIBLE_DEVICES` env from `_docker_gpu_attachment` and from `embedding_manager` (both paths). Keep `NVIDIA_DRIVER_CAPABILITIES=compute,utility` and `CUDA_DEVICE_ORDER=PCI_BUS_ID`. `STT`/`TTS` managers left alone — they use `--runtime nvidia` + `NVIDIA_VISIBLE_DEVICES` only (no `--gpus`/`DeviceRequest`), so the value is honored as a host filter and these services are single-GPU anyway. Tests in `backend/tests/test_gpu_attachment.py`.
+
+## 2026-06-09 Deploy UI MTP false-negative
+
+**Symptom:** Uncensored heretic deploy blocked with `mtp_capable=false` even though MTP switch looked off.
+
+**Root cause:** Qwen3.6-moe family presets default `mtp.enabled=true`. UI switch used `checked={enabled && canEnable}` so non-MTP GGUFs showed OFF while saved config still had `enabled: true` and command included `--spec-type draft-mtp`. Switch was disabled — user could not turn it off.
+
+**Fix:** `clampMtpForModelCapability` on save/preview/init; backend clamps on merge + `build_command`; `resolveMtpForModel` respects `mtpCapable`.
+
+**Immediate unblock:** `PUT /api/v1/service/config` with body `{"mtp":{"enabled":false}}` (raw config, not wrapped).
+
 ## Current Goal
 
 **fast-inference experiment** (`fast-inference/`): MTP speculative decoding with Qwen3.6 on the 4×16GB rig (2×5070 Ti + 2×5060 Ti). Using `llama-nexus-llamacpp-embed:latest` (b9193, has `draft-mtp`) on port **8603**, GPUs 0+1 layer-split. Downloaded `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` (22GB MTP) to `/home/alec/models/qwen3.6-35b-mtp/`.

@@ -158,9 +158,10 @@ class EmbeddingManager:
                 "BATCH_SIZE": str(self.config["performance"]["batch_size"]),
                 "UBATCH_SIZE": str(self.config["performance"]["ubatch_size"]),
                 "POOLING_TYPE": self.config["performance"]["pooling_type"],
-                "CUDA_VISIBLE_DEVICES": cuda_devices,
-                "CUDA_VISIBLE_DEVICES": cuda_devices,
-                "NVIDIA_VISIBLE_DEVICES": cuda_devices,
+                # NOTE: do NOT set CUDA_VISIBLE_DEVICES / NVIDIA_VISIBLE_DEVICES here.
+                # DeviceRequest(--gpus) below remaps host GPUs to internal indices 0..N-1;
+                # setting host indices here would shrink the visible set (see
+                # llamacpp_manager._docker_gpu_attachment for the same bug).
                 "MODEL_FILE": self._get_model_file(self.config["model"]["name"], self.config["model"]["variant"]),
             }
             
@@ -259,8 +260,8 @@ class EmbeddingManager:
                 "-e", f"HOST={self.config['server']['host']}",
                 "-e", f"PORT={self.config['server']['port']}",
                 "-e", f"API_KEY={self.config['server']['api_key']}",
-                "-e", f"NVIDIA_VISIBLE_DEVICES={cuda_devices}",
-                "-e", "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+                # NOTE: not setting NVIDIA_VISIBLE_DEVICES here; --gpus below remaps
+                # host GPUs to internal indices and would conflict with host indices.
                 "-e", "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
                 "-e", "HF_HOME=/home/llamacpp/models/.cache",
                 "-e", f"MODEL_FILE={self._get_model_file(model_name, self.config['model']['variant'])}",

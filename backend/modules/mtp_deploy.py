@@ -74,6 +74,17 @@ def mtp_enabled_in_config(config: Dict[str, Any]) -> bool:
     return bool(mtp.get("enabled"))
 
 
+def clamp_mtp_for_model_capability(
+    config: Dict[str, Any], *, model_mtp_capable: bool
+) -> Dict[str, Any]:
+    """Disable MTP when the selected GGUF has no prediction heads."""
+    if model_mtp_capable or not mtp_enabled_in_config(config):
+        return config
+    cfg = copy.deepcopy(config)
+    cfg.setdefault("mtp", {})["enabled"] = False
+    return cfg
+
+
 def normalize_mtp_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Return MTP block with defaults applied."""
     raw = config.get("mtp") or {}
