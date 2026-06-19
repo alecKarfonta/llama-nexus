@@ -133,18 +133,14 @@ export function applyMtpWorkloadProfile<T extends Record<string, unknown>>(
 }
 
 /** Force MTP off when the selected GGUF has no prediction heads. */
-export function clampMtpForModelCapability<T extends Record<string, unknown>>(
-  cfg: {
-    mtp?: T & { enabled?: boolean };
-    performance?: { parallel_slots?: number };
-    server?: Record<string, unknown>;
-  },
+export function clampMtpForModelCapability<C extends { mtp?: { enabled?: boolean } }>(
+  cfg: C,
   modelMtpCapable: boolean
-): typeof cfg {
+): C {
   if (modelMtpCapable || !cfg.mtp?.enabled) {
     return cfg;
   }
-  const next = JSON.parse(JSON.stringify(cfg)) as typeof cfg;
-  next.mtp = { ...(next.mtp ?? {}), enabled: false } as T & { enabled?: boolean };
+  const next = JSON.parse(JSON.stringify(cfg)) as C;
+  next.mtp = { ...(next.mtp ?? {}), enabled: false };
   return next;
 }
