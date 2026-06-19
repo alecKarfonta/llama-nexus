@@ -59,6 +59,7 @@ import {
 } from '@/utils/mtpModelSettings'
 import {
   applyMtpWorkloadProfile,
+  clampMtpForModelCapability,
   type MtpWorkloadProfile,
 } from '@/utils/mtpWorkloadProfiles'
 import { settingsManager } from '@/utils/settings'
@@ -628,13 +629,14 @@ function setAtPath(obj: Record<string, unknown>, parts: string[], value: unknown
 }
 
 /** Serialize config for backend preview/save — explicit null clears optional params on merge. */
-function prepareConfigForBackend(cfg: Config): Record<string, unknown> {
+function prepareConfigForBackend(cfg: Config, modelMtpCapable = true): Record<string, unknown> {
+  const clamped = clampMtpForModelCapability(cfg, modelMtpCapable)
   const out = JSON.parse(
-    JSON.stringify(cfg, (_key, value) => (value === undefined ? null : value))
+    JSON.stringify(clamped, (_key, value) => (value === undefined ? null : value))
   ) as Record<string, unknown>
   for (const path of OPTIONAL_LLAMACPP_PATHS) {
     const parts = path.split('.')
-    let src: unknown = cfg
+    let src: unknown = clamped
     for (const p of parts) {
       if (src == null || typeof src !== 'object') {
         src = undefined
@@ -1133,11 +1135,12 @@ export const DeployPage: React.FC = () => {
         deployLog('init', 'Loaded persisted settings:', persistedSettings)
 
         // Load available local models (non-fatal - page should still work without model list)
+        let modelList: ModelInfo[] = []
         try {
           deployLog('init', 'Fetching available models...')
-          const list = await apiService.getModels()
-          deployLog('init', 'Loaded models:', { count: list.length, models: list.map(m => `${m.name}/${m.variant}`) })
-          setModels(list)
+          modelList = await apiService.getModels()
+          deployLog('init', 'Loaded models:', { count: modelList.length, models: modelList.map(m => `${m.name}/${m.variant}`) })
+          setModels(modelList)
         } catch (e) {
           deployLog('init', 'Failed to fetch models (non-fatal):', e)
         }
@@ -1195,9 +1198,16 @@ export const DeployPage: React.FC = () => {
           configToUse.mtp = { ...defaultMtpSettings() }
         }
         if (configToUse.model?.name) {
+          const initModel =
+            modelList.find(
+              (m) =>
+                m.name === configToUse.model.name && m.variant === configToUse.model.variant
+            ) ?? modelList.find((m) => m.name === configToUse.model.name)
+          const initMtpCapable = initModel?.mtpCapable === true
           const resolvedMtp = resolveMtpForModel(
             configToUse.model.name,
             configToUse.model.variant || '',
+            { mtpCapable: initMtpCapable }
           )
           configToUse.mtp = { ...defaultMtpSettings(), ...configToUse.mtp, ...resolvedMtp }
           const profile = (configToUse.mtp.workload_profile ?? 'chat') as MtpWorkloadProfile
@@ -1205,6 +1215,10 @@ export const DeployPage: React.FC = () => {
           configToUse.mtp = applied.mtp
           configToUse.performance = { ...configToUse.performance, ...applied.performance }
           configToUse.server = { ...configToUse.server, ...applied.server }
+          Object.assign(
+            configToUse,
+            clampMtpForModelCapability(configToUse, initMtpCapable)
+          )
         }
         if (configToUse.model?.name) {
           prevModelMtpKey.current = modelMtpKey(configToUse.model.name, configToUse.model.variant || '')
@@ -1301,29 +1315,6 @@ export const DeployPage: React.FC = () => {
     init()
   }, [])
 
-  // Restore per-model MTP settings when the selected GGUF changes
-  useEffect(() => {
-    if (!config?.model?.name) return
-    const key = modelMtpKey(config.model.name, config.model.variant || '')
-    if (prevModelMtpKey.current === key) return
-    prevModelMtpKey.current = key
-    const resolved = resolveMtpForModel(config.model.name, config.model.variant || '')
-    setConfig((prev) => {
-      if (!prev) return prev
-      const base: Config = {
-        ...prev,
-        mtp: { ...defaultMtpSettings(), ...resolved },
-      }
-      const applied = applyMtpWorkloadProfile(resolved.workload_profile, base)
-      return {
-        ...base,
-        mtp: applied.mtp,
-        performance: { ...base.performance, ...applied.performance },
-        server: { ...base.server, ...applied.server },
-      }
-    })
-  }, [config?.model?.name, config?.model?.variant])
-
   const availableModelNames = useMemo(() => {
     const names = Array.from(new Set(models.map((m) => m.name))).sort()
     deployLog('models', 'Computed available model names:', { count: names.length, names })
@@ -1349,6 +1340,45 @@ export const DeployPage: React.FC = () => {
       null
     )
   }, [models, config?.model?.name, config?.model?.variant])
+
+  const selectedModelMtpCapable = selectedDeployModel?.mtpCapable === true
+
+  // Restore per-model MTP settings when the selected GGUF changes
+  useEffect(() => {
+    if (!config?.model?.name) return
+    const key = modelMtpKey(config.model.name, config.model.variant || '')
+    if (prevModelMtpKey.current === key) return
+    prevModelMtpKey.current = key
+    const resolved = resolveMtpForModel(config.model.name, config.model.variant || '', {
+      mtpCapable: selectedModelMtpCapable,
+    })
+    setConfig((prev) => {
+      if (!prev) return prev
+      const base: Config = {
+        ...prev,
+        mtp: { ...defaultMtpSettings(), ...resolved },
+      }
+      const applied = applyMtpWorkloadProfile(resolved.workload_profile, base)
+      return clampMtpForModelCapability(
+        {
+          ...base,
+          mtp: applied.mtp,
+          performance: { ...base.performance, ...applied.performance },
+          server: { ...base.server, ...applied.server },
+        },
+        selectedModelMtpCapable
+      )
+    })
+  }, [config?.model?.name, config?.model?.variant, selectedModelMtpCapable])
+
+  // Family presets can leave mtp.enabled=true while the switch looks off (non-MTP GGUF)
+  useEffect(() => {
+    if (!config || selectedModelMtpCapable || !config.mtp?.enabled) return
+    const next = clampMtpForModelCapability(config, false)
+    setConfig(next)
+    saveDeploySettings(next, selectedApiKey)
+    void updateCommandPreview(next)
+  }, [selectedModelMtpCapable, config?.mtp?.enabled, config?.model?.name, config?.model?.variant])
 
   const mtpStatsWatch =
     backend === 'llamacpp' &&
@@ -1399,7 +1429,7 @@ export const DeployPage: React.FC = () => {
     deployLog('commandPreview', 'Updating command preview', { modelName: configToPreview?.model?.name, backend })
     try {
       // Convert undefined values to null so they get properly serialized and handled by backend
-      const configForPreview = prepareConfigForBackend(configToPreview)
+      const configForPreview = prepareConfigForBackend(configToPreview, selectedModelMtpCapable)
 
       // Send the config to backend to get command preview without saving
       deployLog('commandPreview', 'Sending preview request to backend')
@@ -1481,11 +1511,17 @@ export const DeployPage: React.FC = () => {
 
   const handleMtpWorkloadProfileChange = (profile: MtpWorkloadProfile) => {
     if (!config) return
-    const next: Config = JSON.parse(JSON.stringify(config))
-    const applied = applyMtpWorkloadProfile(profile, next)
-    next.mtp = applied.mtp
-    next.performance = { ...next.performance, ...applied.performance }
-    next.server = { ...next.server, ...applied.server }
+    const next: Config = clampMtpForModelCapability(
+      (() => {
+        const draft: Config = JSON.parse(JSON.stringify(config))
+        const applied = applyMtpWorkloadProfile(profile, draft)
+        draft.mtp = applied.mtp
+        draft.performance = { ...draft.performance, ...applied.performance }
+        draft.server = { ...draft.server, ...applied.server }
+        return draft
+      })(),
+      selectedModelMtpCapable
+    )
     setConfig(next)
     if (next.model?.name) {
       saveMtpForModel(next.model.name, next.model.variant || '', next.mtp ?? {})
@@ -1677,7 +1713,7 @@ export const DeployPage: React.FC = () => {
       setSaving(true)
 
       // Convert undefined values to null for proper backend handling
-      const configForSave = prepareConfigForBackend(config)
+      const configForSave = prepareConfigForBackend(config, selectedModelMtpCapable)
 
       deployLog('save', 'Sending save request', { model: configForSave.model })
       const data = await (async () => {
@@ -1724,7 +1760,7 @@ export const DeployPage: React.FC = () => {
       if (backend === 'vllm' && vllmConfig) {
         configForAction = JSON.parse(JSON.stringify(vllmConfig))
       } else if (config) {
-        configForAction = prepareConfigForBackend(config)
+        configForAction = prepareConfigForBackend(config, selectedModelMtpCapable)
       }
 
       // Ensure the current template selection is included in the config

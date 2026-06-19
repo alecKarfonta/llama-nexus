@@ -28,6 +28,7 @@ _deploy = _load("modules/mtp_deploy.py", "mtp_deploy_test")
 validate_mtp_deployment = _deploy.validate_mtp_deployment
 normalize_mtp_config = _deploy.normalize_mtp_config
 apply_mtp_workload_profile = _deploy.apply_mtp_workload_profile
+clamp_mtp_for_model_capability = _deploy.clamp_mtp_for_model_capability
 chat_template_kwargs_cli_value = _deploy.chat_template_kwargs_cli_value
 mtp_env_from_config = _deploy.mtp_env_from_config
 parse_mtp_stats_from_log_line = _log.parse_mtp_stats_from_log_line
@@ -111,6 +112,22 @@ def test_validate_rejects_non_mtp_model():
     )
     assert any("mtp_capable" in e for e in errors)
     assert warnings == []
+
+
+def test_clamp_disables_mtp_for_non_capable_model():
+    cfg = clamp_mtp_for_model_capability(
+        {"mtp": {"enabled": True, "workload_profile": "chat"}},
+        model_mtp_capable=False,
+    )
+    assert cfg["mtp"]["enabled"] is False
+
+
+def test_clamp_leaves_mtp_when_capable():
+    cfg = clamp_mtp_for_model_capability(
+        {"mtp": {"enabled": True}},
+        model_mtp_capable=True,
+    )
+    assert cfg["mtp"]["enabled"] is True
 
 
 def test_validate_rejects_old_build():

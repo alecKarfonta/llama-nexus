@@ -118,6 +118,13 @@ export const MtpConfigSection: React.FC<MtpConfigSectionProps> = ({
         {blockReason && (
           <Alert severity="warning" sx={{ mb: 2, fontSize: '0.8125rem' }}>
             {blockReason}
+            {mtp?.enabled && (
+              <>
+                {' '}
+                MTP is forced off for deploy — save again if the command preview still shows
+                draft-mtp flags.
+              </>
+            )}
           </Alert>
         )}
 
@@ -157,7 +164,7 @@ export const MtpConfigSection: React.FC<MtpConfigSectionProps> = ({
         <FormControlLabel
           control={
             <Switch
-              checked={Boolean(mtp?.enabled) && canEnable}
+              checked={Boolean(mtp?.enabled)}
               disabled={!canEnable}
               onChange={(e) => {
                 if (e.target.checked) {

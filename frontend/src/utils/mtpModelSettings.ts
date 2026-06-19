@@ -89,8 +89,16 @@ export function loadMtpForModel(name: string, variant: string): MtpModelSettings
 }
 
 /** Per-model localStorage override, else benchmark-derived family defaults. */
-export function resolveMtpForModel(name: string, variant: string): MtpModelSettings {
-  return loadMtpForModel(name, variant) ?? recommendedMtpForFamily(inferMtpFamily(name));
+export function resolveMtpForModel(
+  name: string,
+  variant: string,
+  options?: { mtpCapable?: boolean }
+): MtpModelSettings {
+  const base = loadMtpForModel(name, variant) ?? recommendedMtpForFamily(inferMtpFamily(name));
+  if (options?.mtpCapable === false) {
+    return { ...base, enabled: false };
+  }
+  return base;
 }
 
 export function saveMtpForModel(name: string, variant: string, mtp: Partial<MtpModelSettings>): void {

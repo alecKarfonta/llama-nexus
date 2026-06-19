@@ -51,6 +51,14 @@ def _merge_and_persist_config(new_config: Dict[str, Any]):
     # Merge new config into existing
     deep_merge(manager.config, new_config)
 
+    # Non-MTP GGUFs cannot use draft-mtp — clear stale enabled flags from family presets
+    model_name = manager.config.get("model", {}).get("name")
+    variant = manager.config.get("model", {}).get("variant")
+    if model_name and variant and download_manager:
+        meta = download_manager._load_model_metadata(model_name, variant)
+        if not (meta and meta.get("mtp_capable")):
+            manager.config.setdefault("mtp", {})["enabled"] = False
+
     # Persist the merged configuration
     try:
         config_file = Path("/tmp/llamacpp_config.json")
