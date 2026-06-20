@@ -24,77 +24,100 @@ _BACKEND = Path(__file__).resolve().parents[1]
 
 def _make_manager():
     """Load LlamaCPPManager with stubbed heavy dependencies."""
-    # Stub dependencies that pull in docker / databases / etc.
-    for mod_name in [
+    stubbed_modules = [
         "enhanced_logger",
         "docker",
         "httpx",
         "psutil",
         "huggingface_hub",
         "fastapi",
-    ]:
-        if mod_name not in sys.modules:
-            sys.modules[mod_name] = ModuleType(mod_name)
-
-    sys.modules["enhanced_logger"].enhanced_logger = MagicMock()
-    sys.modules["fastapi"].HTTPException = type("HTTPException", (Exception,), {})
-    sys.modules["huggingface_hub"].hf_hub_url = lambda *a, **k: ""
-    sys.modules["huggingface_hub"].HfApi = MagicMock
-
-    docker_stub = sys.modules["docker"]
-    docker_stub.types = MagicMock()
-    # Capture what the manager passes into DeviceRequest.
-    captured = {"device_requests": []}
-
-    def _device_request(**kwargs):
-        captured["device_requests"].append(kwargs)
-        return kwargs
-
-    docker_stub.types.DeviceRequest = _device_request
-
-    # Stub submodules the manager imports at import time.
-    for sub in [
         "modules",
         "modules.managers",
         "modules.managers.base",
         "modules.llamacpp_build_info",
         "modules.mtp_deploy",
         "modules.mtp_log_parser",
-    ]:
-        if sub not in sys.modules:
-            m = ModuleType(sub)
-            if "." in sub:
-                parent_name, leaf = sub.rsplit(".", 1)
-                setattr(sys.modules[parent_name], leaf, m)
-            sys.modules[sub] = m
+    ]
+    saved_modules = {name: sys.modules.get(name) for name in stubbed_modules}
 
-    sys.modules["modules.managers.base"].DOCKER_AVAILABLE = False
-    sys.modules["modules.managers.base"].docker_client = None
-    sys.modules["modules.llamacpp_build_info"].build_info_from_tag_and_version = lambda *a, **k: {}
-    sys.modules["modules.llamacpp_build_info"].parse_llguidance_enabled = lambda *a, **k: False
-    for fn_name in [
-        "apply_mtp_workload_profile",
-        "chat_template_kwargs_cli_value",
-        "clamp_mtp_for_model_capability",
-        "mtp_env_from_config",
-        "mtp_enabled_in_config",
-        "normalize_mtp_config",
-        "validate_mtp_deployment",
-    ]:
-        setattr(sys.modules["modules.mtp_deploy"], fn_name, lambda *a, **k: (a[0] if a else {}))
-    sys.modules["modules.mtp_log_parser"].parse_mtp_stats_from_log_line = lambda *a, **k: None
+    try:
+        # Stub dependencies that pull in docker / databases / etc.
+        for mod_name in [
+            "enhanced_logger",
+            "docker",
+            "httpx",
+            "psutil",
+            "huggingface_hub",
+            "fastapi",
+        ]:
+            if mod_name not in sys.modules:
+                sys.modules[mod_name] = ModuleType(mod_name)
 
-    spec = importlib.util.spec_from_file_location(
-        "_llamacpp_manager_test",
-        _BACKEND / "modules" / "managers" / "llamacpp_manager.py",
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(module)
+        sys.modules["enhanced_logger"].enhanced_logger = MagicMock()
+        sys.modules["fastapi"].HTTPException = type("HTTPException", (Exception,), {})
+        sys.modules["huggingface_hub"].hf_hub_url = lambda *a, **k: ""
+        sys.modules["huggingface_hub"].HfApi = MagicMock
 
-    # Instantiate without running __init__'s side effects beyond what we need.
-    mgr = object.__new__(module.LlamaCPPManager)
-    return mgr, captured, docker_stub
+        docker_stub = sys.modules["docker"]
+        docker_stub.types = MagicMock()
+        # Capture what the manager passes into DeviceRequest.
+        captured = {"device_requests": []}
+
+        def _device_request(**kwargs):
+            captured["device_requests"].append(kwargs)
+            return kwargs
+
+        docker_stub.types.DeviceRequest = _device_request
+
+        # Stub submodules the manager imports at import time.
+        for sub in [
+            "modules",
+            "modules.managers",
+            "modules.managers.base",
+            "modules.llamacpp_build_info",
+            "modules.mtp_deploy",
+            "modules.mtp_log_parser",
+        ]:
+            if sub not in sys.modules:
+                m = ModuleType(sub)
+                if "." in sub:
+                    parent_name, leaf = sub.rsplit(".", 1)
+                    setattr(sys.modules[parent_name], leaf, m)
+                sys.modules[sub] = m
+
+        sys.modules["modules.managers.base"].DOCKER_AVAILABLE = False
+        sys.modules["modules.managers.base"].docker_client = None
+        sys.modules["modules.llamacpp_build_info"].build_info_from_tag_and_version = lambda *a, **k: {}
+        sys.modules["modules.llamacpp_build_info"].parse_llguidance_enabled = lambda *a, **k: False
+        for fn_name in [
+            "apply_mtp_workload_profile",
+            "chat_template_kwargs_cli_value",
+            "clamp_mtp_for_model_capability",
+            "mtp_env_from_config",
+            "mtp_enabled_in_config",
+            "normalize_mtp_config",
+            "validate_mtp_deployment",
+        ]:
+            setattr(sys.modules["modules.mtp_deploy"], fn_name, lambda *a, **k: (a[0] if a else {}))
+        sys.modules["modules.mtp_log_parser"].parse_mtp_stats_from_log_line = lambda *a, **k: None
+
+        spec = importlib.util.spec_from_file_location(
+            "_llamacpp_manager_test",
+            _BACKEND / "modules" / "managers" / "llamacpp_manager.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+
+        # Instantiate without running __init__'s side effects beyond what we need.
+        mgr = object.__new__(module.LlamaCPPManager)
+        return mgr, captured, docker_stub
+    finally:
+        for name, previous in saved_modules.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
 
 
 def test_specific_devices_does_not_set_host_index_env():

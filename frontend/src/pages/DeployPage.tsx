@@ -1081,6 +1081,27 @@ export const DeployPage: React.FC = () => {
         (m) => m.name === config.model?.name && m.variant === config.model?.variant,
       );
 
+      const cudaDevices = config.execution?.cuda_devices || 'all';
+      let availableVramGb = 24;
+      if (gpuList.length > 0) {
+        const selectedGpus =
+          cudaDevices === 'all'
+            ? gpuList
+            : cudaDevices
+                .split(',')
+                .map((s) => parseInt(s.trim(), 10))
+                .filter((n) => !Number.isNaN(n))
+                .map((idx) => gpuList.find((g) => g.index === idx))
+                .filter((g): g is NonNullable<typeof g> => g != null);
+        const vramMb = selectedGpus.reduce((sum, g) => sum + g.vram_total_mb, 0);
+        if (vramMb > 0) {
+          availableVramGb = vramMb / 1024;
+        }
+      }
+
+      const flashAttn = config.model?.flash_attn;
+      const flashAttention = flashAttn !== 'off';
+
       const response = await fetch('/api/v1/vram/estimate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1089,10 +1110,12 @@ export const DeployPage: React.FC = () => {
           context_size: config.model?.context_size || 4096,
           batch_size: config.performance?.batch_size || 1,
           gpu_layers: config.model?.gpu_layers ?? -1,
+          kv_cache_type: config.performance?.cache_type_k || 'f16',
+          flash_attention: flashAttention,
           parallel_slots: config.performance?.parallel_slots ?? 1,
           mtp_enabled: config.mtp?.enabled === true,
           mtp_nextn_layers: selectedModel?.mtpNextnLayers ?? 1,
-          available_vram_gb: 24, // Default, could be detected
+          available_vram_gb: availableVramGb,
         }),
       });
 
@@ -1121,7 +1144,11 @@ export const DeployPage: React.FC = () => {
     config?.performance?.batch_size,
     config?.model?.gpu_layers,
     config?.performance?.parallel_slots,
+    config?.performance?.cache_type_k,
+    config?.model?.flash_attn,
+    config?.execution?.cuda_devices,
     config?.mtp?.enabled,
+    gpuList,
   ]);
 
   useEffect(() => {
@@ -2072,7 +2099,7 @@ export const DeployPage: React.FC = () => {
                   </>
                 ) : (
                   <>
-                    You are editing <strong>llama.cpp</strong> (GGUF paths, llama-server flags, templates). Switch to <strong>vLLM</strong> for Nemotron-style server launches and MoE/env tuning.
+                    You are editing <strong>llama.cpp</strong> (GGUF paths, llama-server flags, templates). Switch to <strong>vLLM</strong> for Hugging Face model IDs and server-side tuning.
                   </>
                 )}
               </Typography>
@@ -2438,7 +2465,7 @@ export const DeployPage: React.FC = () => {
               ))}
             </Box>
             <FormHelperText sx={{ mt: 0.75, fontSize: '0.6875rem' }}>
-              Conversation-optimized for 4×3090 Ti — thinking off, GGUF jinja, f16 KV, short n-predict. Pick a preset then Save + Restart.
+              One-click presets for common chat workloads. Pick a preset, then Save + Restart.
             </FormHelperText>
           </Box>
           <Typography variant="h6" gutterBottom sx={{ fontSize: '0.9375rem', fontWeight: 600 }}>Model</Typography>

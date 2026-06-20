@@ -582,7 +582,7 @@ class TestGraphRAGIntegrationAPI:
         from main import app
         return TestClient(app)
     
-    @patch('routes.graphrag.helpers.get_http_client')
+    @patch('routes.graphrag.ingest.get_http_client')
     def test_upload_endpoint(self, mock_get_client, client, mock_graphrag_response):
         """Test document upload endpoint."""
         mock_response = Mock()
@@ -609,7 +609,7 @@ class TestGraphRAGIntegrationAPI:
         # This is a structural test showing how the endpoint should be tested
         assert response.status_code in [200, 500, 502, 503]  # 500/502 if service unreachable, 503 if disabled
     
-    @patch('routes.graphrag.helpers.get_http_client')
+    @patch('routes.graphrag.search.get_http_client')
     def test_search_endpoint(self, mock_get_client, client, mock_graphrag_response):
         """Test intelligent search endpoint."""
         mock_response = Mock()

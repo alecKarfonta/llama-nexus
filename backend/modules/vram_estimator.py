@@ -90,6 +90,15 @@ MODEL_ARCHITECTURES = {
     'qwen2.5-14b': {'params_b': 14, 'layers': 48, 'hidden': 5120, 'heads': 40, 'kv_heads': 8},
     'qwen2.5-32b': {'params_b': 32, 'layers': 64, 'hidden': 5120, 'heads': 40, 'kv_heads': 8},
     'qwen2.5-72b': {'params_b': 72, 'layers': 80, 'hidden': 8192, 'heads': 64, 'kv_heads': 8},
+    # Qwen3.6 hybrid (DeltaNet + gated attention): KV only on attention blocks
+    'qwen3.6-27b': {
+        'params_b': 27, 'layers': 64, 'kv_layers': 16,
+        'hidden': 5120, 'heads': 24, 'kv_heads': 4, 'head_dim': 256,
+    },
+    'qwen3.6-35b-a3b': {
+        'params_b': 35, 'layers': 64, 'kv_layers': 16,
+        'hidden': 5120, 'heads': 24, 'kv_heads': 4, 'head_dim': 256, 'moe': True,
+    },
     
     # DeepSeek
     'deepseek-7b': {'params_b': 7, 'layers': 30, 'hidden': 4096, 'heads': 32, 'kv_heads': 32},
@@ -202,6 +211,7 @@ def calculate_kv_cache_vram(
     kv_heads: int,
     n_parallel: int = 1,
     kv_cache_type: str = 'f16',
+    head_dim: Optional[int] = None,
 ) -> float:
     """Calculate KV cache VRAM in MB.
     
@@ -209,10 +219,10 @@ def calculate_kv_cache_vram(
     NOT the token batch size (n_batch). Token batch size affects compute buffer
     but does NOT multiply KV cache memory.
     """
-    # Head dimension is based on total attention heads, not KV heads
-    head_dim = hidden_size // num_heads if num_heads > 0 else 128
+    if head_dim is None or head_dim <= 0:
+        head_dim = hidden_size // num_heads if num_heads > 0 else 128
     if head_dim <= 0:
-        head_dim = 128  # Default
+        head_dim = 128
     
     # KV cache bits per element
     kv_bits = {
@@ -285,8 +295,6 @@ def calculate_mtp_vram_overhead_mb(
         n_parallel=n_parallel,
         kv_cache_type=kv_cache_type,
     )
-    if flash_attention:
-        extra_kv *= 0.7
     return extra_weights + extra_kv
 
 
@@ -323,6 +331,8 @@ def estimate_vram(
     """
     warnings = []
     
+    arch: Optional[Dict[str, Any]] = None
+
     # Detect or use provided parameters
     if params_b is None:
         arch = detect_model_architecture(model_name)
@@ -341,7 +351,7 @@ def estimate_vram(
             kv_heads = 8
             warnings.append(f"Could not detect model architecture from '{model_name}', using 7B defaults")
     else:
-        arch = estimate_architecture_from_params(params_b)
+        arch = detect_model_architecture(model_name) or estimate_architecture_from_params(params_b)
         num_layers = arch['layers']
         hidden_size = arch['hidden']
         num_heads = arch['heads']
@@ -365,19 +375,19 @@ def estimate_vram(
         total_layers=num_layers,
     )
     
+    kv_layers = arch.get('kv_layers', num_layers) if arch else num_layers
+    head_dim = arch.get('head_dim') if arch else None
+
     kv_cache_mb = calculate_kv_cache_vram(
         context_size=context_size,
         hidden_size=hidden_size,
-        num_layers=num_layers,
+        num_layers=kv_layers,
         num_heads=num_heads,
         kv_heads=kv_heads,
-        n_parallel=1,  # Single deployment slot; batch_size is NOT a KV multiplier
+        n_parallel=max(parallel_slots, 1),
         kv_cache_type=kv_cache_type,
+        head_dim=head_dim,
     )
-    
-    # Flash attention reduces KV cache memory usage
-    if flash_attention:
-        kv_cache_mb *= 0.7  # Approximate reduction
 
     mtp_overhead_mb = 0.0
     if mtp_enabled:

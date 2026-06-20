@@ -1,6 +1,5 @@
 /**
- * One-click llama.cpp deployment presets tuned for 4×3090 Ti conversation workloads.
- * Shared principles: thinking off, GGUF jinja template, f16 KV, moderate batches, short n-predict.
+ * One-click llama.cpp deployment presets for common chat workloads.
  */
 
 export type DeployPresetCategory = 'conversation' | 'assistant' | 'rp' | 'fast' | 'multi';
@@ -79,7 +78,7 @@ function conversationRuntime(overrides: LlamaCppDeployPresetConfig = {}): LlamaC
       num_predict: 1024,
       parallel_slots: 1,
       split_mode: 'layer',
-      main_gpu: 2,
+      main_gpu: 0,
       cache_type_k: 'f16',
       cache_type_v: 'f16',
       ...overrides.performance,
@@ -101,7 +100,7 @@ export const LLAMACPP_DEPLOY_PRESETS: LlamaCppDeployPreset[] = [
     id: 'chat-vtuber',
     name: 'Chat · VTuber',
     description:
-      'Qwen3.6-35B-A3B uncensored heretic Q8_0 — personality-driven chat, low latency, presence penalty anti-repeat. Best for Twitch/YouTube/Kick bot replies.',
+      'Qwen3.6-35B-A3B uncensored heretic Q8_0 — personality-driven chat with low latency and presence penalty anti-repeat.',
     category: 'conversation',
     config: conversationRuntime({
       model: {
@@ -119,7 +118,7 @@ export const LLAMACPP_DEPLOY_PRESETS: LlamaCppDeployPreset[] = [
     id: 'chat-assistant',
     name: 'Chat · Assistant',
     description:
-      'Qwen3.6-35B-A3B official Q8_0 — same speed profile as VTuber tier but official weights for accurate, instruction-following assistant chat.',
+      'Qwen3.6-35B-A3B official Q8_0 — same speed profile as VTuber tier but official weights for instruction-following assistant chat.',
     category: 'assistant',
     config: conversationRuntime({
       model: {
@@ -137,7 +136,7 @@ export const LLAMACPP_DEPLOY_PRESETS: LlamaCppDeployPreset[] = [
     id: 'chat-rp',
     name: 'Chat · RP / Character',
     description:
-      'Uncensored heretic Q8_0 with min-p + DRY sampling — warmer output and better long-session anti-repetition for persona-driven / roleplay chat.',
+      'Uncensored heretic Q8_0 with min-p + DRY sampling — warmer output and better long-session anti-repetition for persona-driven chat.',
     category: 'rp',
     config: conversationRuntime({
       model: {
@@ -155,7 +154,7 @@ export const LLAMACPP_DEPLOY_PRESETS: LlamaCppDeployPreset[] = [
     id: 'chat-multi-platform',
     name: 'Chat · Multi-Platform',
     description:
-      'One model, 4 parallel slots (~16K ctx each) — run per-platform bot personalities on Twitch, YouTube, Kick, etc. without separate servers.',
+      'One model, 4 parallel slots (~16K ctx each) — run multiple concurrent chat sessions without separate servers.',
     category: 'multi',
     config: conversationRuntime({
       model: {
@@ -176,7 +175,7 @@ export const LLAMACPP_DEPLOY_PRESETS: LlamaCppDeployPreset[] = [
     id: 'chat-fast',
     name: 'Chat · Fast / Side Bot',
     description:
-      'Qwen3-4B-Instruct Q8_0 on a single GPU — minimal VRAM and latency for a low-priority side endpoint (change port if running alongside main server).',
+      'Qwen3-4B-Instruct Q8_0 on a single GPU — minimal VRAM and latency for a low-priority side endpoint.',
     category: 'fast',
     config: conversationRuntime({
       model: {

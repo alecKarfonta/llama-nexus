@@ -11,6 +11,7 @@ import httpx
 import os
 import asyncio
 from pathlib import Path
+from unittest.mock import Mock, patch, AsyncMock
 
 
 # Module-level skip. The old form ``pytest.config.getoption(...)`` was removed
