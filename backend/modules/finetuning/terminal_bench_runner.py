@@ -52,7 +52,7 @@ class TerminalBenchJob:
     timeout_multiplier: float = 1.0
     harbor_agent: str = "local-openai-agent"
     model_name: str = "openai/gpt-4o-mini"
-    endpoint_url: str = "http://llamacpp-api:8080/v1"
+    endpoint_url: str = "http://backend-api:8700/v1"
     api_key: str = "placeholder-api-key"
     jobs_dir: Optional[str] = None
     status: TerminalBenchStatus = TerminalBenchStatus.PENDING
@@ -126,7 +126,7 @@ class TerminalBenchRunner:
                     timeout_multiplier=float(summary.get("timeout_multiplier", 1.0)),
                     harbor_agent=summary.get("harbor_agent", "local-openai-agent"),
                     model_name=summary.get("model_name", "openai/gpt-4o-mini"),
-                    endpoint_url=summary.get("endpoint_url", "http://llamacpp-api:8080/v1"),
+                    endpoint_url=summary.get("endpoint_url", "http://backend-api:8700/v1"),
                     api_key=summary.get("api_key", "placeholder-api-key"),
                     jobs_dir=summary.get("jobs_dir"),
                     status=TerminalBenchStatus(status_value),

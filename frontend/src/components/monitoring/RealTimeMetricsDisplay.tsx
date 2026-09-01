@@ -2,7 +2,7 @@
  * Real-time Metrics Display - Main monitoring dashboard component
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Grid,
   Box,
@@ -26,7 +26,6 @@ import { ServiceStatusCard } from './ServiceStatusCard';
 import { MetricsChart, ResourceUsageChart, ThroughputChart, ResponseTimeChart } from './MetricsChart';
 
 import { useRealTimeMetrics, usePrometheusMetrics, useServiceStatus, useMetrics, useMetricsHistory } from '@/hooks/useMetrics';
-import type { ResourceMetrics } from '@/types/api';
 
 interface RealTimeMetricsDisplayProps {
   showWebSocketStatus?: boolean;
@@ -45,7 +44,7 @@ export const RealTimeMetricsDisplay: React.FC<RealTimeMetricsDisplayProps> = ({
   const { data: currentMetrics, isLoading: metricsLoading, error: metricsError, refetch: refetchMetrics } = useMetrics();
 
   // Metrics history for charts
-  const { data: metricsHistory, isLoading: historyLoading, error: historyError } = useMetricsHistory(timeRange);
+  const { data: metricsHistory } = useMetricsHistory(timeRange);
 
   // Prometheus metrics parsing
   const { parsedMetrics, fetchMetrics } = usePrometheusMetrics();

@@ -24,6 +24,7 @@ import {
     OpenInNew as OpenIcon,
     ContentCopy as CopyIcon,
 } from '@mui/icons-material'
+import { useClipboard } from '@/hooks/useClipboard'
 
 export interface RAGChunk {
     id: string
@@ -50,6 +51,7 @@ export const RAGContextBlock: React.FC<RAGContextBlockProps> = ({
     const [selectedChunk, setSelectedChunk] = useState<RAGChunk | null>(null)
     const [neighborChunks, setNeighborChunks] = useState<{ before: RAGChunk[], after: RAGChunk[] }>({ before: [], after: [] })
     const [loadingNeighbors, setLoadingNeighbors] = useState(false)
+    const copyToClipboard = useClipboard()
 
     const handleOpenChunkExplorer = async (chunk: RAGChunk) => {
         setSelectedChunk(chunk)
@@ -72,7 +74,10 @@ export const RAGContextBlock: React.FC<RAGContextBlockProps> = ({
     }
 
     const handleCopyContent = (content: string) => {
-        navigator.clipboard.writeText(content)
+        copyToClipboard(content, {
+            successMessage: 'RAG chunk copied.',
+            successTitle: 'Context copied',
+        })
     }
 
     if (chunks.length === 0 && !isLoading) {

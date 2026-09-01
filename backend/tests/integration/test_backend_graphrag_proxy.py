@@ -4,17 +4,21 @@ Backend GraphRAG Proxy Verification
 Tests that llama-nexus backend can successfully proxy to GraphRAG.
 
 NOTE: This requires the backend to be accessible (running in Docker or locally).
-For Docker backend, it needs to be configured with GRAPHRAG_URL=http://host.docker.internal:18000
-or be on the same Docker network as GraphRAG.
+Override BACKEND_URL or GRAPHRAG_DIRECT_URL if your local ports differ.
 """
 
 import asyncio
 import httpx
 import json
+import os
+import pytest
 
 
-BACKEND_URL = "http://localhost:8700"
-GRAPHRAG_DIRECT_URL = "http://localhost:18000"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8700")
+GRAPHRAG_DIRECT_URL = os.getenv("GRAPHRAG_DIRECT_URL", "http://localhost:8000")
+
+
+pytestmark = pytest.mark.asyncio
 
 
 async def test_backend_proxy():
@@ -190,7 +194,7 @@ async def test_backend_proxy():
         print("\n✓ Core functionality verified")
         if passed_count < total_count:
             print("\nNote: Some proxy endpoints may require backend network configuration.")
-            print("If backend is in Docker, it needs: GRAPHRAG_URL=http://host.docker.internal:18000")
+            print("If backend is in Docker, set GRAPHRAG_URL to a reachable GraphRAG API URL")
             print("Or add to same Docker network as GraphRAG.")
     
     return results
@@ -198,4 +202,3 @@ async def test_backend_proxy():
 
 if __name__ == "__main__":
     asyncio.run(test_backend_proxy())
-

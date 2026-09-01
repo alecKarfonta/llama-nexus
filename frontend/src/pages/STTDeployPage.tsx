@@ -3,8 +3,6 @@ import {
   Box,
   Grid,
   Typography,
-  Card,
-  CardContent,
   TextField,
   Select,
   MenuItem,
@@ -15,7 +13,8 @@ import {
   FormHelperText,
   IconButton,
   LinearProgress,
-  Slider,
+  Tooltip,
+  useMediaQuery,
 } from '@mui/material'
 import {
   PlayArrow as StartIcon,
@@ -26,7 +25,17 @@ import {
   MicOff as MicOffIcon,
   CloudUpload as UploadIcon,
   Delete as DeleteIcon,
+  Refresh as RefreshIcon,
+  Speed as SpeedIcon,
 } from '@mui/icons-material'
+import {
+  compactCollapsibleCardSx,
+  PageShell,
+  SectionCard,
+} from '@/components/common'
+import { alpha } from '@mui/material/styles'
+import { debugLog } from '@/utils/debug'
+import { accentColors } from '@/utils/theme'
 
 interface STTConfig {
   model: {
@@ -84,6 +93,8 @@ const LANGUAGES = [
 ]
 
 export const STTDeployPage: React.FC = () => {
+  const isNarrow = useMediaQuery('(max-width:599.95px)')
+
   // Service state
   const [status, setStatus] = useState<STTStatus | null>(null)
   const [config, setConfig] = useState<STTConfig>({
@@ -134,7 +145,7 @@ export const STTDeployPage: React.FC = () => {
           const data = await configRes.json()
           if (data.config) setConfig(data.config)
         }
-        
+
         const statusRes = await fetch('/api/v1/stt/status')
         if (statusRes.ok) {
           const data = await statusRes.json()
@@ -142,7 +153,7 @@ export const STTDeployPage: React.FC = () => {
         }
       } catch (e) {
         // Service might not exist yet - that's ok
-        console.log('STT service not configured yet')
+        debugLog('stt', 'STT service not configured yet')
       } finally {
         setPageLoading(false)
       }
@@ -170,7 +181,7 @@ export const STTDeployPage: React.FC = () => {
     try {
       setLoading(action)
       setError(null)
-      
+
       const res = await fetch(`/api/v1/stt/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -325,6 +336,150 @@ export const STTDeployPage: React.FC = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
+  const refreshStatus = async () => {
+    try {
+      const res = await fetch('/api/v1/stt/status')
+      if (res.ok) {
+        setStatus(await res.json())
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to refresh STT status')
+    }
+  }
+
+  const serviceRunning = Boolean(status?.running)
+  const serviceStatusColor = serviceRunning ? accentColors.success : accentColors.warning
+  const serviceStatusLabel = serviceRunning ? 'Service running' : 'Service stopped'
+  const showStartAction = !serviceRunning || loading === 'start'
+  const showRestartAction = serviceRunning || loading === 'restart'
+  const showStopAction = serviceRunning || loading === 'stop'
+  const selectedLanguage = LANGUAGES.find(lang => lang.code === config.model.language)?.name || config.model.language
+  const activeAudioSource = isRecording
+    ? `Recording ${formatTime(recordingTime)}`
+    : recordedAudio
+      ? 'Recording ready'
+      : testFile
+        ? testFile.name
+        : 'No audio loaded'
+  const commandIconButtonSx = {
+    width: 32,
+    height: 32,
+    borderRadius: '8px',
+    border: '1px solid',
+    borderColor: 'divider',
+    bgcolor: 'action.hover',
+    '&:hover': { bgcolor: 'action.selected' },
+    '&.Mui-disabled': {
+      bgcolor: 'action.disabledBackground',
+      color: 'action.disabled',
+    },
+  }
+  const compactSectionCardSx = compactCollapsibleCardSx as Record<string, unknown>
+  const sttHeaderActions = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: { xs: 'nowrap', sm: 'wrap' }, justifyContent: 'flex-end' }}>
+      {!isNarrow && (
+        <Tooltip title="Refresh STT status">
+          <IconButton
+            size="small"
+            aria-label="Refresh STT status"
+            onClick={refreshStatus}
+            sx={commandIconButtonSx}
+          >
+            <RefreshIcon sx={{ fontSize: 17 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+      <Tooltip title="Save settings">
+        <IconButton
+          size="small"
+          aria-label="Save STT settings"
+          onClick={saveConfig}
+          sx={commandIconButtonSx}
+        >
+          <SaveIcon sx={{ fontSize: 17 }} />
+        </IconButton>
+      </Tooltip>
+      {showStartAction && (
+        <Tooltip title="Start service">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Start STT service"
+              onClick={() => runAction('start')}
+              disabled={loading !== null || serviceRunning}
+              sx={{
+                width: 32,
+                height: 32,
+                borderRadius: '8px',
+                bgcolor: 'primary.main',
+                color: 'primary.contrastText',
+                '&:hover': { bgcolor: 'primary.dark' },
+                '&.Mui-disabled': {
+                  bgcolor: 'action.disabledBackground',
+                  color: 'action.disabled',
+                },
+              }}
+            >
+              {loading === 'start' ? <CircularProgress size={15} color="inherit" /> : <StartIcon sx={{ fontSize: 17 }} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
+      {!isNarrow && showRestartAction && (
+        <Tooltip title="Restart service">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Restart STT service"
+              onClick={() => runAction('restart')}
+              disabled={loading !== null}
+              sx={commandIconButtonSx}
+            >
+              {loading === 'restart' ? <CircularProgress size={15} /> : <RestartIcon sx={{ fontSize: 17 }} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
+      {(!isNarrow || serviceRunning) && showStopAction && (
+        <Tooltip title="Stop service">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Stop STT service"
+              color="error"
+              onClick={() => runAction('stop')}
+              disabled={loading !== null || !serviceRunning}
+              sx={commandIconButtonSx}
+            >
+              {loading === 'stop' ? <CircularProgress size={15} /> : <StopIcon sx={{ fontSize: 17 }} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
+    </Box>
+  )
+  const sttSummaryRow = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+      <Chip
+        size="small"
+        label={serviceStatusLabel}
+        sx={{
+          height: 22,
+          fontSize: '0.68rem',
+          fontWeight: 800,
+          color: serviceStatusColor,
+          bgcolor: alpha(serviceStatusColor, 0.1),
+          border: `1px solid ${alpha(serviceStatusColor, 0.28)}`,
+        }}
+      />
+      <Chip size="small" label={`${config.model.name} / ${config.execution.compute_type}`} sx={{ height: 22, fontSize: '0.68rem', fontWeight: 800 }} />
+      <Chip size="small" label={`${selectedLanguage} / ${config.model.task}`} sx={{ height: 22, fontSize: '0.68rem', fontWeight: 800 }} />
+      <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
+        /v1/audio/transcriptions / {activeAudioSource}
+      </Typography>
+    </Box>
+  )
+
   if (pageLoading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -334,116 +489,49 @@ export const STTDeployPage: React.FC = () => {
   }
 
   return (
-    <Box sx={{ p: { xs: 2, sm: 3, md: 4 }, maxWidth: '100%', mx: 'auto' }}>
-      {/* Header */}
-      <Box sx={{ mb: 4, display: 'flex', alignItems: 'center', gap: 2 }}>
-        <MicIcon sx={{ fontSize: 40, color: '#10b981' }} />
-        <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
-            Speech-to-Text Deployment
-          </Typography>
-          <Typography variant="body1" color="text.secondary">
-            Deploy and manage Whisper STT models for audio transcription
-          </Typography>
-        </Box>
-      </Box>
-
+    <PageShell sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       {error && (
-        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
+        <Alert severity="error" onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
-      
+
       {success && (
-        <Alert severity="success" sx={{ mb: 3 }} onClose={() => setSuccess(null)}>
+        <Alert severity="success" onClose={() => setSuccess(null)}>
           {success}
         </Alert>
       )}
 
-      {/* Service Status */}
-      <Card sx={{ mb: 3, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-            Service Status
-          </Typography>
-          
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
-            <Chip
-              label={status?.running ? 'Running' : 'Stopped'}
-              color={status?.running ? 'success' : 'default'}
-              size="small"
-            />
-            {status?.running && (
-              <>
-                <Typography variant="body2" color="text.secondary">
-                  Uptime: {Math.floor((status.uptime || 0) / 60)}m {Math.floor((status.uptime || 0) % 60)}s
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Model: {status.model?.name || config.model.name}
-                </Typography>
-              </>
-            )}
-          </Box>
-          
-          {status?.endpoint && (
-            <Alert severity="info" sx={{ mb: 3 }}>
-              <strong>Service Endpoint:</strong> {status.endpoint}
-              <br />
-              <Typography variant="caption" color="text.secondary">
-                OpenAI-compatible endpoint: POST {status.endpoint}/v1/audio/transcriptions
-              </Typography>
-            </Alert>
-          )}
-          
-          <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-            <Button
-              variant="contained"
-              color="primary"
-              startIcon={loading === 'start' ? <CircularProgress size={20} /> : <StartIcon />}
-              onClick={() => runAction('start')}
-              disabled={loading !== null || status?.running}
-              sx={{ borderRadius: 1.5, fontWeight: 600 }}
-            >
-              Start Service
-            </Button>
-            <Button
-              variant="contained"
-              color="warning"
-              startIcon={loading === 'restart' ? <CircularProgress size={20} /> : <RestartIcon />}
-              onClick={() => runAction('restart')}
-              disabled={loading !== null}
-              sx={{ borderRadius: 1.5, fontWeight: 600 }}
-            >
-              Restart
-            </Button>
-            <Button
-              variant="outlined"
-              color="error"
-              startIcon={loading === 'stop' ? <CircularProgress size={20} /> : <StopIcon />}
-              onClick={() => runAction('stop')}
-              disabled={loading !== null || !status?.running}
-              sx={{ borderRadius: 1.5, fontWeight: 600 }}
-            >
-              Stop
-            </Button>
-          </Box>
-        </CardContent>
-      </Card>
-
-      {/* Model Configuration */}
-      <Card sx={{ mb: 3, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-            Model Configuration
-          </Typography>
-          
-          <Grid container spacing={3}>
-            <Grid item xs={12} md={6}>
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: {
+            xs: '1fr',
+            lg: 'minmax(0, 0.95fr) minmax(0, 1.05fr)',
+          },
+          gap: 1.25,
+          alignItems: 'start',
+        }}
+      >
+        <SectionCard
+          title="Model settings"
+          subtitle={isNarrow ? `${serviceStatusLabel} / ${config.model.name} / ${config.execution.compute_type}` : undefined}
+          icon={<MicIcon />}
+          accentColor={accentColors.info}
+          action={sttHeaderActions}
+          collapsible={isNarrow}
+          defaultExpanded={!isNarrow}
+          sx={{ ...compactSectionCardSx, order: { xs: 2, lg: 1 } }}
+        >
+          {sttSummaryRow}
+          <Grid container spacing={1.25}>
+            <Grid item xs={12} sm={6}>
               <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
                 Whisper Model
               </Typography>
               <Select
                 fullWidth
+                size="small"
                 value={config.model.name}
                 onChange={(e) => {
                   const newName = e.target.value as string
@@ -463,17 +551,15 @@ export const STTDeployPage: React.FC = () => {
                   </MenuItem>
                 ))}
               </Select>
-              <FormHelperText>
-                {WHISPER_MODELS.find(m => m.name === config.model.name)?.quality} quality, {WHISPER_MODELS.find(m => m.name === config.model.name)?.speed}
-              </FormHelperText>
             </Grid>
             
-            <Grid item xs={12} md={6}>
+            <Grid item xs={12} sm={6}>
               <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
                 Language
               </Typography>
               <Select
                 fullWidth
+                size="small"
                 value={config.model.language}
                 onChange={(e) => updateConfig('model.language', e.target.value)}
               >
@@ -483,34 +569,30 @@ export const STTDeployPage: React.FC = () => {
                   </MenuItem>
                 ))}
               </Select>
-              <FormHelperText>
-                Auto-detect works well but specifying language improves accuracy
-              </FormHelperText>
             </Grid>
             
-            <Grid item xs={12} md={6}>
+            <Grid item xs={12} sm={6}>
               <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
                 Task
               </Typography>
               <Select
                 fullWidth
+                size="small"
                 value={config.model.task}
                 onChange={(e) => updateConfig('model.task', e.target.value)}
               >
                 <MenuItem value="transcribe">Transcribe (same language)</MenuItem>
                 <MenuItem value="translate">Translate to English</MenuItem>
               </Select>
-              <FormHelperText>
-                Translate will convert any language to English
-              </FormHelperText>
             </Grid>
             
-            <Grid item xs={12} md={6}>
+            <Grid item xs={12} sm={6}>
               <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
                 Compute Type
               </Typography>
               <Select
                 fullWidth
+                size="small"
                 value={config.execution.compute_type}
                 onChange={(e) => updateConfig('execution.compute_type', e.target.value)}
               >
@@ -518,47 +600,41 @@ export const STTDeployPage: React.FC = () => {
                 <MenuItem value="float32">float32 (Higher precision)</MenuItem>
                 <MenuItem value="int8">int8 (Lower memory)</MenuItem>
               </Select>
-              <FormHelperText>
-                float16 offers best speed/quality balance on GPU
-              </FormHelperText>
             </Grid>
 
-            <Grid item xs={12} md={6}>
+            <Grid item xs={6} sm={6}>
               <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
                 Port
               </Typography>
               <TextField
                 fullWidth
+                size="small"
                 type="number"
                 value={config.server.port}
                 onChange={(e) => updateConfig('server.port', parseInt(e.target.value))}
                 inputProps={{ min: 1024, max: 65535 }}
               />
-              <FormHelperText>
-                Service port (default: 8603)
-              </FormHelperText>
             </Grid>
             
-            <Grid item xs={12} md={6}>
+            <Grid item xs={6} sm={6}>
               <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
                 API Key
               </Typography>
               <TextField
                 fullWidth
+                size="small"
                 value={config.server.api_key}
                 onChange={(e) => updateConfig('server.api_key', e.target.value)}
               />
-              <FormHelperText>
-                API key for authentication
-              </FormHelperText>
             </Grid>
             
-            <Grid item xs={12} md={6}>
+            <Grid item xs={6} sm={6}>
               <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
                 Execution Mode
               </Typography>
               <Select
                 fullWidth
+                size="small"
                 value={config.execution.mode}
                 onChange={(e) => updateConfig('execution.mode', e.target.value)}
               >
@@ -567,66 +643,89 @@ export const STTDeployPage: React.FC = () => {
               </Select>
             </Grid>
             
-            <Grid item xs={12} md={6}>
+            <Grid item xs={6} sm={6}>
               <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
                 CUDA Device
               </Typography>
               <TextField
                 fullWidth
+                size="small"
                 value={config.execution.cuda_devices}
                 onChange={(e) => updateConfig('execution.cuda_devices', e.target.value)}
                 disabled={config.execution.mode === 'cpu'}
               />
-              <FormHelperText>
-                GPU device ID (0, 1, etc.)
-              </FormHelperText>
             </Grid>
           </Grid>
           
-          <Box sx={{ mt: 3 }}>
-            <Button
-              variant="contained"
-              startIcon={<SaveIcon />}
-              onClick={saveConfig}
-              sx={{ borderRadius: 1.5, fontWeight: 600 }}
-            >
-              Save Configuration
-            </Button>
-          </Box>
-        </CardContent>
-      </Card>
+        </SectionCard>
 
-      {/* Test Transcription */}
-      <Card sx={{ mb: 3, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-            Test Transcription
-          </Typography>
-          <Typography variant="body2" color="text.secondary" paragraph>
-            Record audio or upload a file to test the STT service.
-          </Typography>
-          
+        <SectionCard
+          title="Transcription test"
+          icon={<UploadIcon />}
+          accentColor={accentColors.success}
+          collapsible
+          defaultExpanded
+          sx={{ ...compactSectionCardSx, order: { xs: 1, lg: 2 } }}
+        >
           {testError && (
             <Alert severity="error" sx={{ mb: 2 }} onClose={() => setTestError(null)}>
               {testError}
             </Alert>
           )}
           
-          <Grid container spacing={3}>
+          {!serviceRunning ? (
+            <Box
+              sx={{
+                p: 1.25,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                borderRadius: '8px',
+                border: '1px solid',
+                borderColor: alpha(accentColors.warning, 0.35),
+                bgcolor: alpha(accentColors.warning, 0.08),
+              }}
+            >
+              <Chip
+                label="Service stopped"
+                size="small"
+                sx={{
+                  height: 22,
+                  bgcolor: alpha(accentColors.warning, 0.14),
+                  color: accentColors.warning,
+                  fontWeight: 800,
+                }}
+              />
+              <Typography variant="body2" color="text.secondary">
+                Start the STT service to record, upload, and transcribe audio.
+              </Typography>
+            </Box>
+          ) : (
+          <Grid container spacing={1.5}>
             {/* Recording Section */}
             <Grid item xs={12} md={6}>
-              <Card variant="outlined" sx={{ p: 2 }}>
+              <Box
+	                sx={{
+	                  p: 1.5,
+	                  height: '100%',
+                  borderRadius: '8px',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  bgcolor: 'action.hover',
+                }}
+              >
                 <Typography variant="subtitle2" gutterBottom>
                   Record Audio
                 </Typography>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
-                  <IconButton
-                    color={isRecording ? 'error' : 'primary'}
-                    onClick={isRecording ? stopRecording : startRecording}
-                    sx={{ 
-                      width: 56, 
-                      height: 56,
-                      bgcolor: isRecording ? 'error.light' : 'primary.light',
+	                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: isRecording ? 1 : 0 }}>
+	                  <IconButton
+	                    size="small"
+	                    color={isRecording ? 'error' : 'primary'}
+	                    onClick={isRecording ? stopRecording : startRecording}
+	                    sx={{
+	                      width: 40,
+	                      height: 40,
+	                      bgcolor: isRecording ? 'error.light' : 'primary.light',
                       '&:hover': {
                         bgcolor: isRecording ? 'error.main' : 'primary.main',
                       }
@@ -651,12 +750,21 @@ export const STTDeployPage: React.FC = () => {
                   </Box>
                 </Box>
                 {isRecording && <LinearProgress color="error" />}
-              </Card>
+              </Box>
             </Grid>
             
             {/* Upload Section */}
             <Grid item xs={12} md={6}>
-              <Card variant="outlined" sx={{ p: 2 }}>
+              <Box
+	                sx={{
+	                  p: 1.5,
+	                  height: '100%',
+                  borderRadius: '8px',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  bgcolor: 'action.hover',
+                }}
+              >
                 <Typography variant="subtitle2" gutterBottom>
                   Upload Audio File
                 </Typography>
@@ -668,10 +776,11 @@ export const STTDeployPage: React.FC = () => {
                   style={{ display: 'none' }}
                 />
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <Button
-                    variant="outlined"
-                    startIcon={<UploadIcon />}
-                    onClick={() => fileInputRef.current?.click()}
+	                  <Button
+	                    variant="outlined"
+	                    size="small"
+	                    startIcon={<UploadIcon />}
+	                    onClick={() => fileInputRef.current?.click()}
                   >
                     Choose File
                   </Button>
@@ -686,25 +795,25 @@ export const STTDeployPage: React.FC = () => {
                     </Box>
                   )}
                 </Box>
-                <FormHelperText>
-                  Supports WAV, MP3, M4A, FLAC, WebM
-                </FormHelperText>
-              </Card>
+	                <FormHelperText>
+	                  Supports WAV, MP3, M4A, FLAC, WebM
+	                </FormHelperText>
+              </Box>
             </Grid>
             
             <Grid item xs={12}>
-              <Button
-                variant="contained"
-                color="primary"
-                size="large"
-                startIcon={testLoading ? <CircularProgress size={20} /> : <MicIcon />}
+	              <Button
+	                variant="contained"
+	                color="primary"
+	                size="small"
+	                startIcon={testLoading ? <CircularProgress size={20} /> : <MicIcon />}
                 onClick={testTranscription}
-                disabled={testLoading || (!recordedAudio && !testFile) || !status?.running}
-                sx={{ borderRadius: 1.5, fontWeight: 600 }}
+                disabled={testLoading || (!recordedAudio && !testFile) || !serviceRunning}
+                sx={{ fontWeight: 600 }}
               >
                 {testLoading ? 'Transcribing...' : 'Transcribe'}
               </Button>
-              {!status?.running && (
+              {!serviceRunning && (
                 <Typography variant="caption" color="error" sx={{ ml: 2 }}>
                   Start the service first
                 </Typography>
@@ -718,107 +827,146 @@ export const STTDeployPage: React.FC = () => {
                   Transcription completed in {testResult.processingTime}ms
                 </Alert>
                 
-                <Card variant="outlined" sx={{ p: 2, mb: 2 }}>
+                <Box
+                  sx={{
+                    p: 2,
+                    mb: 2,
+                    borderRadius: '8px',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    bgcolor: 'action.hover',
+                  }}
+                >
                   <Typography variant="subtitle2" gutterBottom>
                     Transcribed Text
                   </Typography>
                   <Typography variant="body1" sx={{ 
                     p: 2, 
                     bgcolor: 'grey.900', 
-                    borderRadius: 1,
+                    borderRadius: '8px',
                     fontStyle: testResult.text ? 'normal' : 'italic',
                     color: 'grey.100'
                   }}>
                     {testResult.text || '(No speech detected)'}
                   </Typography>
-                </Card>
+                </Box>
                 
                 <Grid container spacing={2}>
                   <Grid item xs={6} sm={3}>
-                    <Card variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Box
+                      sx={{
+                        p: 2,
+                        textAlign: 'center',
+                        borderRadius: '8px',
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        bgcolor: 'action.hover',
+                      }}
+                    >
                       <Typography variant="caption" color="text.secondary">
                         Language
                       </Typography>
                       <Typography variant="h6">
                         {testResult.language || 'N/A'}
                       </Typography>
-                    </Card>
+                    </Box>
                   </Grid>
                   <Grid item xs={6} sm={3}>
-                    <Card variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Box
+                      sx={{
+                        p: 2,
+                        textAlign: 'center',
+                        borderRadius: '8px',
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        bgcolor: 'action.hover',
+                      }}
+                    >
                       <Typography variant="caption" color="text.secondary">
                         Duration
                       </Typography>
                       <Typography variant="h6">
                         {testResult.duration ? `${testResult.duration.toFixed(1)}s` : 'N/A'}
                       </Typography>
-                    </Card>
+                    </Box>
                   </Grid>
                   <Grid item xs={6} sm={3}>
-                    <Card variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Box
+                      sx={{
+                        p: 2,
+                        textAlign: 'center',
+                        borderRadius: '8px',
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        bgcolor: 'action.hover',
+                      }}
+                    >
                       <Typography variant="caption" color="text.secondary">
                         Processing
                       </Typography>
                       <Typography variant="h6">
                         {testResult.processingTime}ms
                       </Typography>
-                    </Card>
+                    </Box>
                   </Grid>
                   <Grid item xs={6} sm={3}>
-                    <Card variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Box
+                      sx={{
+                        p: 2,
+                        textAlign: 'center',
+                        borderRadius: '8px',
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        bgcolor: 'action.hover',
+                      }}
+                    >
                       <Typography variant="caption" color="text.secondary">
                         Words
                       </Typography>
                       <Typography variant="h6">
                         {testResult.text?.split(/\s+/).filter(Boolean).length || 0}
                       </Typography>
-                    </Card>
+                    </Box>
                   </Grid>
                 </Grid>
               </Grid>
             )}
           </Grid>
-        </CardContent>
-      </Card>
+          )}
+        </SectionCard>
+      </Box>
 
-      {/* API Documentation */}
-      <Card sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-            API Usage
-          </Typography>
-          <Typography variant="body2" color="text.secondary" paragraph>
-            The STT service provides an OpenAI-compatible API for audio transcription.
-          </Typography>
-          
-          <Typography variant="subtitle2" gutterBottom>
-            Endpoint
-          </Typography>
-          <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: 1, mb: 2 }}>
-            <code style={{ color: '#10b981' }}>
-              POST {status?.endpoint || `http://localhost:${config.server.port}`}/v1/audio/transcriptions
-            </code>
-          </Box>
-          
-          <Typography variant="subtitle2" gutterBottom>
-            Example (cURL)
-          </Typography>
-          <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: 1, fontFamily: 'monospace', fontSize: '0.8rem', overflowX: 'auto' }}>
-            <pre style={{ margin: 0, color: '#e2e8f0' }}>
+      <SectionCard
+        title="API usage"
+        icon={<SpeedIcon />}
+        accentColor={accentColors.primary}
+        collapsible
+        defaultExpanded={false}
+        sx={compactSectionCardSx}
+      >
+        <Typography variant="subtitle2" gutterBottom>
+          Endpoint
+        </Typography>
+        <Box sx={{ p: 1.25, bgcolor: 'grey.900', borderRadius: '8px', mb: 1.25, minWidth: 0 }}>
+          <code style={{ color: accentColors.success, whiteSpace: 'normal', wordBreak: 'break-word' }}>
+            POST {status?.endpoint || `http://localhost:${config.server.port}`}/v1/audio/transcriptions
+          </code>
+        </Box>
+        <Typography variant="subtitle2" gutterBottom>
+          Example (cURL)
+        </Typography>
+        <Box sx={{ p: 1.25, bgcolor: 'grey.900', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.8rem', minWidth: 0 }}>
+          <pre style={{ margin: 0, color: 'inherit', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
 {`curl ${status?.endpoint || `http://localhost:${config.server.port}`}/v1/audio/transcriptions \\
   -H "Authorization: Bearer ${config.server.api_key}" \\
   -F file="@audio.mp3" \\
   -F model="${config.model.name}" \\
   -F language="${config.model.language}"`}
-            </pre>
-          </Box>
-        </CardContent>
-      </Card>
-    </Box>
+          </pre>
+        </Box>
+      </SectionCard>
+    </PageShell>
   )
 }
 
 export default STTDeployPage
-
-
-

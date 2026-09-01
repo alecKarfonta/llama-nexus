@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 import threading
 import logging
+from local_paths import backend_data_path
 
 # Configure logging
 logger = logging.getLogger("token_tracker")
@@ -27,7 +28,7 @@ class TokenTracker:
         """Initialize the token tracker with database path"""
         # Use environment variable for database path if set
         if db_path is None:
-            db_path = os.environ.get("TOKEN_DB_PATH", "/tmp/token_usage.db")
+            db_path = os.environ.get("TOKEN_DB_PATH") or str(backend_data_path("token_usage.db"))
         
         self.db_path = db_path
         self.db_lock = threading.Lock()

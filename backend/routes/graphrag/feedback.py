@@ -9,8 +9,9 @@ from fastapi import APIRouter, HTTPException, Request
 import sqlite3
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
+from local_paths import backend_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ router = APIRouter()
 
 # ── SQLite setup ───────────────────────────────────────────────────────
 
-DB_PATH = os.getenv("FEEDBACK_DB_PATH", "/data/retrieval_feedback.db")
+DB_PATH = os.getenv("FEEDBACK_DB_PATH") or str(backend_data_path("retrieval_feedback.db"))
 
 _db_initialized = False
 
@@ -135,7 +136,7 @@ async def get_analytics(days: int = 30, domain: str = None):
     """
     try:
         with _get_db() as conn:
-            cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
             
             # Overall stats
             params: list = [cutoff]

@@ -3,10 +3,7 @@ import {
     Box,
     Grid,
     Typography,
-    Card,
-    CardContent,
     TextField,
-    Button,
     Alert,
     Chip,
     CircularProgress,
@@ -14,8 +11,10 @@ import {
     IconButton,
     LinearProgress,
     Slider,
-    Paper,
+    Tooltip,
+    useMediaQuery,
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import {
     PlayArrow as StartIcon,
     Stop as StopIcon,
@@ -24,8 +23,17 @@ import {
     Mic as MicIcon,
     MicOff as MicOffIcon,
     GraphicEq as WaveformIcon,
-    RecordVoiceOver as SpeakingIcon,
+    Refresh as RefreshIcon,
+    Speed as SpeedIcon,
 } from '@mui/icons-material'
+import {
+    compactCollapsibleCardSx,
+    optionalSectionGridSx,
+    PageShell,
+    SectionCard,
+} from '@/components/common'
+import { debugLog } from '@/utils/debug'
+import { accentColors } from '@/utils/theme'
 
 interface StreamingSTTConfig {
     model: {
@@ -65,6 +73,8 @@ interface StreamingSTTStatus {
 }
 
 export const StreamingSTTDeployPage: React.FC = () => {
+    const isNarrow = useMediaQuery('(max-width:599.95px)')
+
     // Service state
     const [status, setStatus] = useState<StreamingSTTStatus | null>(null)
     const [config, setConfig] = useState<StreamingSTTConfig | null>(null)
@@ -86,48 +96,47 @@ export const StreamingSTTDeployPage: React.FC = () => {
     const processorRef = useRef<ScriptProcessorNode | null>(null)
     const streamRef = useRef<MediaStream | null>(null)
 
+    const refreshStatus = useCallback(async () => {
+        try {
+            const res = await fetch('/api/v1/streaming-stt/status')
+            if (res.ok) {
+                const data = await res.json()
+                setStatus(data)
+            }
+        } catch (e) {
+            // Status polling should not interrupt the active workflow.
+        }
+    }, [])
+
     useEffect(() => {
         const init = async () => {
             try {
                 setPageLoading(true)
-                const [configRes, statusRes] = await Promise.all([
+                const [configRes] = await Promise.all([
                     fetch('/api/v1/streaming-stt/config'),
-                    fetch('/api/v1/streaming-stt/status')
+                    refreshStatus()
                 ])
 
                 if (configRes.ok) {
                     const data = await configRes.json()
                     if (data.config) setConfig(data.config)
                 }
-
-                if (statusRes.ok) {
-                    const data = await statusRes.json()
-                    setStatus(data)
-                }
             } catch (e) {
-                console.log('Streaming STT service not configured yet')
+                debugLog('streaming-stt', 'Streaming STT service not configured yet')
             } finally {
                 setPageLoading(false)
             }
         }
         init()
-    }, [])
+    }, [refreshStatus])
 
     // Poll status
     useEffect(() => {
-        const interval = setInterval(async () => {
-            try {
-                const res = await fetch('/api/v1/streaming-stt/status')
-                if (res.ok) {
-                    const data = await res.json()
-                    setStatus(data)
-                }
-            } catch (e) {
-                // Silently fail
-            }
+        const interval = setInterval(() => {
+            void refreshStatus()
         }, 5000)
         return () => clearInterval(interval)
-    }, [])
+    }, [refreshStatus])
 
     const runAction = async (action: 'start' | 'stop' | 'restart') => {
         try {
@@ -216,7 +225,7 @@ export const StreamingSTTDeployPage: React.FC = () => {
             wsRef.current = ws
 
             ws.onopen = () => {
-                console.log('WebSocket connected')
+                debugLog('streaming-stt', 'WebSocket connected')
                 setIsStreaming(true)
 
                 // Set up audio processing
@@ -275,12 +284,12 @@ export const StreamingSTTDeployPage: React.FC = () => {
             }
 
             ws.onclose = () => {
-                console.log('WebSocket closed')
+                debugLog('streaming-stt', 'WebSocket closed')
                 stopStreaming()
             }
 
             ws.onerror = (e) => {
-                console.error('WebSocket error:', e)
+                debugLog('streaming-stt', 'WebSocket error', e)
                 setStreamError('WebSocket connection error')
                 stopStreaming()
             }
@@ -322,6 +331,133 @@ export const StreamingSTTDeployPage: React.FC = () => {
         setIsSpeaking(false)
     }, [])
 
+    const serviceRunning = Boolean(status?.running)
+    const serviceStatusColor = serviceRunning ? accentColors.success : accentColors.warning
+    const serviceStatusLabel = serviceRunning ? 'Service running' : 'Service stopped'
+    const showStartAction = !serviceRunning || loading === 'start'
+    const showRestartAction = serviceRunning || loading === 'restart'
+    const showStopAction = serviceRunning || loading === 'stop'
+    const modelName = status?.model?.name || config?.model.name || 'Nemotron-0.6B'
+    const sampleRate = config?.processing?.sample_rate ?? 16000
+    const sampleRateLabel = sampleRate >= 1000 ? `${Number((sampleRate / 1000).toFixed(1))} kHz` : `${sampleRate} Hz`
+    const modelBufferMs = config?.processing?.model_buffer_ms ?? 896
+    const sentenceSilenceMs = config?.processing?.sentence_end_silence_ms ?? 800
+    const vadThreshold = config?.vad?.threshold ?? 0.005
+    const transcriptLabel = partialText ? 'Live partial' : `${sentences.length} committed`
+    const hasTranscriptContent = Boolean(partialText || sentences.length)
+    const micLabel = isStreaming ? (isSpeaking ? 'Speaking' : 'Listening') : 'Mic idle'
+    const commandIconButtonSx = {
+        width: 32,
+        height: 32,
+        borderRadius: '8px',
+        border: '1px solid',
+        borderColor: 'divider',
+        bgcolor: 'action.hover',
+        '&:hover': { bgcolor: 'action.selected' },
+        '&.Mui-disabled': {
+            bgcolor: 'action.disabledBackground',
+            color: 'action.disabled',
+        },
+    }
+    const compactSectionCardSx = compactCollapsibleCardSx as Record<string, unknown>
+    const streamingHeaderActions = (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: { xs: 'nowrap', sm: 'wrap' }, justifyContent: 'flex-end' }}>
+            {!isNarrow && (
+                <Tooltip title="Refresh streaming STT status">
+                    <IconButton size="small" aria-label="Refresh streaming STT status" onClick={refreshStatus} sx={commandIconButtonSx}>
+                        <RefreshIcon sx={{ fontSize: 17 }} />
+                    </IconButton>
+                </Tooltip>
+            )}
+            {showStartAction && (
+                <Tooltip title="Start service">
+                    <span>
+                        <IconButton
+                            size="small"
+                            aria-label="Start streaming STT service"
+                            onClick={() => runAction('start')}
+                            disabled={loading !== null || serviceRunning}
+                            sx={{
+                                ...commandIconButtonSx,
+                                bgcolor: 'primary.main',
+                                color: 'primary.contrastText',
+                                borderColor: 'primary.main',
+                                '&:hover': { bgcolor: 'primary.dark', borderColor: 'primary.dark' },
+                            }}
+                        >
+                            {loading === 'start' ? <CircularProgress size={15} color="inherit" /> : <StartIcon sx={{ fontSize: 17 }} />}
+                        </IconButton>
+                    </span>
+                </Tooltip>
+            )}
+            {!isNarrow && showRestartAction && (
+                <Tooltip title="Restart service">
+                    <span>
+                        <IconButton
+                            size="small"
+                            aria-label="Restart streaming STT service"
+                            onClick={() => runAction('restart')}
+                            disabled={loading !== null}
+                            sx={commandIconButtonSx}
+                        >
+                            {loading === 'restart' ? <CircularProgress size={15} /> : <RestartIcon sx={{ fontSize: 17 }} />}
+                        </IconButton>
+                    </span>
+                </Tooltip>
+            )}
+            {(!isNarrow || serviceRunning) && showStopAction && (
+                <Tooltip title="Stop service">
+                    <span>
+                        <IconButton
+                            size="small"
+                            aria-label="Stop streaming STT service"
+                            color="error"
+                            onClick={() => runAction('stop')}
+                            disabled={loading !== null || !serviceRunning}
+                            sx={commandIconButtonSx}
+                        >
+                            {loading === 'stop' ? <CircularProgress size={15} /> : <StopIcon sx={{ fontSize: 17 }} />}
+                        </IconButton>
+                    </span>
+                </Tooltip>
+            )}
+            <Tooltip title="Save stream settings">
+                <span>
+                    <IconButton
+                        size="small"
+                        aria-label="Save stream settings"
+                        onClick={saveConfig}
+                        disabled={!config}
+                        sx={commandIconButtonSx}
+                    >
+                        <SaveIcon sx={{ fontSize: 17 }} />
+                    </IconButton>
+                </span>
+            </Tooltip>
+        </Box>
+    )
+    const streamingSummaryRow = (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+            <Chip
+                size="small"
+                label={`${serviceStatusLabel} / ${micLabel}`}
+                sx={{
+                    height: 22,
+                    fontSize: '0.68rem',
+                    fontWeight: 800,
+                    color: isStreaming ? accentColors.success : serviceStatusColor,
+                    bgcolor: alpha(isStreaming ? accentColors.success : serviceStatusColor, 0.1),
+                    border: `1px solid ${alpha(isStreaming ? accentColors.success : serviceStatusColor, 0.28)}`,
+                }}
+            />
+            <Chip size="small" label={`${modelBufferMs} ms buffer`} sx={{ height: 22, fontSize: '0.68rem', fontWeight: 800, display: { xs: 'none', sm: 'inline-flex' } }} />
+            <Chip size="small" label={`${sentenceSilenceMs} ms silence`} sx={{ height: 22, fontSize: '0.68rem', fontWeight: 800, display: { xs: 'none', sm: 'inline-flex' } }} />
+            <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0, display: { xs: 'none', sm: 'block' } }}>
+                {modelName} / {sampleRateLabel} / {transcriptLabel}
+            </Typography>
+        </Box>
+    )
+
     if (pageLoading) {
         return (
             <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -331,313 +467,233 @@ export const StreamingSTTDeployPage: React.FC = () => {
     }
 
     return (
-        <Box sx={{ p: { xs: 2, sm: 3, md: 4 }, maxWidth: '100%', mx: 'auto' }}>
-            {/* Header */}
-            <Box sx={{ mb: 4, display: 'flex', alignItems: 'center', gap: 2 }}>
-                <WaveformIcon sx={{ fontSize: 40, color: '#8b5cf6' }} />
-                <Box>
-                    <Typography variant="h4" sx={{ fontWeight: 700 }}>
-                        Streaming STT Deployment
-                    </Typography>
-                    <Typography variant="body1" color="text.secondary">
-                        Real-time speech-to-text using NVIDIA Nemotron with WebSocket streaming
-                    </Typography>
-                </Box>
-            </Box>
-
+        <PageShell sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
             {error && (
-                <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
+                <Alert severity="error" onClose={() => setError(null)}>
                     {error}
                 </Alert>
             )}
 
             {success && (
-                <Alert severity="success" sx={{ mb: 3 }} onClose={() => setSuccess(null)}>
+                <Alert severity="success" onClose={() => setSuccess(null)}>
                     {success}
                 </Alert>
             )}
 
-            {/* Service Status */}
-            <Card sx={{ mb: 3, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-                <CardContent>
-                    <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-                        Service Status
-                    </Typography>
-
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
-                        <Chip
-                            label={status?.running ? 'Running' : 'Stopped'}
-                            color={status?.running ? 'success' : 'default'}
-                            size="small"
-                        />
-                        {status?.running && (
+            <Grid container spacing={1.5} alignItems="flex-start">
+                <Grid item xs={12} lg={7.2}>
+                    <SectionCard
+                        title="Live transcript"
+                        icon={<WaveformIcon />}
+                        accentColor={accentColors.primary}
+                        action={streamingHeaderActions}
+                    >
+                        {!serviceRunning ? (
+                            <Box
+                                sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 1,
+                                    flexWrap: 'wrap',
+                                    p: 1.25,
+                                    borderRadius: '8px',
+                                    border: `1px solid ${alpha(accentColors.warning, 0.45)}`,
+                                    bgcolor: alpha(accentColors.warning, 0.12),
+                                }}
+                            >
+                                <Chip
+                                    size="small"
+                                    label="Service stopped"
+                                    sx={{
+                                        height: 22,
+                                        fontSize: '0.68rem',
+                                        fontWeight: 800,
+                                        color: accentColors.warning,
+                                        bgcolor: alpha(accentColors.warning, 0.14),
+                                    }}
+                                />
+                                <Typography variant="body2" color="text.secondary">
+                                    Start the streaming STT service to open the microphone and capture live transcripts.
+                                </Typography>
+                            </Box>
+                        ) : (
                             <>
-                                <Typography variant="body2" color="text.secondary">
-                                    Uptime: {Math.floor((status.uptime || 0) / 60)}m {Math.floor((status.uptime || 0) % 60)}s
-                                </Typography>
-                                <Typography variant="body2" color="text.secondary">
-                                    Model: {status.model?.name || 'Nemotron-0.6B'}
-                                </Typography>
+                                {streamingSummaryRow}
+                                {streamError && (
+                                    <Alert severity="error" sx={{ mb: 1.25 }} onClose={() => setStreamError(null)}>
+                                        {streamError}
+                                    </Alert>
+                                )}
+
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.25, minWidth: 0 }}>
+                                    <IconButton
+                                        color={isStreaming ? 'error' : 'primary'}
+                                        onClick={isStreaming ? stopStreaming : startStreaming}
+                                        sx={{
+                                            width: 36,
+                                            height: 36,
+                                            borderRadius: '8px',
+                                            bgcolor: isStreaming ? 'error.main' : 'primary.main',
+                                            color: 'primary.contrastText',
+                                            '&:hover': {
+                                                bgcolor: isStreaming ? 'error.dark' : 'primary.dark',
+                                            },
+                                        }}
+                                    >
+                                        {isStreaming ? <MicOffIcon sx={{ fontSize: 18 }} /> : <MicIcon sx={{ fontSize: 18 }} />}
+                                    </IconButton>
+                                    <Box sx={{ minWidth: 0 }}>
+                                        <Typography variant="body2" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+                                            {isStreaming ? micLabel : 'Microphone'}
+                                        </Typography>
+                                        <Typography variant="caption" color="text.secondary" noWrap>
+                                            {`${transcriptLabel} / ${sampleRateLabel}`}
+                                        </Typography>
+                                    </Box>
+                                </Box>
+
+                                {isStreaming && <LinearProgress color="primary" sx={{ mb: 1 }} />}
+
+                                <Box
+                                    sx={{
+                                        p: 1.5,
+                                        height: hasTranscriptContent || isStreaming
+                                            ? { xs: 180, lg: streamError ? 150 : 190 }
+                                            : 96,
+                                        overflow: 'auto',
+                                        borderRadius: '8px',
+                                        border: '1px solid',
+                                        borderColor: 'divider',
+                                        bgcolor: 'grey.900',
+                                        fontFamily: 'monospace',
+                                    }}
+                                >
+                                    {sentences.map((sentence, i) => (
+                                        <Typography key={i} sx={{ color: 'grey.100', mb: 1, fontSize: '0.875rem' }}>
+                                            {sentence}
+                                        </Typography>
+                                    ))}
+                                    {partialText && (
+                                        <Typography sx={{ color: 'grey.500', fontStyle: 'italic', fontSize: '0.875rem' }}>
+                                            {partialText}...
+                                        </Typography>
+                                    )}
+                                    {!sentences.length && !partialText && (
+                                        <Typography sx={{ color: 'grey.600', fontStyle: 'italic', fontSize: '0.875rem' }}>
+                                            {isStreaming ? 'Waiting for speech...' : 'No transcript yet'}
+                                        </Typography>
+                                    )}
+                                </Box>
                             </>
                         )}
-                    </Box>
+                    </SectionCard>
+                </Grid>
 
-                    {status?.running && (
-                        <Alert severity="info" sx={{ mb: 3 }}>
-                            <strong>WebSocket Endpoint:</strong> {status.relay_url}
-                            <br />
-                            <Typography variant="caption" color="text.secondary">
-                                Direct service: {status.websocket_url}
-                            </Typography>
-                        </Alert>
+                <Grid item xs={12} lg={4.8}>
+                    {config && (
+                        <SectionCard
+                            title="Stream settings"
+                            subtitle={isNarrow ? `VAD ${vadThreshold.toFixed(3)} / ${sentenceSilenceMs} ms silence / ${modelBufferMs} ms buffer` : undefined}
+                            icon={<SpeedIcon />}
+                            accentColor={accentColors.info}
+                            collapsible={isNarrow}
+                            defaultExpanded={!isNarrow}
+                            sx={{ ...compactSectionCardSx }}
+                        >
+                            <Grid container spacing={1.25}>
+                                <Grid item xs={12}>
+                                    <Box sx={{ px: 0.5 }}>
+                                        <Typography variant="caption" sx={{ display: 'block', fontWeight: 700 }}>
+                                            VAD threshold: {vadThreshold.toFixed(3)}
+                                        </Typography>
+                                        <Slider
+                                            size="small"
+                                            value={config.vad?.threshold || 0.005}
+                                            onChange={(_, v) => updateConfig('vad.threshold', v)}
+                                            min={0.001}
+                                            max={0.05}
+                                            step={0.001}
+                                            valueLabelDisplay="auto"
+                                            sx={{ mt: 0.25 }}
+                                        />
+                                    </Box>
+                                </Grid>
+
+                                <Grid item xs={12} sm={6}>
+                                    <TextField
+                                        fullWidth
+                                        size="small"
+                                        label="Sentence silence"
+                                        type="number"
+                                        value={config.processing?.sentence_end_silence_ms || 800}
+                                        onChange={(e) => updateConfig('processing.sentence_end_silence_ms', parseInt(e.target.value))}
+                                        inputProps={{ min: 200, max: 2000 }}
+                                    />
+                                    <FormHelperText sx={{ mx: 0.25 }}>ms before commit</FormHelperText>
+                                </Grid>
+
+                                <Grid item xs={12} sm={6}>
+                                    <TextField
+                                        fullWidth
+                                        size="small"
+                                        label="Model buffer"
+                                        type="number"
+                                        value={config.processing?.model_buffer_ms || 896}
+                                        onChange={(e) => updateConfig('processing.model_buffer_ms', parseInt(e.target.value))}
+                                        inputProps={{ min: 400, max: 2000 }}
+                                    />
+                                    <FormHelperText sx={{ mx: 0.25 }}>ms before inference</FormHelperText>
+                                </Grid>
+
+                                <Grid item xs={12} sm={6}>
+                                    <TextField
+                                        fullWidth
+                                        size="small"
+                                        label="Min words"
+                                        type="number"
+                                        value={config.processing?.min_sentence_words || 2}
+                                        onChange={(e) => updateConfig('processing.min_sentence_words', parseInt(e.target.value))}
+                                        inputProps={{ min: 1, max: 10 }}
+                                    />
+                                </Grid>
+
+                                <Grid item xs={12} sm={6}>
+                                    <TextField
+                                        fullWidth
+                                        size="small"
+                                        label="Log level"
+                                        value={config.logging?.level || 'INFO'}
+                                        onChange={(e) => updateConfig('logging.level', e.target.value)}
+                                    />
+                                </Grid>
+                            </Grid>
+                        </SectionCard>
                     )}
+                </Grid>
+            </Grid>
 
-                    <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                        <Button
-                            variant="contained"
-                            color="primary"
-                            startIcon={loading === 'start' ? <CircularProgress size={20} /> : <StartIcon />}
-                            onClick={() => runAction('start')}
-                            disabled={loading !== null || status?.running}
-                            sx={{ borderRadius: 1.5, fontWeight: 600 }}
-                        >
-                            Start Service
-                        </Button>
-                        <Button
-                            variant="contained"
-                            color="warning"
-                            startIcon={loading === 'restart' ? <CircularProgress size={20} /> : <RestartIcon />}
-                            onClick={() => runAction('restart')}
-                            disabled={loading !== null}
-                            sx={{ borderRadius: 1.5, fontWeight: 600 }}
-                        >
-                            Restart
-                        </Button>
-                        <Button
-                            variant="outlined"
-                            color="error"
-                            startIcon={loading === 'stop' ? <CircularProgress size={20} /> : <StopIcon />}
-                            onClick={() => runAction('stop')}
-                            disabled={loading !== null || !status?.running}
-                            sx={{ borderRadius: 1.5, fontWeight: 600 }}
-                        >
-                            Stop
-                        </Button>
-                    </Box>
-                </CardContent>
-            </Card>
-
-            {/* Live Streaming Test */}
-            <Card sx={{ mb: 3, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-                <CardContent>
-                    <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-                        Live Streaming Test
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" paragraph>
-                        Test real-time transcription with your microphone. Click the button to start streaming.
-                    </Typography>
-
-                    {streamError && (
-                        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setStreamError(null)}>
-                            {streamError}
-                        </Alert>
-                    )}
-
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
-                        <IconButton
-                            color={isStreaming ? 'error' : 'primary'}
-                            onClick={isStreaming ? stopStreaming : startStreaming}
-                            disabled={!status?.running}
-                            sx={{
-                                width: 64,
-                                height: 64,
-                                bgcolor: isStreaming ? 'error.light' : 'primary.light',
-                                '&:hover': {
-                                    bgcolor: isStreaming ? 'error.main' : 'primary.main',
-                                }
-                            }}
-                        >
-                            {isStreaming ? <MicOffIcon sx={{ fontSize: 32 }} /> : <MicIcon sx={{ fontSize: 32 }} />}
-                        </IconButton>
-                        <Box>
-                            <Typography variant="body1">
-                                {isStreaming ? 'Streaming...' : 'Click to start'}
-                            </Typography>
-                            {isStreaming && (
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <SpeakingIcon sx={{ color: isSpeaking ? 'success.main' : 'text.disabled', fontSize: 18 }} />
-                                    <Typography variant="caption" color={isSpeaking ? 'success.main' : 'text.disabled'}>
-                                        {isSpeaking ? 'Speaking detected' : 'Listening...'}
-                                    </Typography>
-                                </Box>
-                            )}
-                        </Box>
-                        {!status?.running && (
-                            <Typography variant="caption" color="error">
-                                Start the service first
-                            </Typography>
-                        )}
-                    </Box>
-
-                    {isStreaming && <LinearProgress color="primary" sx={{ mb: 2 }} />}
-
-                    {/* Transcription Output */}
-                    <Paper
-                        variant="outlined"
-                        sx={{
-                            p: 2,
-                            minHeight: 150,
-                            maxHeight: 300,
-                            overflow: 'auto',
-                            bgcolor: 'grey.900',
-                            fontFamily: 'monospace',
-                        }}
-                    >
-                        {sentences.map((sentence, i) => (
-                            <Typography key={i} sx={{ color: 'grey.100', mb: 1 }}>
-                                {sentence}
-                            </Typography>
-                        ))}
-                        {partialText && (
-                            <Typography sx={{ color: 'grey.500', fontStyle: 'italic' }}>
-                                {partialText}...
-                            </Typography>
-                        )}
-                        {!sentences.length && !partialText && (
-                            <Typography sx={{ color: 'grey.600', fontStyle: 'italic' }}>
-                                {isStreaming ? 'Waiting for speech...' : 'Start streaming to see transcription here'}
-                            </Typography>
-                        )}
-                    </Paper>
-                </CardContent>
-            </Card>
-
-            {/* Configuration */}
-            {config && (
-                <Card sx={{ mb: 3, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-                    <CardContent>
-                        <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-                            Configuration
-                        </Typography>
-
-                        <Grid container spacing={3}>
-                            <Grid item xs={12} md={4}>
-                                <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                                    VAD Threshold
-                                </Typography>
-                                <Slider
-                                    value={config.vad?.threshold || 0.005}
-                                    onChange={(_, v) => updateConfig('vad.threshold', v)}
-                                    min={0.001}
-                                    max={0.05}
-                                    step={0.001}
-                                    valueLabelDisplay="auto"
-                                />
-                                <FormHelperText>
-                                    Speech detection sensitivity (lower = more sensitive)
-                                </FormHelperText>
-                            </Grid>
-
-                            <Grid item xs={12} md={4}>
-                                <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                                    Sentence End Silence (ms)
-                                </Typography>
-                                <TextField
-                                    fullWidth
-                                    type="number"
-                                    value={config.processing?.sentence_end_silence_ms || 800}
-                                    onChange={(e) => updateConfig('processing.sentence_end_silence_ms', parseInt(e.target.value))}
-                                    inputProps={{ min: 200, max: 2000 }}
-                                />
-                                <FormHelperText>
-                                    Silence duration before committing a sentence
-                                </FormHelperText>
-                            </Grid>
-
-                            <Grid item xs={12} md={4}>
-                                <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                                    Model Buffer (ms)
-                                </Typography>
-                                <TextField
-                                    fullWidth
-                                    type="number"
-                                    value={config.processing?.model_buffer_ms || 896}
-                                    onChange={(e) => updateConfig('processing.model_buffer_ms', parseInt(e.target.value))}
-                                    inputProps={{ min: 400, max: 2000 }}
-                                />
-                                <FormHelperText>
-                                    Audio buffer before inference (~900ms optimal)
-                                </FormHelperText>
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                                    Min Sentence Words
-                                </Typography>
-                                <TextField
-                                    fullWidth
-                                    type="number"
-                                    value={config.processing?.min_sentence_words || 2}
-                                    onChange={(e) => updateConfig('processing.min_sentence_words', parseInt(e.target.value))}
-                                    inputProps={{ min: 1, max: 10 }}
-                                />
-                                <FormHelperText>
-                                    Minimum words required to commit a sentence
-                                </FormHelperText>
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                                    Log Level
-                                </Typography>
-                                <TextField
-                                    fullWidth
-                                    value={config.logging?.level || 'INFO'}
-                                    onChange={(e) => updateConfig('logging.level', e.target.value)}
-                                />
-                                <FormHelperText>
-                                    DEBUG, INFO, WARNING, ERROR
-                                </FormHelperText>
-                            </Grid>
-                        </Grid>
-
-                        <Box sx={{ mt: 3 }}>
-                            <Button
-                                variant="contained"
-                                startIcon={<SaveIcon />}
-                                onClick={saveConfig}
-                                sx={{ borderRadius: 1.5, fontWeight: 600 }}
-                            >
-                                Save Configuration
-                            </Button>
-                        </Box>
-                    </CardContent>
-                </Card>
-            )}
-
-            {/* API Documentation */}
-            <Card sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-                <CardContent>
-                    <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-                        WebSocket Protocol
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" paragraph>
-                        Connect to the WebSocket endpoint for real-time streaming transcription.
-                    </Typography>
-
+            <Box sx={optionalSectionGridSx}>
+                <SectionCard
+                    title="WebSocket protocol"
+                    icon={<SpeedIcon />}
+                    accentColor={accentColors.purple}
+                    collapsible
+                    defaultExpanded={false}
+                    sx={compactCollapsibleCardSx}
+                >
                     <Typography variant="subtitle2" gutterBottom>
                         Endpoint
                     </Typography>
-                    <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: 1, mb: 2 }}>
-                        <code style={{ color: '#8b5cf6' }}>
+                    <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: '8px', mb: 2 }}>
+                        <code style={{ color: accentColors.purple }}>
                             ws://localhost:8700/api/v1/streaming-stt/ws
                         </code>
                     </Box>
 
                     <Typography variant="subtitle2" gutterBottom>
-                        Client → Server Messages
+                        Client to server messages
                     </Typography>
-                    <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: 1, mb: 2, fontFamily: 'monospace', fontSize: '0.875rem' }}>
+                    <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: '8px', mb: 2, fontFamily: 'monospace', fontSize: '0.875rem' }}>
                         <Box sx={{ color: 'grey.400' }}>{'// Audio chunk (80ms PCM float32, base64)'}</Box>
                         <Box sx={{ color: 'grey.100' }}>{'{"type": "audio_chunk", "data": "<base64>"}'}</Box>
                         <Box sx={{ color: 'grey.400', mt: 1 }}>{'// End stream'}</Box>
@@ -645,9 +701,9 @@ export const StreamingSTTDeployPage: React.FC = () => {
                     </Box>
 
                     <Typography variant="subtitle2" gutterBottom>
-                        Server → Client Messages
+                        Server to client messages
                     </Typography>
-                    <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: 1, fontFamily: 'monospace', fontSize: '0.875rem' }}>
+                    <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.875rem' }}>
                         <Box sx={{ color: 'grey.400' }}>{'// Partial transcription'}</Box>
                         <Box sx={{ color: 'grey.100' }}>{'{"type": "partial", "text": "Hello wo..."}'}</Box>
                         <Box sx={{ color: 'grey.400', mt: 1 }}>{'// Complete sentence'}</Box>
@@ -655,9 +711,9 @@ export const StreamingSTTDeployPage: React.FC = () => {
                         <Box sx={{ color: 'grey.400', mt: 1 }}>{'// VAD state change'}</Box>
                         <Box sx={{ color: 'grey.100' }}>{'{"type": "vad", "is_speech": true}'}</Box>
                     </Box>
-                </CardContent>
-            </Card>
-        </Box>
+                </SectionCard>
+            </Box>
+        </PageShell>
     )
 }
 

@@ -12,6 +12,8 @@ import {
   Refresh as RefreshIcon,
 } from '@mui/icons-material'
 import { apiService } from '@/services/api'
+import { getRoutePath } from '@/config/navigation'
+import { accentColors } from '@/utils/theme'
 
 interface ServiceStatus {
   id: string
@@ -31,19 +33,21 @@ interface ServiceStatusBarProps {
   onServiceClick?: (serviceId: string, path: string) => void
 }
 
+const serviceStatusDefaults: ServiceStatus[] = [
+  { id: 'llm', name: 'LLM', icon: <LLMIcon />, running: false, loading: true, color: accentColors.warning, path: getRoutePath('deploy') },
+  { id: 'embedding', name: 'Embed', icon: <EmbeddingIcon />, running: false, loading: true, color: accentColors.info, path: getRoutePath('embedding-deploy') },
+  { id: 'stt', name: 'STT', icon: <STTIcon />, running: false, loading: true, color: accentColors.success, path: getRoutePath('stt-deploy') },
+  { id: 'tts', name: 'TTS', icon: <TTSIcon />, running: false, loading: true, color: accentColors.purple, path: getRoutePath('tts-deploy') },
+  { id: 'training', name: 'Train', icon: <TrainingIcon />, running: false, loading: true, color: accentColors.rose, path: getRoutePath('finetuning'), isWorker: true },
+  { id: 'quantization', name: 'Quant', icon: <QuantizationIcon />, running: false, loading: true, color: accentColors.warning, path: getRoutePath('quantization'), isWorker: true },
+]
+
 export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
   compact = false,
   showLabels = true,
   onServiceClick,
 }) => {
-  const [services, setServices] = useState<ServiceStatus[]>([
-    { id: 'llm', name: 'LLM', icon: <LLMIcon />, running: false, loading: true, color: '#f59e0b', path: '/deploy' },
-    { id: 'embedding', name: 'Embed', icon: <EmbeddingIcon />, running: false, loading: true, color: '#06b6d4', path: '/embedding-deploy' },
-    { id: 'stt', name: 'STT', icon: <STTIcon />, running: false, loading: true, color: '#10b981', path: '/stt-deploy' },
-    { id: 'tts', name: 'TTS', icon: <TTSIcon />, running: false, loading: true, color: '#8b5cf6', path: '/tts-deploy' },
-    { id: 'training', name: 'Train', icon: <TrainingIcon />, running: false, loading: true, color: '#ec4899', path: '/finetuning', isWorker: true },
-    { id: 'quantization', name: 'Quant', icon: <QuantizationIcon />, running: false, loading: true, color: '#f97316', path: '/quantization', isWorker: true },
-  ])
+  const [services, setServices] = useState<ServiceStatus[]>(serviceStatusDefaults)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
@@ -126,6 +130,9 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
 
   const runningCount = services.filter(s => s.running).length
   const totalCount = services.length
+  const runningColor = accentColors.success
+  const stoppedColor = accentColors.rose
+  const warningColor = accentColors.warning
 
   if (compact) {
     return (
@@ -141,7 +148,7 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
                   width: 6,
                   height: 6,
                   borderRadius: '50%',
-                  bgcolor: service.loading ? 'grey.500' : service.running ? '#10b981' : '#ef4444'
+                  bgcolor: service.loading ? 'grey.500' : service.running ? runningColor : stoppedColor,
                 }} />
                 <Typography variant="caption">{service.name}</Typography>
               </Box>
@@ -161,7 +168,7 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
             gap: 0.5,
             px: 1,
             py: 0.5,
-            borderRadius: 1.5,
+            borderRadius: '8px',
             bgcolor: 'rgba(255, 255, 255, 0.03)',
             border: '1px solid rgba(255, 255, 255, 0.08)',
             cursor: 'pointer',
@@ -177,8 +184,8 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
                 bgcolor: service.loading
                   ? 'grey.600'
                   : service.running
-                    ? '#10b981'
-                    : alpha('#ef4444', 0.5),
+                    ? runningColor
+                    : alpha(stoppedColor, 0.5),
                 transition: 'all 0.3s ease',
               }}
             />
@@ -195,7 +202,7 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
         alignItems: 'center',
         gap: 1,
         p: 1,
-        borderRadius: 2,
+        borderRadius: '8px',
         bgcolor: 'rgba(255, 255, 255, 0.02)',
         border: '1px solid rgba(255, 255, 255, 0.06)',
       }}
@@ -208,8 +215,8 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
               <Typography variant="caption" sx={{ display: 'block' }}>
                 {service.name}: {service.loading ? 'Checking...' : service.running ? 'Running' : 'Stopped'}
               </Typography>
-              {service.isWorker && service.running && (service as any).gpuActive && (
-                <Typography variant="caption" sx={{ color: '#f59e0b', fontSize: '0.65rem' }}>
+              {service.isWorker && service.running && service.gpuActive && (
+                <Typography variant="caption" sx={{ color: warningColor, fontSize: '0.65rem' }}>
                   Using GPU resources
                 </Typography>
               )}
@@ -228,9 +235,9 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
               ) : service.loading ? (
                 <CircularProgress size={12} sx={{ color: 'text.secondary' }} />
               ) : service.running ? (
-                <OnlineIcon sx={{ fontSize: '14px !important', color: '#10b981 !important' }} />
+                <OnlineIcon sx={{ fontSize: '14px !important', color: `${runningColor} !important` }} />
               ) : (
-                <OfflineIcon sx={{ fontSize: '14px !important', color: alpha('#ef4444', 0.6) + ' !important' }} />
+                <OfflineIcon sx={{ fontSize: '14px !important', color: `${alpha(stoppedColor, 0.6)} !important` }} />
               )
             }
             label={showLabels ? service.name : undefined}
@@ -244,17 +251,17 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
             }}
             sx={{
               height: 28,
-              bgcolor: service.running ? alpha('#10b981', 0.1) : 'rgba(255, 255, 255, 0.03)',
+              bgcolor: service.running ? alpha(runningColor, 0.1) : 'rgba(255, 255, 255, 0.03)',
               border: '1px solid',
-              borderColor: service.running ? alpha('#10b981', 0.2) : 'rgba(255, 255, 255, 0.06)',
-              color: service.running ? '#34d399' : 'text.secondary',
+              borderColor: service.running ? alpha(runningColor, 0.2) : 'rgba(255, 255, 255, 0.06)',
+              color: service.running ? runningColor : 'text.secondary',
               fontWeight: 500,
               fontSize: '0.75rem',
               cursor: 'pointer',
               transition: 'all 0.2s ease',
               '&:hover': {
-                bgcolor: service.running ? alpha('#10b981', 0.15) : alpha(service.color, 0.1),
-                borderColor: service.running ? alpha('#10b981', 0.3) : alpha(service.color, 0.3),
+                bgcolor: service.running ? alpha(runningColor, 0.15) : alpha(service.color, 0.1),
+                borderColor: service.running ? alpha(runningColor, 0.3) : alpha(service.color, 0.3),
               },
               '& .MuiChip-icon': {
                 ml: showLabels ? 0.5 : 0,
@@ -281,7 +288,7 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
             justifyContent: 'center',
             width: 28,
             height: 28,
-            borderRadius: 1,
+            borderRadius: '8px',
             cursor: 'pointer',
             color: 'text.secondary',
             transition: 'all 0.2s ease',

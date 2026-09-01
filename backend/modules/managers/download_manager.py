@@ -19,6 +19,7 @@ from modules.gguf_metadata import (
     scan_gguf_mtp,
 )
 from enhanced_logger import enhanced_logger as logger
+from local_paths import container_or_backend_subdir, backend_data_path
 from modules.managers.base import DOCKER_AVAILABLE, docker_client
 
 
@@ -47,7 +48,10 @@ class ModelDownloadManager:
         self._cancel_events: Dict[str, asyncio.Event] = {}
         self._lock = asyncio.Lock()
         # Models directory shared with llamacpp
-        self.models_dir = Path("/home/llamacpp/models")
+        self.models_dir = Path(
+            os.getenv("MODELS_DIR")
+            or container_or_backend_subdir("/home/llamacpp/models", "models")
+        )
         self.models_dir.mkdir(parents=True, exist_ok=True)
         # Metadata directory for storing model source information
         self.metadata_dir = self.models_dir / ".metadata"
@@ -357,14 +361,23 @@ class ModelDownloadManager:
     def _parse_name_variant(self, filename: str) -> (str, Optional[str]):
         # Remove extension
         stem = filename[:-5] if filename.endswith('.gguf') else Path(filename).stem
-        
+
+        # Strip any subdirectory prefix (e.g. "UD-Q4_K_XL/Model-UD-Q4_K_XL.gguf" -> "Model-UD-Q4_K_XL")
+        stem = Path(stem).name
+
         # Handle multi-part files by removing the part suffix first
         import re
         multipart_pattern = r'(.+)-(\d{5}-of-\d{5})$'
         multipart_match = re.match(multipart_pattern, stem)
         if multipart_match:
             stem = multipart_match.group(1)
-        
+
+        # [TIME] | INFO | DOWNLOAD_MANAGER.PARSE_NAME_VARIANT | Unsloth-style variants
+        # "Model-UD-Q4_K_XL" -> ("Model", "UD-Q4_K_XL"); likewise plain IQ/Q prefixes.
+        unsloth_match = re.match(r'(.+?)-((?:UD-)?(?:IQ|Q)\d\S*)$', stem)
+        if unsloth_match:
+            return (unsloth_match.group(1), unsloth_match.group(2))
+
         # Try dot pattern: ModelName.Q4_K_M
         if '.' in stem:
             parts = stem.split('.')
@@ -1117,7 +1130,13 @@ class ModelDownloadManager:
                 self.config[category].update(filtered_category)
         
         # Save config to file for persistence
-        config_file = Path("/tmp/llamacpp_config.json")
+        # [TIME] | INFO | DOWNLOAD_MANAGER.UPDATE_CONFIG | persist on the backend_data
+        # volume (not /tmp) so container rebuilds keep the deployed model config
+        config_file = Path(
+            os.getenv("LLAMACPP_CONFIG_PATH")
+            or str(backend_data_path("llamacpp_config.json"))
+        )
+        config_file.parent.mkdir(parents=True, exist_ok=True)
         with open(config_file, "w") as f:
             json.dump(self.config, f, indent=2)
         

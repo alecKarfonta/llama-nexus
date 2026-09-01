@@ -5,7 +5,7 @@ All configuration is sourced from the unified GraphRAGConfig singleton.
 An httpx connection pool is shared across all route modules.
 """
 
-from fastapi import HTTPException
+from fastapi.exceptions import HTTPException
 import httpx
 import logging
 from functools import lru_cache
@@ -13,6 +13,20 @@ from functools import lru_cache
 from modules.graphrag.config import get_graphrag_config
 
 logger = logging.getLogger(__name__)
+
+CHAT_CONTEXT_OPTIONAL_TIMEOUT_SECONDS = 2.0
+
+GRAPHRAG_COMPATIBLE_INGEST_PATHS = (
+    "ingest-documents",
+    "process-document",
+    "add-to-vector-store",
+)
+
+GRAPHRAG_COMPATIBLE_HEALTH_PATHS = (
+    "health",
+    "api/health",
+    "api/v1/health",
+)
 
 
 # ── Config shorthand ───────────────────────────────────────────────────
@@ -34,6 +48,22 @@ def graphrag_url() -> str:
             detail="GRAPHRAG_URL not configured. Set GRAPHRAG_URL to the external GraphRAG service.",
         )
     return url
+
+
+def compatible_ingest_urls(service_url: str | None) -> list[str]:
+    """Return GraphRAG ingest endpoints in the compatibility fallback order."""
+    if not service_url:
+        return []
+    base_url = service_url.rstrip("/")
+    return [f"{base_url}/{path}" for path in GRAPHRAG_COMPATIBLE_INGEST_PATHS]
+
+
+def compatible_health_urls(service_url: str | None) -> list[str]:
+    """Return GraphRAG health endpoints in the compatibility fallback order."""
+    if not service_url:
+        return []
+    base_url = service_url.rstrip("/")
+    return [f"{base_url}/{path}" for path in GRAPHRAG_COMPATIBLE_HEALTH_PATHS]
 
 
 # ── Shared HTTP client ─────────────────────────────────────────────────
@@ -63,6 +93,18 @@ def get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
+def optional_chat_context_timeout() -> float:
+    """Short timeout for optional enrichment calls on interactive chat paths."""
+    cfg = _cfg()
+    try:
+        configured = float(cfg.http_timeout)
+    except (TypeError, ValueError):
+        configured = CHAT_CONTEXT_OPTIONAL_TIMEOUT_SECONDS
+    if configured <= 0:
+        return CHAT_CONTEXT_OPTIONAL_TIMEOUT_SECONDS
+    return max(0.25, min(configured, CHAT_CONTEXT_OPTIONAL_TIMEOUT_SECONDS))
+
+
 async def close_http_client():
     """Close the shared client (call from FastAPI shutdown handler)."""
     global _http_client
@@ -87,12 +129,37 @@ def check_graphrag_enabled():
 _TYPE_MAP = {
     "component": "technology",
     "maintenance": "process",
+    "organisation": "organization",
     "organization": "organization",
+    "org": "organization",
+    "company": "organization",
     "person": "person",
     "location": "location",
     "date": "date",
+    "time": "date",
+    "duration": "date",
     "event": "event",
     "product": "product",
+    "solution": "product",
+    "system": "service",
+    "service": "service",
+    "api": "api",
+    "endpoint": "api",
+    "specification": "concept",
+    "position": "concept",
+    "format": "concept",
+    "model": "model",
+    "dataset": "data",
+    "document": "data",
+    "database": "data",
+    "requirement": "config",
+    "safety": "security",
+    "metric": "metric",
+    "benchmark": "evaluation",
+    "workflow": "process",
+    "pipeline": "process",
+    "module": "code",
+    "file": "code",
     "technology": "technology",
     "concept": "concept",
     "process": "process",
@@ -108,7 +175,7 @@ def _normalize_entity_type(raw_type: str) -> str:
     """
     if not raw_type:
         return "concept"
-    return _TYPE_MAP.get(raw_type.lower(), "custom")
+    return _TYPE_MAP.get(str(raw_type).strip().lower(), "custom")
 
 
 def _transform_nodes(raw_nodes: list) -> list:
@@ -129,18 +196,105 @@ def _transform_nodes(raw_nodes: list) -> list:
             "type": normalized_type,
             "occurrence": node.get("occurrence") or props.get("occurrence", 1),
             "properties": {
+                **props,
                 "description": props.get("description", ""),
                 "confidence": props.get("confidence", 1.0),
                 "domain": props.get("domain", "general"),
+                "entity_type": entity_type,
+                "original_type": entity_type,
             },
         })
 
     return transformed
 
 
+def _edge_endpoint_id(value) -> str:
+    if isinstance(value, dict):
+        return value.get("id") or value.get("label") or value.get("name") or ""
+    return value or ""
+
+
+def _edge_relation_count(edge: dict, properties: dict) -> int:
+    for key in ("relationCount", "relation_count", "count"):
+        value = edge.get(key, properties.get(key))
+        if value is not None:
+            try:
+                return max(1, int(value))
+            except (TypeError, ValueError):
+                continue
+
+    relation_types = properties.get("relationTypes") or properties.get("relation_types")
+    if isinstance(relation_types, list):
+        count = 0
+        for item in relation_types:
+            if not isinstance(item, dict):
+                continue
+            try:
+                count += max(1, int(item.get("count", 1)))
+            except (TypeError, ValueError):
+                count += 1
+        if count > 0:
+            return count
+
+    return 1
+
+
+def _transform_edge(edge: dict, edge_id: int = 0) -> dict:
+    """Transform GraphRAG relationship payloads to the frontend edge contract."""
+    raw_properties = edge.get("properties", {})
+    properties = dict(raw_properties) if isinstance(raw_properties, dict) else {}
+    relation_type = (
+        edge.get("type")
+        or edge.get("relationship_type")
+        or edge.get("label")
+        or edge.get("relation")
+        or properties.get("type")
+        or "related_to"
+    )
+    weight = edge.get("weight", properties.get("weight", 1))
+    relation_count = _edge_relation_count(edge, properties)
+
+    for key, value in edge.items():
+        if key not in {
+            "id",
+            "source",
+            "target",
+            "label",
+            "type",
+            "relationship_type",
+            "relation",
+            "weight",
+            "relationCount",
+            "relation_count",
+            "count",
+            "properties",
+        } and value is not None:
+            properties.setdefault(key, value)
+
+    properties["type"] = relation_type
+    properties["weight"] = weight
+    properties["relationCount"] = relation_count
+    properties.setdefault("relationTypes", [{"type": relation_type, "count": relation_count}])
+
+    return {
+        "id": edge.get("id") or f"edge_{edge_id}",
+        "source": _edge_endpoint_id(edge.get("source")),
+        "target": _edge_endpoint_id(edge.get("target")),
+        "label": edge.get("label") or relation_type,
+        "type": relation_type,
+        "weight": weight,
+        "relationCount": relation_count,
+        "properties": properties,
+    }
+
+
 # ── Graph data fetching ────────────────────────────────────────────────
 
-async def _fetch_graph_data(client: httpx.AsyncClient, domain: str = None) -> tuple:
+async def _fetch_graph_data(
+    client: httpx.AsyncClient,
+    domain: str = None,
+    timeout: float | None = None,
+) -> tuple:
     """Fetch graph nodes and edges from GraphRAG service.
 
     Returns (node_map, raw_edges) where node_map is {lowercase_name: node_info}.
@@ -157,6 +311,7 @@ async def _fetch_graph_data(client: httpx.AsyncClient, domain: str = None) -> tu
     response = await client.post(
         f"{cfg.graphrag_url}/knowledge-graph/filtered",
         json=filter_payload,
+        timeout=timeout,
     )
     response.raise_for_status()
     result = response.json()
@@ -173,6 +328,7 @@ async def _fetch_graph_data(client: httpx.AsyncClient, domain: str = None) -> tu
         rel_response = await client.get(
             f"{cfg.graphrag_url}/knowledge-graph/top-relationships",
             params=rel_params,
+            timeout=timeout,
         )
         if rel_response.status_code == 200:
             rel_data = rel_response.json()
@@ -301,6 +457,7 @@ async def _extract_entities_ner(
         ner_response = await client.post(
             f"{cfg.ner_api_url}/ner",
             json={"text": query},
+            timeout=optional_chat_context_timeout(),
         )
         if ner_response.status_code == 200:
             ner_data = ner_response.json()
@@ -343,6 +500,7 @@ async def _extract_relationships_rel(
                 "relations": [{"relation": r} for r in cfg.default_relation_types],
                 "threshold": 0.5,
             },
+            timeout=optional_chat_context_timeout(),
         )
         if rel_response.status_code == 200:
             rel_data = rel_response.json()
@@ -367,6 +525,7 @@ async def _expand_graph_neighborhood(
     errors: list,
     max_entities: int = 3,
     neighbor_limit: int = 5,
+    timeout: float | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Expand top entities via 1-hop graph neighborhood.
 
@@ -380,7 +539,7 @@ async def _expand_graph_neighborhood(
         return expanded_entities, graph_connections
 
     try:
-        node_map, raw_edges = await _fetch_graph_data(client, domain)
+        node_map, raw_edges = await _fetch_graph_data(client, domain, timeout=timeout)
 
         top_entities = sorted(entities, key=lambda e: e.get("score", 0), reverse=True)[:max_entities]
         seen_entity_names = {e["name"].lower() for e in entities}

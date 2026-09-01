@@ -16,34 +16,33 @@ import {
   Chip,
   Menu,
   MenuItem,
+  Drawer,
   ListItemIcon,
   ListItemText,
   Divider,
   Tooltip,
   alpha,
   CircularProgress,
+  useMediaQuery,
 } from '@mui/material';
 import {
   Add as AddIcon,
   Save as SaveIcon,
   FolderOpen as OpenIcon,
   PlayArrow as PlayIcon,
-  Stop as StopIcon,
   Settings as SettingsIcon,
   MoreVert as MoreIcon,
   Delete as DeleteIcon,
-  ContentCopy as DuplicateIcon,
   Download as ExportIcon,
   Upload as ImportIcon,
-  Undo as UndoIcon,
-  Redo as RedoIcon,
-  ZoomIn as ZoomInIcon,
   AccountTree as WorkflowIcon,
+  Timeline as ExecutionIcon,
 } from '@mui/icons-material';
 import { ReactFlowProvider } from 'reactflow';
 import 'reactflow/dist/style.css';
 
 import { WorkflowCanvas, NodePalette, PropertyPanel, ExecutionPanel, WorkflowOnboarding } from '@/components/workflow';
+import { ConfirmationDialog } from '@/components/common';
 import {
   Workflow,
   WorkflowNode,
@@ -53,6 +52,9 @@ import {
   getNodeTypeDefinition,
 } from '@/types/workflow';
 import { workflowApi } from '@/services/workflowApi';
+import { useToast } from '@/contexts/ToastContext';
+import { useConfirmableAction } from '@/hooks/useConfirmableAction';
+import { debugLog } from '@/utils/debug';
 
 // Initial empty workflow
 const createEmptyWorkflow = (): Workflow => ({
@@ -69,9 +71,59 @@ const createEmptyWorkflow = (): Workflow => ({
   isActive: true,
 });
 
+const isRecord = (value: unknown): value is Record<string, any> => (
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+);
+
+const workflowNameFromFile = (fileName: string): string => (
+  fileName.replace(/\.json$/i, '').replace(/[-_]+/g, ' ').trim() || 'Imported Workflow'
+);
+
+const normalizeImportedWorkflow = (value: unknown, fileName: string): Workflow => {
+  if (!isRecord(value)) {
+    throw new Error('The selected file does not contain a workflow object.');
+  }
+
+  if (value.nodes !== undefined && !Array.isArray(value.nodes)) {
+    throw new Error('Workflow import failed because "nodes" is not an array.');
+  }
+
+  if (value.connections !== undefined && !Array.isArray(value.connections)) {
+    throw new Error('Workflow import failed because "connections" is not an array.');
+  }
+
+  const now = new Date().toISOString();
+  const variables = isRecord(value.variables) ? value.variables : {};
+  const settings = isRecord(value.settings) ? value.settings : {};
+  const name = typeof value.name === 'string' && value.name.trim()
+    ? value.name.trim()
+    : workflowNameFromFile(fileName);
+
+  return {
+    id: `wf-${Date.now()}`,
+    name,
+    description: typeof value.description === 'string' ? value.description : '',
+    nodes: Array.isArray(value.nodes) ? value.nodes as WorkflowNode[] : [],
+    connections: Array.isArray(value.connections) ? value.connections as WorkflowConnection[] : [],
+    variables,
+    settings,
+    createdAt: now,
+    updatedAt: now,
+    version: typeof value.version === 'number' ? value.version : 1,
+    isActive: typeof value.isActive === 'boolean' ? value.isActive : true,
+  };
+};
+
+const normalizeWorkflowArray = (value: unknown): Workflow[] => (
+  Array.isArray(value) ? value.filter(isRecord) as Workflow[] : []
+);
+
 const WorkflowBuilderPage: React.FC = () => {
+  const toast = useToast();
+  const isNarrow = useMediaQuery('(max-width:599.95px)');
+
   // Workflow state
-  const [workflow, setWorkflow] = useState<Workflow | null>(null);
+  const [workflow, setWorkflow] = useState<Workflow | null>(() => createEmptyWorkflow());
   const [savedWorkflows, setSavedWorkflows] = useState<Workflow[]>([]);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -85,12 +137,21 @@ const WorkflowBuilderPage: React.FC = () => {
   const [nodeExecutions, setNodeExecutions] = useState<Record<string, NodeExecution>>({});
   const [isRunning, setIsRunning] = useState(false);
   const [executionId, setExecutionId] = useState<string | null>(null);
+  const [executionPanelOpen, setExecutionPanelOpen] = useState(false);
 
   // Dialog state
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [openDialogOpen, setOpenDialogOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [mobilePaletteOpen, setMobilePaletteOpen] = useState(false);
+  const {
+    confirmationAction: confirmDialog,
+    confirmationLoading: confirmLoading,
+    requestConfirmation,
+    closeConfirmation: handleConfirmDialogClose,
+    confirmAction: handleConfirmDialogConfirm,
+  } = useConfirmableAction();
 
   // Menu state
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
@@ -98,13 +159,6 @@ const WorkflowBuilderPage: React.FC = () => {
   // Load saved workflows from API
   useEffect(() => {
     loadWorkflows();
-    
-    // Check if this is the first time visiting workflow builder
-    const hasSeenOnboarding = localStorage.getItem('workflow-onboarding-seen');
-    if (!hasSeenOnboarding) {
-      // Show onboarding after a brief delay
-      setTimeout(() => setOnboardingOpen(true), 500);
-    }
   }, []);
 
   const loadWorkflows = async () => {
@@ -113,14 +167,14 @@ const WorkflowBuilderPage: React.FC = () => {
       const response = await workflowApi.listWorkflows({ limit: 100 });
       setSavedWorkflows(response.workflows);
     } catch (e) {
-      console.error('Failed to load workflows:', e);
+      debugLog('workflows', 'Failed to load workflows', e);
       // Fallback to localStorage if API fails
       const stored = localStorage.getItem('llama-nexus-workflows');
       if (stored) {
         try {
-          setSavedWorkflows(JSON.parse(stored));
+          setSavedWorkflows(normalizeWorkflowArray(JSON.parse(stored)));
         } catch (parseError) {
-          console.error('Failed to parse stored workflows:', parseError);
+          debugLog('workflows', 'Failed to parse stored workflows', parseError);
         }
       }
     } finally {
@@ -128,17 +182,32 @@ const WorkflowBuilderPage: React.FC = () => {
     }
   };
 
-  // Create new workflow
-  const handleNewWorkflow = () => {
-    if (hasUnsavedChanges) {
-      if (!confirm('You have unsaved changes. Create new workflow anyway?')) {
-        return;
-      }
-    }
+  const createNewWorkflow = () => {
     setWorkflow(createEmptyWorkflow());
     setSelectedNode(null);
+    setExecution(null);
+    setNodeExecutions({});
+    setExecutionId(null);
+    setExecutionPanelOpen(false);
     setHasUnsavedChanges(false);
     setError(null);
+  };
+
+  // Create new workflow
+  const handleNewWorkflow = () => {
+    setMenuAnchor(null);
+
+    if (hasUnsavedChanges) {
+      requestConfirmation({
+        title: 'Discard unsaved changes?',
+        message: 'Creating a new workflow will replace the current canvas. Save the current workflow first if you want to keep these changes.',
+        confirmLabel: 'Create New',
+        onConfirm: createNewWorkflow,
+      });
+      return;
+    }
+
+    createNewWorkflow();
   };
 
   // Save workflow
@@ -190,20 +259,17 @@ const WorkflowBuilderPage: React.FC = () => {
     }
   };
 
-  // Open workflow
-  const handleOpenWorkflow = async (workflowToOpen: Workflow) => {
-    if (hasUnsavedChanges) {
-      if (!confirm('You have unsaved changes. Open another workflow anyway?')) {
-        return;
-      }
-    }
-    
+  const openWorkflow = async (workflowToOpen: Workflow) => {
     try {
       setLoading(true);
       // Fetch fresh copy from API
       const freshWorkflow = await workflowApi.getWorkflow(workflowToOpen.id);
       setWorkflow(freshWorkflow);
       setSelectedNode(null);
+      setExecution(null);
+      setNodeExecutions({});
+      setExecutionId(null);
+      setExecutionPanelOpen(false);
       setHasUnsavedChanges(false);
       setOpenDialogOpen(false);
       setError(null);
@@ -212,11 +278,30 @@ const WorkflowBuilderPage: React.FC = () => {
       // Fallback to passed workflow
       setWorkflow(workflowToOpen);
       setSelectedNode(null);
+      setExecution(null);
+      setNodeExecutions({});
+      setExecutionId(null);
+      setExecutionPanelOpen(false);
       setHasUnsavedChanges(false);
       setOpenDialogOpen(false);
     } finally {
       setLoading(false);
     }
+  };
+
+  // Open workflow
+  const handleOpenWorkflow = async (workflowToOpen: Workflow) => {
+    if (hasUnsavedChanges) {
+      requestConfirmation({
+        title: 'Open another workflow?',
+        message: 'Opening a different workflow will replace the current unsaved canvas. Save first if you want to keep these changes.',
+        confirmLabel: 'Open Workflow',
+        onConfirm: () => openWorkflow(workflowToOpen),
+      });
+      return;
+    }
+
+    await openWorkflow(workflowToOpen);
   };
 
   // Delete workflow
@@ -228,15 +313,30 @@ const WorkflowBuilderPage: React.FC = () => {
       if (workflow?.id === workflowId) {
         setWorkflow(null);
         setSelectedNode(null);
+        setExecution(null);
+        setNodeExecutions({});
+        setExecutionId(null);
+        setExecutionPanelOpen(false);
       }
       
       await loadWorkflows();
+      toast.success('Workflow removed from the library.', 'Workflow deleted');
     } catch (e: any) {
       console.error('Failed to delete workflow:', e);
       setError(e.message || 'Failed to delete workflow');
     } finally {
       setLoading(false);
     }
+  };
+
+  const requestDeleteWorkflow = (workflowToDelete: Workflow) => {
+    requestConfirmation({
+      title: 'Delete workflow?',
+      message: `"${workflowToDelete.name}" will be permanently removed from the workflow library.`,
+      confirmLabel: 'Delete',
+      destructive: true,
+      onConfirm: () => handleDeleteWorkflow(workflowToDelete.id),
+    });
   };
 
   // Handle nodes change
@@ -254,6 +354,9 @@ const WorkflowBuilderPage: React.FC = () => {
   // Handle node selection
   const handleNodeSelect = useCallback((node: WorkflowNode | null) => {
     setSelectedNode(node);
+    if (node) {
+      setExecutionPanelOpen(false);
+    }
   }, []);
 
   // Handle node update from property panel
@@ -315,6 +418,37 @@ const WorkflowBuilderPage: React.FC = () => {
     setHasUnsavedChanges(true);
   }, []);
 
+  const handleInsertNode = useCallback((nodeType: string) => {
+    const typeDef = getNodeTypeDefinition(nodeType);
+    if (!workflow || !typeDef) return;
+
+    const nodeIndex = workflow.nodes.length;
+    const baseX = isNarrow ? 200 : 80;
+    const newNode: WorkflowNode = {
+      id: `node-${Date.now()}`,
+      type: nodeType,
+      position: {
+        x: baseX + (nodeIndex % 4) * 56,
+        y: 80 + Math.floor(nodeIndex / 4) * 88,
+      },
+      data: {
+        label: typeDef.displayName,
+        nodeType,
+        config: {},
+        inputs: typeDef.inputs,
+        outputs: typeDef.outputs,
+      },
+    };
+
+    setWorkflow((prev) => prev ? { ...prev, nodes: [...prev.nodes, newNode] } : prev);
+    setSelectedNode(isNarrow ? null : newNode);
+    setExecutionPanelOpen(false);
+    setHasUnsavedChanges(true);
+    if (isNarrow) {
+      setMobilePaletteOpen(false);
+    }
+  }, [isNarrow, workflow]);
+
   // Run workflow via API
   const handleRunWorkflow = async () => {
     if (!workflow || workflow.nodes.length === 0) return;
@@ -326,6 +460,8 @@ const WorkflowBuilderPage: React.FC = () => {
 
     try {
       setIsRunning(true);
+      setSelectedNode(null);
+      setExecutionPanelOpen(true);
       setNodeExecutions({});
       setError(null);
 
@@ -389,6 +525,7 @@ const WorkflowBuilderPage: React.FC = () => {
     link.click();
     URL.revokeObjectURL(url);
     setMenuAnchor(null);
+    toast.success(`${workflow.name} exported as JSON.`, 'Workflow exported');
   };
 
   // Import workflow
@@ -402,13 +539,17 @@ const WorkflowBuilderPage: React.FC = () => {
 
       try {
         const text = await file.text();
-        const imported = JSON.parse(text) as Workflow;
-        imported.id = `wf-${Date.now()}`; // Generate new ID
+        const imported = normalizeImportedWorkflow(JSON.parse(text), file.name);
         setWorkflow(imported);
+        setSelectedNode(null);
         setHasUnsavedChanges(true);
+        setError(null);
+        toast.success(`${imported.name} is ready to review and save.`, 'Workflow imported');
       } catch (err) {
         console.error('Failed to import workflow:', err);
-        alert('Failed to import workflow. Please check the file format.');
+        const message = err instanceof Error ? err.message : 'Failed to import workflow. Please check the file format.';
+        setError(message);
+        toast.error(message, 'Import failed');
       }
     };
     input.click();
@@ -459,6 +600,13 @@ const WorkflowBuilderPage: React.FC = () => {
     setOnboardingOpen(false);
   };
 
+  const workflowHasNodes = Boolean(workflow && workflow.nodes.length > 0);
+  const hasExecutionData = Boolean(execution || isRunning || Object.keys(nodeExecutions).length > 0);
+  const mobileDrawerPaperOffsetSx = {
+    top: 56,
+    height: 'calc(100% - 56px)',
+  };
+
   return (
     <Box
       sx={{
@@ -472,21 +620,42 @@ const WorkflowBuilderPage: React.FC = () => {
       {/* Header */}
       <Box
         sx={{
-          px: 2,
-          py: 1.5,
+          px: { xs: 0.75, sm: 1.25 },
+          py: 0.75,
           borderBottom: '1px solid',
           borderColor: 'divider',
           display: 'flex',
           alignItems: 'center',
-          gap: 2,
+          gap: { xs: 0.5, sm: 1 },
           bgcolor: 'background.paper',
         }}
       >
         {/* Left: Title and workflow info */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-          <WorkflowIcon sx={{ color: '#6366f1' }} />
-          <Typography variant="h6" fontWeight={600}>
-            Workflow Builder
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, flex: 1 }}>
+          {workflow && (
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<AddIcon />}
+              onClick={() => setMobilePaletteOpen(true)}
+              disabled={loading}
+              sx={{
+                display: { xs: 'inline-flex', sm: 'none' },
+                height: 32,
+                minWidth: 0,
+                px: 1,
+                borderRadius: '8px',
+                textTransform: 'none',
+                fontWeight: 800,
+                '& .MuiButton-startIcon': { mr: 0.5, ml: 0 },
+              }}
+            >
+              Nodes
+            </Button>
+          )}
+          <WorkflowIcon sx={{ color: '#6366f1', fontSize: 20, display: { xs: 'none', sm: 'block' } }} />
+          <Typography variant="body2" fontWeight={800} sx={{ display: { xs: 'none', sm: 'block' } }}>
+            Workflows
           </Typography>
           {workflow && (
             <>
@@ -497,6 +666,12 @@ const WorkflowBuilderPage: React.FC = () => {
                   bgcolor: alpha('#6366f1', 0.1),
                   color: '#818cf8',
                   fontWeight: 500,
+                  maxWidth: 180,
+                  display: { xs: 'none', sm: 'inline-flex' },
+                  '& .MuiChip-label': {
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  },
                 }}
               />
               {hasUnsavedChanges && (
@@ -514,54 +689,81 @@ const WorkflowBuilderPage: React.FC = () => {
           )}
         </Box>
 
-        {/* Center: Workflow actions */}
-        <Box sx={{ flex: 1, display: 'flex', justifyContent: 'center', gap: 1 }}>
+        {/* Workflow actions */}
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: { xs: 0.25, sm: 0.5 } }}>
           {!workflow ? (
             <Button
+              size="small"
               variant="contained"
               startIcon={<AddIcon />}
               onClick={handleNewWorkflow}
+              sx={{ height: 32, textTransform: 'none', fontWeight: 800 }}
             >
               New Workflow
             </Button>
           ) : (
             <>
               <Tooltip title="Save">
-                <IconButton onClick={() => setSaveDialogOpen(true)} disabled={loading}>
+                <IconButton size="small" onClick={() => setSaveDialogOpen(true)} disabled={loading}>
                   {loading ? <CircularProgress size={20} /> : <SaveIcon />}
                 </IconButton>
               </Tooltip>
               <Tooltip title="Open">
-                <IconButton onClick={() => setOpenDialogOpen(true)}>
+                <IconButton size="small" onClick={() => setOpenDialogOpen(true)} sx={{ display: { xs: 'none', sm: 'inline-flex' } }}>
                   <OpenIcon />
                 </IconButton>
               </Tooltip>
-              <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
-              <Button
-                variant="contained"
-                startIcon={isRunning ? <CircularProgress size={16} color="inherit" /> : <PlayIcon />}
-                onClick={isRunning ? handleStopWorkflow : handleRunWorkflow}
-                disabled={workflow.nodes.length === 0}
-                color={isRunning ? 'error' : 'success'}
-                sx={{ minWidth: 100 }}
-              >
-                {isRunning ? 'Stop' : 'Run'}
-              </Button>
-            </>
-          )}
-        </Box>
-
-        {/* Right: More actions */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          {workflow && (
-            <>
+              {workflowHasNodes && (
+                <>
+                  <Divider orientation="vertical" flexItem sx={{ mx: 0.5, display: { xs: 'none', sm: 'block' } }} />
+                  <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={isRunning ? <CircularProgress size={16} color="inherit" /> : <PlayIcon />}
+                    aria-label={isRunning ? 'Stop workflow' : 'Run workflow'}
+                    onClick={isRunning ? handleStopWorkflow : handleRunWorkflow}
+                    color={isRunning ? 'error' : 'success'}
+                    sx={{
+                      height: 32,
+                      minHeight: 32,
+                      minWidth: { xs: 36, sm: 72 },
+                      px: { xs: 0, sm: 1.25 },
+                      borderRadius: '8px',
+                      boxShadow: 'none',
+                      textTransform: 'none',
+                      fontWeight: 800,
+                      '& .MuiButton-startIcon': { mr: { xs: 0, sm: 0.75 }, ml: 0 },
+                      '&:hover': { boxShadow: 'none' },
+                    }}
+                  >
+                    <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>
+                      {isRunning ? 'Stop' : 'Run'}
+                    </Box>
+                  </Button>
+                </>
+              )}
+              {hasExecutionData && (
+                <Tooltip title={executionPanelOpen && !selectedNode ? 'Hide execution' : 'Execution'}>
+                  <IconButton
+                    size="small"
+                    color={executionPanelOpen && !selectedNode ? 'primary' : 'default'}
+                    onClick={() => {
+                      setSelectedNode(null);
+                      setExecutionPanelOpen((open) => !open);
+                    }}
+                    sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
+                  >
+                    <ExecutionIcon />
+                  </IconButton>
+                </Tooltip>
+              )}
               <Tooltip title="Settings">
-                <IconButton onClick={() => setSettingsDialogOpen(true)}>
+                <IconButton size="small" onClick={() => setSettingsDialogOpen(true)} sx={{ display: { xs: 'none', sm: 'inline-flex' } }}>
                   <SettingsIcon />
                 </IconButton>
               </Tooltip>
               <Tooltip title="More actions">
-                <IconButton onClick={(e) => setMenuAnchor(e.currentTarget)}>
+                <IconButton size="small" onClick={(e) => setMenuAnchor(e.currentTarget)}>
                   <MoreIcon />
                 </IconButton>
               </Tooltip>
@@ -584,7 +786,12 @@ const WorkflowBuilderPage: React.FC = () => {
       {/* Main content */}
       <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Node Palette */}
-        <NodePalette disabled={!workflow || loading} />
+        <Box sx={{ display: { xs: 'none', sm: 'block' }, height: '100%' }}>
+          <NodePalette
+            disabled={!workflow || loading}
+            onNodeSelect={handleInsertNode}
+          />
+        </Box>
 
         {/* Canvas */}
         <Box sx={{ flex: 1, position: 'relative' }}>
@@ -634,8 +841,7 @@ const WorkflowBuilderPage: React.FC = () => {
         </Box>
 
         {/* Right Side Panel: Property or Execution */}
-        {workflow && (
-          selectedNode ? (
+        {workflow && selectedNode && !isNarrow && (
             <PropertyPanel
               node={selectedNode}
               onNodeUpdate={handleNodeUpdate}
@@ -643,16 +849,86 @@ const WorkflowBuilderPage: React.FC = () => {
               onNodeDuplicate={handleNodeDuplicate}
               onClose={() => setSelectedNode(null)}
             />
-          ) : (
+        )}
+
+        {workflow && !selectedNode && executionPanelOpen && !isNarrow && (
             <ExecutionPanel
               workflowId={workflow.id}
               currentExecution={execution}
               nodeExecutions={nodeExecutions}
               isRunning={isRunning}
             />
-          )
         )}
       </Box>
+
+      <Drawer
+        anchor="right"
+        open={Boolean(workflow && selectedNode && isNarrow)}
+        onClose={() => setSelectedNode(null)}
+        ModalProps={{ keepMounted: true }}
+        PaperProps={{
+          sx: {
+            width: 320,
+            maxWidth: '88vw',
+            ...mobileDrawerPaperOffsetSx,
+            bgcolor: 'background.paper',
+          },
+        }}
+      >
+        {workflow && selectedNode && (
+          <PropertyPanel
+            node={selectedNode}
+            onNodeUpdate={handleNodeUpdate}
+            onNodeDelete={handleNodeDelete}
+            onNodeDuplicate={handleNodeDuplicate}
+            onClose={() => setSelectedNode(null)}
+          />
+        )}
+      </Drawer>
+
+      <Drawer
+        anchor="right"
+        open={Boolean(workflow && !selectedNode && executionPanelOpen && isNarrow)}
+        onClose={() => setExecutionPanelOpen(false)}
+        ModalProps={{ keepMounted: true }}
+        PaperProps={{
+          sx: {
+            width: 320,
+            maxWidth: '88vw',
+            ...mobileDrawerPaperOffsetSx,
+            bgcolor: 'background.paper',
+          },
+        }}
+      >
+        {workflow && !selectedNode && executionPanelOpen && (
+          <ExecutionPanel
+            workflowId={workflow.id}
+            currentExecution={execution}
+            nodeExecutions={nodeExecutions}
+            isRunning={isRunning}
+          />
+        )}
+      </Drawer>
+
+      <Drawer
+        anchor="left"
+        open={mobilePaletteOpen}
+        onClose={() => setMobilePaletteOpen(false)}
+        ModalProps={{ keepMounted: true }}
+        PaperProps={{
+          sx: {
+            width: 312,
+            maxWidth: '86vw',
+            ...mobileDrawerPaperOffsetSx,
+            bgcolor: 'background.paper',
+          },
+        }}
+      >
+        <NodePalette
+          disabled={!workflow || loading}
+          onNodeSelect={handleInsertNode}
+        />
+      </Drawer>
 
       {/* More actions menu */}
       <Menu
@@ -663,6 +939,36 @@ const WorkflowBuilderPage: React.FC = () => {
         <MenuItem onClick={handleNewWorkflow}>
           <ListItemIcon><AddIcon fontSize="small" /></ListItemIcon>
           <ListItemText>New Workflow</ListItemText>
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setMenuAnchor(null);
+            setOpenDialogOpen(true);
+          }}
+        >
+          <ListItemIcon><OpenIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Open Workflow</ListItemText>
+        </MenuItem>
+        <MenuItem
+          disabled={!workflow}
+          onClick={() => {
+            setSelectedNode(null);
+            setExecutionPanelOpen((open) => !open);
+            setMenuAnchor(null);
+          }}
+        >
+          <ListItemIcon><ExecutionIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>{executionPanelOpen && !selectedNode ? 'Hide Execution' : 'Execution'}</ListItemText>
+        </MenuItem>
+        <MenuItem
+          disabled={!workflow}
+          onClick={() => {
+            setSettingsDialogOpen(true);
+            setMenuAnchor(null);
+          }}
+        >
+          <ListItemIcon><SettingsIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Settings</ListItemText>
         </MenuItem>
         <Divider />
         <MenuItem onClick={handleExportWorkflow}>
@@ -676,8 +982,8 @@ const WorkflowBuilderPage: React.FC = () => {
         <Divider />
         <MenuItem
           onClick={() => {
-            if (workflow && confirm('Delete this workflow?')) {
-              handleDeleteWorkflow(workflow.id);
+            if (workflow) {
+              requestDeleteWorkflow(workflow);
             }
             setMenuAnchor(null);
           }}
@@ -687,6 +993,13 @@ const WorkflowBuilderPage: React.FC = () => {
           <ListItemText>Delete Workflow</ListItemText>
         </MenuItem>
       </Menu>
+
+      <ConfirmationDialog
+        action={confirmDialog}
+        loading={confirmLoading}
+        onClose={handleConfirmDialogClose}
+        onConfirm={handleConfirmDialogConfirm}
+      />
 
       {/* Save Dialog */}
       <Dialog open={saveDialogOpen} onClose={() => setSaveDialogOpen(false)} maxWidth="sm" fullWidth>
@@ -755,9 +1068,7 @@ const WorkflowBuilderPage: React.FC = () => {
                     size="small"
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (confirm(`Delete "${wf.name}"?`)) {
-                        handleDeleteWorkflow(wf.id);
-                      }
+                      requestDeleteWorkflow(wf);
                     }}
                   >
                     <DeleteIcon fontSize="small" />

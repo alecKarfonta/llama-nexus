@@ -10,6 +10,8 @@ Current capabilities:
 
 import asyncio
 import json
+import os
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -60,11 +62,6 @@ try:
         ComparisonSession,
         JudgeConfig,
         EvaluationManager,
-        # Benchmarks
-        BenchmarkName,
-        BenchmarkConfig,
-        BenchmarkJob,
-        BenchmarkRunner,
         # A/B Testing
         ABTestStatus,
         TrafficSplit,
@@ -123,10 +120,6 @@ except ImportError:
         ComparisonSession,
         JudgeConfig,
         EvaluationManager,
-        BenchmarkName,
-        BenchmarkConfig,
-        BenchmarkJob,
-        BenchmarkRunner,
         ABTestStatus,
         TrafficSplit,
         ABTest,
@@ -232,7 +225,6 @@ class CreateJobRequest(BaseModel):
 
 
 router = APIRouter(prefix="/api/v1/finetune", tags=["finetuning"])
-benchmark_runner = BenchmarkRunner()
 
 # Import and initialize lm-eval runner for standardized benchmarks
 try:
@@ -2176,251 +2168,6 @@ def get_session_summary(session_id: str):
 
 
 # ============================================================================
-# Benchmarks
-# ============================================================================
-
-
-@router.get("/benchmarks/available")
-def list_available_benchmarks():
-    """List all available benchmark suites with HuggingFace dataset status."""
-    # Static metadata for display
-    benchmark_metadata = {
-        "mmlu": {
-            "display_name": "MMLU",
-            "description": "Multi-task language understanding across 57 subjects",
-            "metrics": ["accuracy"],
-        },
-        "hellaswag": {
-            "display_name": "HellaSwag",
-            "description": "Commonsense reasoning and sentence completion",
-            "metrics": ["accuracy"],
-        },
-        "arc_easy": {
-            "display_name": "ARC-Easy",
-            "description": "Science question answering (easy subset)",
-            "metrics": ["accuracy"],
-        },
-        "arc_challenge": {
-            "display_name": "ARC-Challenge",
-            "description": "Science question answering (challenge subset)",
-            "metrics": ["accuracy"],
-        },
-        "truthfulqa": {
-            "display_name": "TruthfulQA",
-            "description": "Truthfulness evaluation for language models",
-            "metrics": ["truthful_rate"],
-        },
-        "gsm8k": {
-            "display_name": "GSM8K",
-            "description": "Grade school math word problems",
-            "metrics": ["accuracy"],
-        },
-        "humaneval": {
-            "display_name": "HumanEval",
-            "description": "Python code generation benchmark",
-            "metrics": ["pass_at_1"],
-        },
-    }
-    
-    # Get dynamic dataset info from the benchmark runner
-    dataset_info = benchmark_runner.list_available_benchmarks()
-    
-    # Merge static metadata with dynamic dataset info
-    benchmarks = []
-    for ds_info in dataset_info:
-        name = ds_info["name"]
-        metadata = benchmark_metadata.get(name, {})
-        benchmarks.append({
-            "name": name,
-            "display_name": metadata.get("display_name", name.upper()),
-            "description": metadata.get("description", ""),
-            "metrics": metadata.get("metrics", ["accuracy"]),
-            "repo_id": ds_info.get("repo_id"),
-            "subset": ds_info.get("subset"),
-            "split": ds_info.get("split"),
-            "loaded": ds_info.get("loaded", False),
-            "huggingface_available": ds_info.get("available", False),
-            "has_fallback": ds_info.get("has_fallback", False),
-            "fallback_sample_count": ds_info.get("fallback_sample_count", 0),
-        })
-    
-    return {"benchmarks": benchmarks}
-
-
-@router.post("/benchmarks/jobs", status_code=201)
-def create_benchmark_job(job: BenchmarkJob):
-    """Create a new benchmark evaluation job."""
-    # If adapter_id is provided, look up the adapter path
-    if job.adapter_id:
-        training_job = training_manager.get_job(job.adapter_id)
-        if training_job and training_job.adapter_path:
-            job.adapter_path = training_job.adapter_path
-
-    created = benchmark_runner.create_job(job)
-    return created
-
-
-@router.get("/benchmarks/jobs")
-def list_benchmark_jobs():
-    """List all benchmark jobs."""
-    jobs = benchmark_runner.list_jobs()
-    return {"jobs": [j.dict() for j in jobs]}
-
-
-@router.get("/benchmarks/jobs/{job_id}")
-def get_benchmark_job(job_id: str):
-    """Get a specific benchmark job."""
-    job = benchmark_runner.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Benchmark job not found")
-    return job
-
-
-@router.post("/benchmarks/jobs/{job_id}/start")
-async def start_benchmark_job(job_id: str):
-    """Start running a benchmark job."""
-    job = benchmark_runner.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Benchmark job not found")
-
-    success = benchmark_runner.start_job(job_id)
-    if not success:
-        raise HTTPException(status_code=400, detail="Job already running or not found")
-
-    return {"job_id": job_id, "status": "started"}
-
-
-@router.post("/benchmarks/jobs/{job_id}/cancel")
-def cancel_benchmark_job(job_id: str):
-    """Cancel a running benchmark job."""
-    success = benchmark_runner.cancel_job(job_id)
-    if not success:
-        raise HTTPException(status_code=400, detail="Job not running or not found")
-    return {"job_id": job_id, "status": "cancelled"}
-
-
-@router.delete("/benchmarks/jobs/{job_id}", status_code=204)
-def delete_benchmark_job(job_id: str):
-    """Delete a benchmark job."""
-    success = benchmark_runner.delete_job(job_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return Response(status_code=204)
-
-
-@router.get("/benchmarks/jobs/{job_id}/summary")
-def get_benchmark_summary(job_id: str):
-    """Get a summary of benchmark results."""
-    summary = benchmark_runner.get_summary(job_id)
-    if not summary:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return summary
-
-
-# ============================================================================
-# Dataset Discovery and Management
-# ============================================================================
-
-
-@router.get("/benchmarks/datasets/search")
-def search_benchmark_datasets(
-    query: str,
-    limit: int = 20,
-    task: Optional[str] = None,
-):
-    """
-    Search HuggingFace Hub for datasets.
-    
-    Args:
-        query: Search query string
-        limit: Maximum number of results (default 20)
-        task: Filter by task type (e.g., 'question-answering', 'text-classification')
-    """
-    results = benchmark_runner.search_datasets(query, limit, task)
-    return {"datasets": results, "query": query, "count": len(results)}
-
-
-@router.get("/benchmarks/datasets/{repo_id:path}/info")
-def get_dataset_info(repo_id: str):
-    """
-    Get detailed information about a HuggingFace dataset.
-    
-    Args:
-        repo_id: HuggingFace dataset repository ID (e.g., 'cais/mmlu')
-    """
-    info = benchmark_runner.get_dataset_info(repo_id)
-    if "error" in info and not info.get("configs"):
-        raise HTTPException(status_code=404, detail=info["error"])
-    return info
-
-
-@router.get("/benchmarks/datasets/{benchmark_name}/preview")
-def preview_benchmark_dataset(
-    benchmark_name: str,
-    num_samples: int = 5,
-):
-    """
-    Preview samples from a benchmark dataset.
-    
-    Args:
-        benchmark_name: Name of the benchmark (mmlu, hellaswag, etc.)
-        num_samples: Number of samples to preview (default 5)
-    """
-    try:
-        preview = benchmark_runner.preview_dataset(benchmark_name, num_samples)
-        return preview
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.post("/benchmarks/datasets/custom")
-def load_custom_benchmark_dataset(
-    repo_id: str,
-    name: Optional[str] = None,
-    split: str = "test",
-    num_samples: Optional[int] = None,
-):
-    """
-    Load a custom dataset from HuggingFace Hub for benchmarking.
-    
-    Args:
-        repo_id: HuggingFace dataset repository ID
-        name: Dataset configuration/subset name
-        split: Dataset split to load (default 'test')
-        num_samples: Number of samples to load (None = all)
-    """
-    result = benchmark_runner.load_custom_benchmark(
-        repo_id=repo_id,
-        name=name,
-        split=split,
-        num_samples=num_samples,
-    )
-    
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    
-    return result
-
-
-@router.get("/benchmarks/datasets/cache")
-def get_dataset_cache_info():
-    """Get information about cached benchmark datasets."""
-    return benchmark_runner.get_cache_info()
-
-
-@router.delete("/benchmarks/datasets/cache")
-def clear_dataset_cache(benchmark_name: Optional[str] = None):
-    """
-    Clear cached benchmark datasets.
-    
-    Args:
-        benchmark_name: Specific benchmark to clear (None = clear all)
-    """
-    benchmark_runner.clear_dataset_cache(benchmark_name)
-    return {"status": "cleared", "benchmark": benchmark_name or "all"}
-
-
-# ============================================================================
 # A/B Testing
 # ============================================================================
 
@@ -2948,10 +2695,36 @@ class LMEvalJobRequest(BaseModel):
     """Request to create an lm-eval benchmark job."""
     name: str = Field(description="Job name")
     tasks: List[str] = Field(description="List of task names to run")
-    model_path: Optional[str] = Field(default=None, description="GGUF model filename to evaluate (e.g., 'small_test-merged-Q8_0.gguf')")
-    gpu_device: Optional[int] = Field(default=None, description="GPU device index to use for evaluation")
+    model_path: Optional[str] = Field(default=None, description="Optional display label. By default, the active deployed model is evaluated.")
+    gpu_device: Optional[int] = Field(default=None, description="Deprecated; benchmarks use the active deployed model instead of launching on a GPU.")
     num_fewshot: int = Field(default=5, ge=0, le=50, description="Number of few-shot examples")
     limit: Optional[int] = Field(default=None, ge=1, le=10000, description="Max samples per task")
+
+
+LM_EVAL_TASK_NAME_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+
+
+def _active_deployed_model_label(request: Request) -> str:
+    vllm_manager = getattr(request.app.state, "vllm_manager", None)
+    if vllm_manager and vllm_manager.is_running():
+        model_config = vllm_manager.config.get("model", {})
+        return (
+            model_config.get("served_name")
+            or model_config.get("name")
+            or "deployed-vllm-model"
+        )
+
+    llamacpp_manager = getattr(request.app.state, "manager", None)
+    if llamacpp_manager and llamacpp_manager.is_running():
+        model_config = llamacpp_manager.config.get("model", {})
+        name = model_config.get("name") or "deployed-llamacpp-model"
+        variant = model_config.get("variant")
+        return f"{name}-{variant}" if variant else name
+
+    raise HTTPException(
+        status_code=503,
+        detail="No deployed inference backend is running. Deploy a model before running benchmarks.",
+    )
 
 
 class TerminalBenchJobRequest(BaseModel):
@@ -2964,8 +2737,8 @@ class TerminalBenchJobRequest(BaseModel):
     n_concurrent: int = Field(default=1, ge=1, le=64, description="Concurrent trial count")
     timeout_multiplier: float = Field(default=1.0, ge=0.1, le=20.0, description="Timeout multiplier")
     harbor_agent: str = Field(default="local-openai-agent", description="Agent label")
-    model_name: str = Field(default="openai/gpt-4o-mini", description="Model identifier passed to Harbor")
-    endpoint_url: str = Field(default="http://llamacpp-api:8080/v1", description="OpenAI-compatible endpoint URL")
+    model_name: Optional[str] = Field(default=None, description="Optional display label. By default, the active deployed model is evaluated.")
+    endpoint_url: str = Field(default="http://backend-api:8700/v1", description="OpenAI-compatible endpoint URL")
     api_key: str = Field(default="placeholder-api-key", description="Endpoint API key")
 
 
@@ -3024,25 +2797,28 @@ def list_terminal_bench_jobs():
 
 
 @router.post("/terminal-bench/jobs")
-def create_terminal_bench_job(request: TerminalBenchJobRequest):
+def create_terminal_bench_job(request: Request, payload: TerminalBenchJobRequest):
     """Create a new Terminal-Bench job."""
     if not TERMINAL_BENCH_AVAILABLE:
         raise HTTPException(status_code=503, detail="Terminal-Bench integration is not available")
-    if request.mode not in ("smoke", "full"):
+    if payload.mode not in ("smoke", "full"):
         raise HTTPException(status_code=400, detail="mode must be one of: smoke, full")
+
+    active_model_label = _active_deployed_model_label(request)
+    model_label = payload.model_name or active_model_label
 
     job = TerminalBenchJob(
         id=str(uuid.uuid4()),
-        name=request.name,
-        dataset=request.dataset,
-        mode=request.mode,
-        task_limit=request.task_limit,
-        n_concurrent=request.n_concurrent,
-        timeout_multiplier=request.timeout_multiplier,
-        harbor_agent=request.harbor_agent,
-        model_name=request.model_name,
-        endpoint_url=request.endpoint_url,
-        api_key=request.api_key,
+        name=payload.name,
+        dataset=payload.dataset,
+        mode=payload.mode,
+        task_limit=payload.task_limit,
+        n_concurrent=payload.n_concurrent,
+        timeout_multiplier=payload.timeout_multiplier,
+        harbor_agent=payload.harbor_agent,
+        model_name=model_label,
+        endpoint_url=payload.endpoint_url,
+        api_key=payload.api_key,
     )
     terminal_bench_runner.create_job(job)
     return {
@@ -3210,6 +2986,7 @@ def list_lm_eval_jobs():
                 "tasks": [t.name for t in j.tasks],
                 "model_path": j.model_path,
                 "gpu_device": j.gpu_device,
+                "endpoint_url": getattr(j, "endpoint_url", None),
                 "status": j.status.value,
                 "progress": j.progress,
                 "results": j.results,
@@ -3223,33 +3000,37 @@ def list_lm_eval_jobs():
 
 
 @router.post("/lm-eval/jobs")
-def create_lm_eval_job(request: LMEvalJobRequest):
+def create_lm_eval_job(request: Request, payload: LMEvalJobRequest):
     """Create a new lm-eval benchmark job."""
     if not LM_EVAL_AVAILABLE:
         raise HTTPException(status_code=503, detail="lm-evaluation-harness is not available")
     
-    # Validate tasks
-    valid_tasks = set(POPULAR_TASKS.keys())
-    for task in request.tasks:
-        if task not in valid_tasks:
+    # Accept curated UI task names and explicit lm-eval harness task IDs. The
+    # worker still performs the authoritative validation when the harness runs.
+    for task in payload.tasks:
+        if not LM_EVAL_TASK_NAME_RE.fullmatch(task):
             raise HTTPException(
                 status_code=400,
-                detail=f"Unknown task: {task}. Valid tasks: {', '.join(valid_tasks)}"
+                detail=f"Invalid lm-eval task name: {task}"
             )
-    
-    # Create job with model_path and gpu_device
+
+    active_model_label = _active_deployed_model_label(request)
+    model_label = payload.model_path or active_model_label
+    endpoint_url = os.getenv("LM_EVAL_DEPLOYED_API_URL", "http://backend-api:8700")
+
     job = LMEvalJob(
         id=str(uuid.uuid4()),
         tasks=[
             LMEvalTask(
                 name=task,
-                num_fewshot=request.num_fewshot,
-                limit=request.limit,
+                num_fewshot=payload.num_fewshot,
+                limit=payload.limit,
             )
-            for task in request.tasks
+            for task in payload.tasks
         ],
-        model_path=request.model_path,
-        gpu_device=request.gpu_device,
+        model_path=model_label,
+        gpu_device=payload.gpu_device,
+        endpoint_url=endpoint_url,
     )
     
     lm_eval_runner.create_job(job)
@@ -3259,6 +3040,7 @@ def create_lm_eval_job(request: LMEvalJobRequest):
         "tasks": [t.name for t in job.tasks],
         "model_path": job.model_path,
         "gpu_device": job.gpu_device,
+        "endpoint_url": job.endpoint_url,
         "status": job.status.value,
     }
 
@@ -3276,6 +3058,9 @@ def get_lm_eval_job(job_id: str):
     return {
         "id": job.id,
         "tasks": [t.name for t in job.tasks],
+        "model_path": job.model_path,
+        "gpu_device": job.gpu_device,
+        "endpoint_url": getattr(job, "endpoint_url", None),
         "status": job.status.value,
         "progress": job.progress,
         "results": job.results,

@@ -3,7 +3,6 @@ import {
     Box,
     Typography,
     Popover,
-    Paper,
     Chip,
     IconButton,
     CircularProgress,

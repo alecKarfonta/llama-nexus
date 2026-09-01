@@ -89,18 +89,6 @@ from .evaluation import (
     JudgeEvaluation,
     EvaluationManager,
 )
-from .benchmarks import (
-    BenchmarkName,
-    BenchmarkStatus,
-    BenchmarkConfig,
-    BenchmarkResult,
-    BenchmarkJob,
-    BenchmarkRunner,
-    DatasetConfig,
-    HuggingFaceDatasetManager,
-    get_dataset_manager,
-    BENCHMARK_DATASETS,
-)
 from .ab_testing import (
     ABTestStatus,
     TrafficSplit,
@@ -212,18 +200,6 @@ __all__ = [
     "JudgeConfig",
     "JudgeEvaluation",
     "EvaluationManager",
-    # Benchmarks
-    "BenchmarkName",
-    "BenchmarkStatus",
-    "BenchmarkConfig",
-    "BenchmarkResult",
-    "BenchmarkJob",
-    "BenchmarkRunner",
-    # Dataset Management
-    "DatasetConfig",
-    "HuggingFaceDatasetManager",
-    "get_dataset_manager",
-    "BENCHMARK_DATASETS",
     # A/B Testing
     "ABTestStatus",
     "TrafficSplit",

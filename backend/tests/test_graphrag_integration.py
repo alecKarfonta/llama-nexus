@@ -8,6 +8,40 @@ from fastapi.testclient import TestClient
 from unittest.mock import Mock, patch, AsyncMock
 import httpx
 from io import BytesIO
+import importlib.util
+import sys
+from pathlib import Path
+from types import ModuleType
+
+
+GRAPHRAG_ROUTES_DIR = Path(__file__).resolve().parents[1] / "routes" / "graphrag"
+ROUTES_DIR = GRAPHRAG_ROUTES_DIR.parent
+
+
+def _install_graphrag_routes_package():
+    """Load routes.graphrag without importing the whole app routes package."""
+    routes_pkg = sys.modules.get("routes")
+    if routes_pkg is None:
+        routes_pkg = ModuleType("routes")
+        routes_pkg.__path__ = [str(ROUTES_DIR)]
+        sys.modules["routes"] = routes_pkg
+
+    if "routes.graphrag" in sys.modules:
+        return sys.modules["routes.graphrag"]
+
+    spec = importlib.util.spec_from_file_location(
+        "routes.graphrag",
+        GRAPHRAG_ROUTES_DIR / "__init__.py",
+        submodule_search_locations=[str(GRAPHRAG_ROUTES_DIR)],
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["routes.graphrag"] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_install_graphrag_routes_package()
 
 
 @pytest.fixture
@@ -56,81 +90,110 @@ def mock_graphrag_response():
     }
 
 
+@pytest.fixture(autouse=True)
+def graphrag_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("GRAPHRAG_ENABLED", "true")
+    monkeypatch.setenv("GRAPHRAG_URL", "http://graphrag.test")
+    monkeypatch.setenv("GRAPHRAG_PIPELINE_RUNS_FILE", str(tmp_path / "pipeline_runs.json"))
+    monkeypatch.setenv("EMBEDDING_BENCHMARK_DB_PATH", str(tmp_path / "embedding_benchmarks.db"))
+
+    from modules.graphrag.config import reset_config
+    from modules.graphrag.pipeline_runs import reset_pipeline_run_store
+
+    reset_config()
+    reset_pipeline_run_store()
+    yield
+    reset_config()
+    reset_pipeline_run_store()
+
+
 class TestGraphRAGProxyEndpoints:
     """Test GraphRAG proxy endpoints."""
+    pytestmark = pytest.mark.asyncio
     
-    @patch('httpx.AsyncClient')
-    async def test_health_check(self, mock_client, mock_graphrag_response):
+    async def test_health_check(self, mock_graphrag_response):
         """Test GraphRAG health check endpoint."""
         mock_response = Mock()
         mock_response.json.return_value = mock_graphrag_response["health"]
+        mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        
-        mock_client.return_value.__aenter__.return_value.get = AsyncMock(return_value=mock_response)
-        
-        from routes.graphrag import graphrag_health
-        result = await graphrag_health()
+
+        mock_client = Mock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        from routes.graphrag import health
+
+        with patch.object(health, "get_http_client", return_value=mock_client):
+            result = await health.graphrag_health()
         
         assert result["status"] == "healthy"
     
-    @patch('httpx.AsyncClient')
-    async def test_intelligent_search(self, mock_client, mock_graphrag_response):
+    async def test_intelligent_search(self, mock_graphrag_response):
         """Test intelligent search endpoint."""
         mock_response = Mock()
         mock_response.json.return_value = mock_graphrag_response["search"]
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        
-        mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-        
-        from routes.graphrag import intelligent_search
+
+        mock_client = Mock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        from routes.graphrag import search
         from fastapi import Request
         
         # Create mock request
         mock_request = Mock(spec=Request)
         mock_request.json = AsyncMock(return_value={"query": "test query", "search_type": "auto"})
-        
-        result = await intelligent_search(mock_request)
+
+        with (
+            patch.object(search, "_graphrag_url", return_value="http://graphrag.test"),
+            patch.object(search, "get_http_client", return_value=mock_client),
+        ):
+            result = await search.intelligent_search(mock_request)
         
         assert "answer" in result
         assert "results" in result
         assert result["search_method_used"] == "hybrid"
         assert len(result["results"]) == 2
     
-    @patch('httpx.AsyncClient')
-    async def test_entity_extraction(self, mock_client, mock_graphrag_response):
+    async def test_entity_extraction(self, mock_graphrag_response):
         """Test entity extraction endpoint."""
         mock_response = Mock()
         mock_response.json.return_value = mock_graphrag_response["extract"]
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        
-        mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-        
-        from routes.graphrag import graphrag_extract_entities
+
+        mock_client = Mock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        from routes.graphrag import ingest
         from fastapi import Request
         
         mock_request = Mock(spec=Request)
         mock_request.json = AsyncMock(return_value={"text": "OpenAI developed GPT-4", "domain": "tech"})
-        
-        result = await graphrag_extract_entities(mock_request)
+
+        with (
+            patch.object(ingest, "_graphrag_url", return_value="http://graphrag.test"),
+            patch.object(ingest, "get_http_client", return_value=mock_client),
+        ):
+            result = await ingest.graphrag_extract_entities(mock_request)
         
         assert "entities" in result
         assert "relationships" in result
         assert len(result["entities"]) == 2
         assert result["entities"][0]["name"] == "OpenAI"
     
-    @patch('httpx.AsyncClient')
-    async def test_document_upload(self, mock_client, mock_graphrag_response):
+    async def test_document_upload(self, mock_graphrag_response):
         """Test document upload to GraphRAG."""
         mock_response = Mock()
         mock_response.json.return_value = mock_graphrag_response["upload"]
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        
-        mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-        
-        from routes.graphrag import graphrag_upload_document
+
+        mock_client = Mock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        from routes.graphrag import ingest
         from fastapi import UploadFile
         
         # Create mock file
@@ -140,12 +203,16 @@ class TestGraphRAGProxyEndpoints:
         mock_file.content_type = "text/plain"
         mock_file.read = AsyncMock(return_value=file_content)
         
-        result = await graphrag_upload_document(
-            file=mock_file,
-            domain="general",
-            use_semantic_chunking=True,
-            build_knowledge_graph=True
-        )
+        with (
+            patch.object(ingest, "_graphrag_url", return_value="http://graphrag.test"),
+            patch.object(ingest, "get_http_client", return_value=mock_client),
+        ):
+            result = await ingest.graphrag_upload_document(
+                file=mock_file,
+                domain="general",
+                use_semantic_chunking=True,
+                build_knowledge_graph=True
+            )
         
         assert result["filename"] == "test.txt"
         assert result["total_chunks"] == 2
@@ -154,7 +221,7 @@ class TestGraphRAGProxyEndpoints:
     async def test_graphrag_disabled(self):
         """Test that endpoints return error when GraphRAG is disabled."""
         from routes.graphrag import check_graphrag_enabled
-        from fastapi import HTTPException
+        from fastapi.exceptions import HTTPException
         
         with patch('modules.graphrag.config._config', None):
             with patch.dict('os.environ', {'GRAPHRAG_ENABLED': 'false'}, clear=False):
@@ -170,6 +237,7 @@ class TestGraphRAGProxyEndpoints:
 
 class TestGraphRAGWorkflowExecutors:
     """Test GraphRAG workflow executors."""
+    pytestmark = pytest.mark.asyncio
     
     @pytest.fixture
     def execution_context(self):
@@ -355,6 +423,7 @@ class TestGraphRAGWorkflowExecutors:
 
 class TestGraphRAGWorkflowIntegration:
     """Test complete workflows using GraphRAG nodes."""
+    pytestmark = pytest.mark.asyncio
     
     @patch('httpx.AsyncClient')
     async def test_qa_workflow(self, mock_client, mock_graphrag_response):
@@ -462,6 +531,7 @@ class TestGraphRAGWorkflowIntegration:
 
 class TestGraphRAGErrorHandling:
     """Test error handling in GraphRAG integration."""
+    pytestmark = pytest.mark.asyncio
     
     @patch('httpx.AsyncClient')
     async def test_service_unavailable(self, mock_client):
@@ -577,13 +647,19 @@ class TestGraphRAGIntegrationAPI:
     """Test GraphRAG integration via FastAPI."""
     
     @pytest.fixture
-    def client(self):
+    def client(self, monkeypatch, tmp_path):
         """Create test client."""
-        from main import app
+        monkeypatch.setenv("MODELS_DIR", str(tmp_path / "models"))
+        from fastapi import FastAPI
+        from routes.graphrag import router as graphrag_router
+
+        app = FastAPI()
+        app.include_router(graphrag_router)
         return TestClient(app)
     
+    @patch('routes.graphrag.ingest._graphrag_url', return_value='http://graphrag.test')
     @patch('routes.graphrag.ingest.get_http_client')
-    def test_upload_endpoint(self, mock_get_client, client, mock_graphrag_response):
+    def test_upload_endpoint(self, mock_get_client, _mock_graphrag_url, client, mock_graphrag_response):
         """Test document upload endpoint."""
         mock_response = Mock()
         mock_response.json.return_value = mock_graphrag_response["upload"]
@@ -609,8 +685,9 @@ class TestGraphRAGIntegrationAPI:
         # This is a structural test showing how the endpoint should be tested
         assert response.status_code in [200, 500, 502, 503]  # 500/502 if service unreachable, 503 if disabled
     
+    @patch('routes.graphrag.search._graphrag_url', return_value='http://graphrag.test')
     @patch('routes.graphrag.search.get_http_client')
-    def test_search_endpoint(self, mock_get_client, client, mock_graphrag_response):
+    def test_search_endpoint(self, mock_get_client, _mock_graphrag_url, client, mock_graphrag_response):
         """Test intelligent search endpoint."""
         mock_response = Mock()
         mock_response.json.return_value = mock_graphrag_response["search"]
@@ -631,4 +708,3 @@ class TestGraphRAGIntegrationAPI:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

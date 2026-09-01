@@ -24,6 +24,7 @@ async def list_conversations(
     offset: int = 0,
     search: Optional[str] = None,
     tags: Optional[str] = None,
+    include_archived: bool = False,
 ):
     """List all conversations with optional filtering."""
     store = get_conversation_store(request)
@@ -33,6 +34,7 @@ async def list_conversations(
         offset=offset,
         search=search,
         tags=tag_list,
+        include_archived=include_archived,
     )
     return result
 
@@ -98,6 +100,7 @@ async def update_conversation(request: Request, conversation_id: str):
             model=data.get('model'),
             settings=data.get('settings'),
             tags=data.get('tags'),
+            is_archived=data.get('is_archived'),
         )
         if conversation is None:
             raise HTTPException(status_code=404, detail="Conversation not found")

@@ -8,6 +8,7 @@
 import type { Tool, ToolCall, WeatherQuery, CalculatorQuery, CodeExecutionQuery } from '@/types/api';
 import { apiService } from './api';
 import { mcpService } from './mcp';
+import { debugLog } from '@/utils/debug';
 
 // Extended tool type with source tracking
 export interface ExtendedTool extends Tool {
@@ -24,13 +25,40 @@ interface WebSearchResult {
   source?: string;
 }
 
-// RAG search result type
-interface RAGSearchResult {
-  content: string;
-  source: string;
-  score: number;
-  metadata?: Record<string, any>;
+type CalculatorToken =
+  | { type: 'number'; value: number }
+  | { type: 'identifier'; value: string }
+  | { type: 'operator'; value: '+' | '-' | '*' | '/' | '^' }
+  | { type: 'leftParen' | 'rightParen' | 'comma' };
+
+interface CalculatorFunction {
+  minArgs: number;
+  maxArgs?: number;
+  execute: (args: number[]) => number;
 }
+
+const calculatorFunctions: Record<string, CalculatorFunction> = {
+  abs: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.abs(value) },
+  acos: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.acos(value) },
+  asin: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.asin(value) },
+  atan: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.atan(value) },
+  ceil: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.ceil(value) },
+  cos: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.cos(value) },
+  floor: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.floor(value) },
+  log: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.log(value) },
+  max: { minArgs: 1, execute: (args) => Math.max(...args) },
+  min: { minArgs: 1, execute: (args) => Math.min(...args) },
+  pow: { minArgs: 2, maxArgs: 2, execute: ([base, exponent]) => Math.pow(base, exponent) },
+  round: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.round(value) },
+  sin: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.sin(value) },
+  sqrt: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.sqrt(value) },
+  tan: { minArgs: 1, maxArgs: 1, execute: ([value]) => Math.tan(value) },
+};
+
+const calculatorConstants: Record<string, number> = {
+  e: Math.E,
+  pi: Math.PI,
+};
 
 export class ToolsService {
   // Built-in tool definitions for testing
@@ -281,7 +309,7 @@ export class ToolsService {
       // Handle potential response structure variations
       const tools = response?.tools ?? [];
       if (!Array.isArray(tools)) {
-        console.warn('getMCPTools: response.tools is not an array', response);
+        debugLog('tools', 'MCP tools response did not include an array', response);
         return [];
       }
       return tools.map(tool => ({
@@ -291,7 +319,7 @@ export class ToolsService {
         _serverName: tool.function.name.split('_')[1], // Extract server name from mcp_servername_toolname
       }));
     } catch (error) {
-      console.warn('Failed to fetch MCP tools:', error);
+      debugLog('tools', 'MCP tools unavailable', error);
       return [];
     }
   }
@@ -604,14 +632,237 @@ export class ToolsService {
     }, null, 2);
   }
 
+  private static tokenizeCalculatorExpression(expression: string): CalculatorToken[] {
+    const tokens: CalculatorToken[] = [];
+    let index = 0;
+
+    const isDigit = (value: string) => value >= '0' && value <= '9';
+    const isIdentifierStart = (value: string) => /[a-z]/i.test(value);
+    const isIdentifierPart = (value: string) => /[a-z0-9_]/i.test(value);
+
+    while (index < expression.length) {
+      const char = expression[index];
+
+      if (/\s/.test(char)) {
+        index += 1;
+        continue;
+      }
+
+      if (isDigit(char) || char === '.') {
+        const start = index;
+        let dotCount = char === '.' ? 1 : 0;
+        index += 1;
+
+        while (index < expression.length) {
+          const next = expression[index];
+          if (next === '.') {
+            dotCount += 1;
+            if (dotCount > 1) {
+              throw new Error('Invalid number');
+            }
+            index += 1;
+            continue;
+          }
+          if (!isDigit(next)) break;
+          index += 1;
+        }
+
+        const value = Number(expression.slice(start, index));
+        if (!Number.isFinite(value)) {
+          throw new Error('Invalid number');
+        }
+        tokens.push({ type: 'number', value });
+        continue;
+      }
+
+      if (isIdentifierStart(char)) {
+        const start = index;
+        index += 1;
+        while (index < expression.length && isIdentifierPart(expression[index])) {
+          index += 1;
+        }
+        tokens.push({ type: 'identifier', value: expression.slice(start, index).toLowerCase() });
+        continue;
+      }
+
+      if (char === '+' || char === '-' || char === '*' || char === '/' || char === '^') {
+        tokens.push({ type: 'operator', value: char });
+        index += 1;
+        continue;
+      }
+
+      if (char === '(') {
+        tokens.push({ type: 'leftParen' });
+        index += 1;
+        continue;
+      }
+
+      if (char === ')') {
+        tokens.push({ type: 'rightParen' });
+        index += 1;
+        continue;
+      }
+
+      if (char === ',') {
+        tokens.push({ type: 'comma' });
+        index += 1;
+        continue;
+      }
+
+      throw new Error('Unsupported character');
+    }
+
+    return tokens;
+  }
+
+  private static evaluateCalculatorExpression(expression: string): number {
+    const tokens = this.tokenizeCalculatorExpression(expression);
+    let position = 0;
+
+    if (tokens.length === 0) {
+      throw new Error('Expression is empty');
+    }
+
+    const peek = () => tokens[position];
+    const consume = () => tokens[position++];
+    const peekOperator = () => {
+      const token = peek();
+      return token?.type === 'operator' ? token : undefined;
+    };
+
+    const consumeType = (type: CalculatorToken['type']) => {
+      if (peek()?.type === type) {
+        position += 1;
+        return true;
+      }
+      return false;
+    };
+
+    const parseExpression = (): number => parseAdditive();
+
+    const parseAdditive = (): number => {
+      let value = parseMultiplicative();
+      let operator = peekOperator();
+
+      while (operator && (operator.value === '+' || operator.value === '-')) {
+        consume();
+        const right = parseMultiplicative();
+        value = operator.value === '+' ? value + right : value - right;
+        operator = peekOperator();
+      }
+
+      return value;
+    };
+
+    const parseMultiplicative = (): number => {
+      let value = parsePower();
+      let operator = peekOperator();
+
+      while (operator && (operator.value === '*' || operator.value === '/')) {
+        consume();
+        const right = parsePower();
+        value = operator.value === '*' ? value * right : value / right;
+        operator = peekOperator();
+      }
+
+      return value;
+    };
+
+    const parsePower = (): number => {
+      const value = parseUnary();
+
+      if (peekOperator()?.value === '^') {
+        consume();
+        return Math.pow(value, parsePower());
+      }
+
+      return value;
+    };
+
+    const parseUnary = (): number => {
+      const operator = peekOperator();
+
+      if (operator && (operator.value === '+' || operator.value === '-')) {
+        consume();
+        const value = parseUnary();
+        return operator.value === '-' ? -value : value;
+      }
+
+      return parsePrimary();
+    };
+
+    const parsePrimary = (): number => {
+      const token = consume();
+
+      if (!token) {
+        throw new Error('Unexpected end of expression');
+      }
+
+      if (token.type === 'number') {
+        return token.value;
+      }
+
+      if (token.type === 'identifier') {
+        if (consumeType('leftParen')) {
+          const args: number[] = [];
+
+          if (!consumeType('rightParen')) {
+            do {
+              args.push(parseExpression());
+            } while (consumeType('comma'));
+
+            if (!consumeType('rightParen')) {
+              throw new Error('Expected closing parenthesis');
+            }
+          }
+
+          const fn = calculatorFunctions[token.value];
+          if (!fn) {
+            throw new Error('Unknown function');
+          }
+          if (args.length < fn.minArgs || (fn.maxArgs !== undefined && args.length > fn.maxArgs)) {
+            throw new Error('Invalid argument count');
+          }
+
+          const result = fn.execute(args);
+          if (!Number.isFinite(result)) {
+            throw new Error('Invalid function result');
+          }
+          return result;
+        }
+
+        const constant = calculatorConstants[token.value];
+        if (constant === undefined) {
+          throw new Error('Unknown identifier');
+        }
+        return constant;
+      }
+
+      if (token.type === 'leftParen') {
+        const value = parseExpression();
+        if (!consumeType('rightParen')) {
+          throw new Error('Expected closing parenthesis');
+        }
+        return value;
+      }
+
+      throw new Error('Unexpected token');
+    };
+
+    const result = parseExpression();
+
+    if (position !== tokens.length || !Number.isFinite(result)) {
+      throw new Error('Invalid mathematical expression');
+    }
+
+    return result;
+  }
+
   private static executeCalculatorTool(query: CalculatorQuery): string {
     const { expression } = query;
 
     try {
-      // Basic math evaluation (in real implementation, use a safe evaluator)
-      // This is a simplified demo - in production, use a proper math library
-      const safeExpression = expression.replace(/[^0-9+\-*/().\s]/g, '');
-      const result = eval(safeExpression);
+      const result = this.evaluateCalculatorExpression(expression);
 
       return JSON.stringify({
         expression,

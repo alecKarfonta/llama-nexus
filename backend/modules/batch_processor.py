@@ -16,6 +16,7 @@ from pathlib import Path
 from dataclasses import dataclass, asdict
 import logging
 import uuid
+from local_paths import backend_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class BatchProcessor:
     def __init__(self, db_path: str = None, api_base_url: str = None):
         """Initialize the batch processor."""
         if db_path is None:
-            db_path = os.getenv('BATCH_DB_PATH', '/data/batch_jobs.db')
+            db_path = os.getenv('BATCH_DB_PATH') or str(backend_data_path('batch_jobs.db'))
         
         self.db_path = db_path
         self.api_base_url = api_base_url or os.getenv('LLAMA_API_URL', 'http://llamacpp-api:8080')

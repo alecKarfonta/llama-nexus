@@ -1,34 +1,22 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Box,
   Grid,
   Typography,
-  Card,
-  CardContent,
-  CardHeader,
+  Button,
   IconButton,
-  Chip,
   Alert,
-  CircularProgress,
-  Divider,
-  Paper,
-  Tab,
-  Tabs,
   LinearProgress,
   Select,
   MenuItem,
   FormControl,
   InputLabel,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
   Tooltip,
   Switch,
   FormControlLabel,
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import {
   Refresh as RefreshIcon,
   Memory as MemoryIcon,
@@ -36,13 +24,44 @@ import {
   Storage as StorageIcon,
   Timer as TimerIcon,
   TrendingUp as TrendingIcon,
-  Insights as InsightsIcon,
   DataUsage as DataUsageIcon,
   Cached as CachedIcon,
   Token as TokenIcon,
+  Chat as ChatIcon,
+  RocketLaunch as DeployIcon,
 } from '@mui/icons-material'
-import { useMetrics, useServiceStatus, useTokenUsage, useRealTimeMetrics } from '@/hooks/useMetrics'
+import { useMetrics, useServiceStatus, useRealTimeMetrics } from '@/hooks/useMetrics'
 import { TokenUsageTracker } from '@/components/monitoring/TokenUsageTracker'
+import { MetricTile, PageShell, SectionCard, StatusChip, type StatusChipConfigMap } from '@/components/common'
+import { getRoutePath } from '@/config/navigation'
+import type { DeploymentRouteContext, RuntimeRouteState } from '@/types/runtimeHandoff'
+import { modelInfoFromDeployment, runtimeBackendLabel } from '@/types/runtimeHandoff'
+import { accentColors } from '@/utils/theme'
+
+const MONITORING_STATUS_CONFIG: StatusChipConfigMap = {
+  checking: { color: accentColors.warning, label: 'Checking health' },
+  connected: { color: accentColors.success, label: 'Live websocket' },
+  deferred: { color: accentColors.warning, label: 'Deferred' },
+  degraded: { color: accentColors.warning, label: 'Degraded' },
+  good: { color: accentColors.success, label: 'Good cache performance' },
+  healthy: { color: accentColors.success, label: 'Healthy' },
+  info: { color: accentColors.info, label: 'Info' },
+  operations: { color: accentColors.primary, label: 'Operations' },
+  polling: { color: accentColors.info, label: 'Polling mode' },
+  processing: { color: accentColors.success, label: 'Processing' },
+  starting: { color: accentColors.warning, label: 'Starting' },
+  stopped: { color: accentColors.rose, label: 'Stopped' },
+  target: { color: accentColors.info, label: 'Runtime target' },
+  unavailable: { color: accentColors.slate, label: 'Metrics unavailable' },
+  warning: { color: accentColors.warning, label: 'Warning' },
+}
+
+const monitoringPanelSx = {
+  borderRadius: '8px',
+  bgcolor: 'background.paper',
+  border: '1px solid',
+  borderColor: 'divider',
+} as const
 
 interface PrometheusMetrics {
   // Request metrics
@@ -75,57 +94,34 @@ interface PrometheusMetrics {
   llamacpp_n_busy_slots_per_decode?: number
 }
 
-const MetricCard: React.FC<{
-  title: string
-  value: string | number
-  subtitle?: string
-  icon: React.ReactNode
-  color?: string
-  trend?: number
-}> = ({ title, value, subtitle, icon, color = 'primary.main', trend }) => (
-  <Card variant="outlined">
-    <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Box>
-          <Typography variant="caption" color="text.secondary">
-            {title}
-          </Typography>
-          <Typography variant="h5" sx={{ color, fontWeight: 600 }}>
-            {value}
-          </Typography>
-          {subtitle && (
-            <Typography variant="caption" color="text.secondary">
-              {subtitle}
-            </Typography>
-          )}
-        </Box>
-        <Box sx={{ color, opacity: 0.8 }}>
-          {icon}
-        </Box>
-      </Box>
-      {trend !== undefined && (
-        <Box sx={{ display: 'flex', alignItems: 'center', mt: 0.5 }}>
-          <TrendingIcon sx={{ fontSize: 14, color: trend >= 0 ? 'success.main' : 'error.main', mr: 0.5 }} />
-          <Typography variant="caption" color={trend >= 0 ? 'success.main' : 'error.main'}>
-            {trend >= 0 ? '+' : ''}{trend.toFixed(1)}%
-          </Typography>
-        </Box>
-      )}
-    </CardContent>
-  </Card>
-)
-
 export default function MonitoringPage() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const benchmarkPath = getRoutePath('benchmark')
+  const chatPath = getRoutePath('chat')
+  const deployPath = getRoutePath('deploy')
+  const routeState = location.state as RuntimeRouteState | null
+  const incomingDeployment = routeState?.deployment
   const [tabValue, setTabValue] = useState(0)
   const [timeRange, setTimeRange] = useState<'1h' | '24h' | '7d' | '30d'>('24h')
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [prometheusMetrics, setPrometheusMetrics] = useState<PrometheusMetrics>({})
-  const [loading, setLoading] = useState(true)
+  const [deploymentHandoff, setDeploymentHandoff] = useState<DeploymentRouteContext | null>(null)
   const [error, setError] = useState<string | null>(null)
   
   const { data: metrics, isLoading: metricsLoading, refetch: refetchMetrics } = useMetrics()
   const { data: serviceStatus, isLoading: statusLoading } = useServiceStatus()
   const { connect, disconnect, connectionStatus } = useRealTimeMetrics()
+
+  useEffect(() => {
+    if (!incomingDeployment?.modelName) return
+    setDeploymentHandoff(incomingDeployment)
+    setAutoRefresh(true)
+  }, [
+    incomingDeployment?.backend,
+    incomingDeployment?.endpoint,
+    incomingDeployment?.modelName,
+  ])
   
   // Fetch Prometheus metrics from llama.cpp
   const fetchPrometheusMetrics = useCallback(async () => {
@@ -171,8 +167,6 @@ export default function MonitoringPage() {
         setError(err.message)
       }
       setPrometheusMetrics({})
-    } finally {
-      setLoading(false)
     }
   }, [])
   
@@ -213,332 +207,438 @@ export default function MonitoringPage() {
     ? ((prometheusMetrics.llamacpp_tokens_cached_total || 0) / 
        ((prometheusMetrics.llamacpp_tokens_cached_total || 0) + (prometheusMetrics.llamacpp_tokens_evaluated_total || 0))) * 100
     : 0
+  const inferenceRequestTotal = prometheusMetrics.llamacpp_requests_total || 0
+  const inferenceProcessing = prometheusMetrics.llamacpp_requests_processing || 0
+  const inferenceDeferred = prometheusMetrics.llamacpp_requests_deferred || 0
+  const inferenceSlotActive = prometheusMetrics.llamacpp_slot_active || 0
+  const inferenceSlotIdle = prometheusMetrics.llamacpp_slot_idle || 0
+  const inferenceTokensPredicted = prometheusMetrics.llamacpp_tokens_predicted_total || 0
+  const inferenceTokensEvaluated = prometheusMetrics.llamacpp_tokens_evaluated_total || 0
+  const hasInferenceTraffic = [
+    inferenceRequestTotal,
+    inferenceProcessing,
+    inferenceDeferred,
+    inferenceSlotActive,
+    inferenceTokensPredicted,
+    inferenceTokensEvaluated,
+    tokensPerSecond,
+    avgTimeToFirstToken,
+  ].some((value) => value > 0)
 
   const handleRefresh = () => {
     fetchPrometheusMetrics()
     refetchMetrics()
   }
 
-  return (
-    <Box sx={{ p: 3 }}>
-      {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h5" sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
-          <InsightsIcon /> System Monitoring
-        </Typography>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={autoRefresh}
-                onChange={(e) => setAutoRefresh(e.target.checked)}
-                size="small"
-              />
-            }
-            label="Auto Refresh"
-          />
-          <Chip
-            label={connectionStatus === 'connected' ? 'Live' : 'Polling'}
-            color={connectionStatus === 'connected' ? 'success' : 'default'}
+  const serviceHealth = serviceStatus?.health || 'stopped'
+  const connectionLabel = connectionStatus === 'connected' ? 'Live' : 'Polling'
+  const connectionStatusKey = connectionStatus === 'connected' ? 'connected' : 'polling'
+  const activeEndpoints = serviceStatus?.endpoints
+    ? Object.values(serviceStatus.endpoints).filter(Boolean).length
+    : 0
+  const totalEndpoints = serviceStatus?.endpoints ? Object.keys(serviceStatus.endpoints).length : 0
+  const showEndpointStatus = activeEndpoints > 0
+  const activeDeploymentContext = deploymentHandoff ?? (
+    serviceStatus?.modelLoaded && serviceStatus.modelName
+      ? {
+          backend: 'llamacpp' as const,
+          modelName: serviceStatus.modelName,
+          endpoint: 'Backend proxy',
+        }
+      : null
+  )
+  const monitoringTargetLabel = activeDeploymentContext?.modelName || serviceStatus?.modelName || 'No model loaded'
+  const monitoringBackendLabel = runtimeBackendLabel(activeDeploymentContext?.backend)
+  const monitoringEndpointLabel = activeDeploymentContext?.endpoint || 'Backend proxy'
+  const runtimeActions = activeDeploymentContext
+    ? [
+        {
+          label: 'Chat',
+          icon: <ChatIcon />,
+          onClick: () => navigate(chatPath, { state: { deployment: activeDeploymentContext } }),
+        },
+        {
+          label: 'Benchmark',
+          icon: <SpeedIcon />,
+          onClick: () =>
+            navigate(benchmarkPath, {
+              state: {
+                deployment: activeDeploymentContext,
+                model: modelInfoFromDeployment(activeDeploymentContext),
+              },
+            }),
+        },
+        {
+          label: 'Deploy',
+          icon: <DeployIcon />,
+          onClick: () => navigate(deployPath, { state: { backend: activeDeploymentContext.backend } }),
+        },
+      ]
+    : []
+  const monitoringIconButtonSx = {
+    width: 34,
+    height: 34,
+    borderRadius: '8px',
+    border: '1px solid',
+    borderColor: 'divider',
+    bgcolor: 'action.hover',
+    '&:hover': { bgcolor: alpha(accentColors.primary, 0.12) },
+    '& .MuiSvgIcon-root': { fontSize: 18 },
+  } as const
+  const monitoringHeaderActions = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      {['Inference', 'KV Cache', 'Tokens'].map((label, index) => (
+        <Button
+          key={label}
+          size="small"
+          variant={tabValue === index ? 'contained' : 'outlined'}
+          onClick={() => setTabValue(index)}
+          sx={{ height: 34, borderRadius: '8px', fontWeight: 800, px: 1.1 }}
+        >
+          {label}
+        </Button>
+      ))}
+      <FormControlLabel
+        control={
+          <Switch
+            checked={autoRefresh}
+            onChange={(e) => setAutoRefresh(e.target.checked)}
             size="small"
           />
-          <Tooltip title="Refresh Now">
-            <IconButton onClick={handleRefresh}>
-              <RefreshIcon />
-            </IconButton>
-          </Tooltip>
-        </Box>
-      </Box>
-      
+        }
+        label="Auto refresh"
+        sx={{ ml: 0, mr: 0.5, '& .MuiFormControlLabel-label': { fontSize: '0.8rem' } }}
+      />
+      {runtimeActions.map((action) => (
+        <Tooltip key={action.label} title={action.label}>
+          <IconButton
+            size="small"
+            aria-label={action.label}
+            onClick={action.onClick}
+            sx={monitoringIconButtonSx}
+          >
+            {action.icon}
+          </IconButton>
+        </Tooltip>
+      ))}
+      <Tooltip title="Refresh metrics">
+        <IconButton
+          size="small"
+          aria-label="Refresh metrics"
+          onClick={handleRefresh}
+          sx={monitoringIconButtonSx}
+        >
+          <RefreshIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  )
+  const monitoringSummaryRow = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+      <StatusChip status={statusLoading ? 'checking' : serviceHealth} statusConfig={MONITORING_STATUS_CONFIG} height={22} sx={{ textTransform: 'capitalize' }} />
+      <StatusChip status={connectionStatusKey} label={connectionLabel} statusConfig={MONITORING_STATUS_CONFIG} height={22} />
+      <StatusChip status="target" label={monitoringTargetLabel} statusConfig={MONITORING_STATUS_CONFIG} height={22} />
+      {showEndpointStatus && (
+        <StatusChip status="info" label={`${activeEndpoints}/${totalEndpoints || 4} endpoints`} statusConfig={MONITORING_STATUS_CONFIG} height={22} />
+      )}
+      <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
+        {monitoringBackendLabel} at {monitoringEndpointLabel} / {metrics ? `${metrics.cpuUsage.toFixed(1)}% CPU, ${metrics.memoryUsage.toFixed(1)}% memory` : metricsLoading ? 'loading resources' : 'resources unavailable'}
+      </Typography>
+    </Box>
+  )
+
+  return (
+    <PageShell
+      sx={{
+        py: 1.25,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1.25,
+        overflow: 'visible',
+      }}
+    >
       {error && (
-        <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setError(null)}>
+        <Alert severity="warning" sx={{ mb: 1.25 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
-      
-      {/* System Resources */}
-      <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 600 }}>
-        System Resources
-      </Typography>
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid item xs={6} md={3}>
-          <MetricCard
-            title="CPU Usage"
-            value={metrics?.cpu?.percent?.toFixed(1) + '%' || 'N/A'}
-            subtitle={`${metrics?.cpu?.count || 0} cores`}
-            icon={<SpeedIcon sx={{ fontSize: 32 }} />}
-            color="primary.main"
-          />
-        </Grid>
-        <Grid item xs={6} md={3}>
-          <MetricCard
-            title="Memory Used"
-            value={metrics?.memory?.used_mb 
-              ? `${(metrics.memory.used_mb / 1024).toFixed(1)} GB`
-              : 'N/A'}
-            subtitle={metrics?.memory?.total_mb 
-              ? `of ${(metrics.memory.total_mb / 1024).toFixed(1)} GB`
-              : ''}
-            icon={<MemoryIcon sx={{ fontSize: 32 }} />}
-            color="info.main"
-          />
-        </Grid>
-        <Grid item xs={6} md={3}>
-          <MetricCard
-            title="GPU Memory"
-            value={metrics?.gpu?.memory_used_mb
-              ? `${(metrics.gpu.memory_used_mb / 1024).toFixed(1)} GB`
-              : 'N/A'}
-            subtitle={metrics?.gpu?.memory_total_mb
-              ? `of ${(metrics.gpu.memory_total_mb / 1024).toFixed(1)} GB`
-              : ''}
-            icon={<StorageIcon sx={{ fontSize: 32 }} />}
-            color="success.main"
-          />
-        </Grid>
-        <Grid item xs={6} md={3}>
-          <MetricCard
-            title="GPU Utilization"
-            value={metrics?.gpu?.utilization?.toFixed(1) + '%' || 'N/A'}
-            subtitle={metrics?.gpu?.name || 'No GPU'}
-            icon={<DataUsageIcon sx={{ fontSize: 32 }} />}
-            color="warning.main"
-          />
-        </Grid>
-      </Grid>
-      
-      <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)} sx={{ mb: 2 }}>
-        <Tab label="Inference Metrics" />
-        <Tab label="KV Cache" />
-        <Tab label="Token Usage" />
-      </Tabs>
-      
-      {/* Inference Metrics Tab */}
-      {tabValue === 0 && (
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={6}>
-            <Card variant="outlined">
-              <CardHeader
-                title="Request Statistics"
-                titleTypographyProps={{ variant: 'subtitle1' }}
-              />
-              <Divider />
-              <CardContent>
-                <TableContainer>
-                  <Table size="small">
-                    <TableBody>
-                      <TableRow>
-                        <TableCell>Total Requests</TableCell>
-                        <TableCell align="right">
-                          <Typography variant="body2" fontWeight={600}>
-                            {prometheusMetrics.llamacpp_requests_total?.toLocaleString() || 0}
-                          </Typography>
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell>Processing</TableCell>
-                        <TableCell align="right">
-                          <Chip 
-                            size="small" 
-                            label={prometheusMetrics.llamacpp_requests_processing || 0}
-                            color={prometheusMetrics.llamacpp_requests_processing ? 'success' : 'default'}
-                          />
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell>Deferred</TableCell>
-                        <TableCell align="right">
-                          <Chip 
-                            size="small" 
-                            label={prometheusMetrics.llamacpp_requests_deferred || 0}
-                            color={prometheusMetrics.llamacpp_requests_deferred ? 'warning' : 'default'}
-                          />
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell>Active Slots</TableCell>
-                        <TableCell align="right">
-                          {prometheusMetrics.llamacpp_slot_active || 0}
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell>Idle Slots</TableCell>
-                        <TableCell align="right">
-                          {prometheusMetrics.llamacpp_slot_idle || 0}
-                        </TableCell>
-                      </TableRow>
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </CardContent>
-            </Card>
+
+      <SectionCard title="Resources" icon={<SpeedIcon />} accentColor={accentColors.success} action={monitoringHeaderActions}>
+        {monitoringSummaryRow}
+        <Grid container spacing={1}>
+          <Grid item xs={6} sm={6} lg={3}>
+            <MetricTile
+              variant="horizontal"
+              label="CPU"
+              value={metrics ? `${metrics.cpuUsage.toFixed(1)}%` : '--'}
+              detail={metricsLoading ? 'loading' : 'system load'}
+              icon={<SpeedIcon />}
+              color={accentColors.success}
+            />
           </Grid>
-          
-          <Grid item xs={12} md={6}>
-            <Card variant="outlined">
-              <CardHeader
-                title="Performance Metrics"
-                titleTypographyProps={{ variant: 'subtitle1' }}
-              />
-              <Divider />
-              <CardContent>
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <MetricCard
-                      title="Tokens/Second"
-                      value={tokensPerSecond.toFixed(1)}
-                      icon={<SpeedIcon />}
-                      color="success.main"
-                    />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <MetricCard
-                      title="Avg TTFT"
-                      value={`${avgTimeToFirstToken.toFixed(0)}ms`}
-                      icon={<TimerIcon />}
-                      color="info.main"
-                    />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <MetricCard
-                      title="Tokens Predicted"
-                      value={(prometheusMetrics.llamacpp_tokens_predicted_total || 0).toLocaleString()}
-                      icon={<TokenIcon />}
-                      color="primary.main"
-                    />
-                  </Grid>
-                  <Grid item xs={6}>
-                    <MetricCard
-                      title="Tokens Evaluated"
-                      value={(prometheusMetrics.llamacpp_tokens_evaluated_total || 0).toLocaleString()}
-                      icon={<DataUsageIcon />}
-                      color="warning.main"
-                    />
-                  </Grid>
-                </Grid>
-              </CardContent>
-            </Card>
+          <Grid item xs={6} sm={6} lg={3}>
+            <MetricTile
+              variant="horizontal"
+              label="Memory"
+              value={metrics ? `${metrics.memoryUsage.toFixed(1)}%` : '--'}
+              detail={metrics ? `${metrics.memoryUsed.toFixed(1)} / ${metrics.memoryTotal.toFixed(1)} GB` : metricsLoading ? 'loading' : 'unavailable'}
+              icon={<MemoryIcon />}
+              color={accentColors.info}
+            />
+          </Grid>
+          <Grid item xs={6} sm={6} lg={3}>
+            <MetricTile
+              variant="horizontal"
+              label="GPU"
+              value={metrics ? `${metrics.gpuUsage.toFixed(1)}%` : '--'}
+              detail={metrics?.gpuUsage ? 'utilization' : 'no active load'}
+              icon={<DataUsageIcon />}
+              color={accentColors.warning}
+            />
+          </Grid>
+          <Grid item xs={6} sm={6} lg={3}>
+            <MetricTile
+              variant="horizontal"
+              label="VRAM"
+              value={metrics ? `${metrics.vramUsage.toFixed(1)}%` : '--'}
+              detail={metrics?.vramTotal ? `${metrics.vramUsed.toFixed(1)} / ${metrics.vramTotal.toFixed(1)} GB` : 'none reported'}
+              icon={<StorageIcon />}
+              color={accentColors.primary}
+            />
           </Grid>
         </Grid>
-      )}
+      </SectionCard>
       
-      {/* KV Cache Tab */}
-      {tabValue === 1 && (
-        <Grid container spacing={2}>
-          <Grid item xs={12}>
-            <Card variant="outlined">
-              <CardHeader
-                title="KV Cache Statistics"
-                titleTypographyProps={{ variant: 'subtitle1' }}
-                action={
-                  <Chip 
-                    icon={<CachedIcon />}
-                    label={`${cacheHitRate.toFixed(1)}% Hit Rate`}
-                    color={cacheHitRate > 50 ? 'success' : cacheHitRate > 20 ? 'warning' : 'default'}
-                    size="small"
+      <Box data-monitoring-workspace sx={{ minWidth: 0 }}>
+        {/* Inference Metrics Tab */}
+        {tabValue === 0 && hasInferenceTraffic && (
+          <SectionCard
+            title="Inference"
+            icon={<DataUsageIcon />}
+            accentColor={accentColors.info}
+            action={
+              inferenceProcessing > 0 ? (
+                <StatusChip
+                  status="processing"
+                  label={`${inferenceProcessing} active`}
+                  statusConfig={MONITORING_STATUS_CONFIG}
+                />
+              ) : inferenceRequestTotal > 0 ? (
+                <StatusChip
+                  status="info"
+                  label={`${inferenceRequestTotal.toLocaleString()} requests`}
+                  statusConfig={MONITORING_STATUS_CONFIG}
+                />
+              ) : undefined
+            }
+          >
+            <Grid container spacing={1}>
+              {inferenceRequestTotal > 0 && (
+                <Grid item xs={6} sm={6} lg={4} xl={3}>
+                  <MetricTile
+                    variant="horizontal"
+                    label="Total requests"
+                    value={inferenceRequestTotal.toLocaleString()}
+                    icon={<DataUsageIcon />}
+                    color={accentColors.info}
                   />
-                }
-              />
-              <Divider />
-              <CardContent>
-                <Grid container spacing={3}>
-                  <Grid item xs={12} md={4}>
-                    <Box sx={{ mb: 2 }}>
-                      <Typography variant="body2" color="text.secondary" gutterBottom>
-                        Cache Utilization
-                      </Typography>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                        <LinearProgress 
-                          variant="determinate" 
-                          value={kvCacheUsage} 
-                          sx={{ flexGrow: 1, height: 8, borderRadius: 4 }}
-                          color={kvCacheUsage > 90 ? 'error' : kvCacheUsage > 70 ? 'warning' : 'primary'}
-                        />
-                        <Typography variant="body2" fontWeight={600}>
-                          {kvCacheUsage.toFixed(1)}%
-                        </Typography>
-                      </Box>
-                    </Box>
-                    <Box>
-                      <Typography variant="body2" color="text.secondary" gutterBottom>
-                        Cache Tokens
-                      </Typography>
-                      <Typography variant="h5" fontWeight={600}>
-                        {(prometheusMetrics.llamacpp_kv_cache_tokens || 0).toLocaleString()}
-                        <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                          / {(prometheusMetrics.llamacpp_kv_cache_max_tokens || 0).toLocaleString()}
-                        </Typography>
-                      </Typography>
-                    </Box>
-                  </Grid>
-                  
-                  <Grid item xs={12} md={4}>
-                    <MetricCard
-                      title="Cached Tokens"
-                      value={(prometheusMetrics.llamacpp_tokens_cached_total || 0).toLocaleString()}
-                      subtitle="Total tokens served from cache"
-                      icon={<CachedIcon sx={{ fontSize: 32 }} />}
-                      color="success.main"
-                    />
-                  </Grid>
-                  
-                  <Grid item xs={12} md={4}>
-                    <MetricCard
-                      title="Cache Hit Rate"
-                      value={`${cacheHitRate.toFixed(1)}%`}
-                      subtitle="Cached / (Cached + Evaluated)"
-                      icon={<TrendingIcon sx={{ fontSize: 32 }} />}
-                      color={cacheHitRate > 50 ? 'success.main' : 'warning.main'}
-                    />
-                  </Grid>
                 </Grid>
-                
-                <Divider sx={{ my: 2 }} />
-                
-                <Typography variant="subtitle2" gutterBottom>
-                  Cache Performance Tips
-                </Typography>
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                  {kvCacheUsage > 90 && (
-                    <Chip size="small" label="Consider reducing context size" color="warning" />
-                  )}
-                  {cacheHitRate < 20 && (
-                    <Chip size="small" label="Low cache hit rate - prompts vary significantly" color="info" />
-                  )}
-                  {kvCacheUsage === 0 && prometheusMetrics.llamacpp_kv_cache_max_tokens === undefined && (
-                    <Chip size="small" label="LlamaCPP server not running or metrics unavailable" color="default" />
-                  )}
-                  {kvCacheUsage > 0 && cacheHitRate > 50 && (
-                    <Chip size="small" label="Good cache performance" color="success" />
-                  )}
+              )}
+              {inferenceProcessing > 0 && (
+                <Grid item xs={6} sm={6} lg={4} xl={3}>
+                  <MetricTile
+                    variant="horizontal"
+                    label="Processing"
+                    value={inferenceProcessing}
+                    detail="active queue"
+                    icon={<SpeedIcon />}
+                    color={accentColors.success}
+                  />
+                </Grid>
+              )}
+              {inferenceDeferred > 0 && (
+                <Grid item xs={6} sm={6} lg={4} xl={3}>
+                  <MetricTile
+                    variant="horizontal"
+                    label="Deferred"
+                    value={inferenceDeferred}
+                    detail="waiting queue"
+                    icon={<TimerIcon />}
+                    color={accentColors.warning}
+                  />
+                </Grid>
+              )}
+              {(inferenceSlotActive > 0 || inferenceSlotIdle > 0) && (
+                <Grid item xs={6} sm={6} lg={4} xl={3}>
+                  <MetricTile
+                    variant="horizontal"
+                    label="Slots"
+                    value={`${inferenceSlotActive} active / ${inferenceSlotIdle} idle`}
+                    icon={<CachedIcon />}
+                    color={accentColors.primary}
+                  />
+                </Grid>
+              )}
+              {tokensPerSecond > 0 && (
+                <Grid item xs={6} sm={6} lg={4} xl={3}>
+                  <MetricTile
+                    variant="horizontal"
+                    label="Tokens/sec"
+                    value={tokensPerSecond.toFixed(1)}
+                    icon={<SpeedIcon />}
+                    color={accentColors.success}
+                  />
+                </Grid>
+              )}
+              {avgTimeToFirstToken > 0 && (
+                <Grid item xs={6} sm={6} lg={4} xl={3}>
+                  <MetricTile
+                    variant="horizontal"
+                    label="Avg TTFT"
+                    value={`${avgTimeToFirstToken.toFixed(0)}ms`}
+                    icon={<TimerIcon />}
+                    color={accentColors.info}
+                  />
+                </Grid>
+              )}
+              {inferenceTokensPredicted > 0 && (
+                <Grid item xs={6} sm={6} lg={4} xl={3}>
+                  <MetricTile
+                    variant="horizontal"
+                    label="Tokens predicted"
+                    value={inferenceTokensPredicted.toLocaleString()}
+                    icon={<TokenIcon />}
+                    color={accentColors.primary}
+                  />
+                </Grid>
+              )}
+              {inferenceTokensEvaluated > 0 && (
+                <Grid item xs={6} sm={6} lg={4} xl={3}>
+                  <MetricTile
+                    variant="horizontal"
+                    label="Tokens evaluated"
+                    value={inferenceTokensEvaluated.toLocaleString()}
+                    icon={<DataUsageIcon />}
+                    color={accentColors.warning}
+                  />
+                </Grid>
+              )}
+            </Grid>
+          </SectionCard>
+        )}
+
+        {/* KV Cache Tab */}
+        {tabValue === 1 && (
+          <SectionCard
+            title="KV Cache"
+            icon={<CachedIcon />}
+            accentColor={cacheHitRate > 50 ? accentColors.success : cacheHitRate > 20 ? accentColors.warning : accentColors.info}
+            action={
+              <StatusChip
+                status={cacheHitRate > 50 ? 'good' : cacheHitRate > 20 ? 'warning' : 'unavailable'}
+                icon={<CachedIcon sx={{ fontSize: 15 }} />}
+                label={`${cacheHitRate.toFixed(1)}% hit`}
+                statusConfig={MONITORING_STATUS_CONFIG}
+              />
+            }
+          >
+            <Grid container spacing={1}>
+              <Grid item xs={12} md={6} xl={3}>
+                <Box sx={{ ...monitoringPanelSx, p: 1.25, height: '100%', minHeight: 58 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 1, mb: 0.75 }}>
+                    <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                      Cache utilization
+                    </Typography>
+                    <Typography variant="body2" fontWeight={800}>
+                      {kvCacheUsage.toFixed(1)}%
+                    </Typography>
+                  </Box>
+                  <LinearProgress
+                    variant="determinate"
+                    value={kvCacheUsage}
+                    sx={{
+                      height: 7,
+                      borderRadius: 4,
+                      bgcolor: 'action.hover',
+                      '& .MuiLinearProgress-bar': {
+                        bgcolor: kvCacheUsage > 90 ? accentColors.rose : kvCacheUsage > 70 ? accentColors.warning : accentColors.primary,
+                      },
+                    }}
+                  />
                 </Box>
-              </CardContent>
-            </Card>
-          </Grid>
-        </Grid>
-      )}
+              </Grid>
+              <Grid item xs={12} sm={6} xl={3}>
+                <MetricTile
+                  variant="horizontal"
+                  label="Cache tokens"
+                  value={`${(prometheusMetrics.llamacpp_kv_cache_tokens || 0).toLocaleString()} / ${(prometheusMetrics.llamacpp_kv_cache_max_tokens || 0).toLocaleString()}`}
+                  icon={<CachedIcon />}
+                  color={accentColors.primary}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6} xl={3}>
+                <MetricTile
+                  variant="horizontal"
+                  label="Cached tokens"
+                  value={(prometheusMetrics.llamacpp_tokens_cached_total || 0).toLocaleString()}
+                  icon={<CachedIcon />}
+                  color={accentColors.success}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6} xl={3}>
+                <MetricTile
+                  variant="horizontal"
+                  label="Cache hit rate"
+                  value={`${cacheHitRate.toFixed(1)}%`}
+                  detail="cached / total"
+                  icon={<TrendingIcon />}
+                  color={cacheHitRate > 50 ? accentColors.success : accentColors.warning}
+                />
+              </Grid>
+            </Grid>
+
+            {(kvCacheUsage > 90 || cacheHitRate < 20 || (kvCacheUsage === 0 && prometheusMetrics.llamacpp_kv_cache_max_tokens === undefined)) && (
+              <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                {kvCacheUsage > 90 && (
+                  <StatusChip status="warning" label="Reduce context size" statusConfig={MONITORING_STATUS_CONFIG} />
+                )}
+                {cacheHitRate < 20 && (
+                  <StatusChip status="info" label="Low cache reuse" statusConfig={MONITORING_STATUS_CONFIG} />
+                )}
+                {kvCacheUsage === 0 && prometheusMetrics.llamacpp_kv_cache_max_tokens === undefined && (
+                  <StatusChip status="unavailable" label="Metrics unavailable" statusConfig={MONITORING_STATUS_CONFIG} />
+                )}
+              </Box>
+            )}
+          </SectionCard>
+        )}
       
-      {/* Token Usage Tab */}
-      {tabValue === 2 && (
-        <Box>
-          <Box sx={{ mb: 2, display: 'flex', justifyContent: 'flex-end' }}>
-            <FormControl size="small" sx={{ minWidth: 120 }}>
-              <InputLabel>Time Range</InputLabel>
-              <Select
-                value={timeRange}
-                label="Time Range"
-                onChange={(e) => setTimeRange(e.target.value as any)}
-              >
-                <MenuItem value="1h">Last Hour</MenuItem>
-                <MenuItem value="24h">Last 24 Hours</MenuItem>
-                <MenuItem value="7d">Last 7 Days</MenuItem>
-                <MenuItem value="30d">Last 30 Days</MenuItem>
-              </Select>
-            </FormControl>
-          </Box>
-          <TokenUsageTracker timeRange={timeRange} />
-        </Box>
-      )}
-    </Box>
+        {/* Token Usage Tab */}
+        {tabValue === 2 && (
+          <SectionCard
+            title="Token Usage"
+            icon={<TokenIcon />}
+            accentColor={accentColors.primary}
+            action={
+              <FormControl size="small" sx={{ minWidth: 118 }}>
+                <InputLabel>Range</InputLabel>
+                <Select
+                  value={timeRange}
+                  label="Range"
+                  onChange={(e) => setTimeRange(e.target.value as any)}
+                >
+                  <MenuItem value="1h">1 hour</MenuItem>
+                  <MenuItem value="24h">24 hours</MenuItem>
+                  <MenuItem value="7d">7 days</MenuItem>
+                  <MenuItem value="30d">30 days</MenuItem>
+                </Select>
+              </FormControl>
+            }
+          >
+            <TokenUsageTracker timeRange={timeRange} compact />
+          </SectionCard>
+        )}
+      </Box>
+    </PageShell>
   )
 }

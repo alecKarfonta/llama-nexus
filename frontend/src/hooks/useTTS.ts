@@ -50,7 +50,6 @@ export function useTTS(userConfig: Partial<TTSConfig> = {}) {
   })
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)
   const sourceRef = useRef<AudioBufferSourceNode | null>(null)
   const queueRef = useRef<string[]>([])
   const isProcessingRef = useRef(false)

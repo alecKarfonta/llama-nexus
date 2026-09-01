@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict, field
 import logging
+from local_paths import backend_data_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ class ConversationStore:
     def __init__(self, storage_dir: str = None):
         """Initialize the conversation store."""
         if storage_dir is None:
-            storage_dir = os.getenv('CONVERSATION_STORAGE_DIR', '/data/conversations')
+            storage_dir = os.getenv('CONVERSATION_STORAGE_DIR') or str(backend_data_subdir('conversations'))
         
         self.storage_dir = Path(storage_dir)
         self._ensure_storage_dir()

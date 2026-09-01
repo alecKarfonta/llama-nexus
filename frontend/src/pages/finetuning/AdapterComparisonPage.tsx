@@ -1,24 +1,14 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import {
   Box,
   Typography,
-  Card,
-  CardContent,
+  IconButton,
   Button,
-  Chip,
   Grid,
   Alert,
-  Tooltip,
-  IconButton,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
   LinearProgress,
-  Divider,
   Checkbox,
+  Tooltip,
   alpha,
 } from "@mui/material";
 import {
@@ -29,13 +19,14 @@ import {
   Science as BenchmarkIcon,
   ArrowBack as BackIcon,
   Refresh as RefreshIcon,
-  TrendingUp as UpIcon,
-  TrendingDown as DownIcon,
-  Remove as NeutralIcon,
   Star as BestIcon,
-  CheckCircle as SelectedIcon,
 } from "@mui/icons-material";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { getRoutePath } from "@/config/navigation";
+import type { AdapterComparisonRouteState, AdapterHandoff } from "@/types/trainingHandoff";
+import { adapterHandoffsKey, findAdapterForHandoff } from "@/types/trainingHandoff";
+import { PageShell, SectionCard, StatusChip, type StatusChipConfigMap } from "@/components/common";
+import { accentColors } from "@/utils/theme";
 
 // Types
 type Adapter = {
@@ -44,6 +35,9 @@ type Adapter = {
   base_model: string;
   status: string;
   training_job_id?: string;
+  job_id?: string;
+  adapter_path?: string;
+  path?: string;
   lora_config: Record<string, any>;
   training_config: Record<string, any>;
   metrics: Record<string, any>;
@@ -65,122 +59,14 @@ type ComparisonResult = {
   summary: Record<string, any>;
 };
 
-// Accent colors
-const accentColors = {
-  primary: "#6366f1",
-  success: "#10b981",
-  warning: "#f59e0b",
-  info: "#06b6d4",
-  purple: "#8b5cf6",
-  rose: "#f43f5e",
-};
-
-// Section Card Component
-interface SectionCardProps {
-  title: string;
-  subtitle?: string;
-  icon?: React.ReactNode;
-  accentColor?: string;
-  children: React.ReactNode;
-  action?: React.ReactNode;
-}
-
-const SectionCard: React.FC<SectionCardProps> = ({
-  title,
-  subtitle,
-  icon,
-  accentColor = accentColors.primary,
-  children,
-  action,
-}) => (
-  <Card
-    sx={{
-      position: "relative",
-      overflow: "hidden",
-      background: "linear-gradient(145deg, rgba(30, 30, 63, 0.6) 0%, rgba(26, 26, 46, 0.8) 100%)",
-      backdropFilter: "blur(12px)",
-      border: "1px solid rgba(255, 255, 255, 0.06)",
-      borderRadius: 3,
-      transition: "all 0.3s ease-in-out",
-      "&:hover": {
-        borderColor: alpha(accentColor, 0.2),
-        boxShadow: `0 8px 32px ${alpha(accentColor, 0.15)}`,
-      },
-    }}
-  >
-    <Box
-      sx={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        height: 3,
-        background: `linear-gradient(90deg, ${accentColor} 0%, ${alpha(accentColor, 0.3)} 100%)`,
-      }}
-    />
-    <CardContent sx={{ p: 2.5 }}>
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2.5 }}>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-          {icon && (
-            <Box
-              sx={{
-                width: 40,
-                height: 40,
-                borderRadius: 2,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                bgcolor: alpha(accentColor, 0.1),
-                color: accentColor,
-                "& .MuiSvgIcon-root": { fontSize: 22 },
-              }}
-            >
-              {icon}
-            </Box>
-          )}
-          <Box>
-            <Typography variant="h6" sx={{ fontWeight: 600, fontSize: "1rem", lineHeight: 1.3 }}>
-              {title}
-            </Typography>
-            {subtitle && (
-              <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.75rem" }}>
-                {subtitle}
-              </Typography>
-            )}
-          </Box>
-        </Box>
-        {action}
-      </Box>
-      <Box sx={{ maxWidth: "100%", overflow: "auto" }}>{children}</Box>
-    </CardContent>
-  </Card>
-);
-
-// Status Chip
-const StatusChip: React.FC<{ status: string }> = ({ status }) => {
-  const config: Record<string, { color: string; label: string }> = {
-    ready: { color: accentColors.success, label: "Ready" },
-    training: { color: accentColors.info, label: "Training" },
-    merged: { color: accentColors.purple, label: "Merged" },
-    exported: { color: accentColors.warning, label: "Exported" },
-    archived: { color: "#64748b", label: "Archived" },
-  };
-  const { color, label } = config[status] || { color: "#64748b", label: status };
-
-  return (
-    <Chip
-      label={label}
-      size="small"
-      sx={{
-        bgcolor: alpha(color, 0.1),
-        color: color,
-        border: `1px solid ${alpha(color, 0.3)}`,
-        fontWeight: 600,
-        fontSize: "0.7rem",
-        height: 22,
-      }}
-    />
-  );
+const ADAPTER_COMPARISON_STATUS_CONFIG: StatusChipConfigMap = {
+  compared: { color: accentColors.success, label: "Compared" },
+  comparing: { color: accentColors.info, label: "Comparing" },
+  comparison: { color: accentColors.purple, label: "Adapter comparison" },
+  ready: { color: accentColors.success, label: "Ready" },
+  selecting: { color: accentColors.warning, label: "Select adapters" },
+  selected: { color: accentColors.success, label: "Selected" },
+  setup: { color: accentColors.info, label: "Setup" },
 };
 
 // Comparison Cell - shows value differences
@@ -215,9 +101,10 @@ const ComparisonCell: React.FC<ComparisonCellProps> = ({
             sx={{
               flex: 1,
               p: 1,
-              borderRadius: 1,
-              bgcolor: isBest ? alpha(accentColors.success, 0.1) : "rgba(255, 255, 255, 0.02)",
-              border: `1px solid ${isBest ? alpha(accentColors.success, 0.3) : "rgba(255, 255, 255, 0.06)"}`,
+              borderRadius: "8px",
+              bgcolor: isBest ? alpha(accentColors.success, 0.1) : "background.paper",
+              border: "1px solid",
+              borderColor: isBest ? alpha(accentColors.success, 0.3) : "divider",
               textAlign: "center",
             }}
           >
@@ -291,7 +178,7 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ benchmarks, adapters })
                         sx={{
                           flex: 1,
                           height: 8,
-                          bgcolor: "rgba(255, 255, 255, 0.1)",
+                          bgcolor: "action.hover",
                           borderRadius: 4,
                           overflow: "hidden",
                         }}
@@ -390,9 +277,10 @@ const MetricsOverlay: React.FC<MetricsOverlayProps> = ({ adapters }) => {
               <Box
                 sx={{
                   p: 1.5,
-                  borderRadius: 2,
-                  bgcolor: "rgba(0, 0, 0, 0.2)",
-                  border: "1px solid rgba(255, 255, 255, 0.06)",
+                  borderRadius: "8px",
+                  bgcolor: "background.paper",
+                  border: "1px solid",
+                  borderColor: "divider",
                 }}
               >
                 <Typography
@@ -419,7 +307,7 @@ const MetricsOverlay: React.FC<MetricsOverlayProps> = ({ adapters }) => {
                             flex: 1,
                             height: 6,
                             borderRadius: 3,
-                            bgcolor: "rgba(255, 255, 255, 0.1)",
+                            bgcolor: "action.hover",
                             "& .MuiLinearProgress-bar": {
                               bgcolor: colors[idx % colors.length],
                               borderRadius: 3,
@@ -454,11 +342,26 @@ const MetricsOverlay: React.FC<MetricsOverlayProps> = ({ adapters }) => {
 
 export const AdapterComparisonPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const trainingPath = getRoutePath("finetuning");
+  const routeState = location.state as AdapterComparisonRouteState | null;
+  const incomingAdapters = useMemo(() => {
+    const adaptersFromState = routeState?.adapters ?? [];
+    return [...(routeState?.adapter ? [routeState.adapter] : []), ...adaptersFromState].filter(
+      (adapter): adapter is AdapterHandoff => Boolean(adapter)
+    );
+  }, [routeState]);
+  const incomingAdapterKey = useMemo(
+    () => adapterHandoffsKey(incomingAdapters),
+    [incomingAdapters]
+  );
+  const appliedHandoffRef = useRef("");
   const [adapters, setAdapters] = useState<Adapter[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [comparison, setComparison] = useState<ComparisonResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
 
   const selectedAdapters = useMemo(
     () => adapters.filter((a) => selectedIds.includes(a.id)),
@@ -468,6 +371,29 @@ export const AdapterComparisonPage: React.FC = () => {
   useEffect(() => {
     fetchAdapters();
   }, []);
+
+  useEffect(() => {
+    if (incomingAdapters.length === 0 || adapters.length === 0 || !incomingAdapterKey) return;
+    if (appliedHandoffRef.current === incomingAdapterKey) return;
+
+    const matchedAdapters = incomingAdapters
+      .map((handoff) => findAdapterForHandoff(handoff, adapters))
+      .filter((adapter): adapter is Adapter => Boolean(adapter));
+    const matchedIds = Array.from(new Set(matchedAdapters.map((adapter) => adapter.id))).slice(0, 4);
+
+    appliedHandoffRef.current = incomingAdapterKey;
+    if (matchedIds.length === 0) {
+      setHandoffNotice("The incoming adapter is not in the comparison registry yet");
+      return;
+    }
+
+    setSelectedIds((current) => Array.from(new Set([...current, ...matchedIds])).slice(0, 4));
+    setHandoffNotice(
+      matchedIds.length === 1
+        ? `${matchedAdapters[0].name} added to the comparison set`
+        : `${matchedIds.length} adapters added to the comparison set`
+    );
+  }, [adapters, incomingAdapterKey, incomingAdapters]);
 
   const fetchAdapters = async () => {
     try {
@@ -518,88 +444,219 @@ export const AdapterComparisonPage: React.FC = () => {
     }
   };
 
-  return (
-    <Box
-      sx={{
-        width: "100%",
-        maxWidth: "100vw",
-        overflow: "hidden",
-        px: { xs: 2, sm: 3, md: 4 },
-        py: 3,
-        boxSizing: "border-box",
-        minHeight: "100%",
-      }}
-    >
-      {/* Header */}
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          mb: 3,
-        }}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-          <IconButton
-            onClick={() => navigate("/finetune")}
-            sx={{
-              bgcolor: "rgba(255, 255, 255, 0.05)",
-              "&:hover": { bgcolor: "rgba(255, 255, 255, 0.1)" },
-            }}
-          >
-            <BackIcon />
-          </IconButton>
-          <Box>
-            <Typography variant="h5" sx={{ fontWeight: 700 }}>
-              Adapter Comparison
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Compare configurations, metrics, and benchmark results
-            </Typography>
-          </Box>
-        </Box>
-        <Box sx={{ display: "flex", gap: 1 }}>
-          <Tooltip title="Refresh">
-            <IconButton onClick={fetchAdapters}>
-              <RefreshIcon />
+  const readyAdapters = adapters.filter((adapter) => adapter.status === "ready").length;
+  const adaptersWithMetrics = adapters.filter((adapter) => Object.keys(adapter.metrics || {}).length > 0).length;
+  const adaptersWithBenchmarks = adapters.filter((adapter) => Object.keys(adapter.benchmark_results || {}).length > 0).length;
+  const baseModelCount = new Set(adapters.map((adapter) => adapter.base_model).filter(Boolean)).size;
+  const hasAdapters = adapters.length > 0;
+  const selectionLabel = selectedAdapters.length > 0
+    ? selectedAdapters.map((adapter) => adapter.name).join(", ")
+    : "No adapters selected";
+  const comparisonStatus = loading
+    ? "comparing"
+    : comparison
+      ? "compared"
+      : selectedIds.length >= 2
+        ? "ready"
+        : "selecting";
+  const showComparisonPane = loading || Boolean(comparison) || selectedIds.length > 0;
+  const showComparisonSummary = hasAdapters || showComparisonPane;
+  const stretchSelectionPane = hasAdapters || showComparisonPane;
+  const selectionGridMd = showComparisonPane ? 4 : 12;
+  const selectionGridLg = showComparisonPane ? 4 : 12;
+  const selectionSummary = selectedIds.length > 0
+    ? selectionLabel
+    : `${baseModelCount} base model${baseModelCount === 1 ? "" : "s"}`;
+  const commandIconButtonSx = {
+    width: 34,
+    height: 34,
+    borderRadius: "8px",
+    border: "1px solid",
+    borderColor: "divider",
+    bgcolor: "action.hover",
+    "&:hover": { bgcolor: "action.selected" },
+    "&.Mui-disabled": {
+      bgcolor: "action.disabledBackground",
+      color: "action.disabled",
+    },
+  };
+  const comparisonHeaderActions = (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      <Tooltip title="Back to training">
+        <IconButton
+          size="small"
+          aria-label="Back to training"
+          onClick={() => navigate(trainingPath)}
+          sx={commandIconButtonSx}
+        >
+          <BackIcon sx={{ fontSize: 17 }} />
+        </IconButton>
+      </Tooltip>
+      {adapters.length > 0 && (
+        <Tooltip title="Compare selected adapters">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Compare selected adapters"
+              color="primary"
+              onClick={runComparison}
+              disabled={selectedIds.length < 2 || loading}
+              sx={{
+                ...commandIconButtonSx,
+                bgcolor: "primary.main",
+                color: "primary.contrastText",
+                "&:hover": { bgcolor: "primary.dark" },
+                "&.Mui-disabled": {
+                  bgcolor: "action.disabledBackground",
+                  color: "action.disabled",
+                },
+              }}
+            >
+              <CompareIcon sx={{ fontSize: 17 }} />
             </IconButton>
-          </Tooltip>
-        </Box>
-      </Box>
+          </span>
+        </Tooltip>
+      )}
+      <Tooltip title="Refresh adapters">
+        <IconButton
+          size="small"
+          aria-label="Refresh adapters"
+          onClick={fetchAdapters}
+          sx={commandIconButtonSx}
+        >
+          <RefreshIcon sx={{ fontSize: 17 }} />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  );
+  const comparisonSummaryRow = (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap", mb: 1 }}>
+      <StatusChip status={comparisonStatus} statusConfig={ADAPTER_COMPARISON_STATUS_CONFIG} height={22} />
+      <StatusChip
+        status="comparison"
+        label={`${adapters.length} adapter${adapters.length === 1 ? "" : "s"}`}
+        statusConfig={ADAPTER_COMPARISON_STATUS_CONFIG}
+        height={22}
+      />
+      {adapters.length > 0 && (
+        <StatusChip
+          status="selected"
+          label={`${selectedIds.length}/4 selected`}
+          statusConfig={ADAPTER_COMPARISON_STATUS_CONFIG}
+          height={22}
+        />
+      )}
+      {readyAdapters > 0 && (
+        <StatusChip
+          status="ready"
+          label={`${readyAdapters} ready`}
+          statusConfig={ADAPTER_COMPARISON_STATUS_CONFIG}
+          height={22}
+        />
+      )}
+      {(adaptersWithMetrics > 0 || adaptersWithBenchmarks > 0) && (
+        <StatusChip
+          status="setup"
+          label={`${adaptersWithMetrics} metrics / ${adaptersWithBenchmarks} benchmarks`}
+          statusConfig={ADAPTER_COMPARISON_STATUS_CONFIG}
+          height={22}
+        />
+      )}
+      {adapters.length > 0 && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >
+          {selectionSummary}
+        </Typography>
+      )}
+    </Box>
+  );
+
+  return (
+    <PageShell sx={{ py: 1.25 }}>
+      {handoffNotice && (
+        <Alert severity="info" sx={{ mb: 1.25 }} onClose={() => setHandoffNotice(null)}>
+          {handoffNotice}
+        </Alert>
+      )}
 
       {error && (
-        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
+        <Alert severity="error" sx={{ mb: 1.25 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
 
-      <Grid container spacing={3}>
+      <Grid container spacing={2} sx={{ minHeight: { md: stretchSelectionPane ? "calc(100dvh - 82px)" : 0 } }}>
         {/* Adapter Selection */}
-        <Grid item xs={12} md={4}>
+        <Grid item xs={12} md={selectionGridMd} lg={selectionGridLg} sx={{ display: "flex", minHeight: 0 }}>
           <SectionCard
             title="Select Adapters"
-            subtitle={`${selectedIds.length}/4 selected`}
+            subtitle={adapters.length > 0 ? `${selectedIds.length}/4 selected` : undefined}
             icon={<AdapterIcon />}
             accentColor={accentColors.purple}
-            action={
-              <Button
-                variant="contained"
-                size="small"
-                startIcon={<CompareIcon />}
-                onClick={runComparison}
-                disabled={selectedIds.length < 2 || loading}
+            action={comparisonHeaderActions}
+            fullHeight={stretchSelectionPane}
+            sx={{
+              flex: 1,
+              ...(stretchSelectionPane ? {
+                minHeight: 0,
+                display: "flex",
+                flexDirection: "column",
+                "& .MuiCardContent-root": {
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                },
+                "& .MuiCardContent-root > .MuiBox-root:last-child": {
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                },
+              } : {}),
+            }}
+          >
+            {showComparisonSummary && comparisonSummaryRow}
+            {adapters.length === 0 ? (
+              <Box
                 sx={{
-                  background: `linear-gradient(135deg, ${accentColors.info} 0%, ${accentColors.purple} 100%)`,
+                  border: "1px dashed",
+                  borderColor: "divider",
+                  borderRadius: "8px",
+                  bgcolor: "action.hover",
+                  display: "grid",
+                  gridTemplateColumns: { xs: "1fr", sm: "minmax(0, 1fr) auto" },
+                  alignItems: "center",
+                  gap: 1.25,
+                  px: 1.5,
+                  py: 1.35,
                 }}
               >
-                Compare
-              </Button>
-            }
-          >
-            {adapters.length === 0 ? (
-              <Box sx={{ py: 4, textAlign: "center" }}>
-                <AdapterIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-                <Typography color="text.secondary">No registered adapters found</Typography>
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 800, mb: 0.5 }}>No adapters available</Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                    Create one from Fine-Tuning to compare training metrics and benchmark results.
+                  </Typography>
+                </Box>
+                <Button
+                  size="small"
+                  variant="contained"
+                  startIcon={<AdapterIcon sx={{ fontSize: 16 }} />}
+                  onClick={() => navigate(trainingPath)}
+                  sx={{
+                    height: 32,
+                    borderRadius: "8px",
+                    fontWeight: 800,
+                    boxShadow: "none",
+                    justifySelf: { xs: "flex-start", sm: "flex-end" },
+                    "&:hover": { boxShadow: "none" },
+                  }}
+                >
+                  Create adapter
+                </Button>
               </Box>
             ) : (
               <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -611,9 +668,10 @@ export const AdapterComparisonPage: React.FC = () => {
                       onClick={() => toggleAdapter(adapter.id)}
                       sx={{
                         p: 1.5,
-                        borderRadius: 2,
-                        bgcolor: isSelected ? alpha(accentColors.success, 0.1) : "rgba(255, 255, 255, 0.02)",
-                        border: `1px solid ${isSelected ? accentColors.success : "rgba(255, 255, 255, 0.06)"}`,
+                        borderRadius: "8px",
+                        bgcolor: isSelected ? alpha(accentColors.success, 0.1) : "background.paper",
+                        border: "1px solid",
+                        borderColor: isSelected ? accentColors.success : "divider",
                         cursor: "pointer",
                         transition: "all 0.2s",
                         display: "flex",
@@ -621,6 +679,7 @@ export const AdapterComparisonPage: React.FC = () => {
                         gap: 1.5,
                         "&:hover": {
                           bgcolor: alpha(accentColors.primary, 0.08),
+                          borderColor: isSelected ? accentColors.success : alpha(accentColors.primary, 0.3),
                         },
                       }}
                     >
@@ -629,7 +688,7 @@ export const AdapterComparisonPage: React.FC = () => {
                         size="small"
                         sx={{
                           p: 0,
-                          color: "rgba(255, 255, 255, 0.3)",
+                          color: "text.disabled",
                           "&.Mui-checked": { color: accentColors.success },
                         }}
                       />
@@ -641,7 +700,7 @@ export const AdapterComparisonPage: React.FC = () => {
                           >
                             {adapter.name}
                           </Typography>
-                          <StatusChip status={adapter.status} />
+                          <StatusChip status={adapter.status} height={22} />
                         </Box>
                         <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
                           {adapter.base_model.split("/").pop()}
@@ -656,6 +715,7 @@ export const AdapterComparisonPage: React.FC = () => {
         </Grid>
 
         {/* Comparison Results */}
+        {showComparisonPane && (
         <Grid item xs={12} md={8}>
           {loading ? (
             <SectionCard title="Comparing..." icon={<CompareIcon />} accentColor={accentColors.info}>
@@ -672,12 +732,13 @@ export const AdapterComparisonPage: React.FC = () => {
                       flex: 1,
                       minWidth: 150,
                       p: 1.5,
-                      borderRadius: 2,
+                      borderRadius: "8px",
                       bgcolor: alpha(
                         [accentColors.info, accentColors.purple, accentColors.success, accentColors.warning][idx],
                         0.1
                       ),
-                      border: `2px solid ${[accentColors.info, accentColors.purple, accentColors.success, accentColors.warning][idx]}`,
+                      border: "1px solid",
+                      borderColor: [accentColors.info, accentColors.purple, accentColors.success, accentColors.warning][idx],
                     }}
                   >
                     <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
@@ -771,26 +832,23 @@ export const AdapterComparisonPage: React.FC = () => {
             </Box>
           ) : (
             <SectionCard
-              title="Comparison Results"
-              subtitle="Select at least 2 adapters to compare"
+              title={selectedIds.length >= 2 ? "Ready to compare" : "Select one more adapter"}
               icon={<CompareIcon />}
               accentColor={accentColors.info}
             >
-              <Box sx={{ py: 6, textAlign: "center" }}>
-                <CompareIcon sx={{ fontSize: 64, color: "text.secondary", opacity: 0.2, mb: 2 }} />
-                <Typography variant="h6" color="text.secondary" sx={{ mb: 1 }}>
-                  Select Adapters to Compare
-                </Typography>
+              <Box sx={{ py: 1.25 }}>
                 <Typography variant="body2" color="text.secondary">
-                  Choose 2-4 adapters from the list to see detailed comparisons of their configurations, training
-                  metrics, and benchmark results.
+                  {selectedIds.length >= 2
+                    ? "Run the comparison to inspect configuration, metrics, and benchmark differences."
+                    : "Choose at least two adapters to compare configuration, metrics, and benchmark differences."}
                 </Typography>
               </Box>
             </SectionCard>
           )}
         </Grid>
+        )}
       </Grid>
-    </Box>
+    </PageShell>
   );
 };
 

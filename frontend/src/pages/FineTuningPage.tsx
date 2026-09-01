@@ -1,10 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   Box,
   Typography,
-  Card,
-  CardContent,
   Button,
   TextField,
   Select,
@@ -21,49 +19,35 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Paper,
-  Stepper,
-  Step,
-  StepLabel,
   Grid,
-  Slider,
   Switch,
   FormControlLabel,
-  Collapse,
   Alert,
   Divider,
   alpha,
-  Tabs,
-  Tab,
   Dialog,
   DialogContent,
   Autocomplete,
+  useMediaQuery,
 } from "@mui/material";
 import {
   PlayArrow as StartIcon,
-  Stop as StopIcon,
   Refresh as RefreshIcon,
   Settings as SettingsIcon,
   Add as AddIcon,
-  CloudUpload as UploadIcon,
   Psychology as ModelIcon,
   Storage as DatasetIcon,
-  Tune as ConfigIcon,
-  CheckCircle as ReviewIcon,
   Speed as SpeedIcon,
   Memory as MemoryIcon,
   Timeline as TimelineIcon,
-  Science as BenchmarkIcon,
   Merge as MergeIcon,
   Download as ExportIcon,
-  ExpandMore as ExpandMoreIcon,
-  ExpandLess as ExpandLessIcon,
   School as TrainingIcon,
   AutoFixHigh as AdapterIcon,
   Assessment as MetricsIcon,
+  CompareArrows as CompareIcon,
   Layers as LayersIcon,
   Bolt as BoltIcon,
-  TrendingDown as LossIcon,
   RestartAlt as ResumeIcon,
   MonitorHeart as MonitorIcon,
   Close as CloseIcon,
@@ -71,6 +55,20 @@ import {
   DeleteOutline as DeleteIcon,
 } from "@mui/icons-material";
 import { TrainingDashboard } from "@/components/finetuning";
+import { ConfirmationDialog, MetricTile, PageShell, SectionCard, StatusChip, type StatusChipConfigMap } from "@/components/common";
+import { useConfirmableAction } from "@/hooks/useConfirmableAction";
+import { quantizationHandoffFromAdapterExport } from "@/types/quantizationHandoff";
+import type { FineTuningRouteState, TrainingDatasetHandoff, TrainingModelHandoff } from "@/types/trainingHandoff";
+import {
+  adapterHandoffFromRegistryAdapter,
+  adapterHandoffFromTrainingJob,
+  trainingDatasetHandoffKey,
+  trainingJobNameFromModel,
+  trainingModelHandoffKey,
+} from "@/types/trainingHandoff";
+import { useToast } from "@/contexts/ToastContext";
+import { getRoutePath } from "@/config/navigation";
+import { accentColors } from "@/utils/theme";
 
 const UNCENSORED_DATASET_ID = "uncensored_preset";
 
@@ -103,6 +101,37 @@ type Preset = {
   qlora_config: any;
 };
 
+type FineTuningForm = {
+  name: string;
+  base_model: string;
+  dataset_ids: string[];
+  lora_config: {
+    rank: number;
+    alpha: number;
+    dropout: number;
+    target_modules: string[];
+  };
+  training_config: {
+    learning_rate: number;
+    batch_size: number;
+    gradient_accumulation_steps: number;
+    num_epochs: number;
+    warmup_steps: number;
+    max_seq_length: number;
+    max_steps: number | null;
+    weight_decay: number;
+    gradient_checkpointing: boolean;
+    gpu_devices: number[] | null;
+  };
+  qlora_config: {
+    enabled: boolean;
+    bits: number;
+    quant_type: string;
+    double_quant: boolean;
+    compute_dtype: string;
+  };
+};
+
 type MetricsPoint = {
   step: number;
   loss: number;
@@ -118,33 +147,9 @@ type VRAMEstimate = {
   warning?: string;
 };
 
-type BenchmarkInfo = {
-  name: string;
-  display_name: string;
-  description: string;
-  metrics: string[];
-};
-
-type BenchmarkJob = {
-  id: string;
-  name: string;
-  base_model: string;
-  adapter_id?: string;
-  status: string;
-  progress: number;
-  current_benchmark?: string;
-  results: Array<{
-    benchmark_name: string;
-    base_model_score?: number;
-    finetuned_score?: number;
-    improvement?: number;
-    num_samples: number;
-  }>;
-};
-
-const defaultJob = {
-  name: "",
+const defaultJob: FineTuningForm = {
   base_model: "meta-llama/Meta-Llama-3-8B",
+  name: trainingJobNameFromModel("meta-llama/Meta-Llama-3-8B"),
   dataset_ids: [],
   lora_config: { rank: 32, alpha: 64, dropout: 0.05, target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"] },
   training_config: {
@@ -157,6 +162,7 @@ const defaultJob = {
     max_steps: null as number | null,
     weight_decay: 0.01,
     gradient_checkpointing: true,
+    gpu_devices: null,
   },
   qlora_config: { enabled: true, bits: 4, quant_type: "nf4", double_quant: true, compute_dtype: "bfloat16" },
 };
@@ -165,182 +171,35 @@ const defaultJob = {
 type WizardStep = 0 | 1 | 2 | 3;
 const wizardSteps = ["Select Model", "Choose Dataset", "Configure Training", "Review & Start"];
 
-// Accent colors for different sections
-const accentColors = {
-  primary: "#6366f1",
-  success: "#10b981",
-  warning: "#f59e0b",
-  info: "#06b6d4",
-  purple: "#8b5cf6",
-  rose: "#f43f5e",
+const trainingStatusConfig = {
+  running: { label: "Training" },
+  cancelled: { color: accentColors.warning },
+  pending: { color: accentColors.purple, label: "Queued" },
 };
 
-// Section Card Component matching DashboardPage style
-interface SectionCardProps {
-  title: string;
-  subtitle?: string;
-  icon?: React.ReactNode;
-  accentColor?: string;
-  children: React.ReactNode;
-  action?: React.ReactNode;
-  collapsible?: boolean;
-  defaultExpanded?: boolean;
-}
-
-const SectionCard: React.FC<SectionCardProps> = ({
-  title,
-  subtitle,
-  icon,
-  accentColor = accentColors.primary,
-  children,
-  action,
-  collapsible = false,
-  defaultExpanded = true,
-}) => {
-  const [expanded, setExpanded] = useState(defaultExpanded);
-
-  return (
-    <Card
-      sx={{
-        position: "relative",
-        overflow: "hidden",
-        background: "linear-gradient(145deg, rgba(30, 30, 63, 0.6) 0%, rgba(26, 26, 46, 0.8) 100%)",
-        backdropFilter: "blur(12px)",
-        border: "1px solid rgba(255, 255, 255, 0.06)",
-        borderRadius: 3,
-        transition: "all 0.3s ease-in-out",
-        "&:hover": {
-          borderColor: alpha(accentColor, 0.2),
-          boxShadow: `0 8px 32px ${alpha(accentColor, 0.15)}`,
-        },
-      }}
-    >
-      {/* Top accent gradient */}
-      <Box
-        sx={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 3,
-          background: `linear-gradient(90deg, ${accentColor} 0%, ${alpha(accentColor, 0.3)} 100%)`,
-        }}
-      />
-
-      <CardContent sx={{ p: 2.5 }}>
-        {/* Header */}
-        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: expanded ? 2.5 : 0 }}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-            {icon && (
-              <Box
-                sx={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 2,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  bgcolor: alpha(accentColor, 0.1),
-                  color: accentColor,
-                  "& .MuiSvgIcon-root": { fontSize: 22 },
-                }}
-              >
-                {icon}
-              </Box>
-            )}
-            <Box>
-              <Typography
-                variant="h6"
-                sx={{
-                  fontWeight: 600,
-                  fontSize: "1rem",
-                  color: "text.primary",
-                  lineHeight: 1.3,
-                }}
-              >
-                {title}
-              </Typography>
-              {subtitle && (
-                <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.75rem" }}>
-                  {subtitle}
-                </Typography>
-              )}
-            </Box>
-          </Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            {action}
-            {collapsible && (
-              <IconButton size="small" onClick={() => setExpanded(!expanded)}>
-                {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-              </IconButton>
-            )}
-          </Box>
-        </Box>
-
-        <Collapse in={expanded}>
-          <Box sx={{ maxWidth: "100%", overflow: "auto" }}>{children}</Box>
-        </Collapse>
-      </CardContent>
-    </Card>
-  );
+const fineTuningStatusConfig: StatusChipConfigMap = {
+  studio: { color: accentColors.purple, label: "Adapter studio" },
+  workflow: { color: accentColors.success, label: "Data / Distill / Train / Evaluate" },
+  active: { color: accentColors.info, label: "Active" },
+  artifacts: { color: accentColors.purple, label: "Artifacts" },
+  merged: { color: accentColors.success, label: "Merged" },
+  merging: { color: accentColors.info, label: "Merging..." },
 };
 
-// Stat Card for metrics
-interface StatBoxProps {
-  label: string;
-  value: string | number;
-  icon: React.ReactNode;
-  color: string;
-  subtitle?: string;
-}
+const fineTuningModeButtonSx = {
+  width: 34,
+  height: 34,
+  borderRadius: "8px",
+  border: "1px solid",
+  borderColor: "divider",
+  bgcolor: "action.hover",
+  "&:hover": {
+    bgcolor: "action.selected",
+  },
+} as const;
 
-const StatBox: React.FC<StatBoxProps> = ({ label, value, icon, color, subtitle }) => (
-  <Box
-    sx={{
-      p: 2,
-      borderRadius: 2,
-      bgcolor: alpha(color, 0.08),
-      border: `1px solid ${alpha(color, 0.15)}`,
-      display: "flex",
-      alignItems: "center",
-      gap: 1.5,
-      transition: "all 0.2s",
-      "&:hover": {
-        bgcolor: alpha(color, 0.12),
-        transform: "translateY(-2px)",
-      },
-    }}
-  >
-    <Box
-      sx={{
-        width: 44,
-        height: 44,
-        borderRadius: 2,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: `linear-gradient(135deg, ${color} 0%, ${alpha(color, 0.7)} 100%)`,
-        boxShadow: `0 4px 12px ${alpha(color, 0.4)}`,
-        "& .MuiSvgIcon-root": { fontSize: 22, color: "#fff" },
-      }}
-    >
-      {icon}
-    </Box>
-    <Box>
-      <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.7rem", display: "block" }}>
-        {label}
-      </Typography>
-      <Typography sx={{ fontWeight: 700, fontSize: "1.25rem", color: "text.primary", lineHeight: 1.2 }}>
-        {value}
-      </Typography>
-      {subtitle && (
-        <Typography variant="caption" sx={{ color: alpha(color, 0.8), fontSize: "0.65rem" }}>
-          {subtitle}
-        </Typography>
-      )}
-    </Box>
-  </Box>
-);
+const isAdapterActionable = (status?: string) =>
+  ["completed", "ready", "merged", "exported"].includes((status || "").toLowerCase());
 
 // Loss Chart Component with beautiful styling
 const LossChart: React.FC<{ data: MetricsPoint[] }> = ({ data }) => {
@@ -414,49 +273,20 @@ const LossChart: React.FC<{ data: MetricsPoint[] }> = ({ data }) => {
   );
 };
 
-// Status Chip with proper styling
-const StatusChip: React.FC<{ status: string }> = ({ status }) => {
-  const getStatusConfig = (s: string) => {
-    switch (s.toLowerCase()) {
-      case "running":
-      case "training":
-        return { color: accentColors.info, label: "Training" };
-      case "paused":
-        return { color: accentColors.warning, label: "Paused" };
-      case "completed":
-        return { color: accentColors.success, label: "Completed" };
-      case "failed":
-        return { color: accentColors.rose, label: "Failed" };
-      case "cancelled":
-        return { color: accentColors.warning, label: "Cancelled" };
-      case "pending":
-      case "queued":
-        return { color: accentColors.purple, label: "Queued" };
-      default:
-        return { color: "#64748b", label: status };
-    }
-  };
-
-  const config = getStatusConfig(status);
-
-  return (
-    <Chip
-      label={config.label}
-      size="small"
-      sx={{
-        bgcolor: alpha(config.color, 0.1),
-        color: config.color,
-        border: `1px solid ${alpha(config.color, 0.3)}`,
-        fontWeight: 600,
-        fontSize: "0.7rem",
-        height: 24,
-      }}
-    />
-  );
-};
-
 export const FineTuningPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const toast = useToast();
+  const isNarrow = useMediaQuery("(max-width:599.95px)");
+  const comparePath = getRoutePath("finetuning-compare");
+  const datasetsPath = getRoutePath("finetuning-datasets");
+  const evaluationPath = getRoutePath("finetuning-evaluation");
+  const quantizationPath = getRoutePath("quantization");
+  const routeState = location.state as FineTuningRouteState | null;
+  const handoffDataset = routeState?.dataset;
+  const handoffModel = routeState?.model;
+  const appliedHandoffRef = useRef("");
+  const appliedModelHandoffRef = useRef("");
   const [jobs, setJobs] = useState<FineTuningJob[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [presets, setPresets] = useState<Preset[]>([]);
@@ -472,6 +302,15 @@ export const FineTuningPage: React.FC = () => {
   const [activeStep, setActiveStep] = useState<WizardStep>(0);
   const [showWizard, setShowWizard] = useState(true);
   const [activeTab, setActiveTab] = useState(0);
+  const [trainingHandoff, setTrainingHandoff] = useState<TrainingDatasetHandoff | null>(null);
+  const [modelHandoff, setModelHandoff] = useState<TrainingModelHandoff | null>(null);
+  const {
+    confirmationAction: confirmAction,
+    confirmationLoading: confirmingAction,
+    requestConfirmation,
+    closeConfirmation: closeConfirmDialog,
+    confirmAction: handleConfirmAction,
+  } = useConfirmableAction();
 
   // Benchmarks
 
@@ -497,6 +336,11 @@ export const FineTuningPage: React.FC = () => {
       .then(setJobs)
       .catch((err) => setError(err.message));
 
+  const fetchAdapters = () =>
+    fetch("/api/v1/finetune/adapters")
+      .then((res) => res.json())
+      .then((data) => setAdapters(data.adapters || []))
+      .catch(() => { });
 
   useEffect(() => {
     fetchJobs();
@@ -507,10 +351,7 @@ export const FineTuningPage: React.FC = () => {
       })
       .then((data) => setDatasets(Array.isArray(data) ? data : []))
       .catch(() => { });
-    fetch("/api/v1/finetune/adapters")
-      .then((res) => res.json())
-      .then((data) => setAdapters(data.adapters || []))
-      .catch(() => { });
+    fetchAdapters();
     fetch("/api/v1/finetune/presets")
       .then((res) => res.json())
       .then((data) => setPresets(data.presets || []))
@@ -550,15 +391,74 @@ export const FineTuningPage: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    if (!handoffDataset?.id) return;
+
+    const handoffKey = trainingDatasetHandoffKey(handoffDataset);
+    if (appliedHandoffRef.current === handoffKey) return;
+    appliedHandoffRef.current = handoffKey;
+
+    const datasetName =
+      handoffDataset.name ||
+      datasets.find((dataset) => dataset.id === handoffDataset.id)?.name ||
+      handoffDataset.id;
+
+    const nextHandoff = { ...handoffDataset, name: datasetName };
+    setTrainingHandoff(nextHandoff);
+    setForm((current) => ({
+      ...current,
+      name: current.name || `${datasetName} adapter`,
+      dataset_ids: Array.from(new Set([...current.dataset_ids, handoffDataset.id])),
+    }));
+    setActiveTab(0);
+    setShowWizard(true);
+    setActiveStep(0);
+    setActionStatus(`${datasetName} loaded into the training wizard`);
+  }, [datasets, handoffDataset?.exampleCount, handoffDataset?.id, handoffDataset?.name, handoffDataset?.source]);
+
+  useEffect(() => {
+    if (datasets.length !== 1 || handoffDataset?.id) return;
+
+    setForm((current) => {
+      if (current.dataset_ids.length > 0) return current;
+      return { ...current, dataset_ids: [datasets[0].id] };
+    });
+  }, [datasets, handoffDataset?.id]);
+
+  useEffect(() => {
+    if (!handoffModel?.baseModel) return;
+
+    const handoffKey = trainingModelHandoffKey(handoffModel);
+    if (appliedModelHandoffRef.current === handoffKey) return;
+    appliedModelHandoffRef.current = handoffKey;
+
+    setModelHandoff(handoffModel);
+    setForm((current) => ({
+      ...current,
+      base_model: handoffModel.baseModel,
+      name: current.name || trainingJobNameFromModel(handoffModel.name),
+    }));
+    setActiveTab(0);
+    setShowWizard(true);
+    setActiveStep(0);
+    setActionStatus(`${handoffModel.name} selected as the fine-tuning base model`);
+  }, [
+    handoffModel?.baseModel,
+    handoffModel?.localPath,
+    handoffModel?.name,
+    handoffModel?.repositoryId,
+    handoffModel?.source,
+  ]);
+
   const applyPreset = (presetName: string) => {
     const preset = presets.find((p) => p.name === presetName);
     if (preset) {
-      setForm({
-        ...form,
-        lora_config: preset.lora_config,
-        training_config: preset.training_config,
-        qlora_config: preset.qlora_config,
-      });
+      setForm((current) => ({
+        ...current,
+        lora_config: { ...defaultJob.lora_config, ...preset.lora_config },
+        training_config: { ...defaultJob.training_config, ...preset.training_config },
+        qlora_config: { ...defaultJob.qlora_config, ...preset.qlora_config },
+      }));
     }
   };
 
@@ -578,6 +478,22 @@ export const FineTuningPage: React.FC = () => {
     try {
       const res = await fetch(`/api/v1/finetune/adapters/${jobId}/export?quant_type=${quantType}`, { method: "POST" });
       const data = await res.json();
+      const sourceJob = jobs.find((job) => job.id === jobId);
+      const sourceAdapter = adapters.find((adapter) =>
+        [adapter.job_id, adapter.training_job_id, adapter.id].filter(Boolean).includes(jobId)
+      );
+      const adapterName = sourceJob?.name || sourceAdapter?.name || jobId;
+      const quantizationHandoff = quantizationHandoffFromAdapterExport(data, adapterName, quantType);
+
+      if (res.ok && quantizationHandoff) {
+        navigate(quantizationPath, {
+          state: {
+            job: quantizationHandoff,
+          },
+        });
+        return;
+      }
+
       setActionStatus(data.message || "Export queued");
     } catch {
       setActionStatus("Export failed");
@@ -734,6 +650,227 @@ export const FineTuningPage: React.FC = () => {
   };
 
   const selected = useMemo(() => jobs.find((j) => j.id === selectedJob), [jobs, selectedJob]);
+  const stopJob = async (job: FineTuningJob) => {
+    try {
+      const res = await fetch(`/api/v1/finetune/jobs/${job.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to stop training job");
+      await fetchJobs();
+      toast.success(`${job.name} was stopped.`, "Training stopped");
+    } catch (e) {
+      console.error("Failed to stop job:", e);
+      const message = e instanceof Error ? e.message : "Failed to stop training job";
+      setError(message);
+      toast.error(message, "Stop failed");
+    }
+  };
+
+  const requestStopJob = (job: FineTuningJob) => {
+    requestConfirmation({
+      title: "Stop training job?",
+      message: (
+        <>
+          Stop <strong>{job.name}</strong>? Current progress may be lost if no usable checkpoint exists.
+        </>
+      ),
+      confirmLabel: "Stop Job",
+      destructive: true,
+      onConfirm: () => stopJob(job),
+    });
+  };
+
+  const deleteJob = async (job: FineTuningJob) => {
+    try {
+      const res = await fetch(`/api/v1/finetune/jobs/${job.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete training job");
+      setSelectedJob(null);
+      await fetchJobs();
+      toast.success(`${job.name} was deleted.`, "Training job deleted");
+    } catch (e) {
+      console.error("Failed to delete job:", e);
+      const message = e instanceof Error ? e.message : "Failed to delete training job";
+      setError(message);
+      toast.error(message, "Delete failed");
+    }
+  };
+
+  const requestDeleteJob = (job: FineTuningJob) => {
+    requestConfirmation({
+      title: "Delete training job?",
+      message: (
+        <>
+          Delete <strong>{job.name}</strong> and all associated files? This cannot be undone.
+        </>
+      ),
+      confirmLabel: "Delete Job",
+      destructive: true,
+      onConfirm: () => deleteJob(job),
+    });
+  };
+
+  const deleteAdapter = async (adapter: any) => {
+    try {
+      const res = await fetch(`/api/v1/finetune/adapters/registry/${adapter.job_id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete adapter");
+      await fetchAdapters();
+      toast.success(`${adapter.name} was deleted.`, "Adapter deleted");
+    } catch (e) {
+      console.error("Failed to delete adapter:", e);
+      const message = e instanceof Error ? e.message : "Failed to delete adapter";
+      setError(message);
+      toast.error(message, "Delete failed");
+    }
+  };
+
+  const requestDeleteAdapter = (adapter: any) => {
+    requestConfirmation({
+      title: "Delete adapter?",
+      message: (
+        <>
+          Delete <strong>{adapter.name}</strong>? This cannot be undone.
+        </>
+      ),
+      confirmLabel: "Delete Adapter",
+      destructive: true,
+      onConfirm: () => deleteAdapter(adapter),
+    });
+  };
+
+  const fineTuningModes = [
+    { label: "Create", icon: <AddIcon sx={{ fontSize: 18 }} />, count: null },
+    { label: "Jobs", icon: <TrainingIcon sx={{ fontSize: 18 }} />, count: jobs.length },
+    { label: "Adapters", icon: <AdapterIcon sx={{ fontSize: 18 }} />, count: adapters.length },
+    { label: "Uncensor", icon: <UncensorIcon sx={{ fontSize: 18 }} />, count: null },
+  ];
+  const fineTuningModeControls = (
+    <Box
+      sx={{
+        display: { xs: "grid", sm: "flex" },
+        gridTemplateColumns: { xs: "minmax(0, 1fr) 32px", sm: "none" },
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 0.75,
+        mb: 1,
+        flexWrap: { sm: "wrap" },
+      }}
+    >
+      <Box sx={{ minWidth: 0, display: "flex", alignItems: "center", gap: 0.5, flexWrap: "nowrap" }}>
+        {fineTuningModes.map((mode, index) => {
+          const selected = activeTab === index;
+          const label = mode.count == null || mode.count === 0 ? mode.label : `${mode.label} ${mode.count}`;
+
+          return (
+            <Tooltip key={mode.label} title={isNarrow && !selected ? label : ""}>
+              <Button
+                size="small"
+                variant={selected ? "contained" : "outlined"}
+                startIcon={mode.icon}
+                onClick={() => setActiveTab(index)}
+                sx={{
+                  height: 30,
+                  minHeight: 30,
+                  minWidth: { xs: selected ? 76 : 34, sm: "auto" },
+                  borderRadius: "8px",
+                  borderColor: selected ? "transparent" : "divider",
+                  fontSize: "0.75rem",
+                  fontWeight: 800,
+                  px: { xs: selected ? 1 : 0.65, sm: 1 },
+                  py: 0,
+                  "& .MuiButton-startIcon": {
+                    mr: { xs: selected ? 0.5 : 0, sm: 0.5 },
+                    ml: 0,
+                  },
+                }}
+              >
+                {isNarrow && !selected ? "" : label}
+              </Button>
+            </Tooltip>
+          );
+        })}
+      </Box>
+
+      <Tooltip title="Refresh training jobs and adapters">
+        <IconButton
+          size="small"
+          aria-label="Refresh training jobs and adapters"
+          onClick={() => {
+            fetchJobs();
+            fetchAdapters();
+          }}
+          sx={fineTuningModeButtonSx}
+        >
+          <RefreshIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  );
+  const resourceEstimateStrip = vramEstimate ? (isNarrow ? (
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 0.75,
+        minWidth: 0,
+        px: 1,
+        py: 0.55,
+        mb: 1,
+        borderRadius: "8px",
+        border: "1px solid",
+        borderColor: alpha(accentColors.info, 0.22),
+        bgcolor: alpha(accentColors.info, 0.06),
+      }}
+    >
+      <Typography variant="caption" sx={{ fontWeight: 800 }} noWrap>
+        VRAM {vramEstimate.total_gb} GB
+      </Typography>
+      <Typography variant="caption" color="text.secondary" noWrap>
+        {vramEstimate.recommended_gpu}
+      </Typography>
+      <Typography variant="caption" color="text.secondary" noWrap sx={{ ml: "auto" }}>
+        ~{vramEstimate.estimated_params_b}B
+      </Typography>
+    </Box>
+  ) : (
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: { xs: "repeat(3, minmax(0, 1fr))", sm: "repeat(3, max-content)" },
+        gap: 0.75,
+        alignItems: "center",
+        mb: 1.25,
+      }}
+    >
+      {[
+        { label: "VRAM", value: `${vramEstimate.total_gb} GB`, color: accentColors.info },
+        { label: "GPU", value: vramEstimate.recommended_gpu, color: accentColors.success },
+        { label: "Model", value: `~${vramEstimate.estimated_params_b}B`, color: accentColors.purple },
+      ].map((item) => (
+        <Box
+          key={item.label}
+          sx={{
+            minWidth: 0,
+            px: 1,
+            py: 0.55,
+            borderRadius: "8px",
+            border: "1px solid",
+            borderColor: alpha(item.color, 0.24),
+            bgcolor: alpha(item.color, 0.08),
+          }}
+        >
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.1 }}>
+            {item.label}
+          </Typography>
+          <Typography variant="body2" sx={{ fontWeight: 800 }} noWrap>
+            {item.value}
+          </Typography>
+        </Box>
+      ))}
+      {vramEstimate.warning && (
+        <Alert severity="warning" sx={{ gridColumn: { xs: "1 / -1", sm: "auto" }, py: 0, borderRadius: "8px" }}>
+          {vramEstimate.warning}
+        </Alert>
+      )}
+    </Box>
+  )) : null;
 
   const canProceed = (step: WizardStep): boolean => {
     switch (step) {
@@ -751,121 +888,7 @@ export const FineTuningPage: React.FC = () => {
   };
 
   return (
-    <Box
-      sx={{
-        width: "100%",
-        maxWidth: "100vw",
-        overflow: "hidden",
-        px: { xs: 2, sm: 3, md: 4 },
-        py: 3,
-        boxSizing: "border-box",
-        minHeight: "100%",
-      }}
-    >
-      {/* Header */}
-      <Box
-        sx={{
-          display: "flex",
-          flexDirection: { xs: "column", sm: "row" },
-          justifyContent: "space-between",
-          alignItems: { xs: "flex-start", sm: "center" },
-          mb: 4,
-          gap: 2,
-        }}
-      >
-        <Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 1 }}>
-            <Typography
-              variant="h1"
-              sx={{
-                fontWeight: 700,
-                color: "text.primary",
-                fontSize: { xs: "1.5rem", sm: "1.75rem", md: "2rem" },
-                lineHeight: 1,
-                background: "linear-gradient(135deg, #f1f5f9 0%, #94a3b8 100%)",
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent",
-              }}
-            >
-              LoRA Fine-Tuning Studio
-            </Typography>
-            <Chip
-              size="small"
-              label="Pro"
-              sx={{
-                height: 22,
-                bgcolor: alpha(accentColors.purple, 0.1),
-                border: `1px solid ${alpha(accentColors.purple, 0.2)}`,
-                color: accentColors.purple,
-                fontWeight: 600,
-                fontSize: "0.6875rem",
-              }}
-            />
-          </Box>
-          <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.875rem", maxWidth: 500 }}>
-            Create, train, and deploy custom LoRA adapters for your language models
-          </Typography>
-        </Box>
-
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<DatasetIcon />}
-            onClick={() => navigate("/datasets")}
-            sx={{
-              borderColor: "rgba(255, 255, 255, 0.1)",
-              color: "text.secondary",
-              "&:hover": { borderColor: accentColors.info, color: accentColors.info },
-            }}
-          >
-            Datasets
-          </Button>
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<ModelIcon />}
-            onClick={() => navigate("/finetuning/distillation")}
-            sx={{
-              borderColor: "rgba(255, 255, 255, 0.1)",
-              color: "text.secondary",
-              "&:hover": { borderColor: accentColors.purple, color: accentColors.purple },
-            }}
-          >
-            Distillation
-          </Button>
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<MetricsIcon />}
-            onClick={() => navigate("/finetuning/evaluation")}
-            sx={{
-              borderColor: "rgba(255, 255, 255, 0.1)",
-              color: "text.secondary",
-              "&:hover": { borderColor: accentColors.success, color: accentColors.success },
-            }}
-          >
-            Evaluation
-          </Button>
-          <Tooltip title="Refresh">
-            <IconButton
-              size="small"
-              onClick={fetchJobs}
-              sx={{
-                width: 38,
-                height: 38,
-                borderRadius: 2,
-                border: "1px solid rgba(255, 255, 255, 0.08)",
-                bgcolor: "rgba(255, 255, 255, 0.03)",
-                "&:hover": { bgcolor: "rgba(255, 255, 255, 0.08)" },
-              }}
-            >
-              <RefreshIcon sx={{ fontSize: 18 }} />
-            </IconButton>
-          </Tooltip>
-        </Box>
-      </Box>
-
+    <PageShell sx={{ py: 1.25 }}>
       {/* Alerts */}
       {error && (
         <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
@@ -877,40 +900,60 @@ export const FineTuningPage: React.FC = () => {
           {actionStatus}
         </Alert>
       )}
-
-      {/* Main Content Tabs */}
-      <Box sx={{ mb: 3 }}>
-        <Tabs
-          value={activeTab}
-          onChange={(_, v) => setActiveTab(v)}
-          sx={{
-            "& .MuiTab-root": {
-              textTransform: "none",
-              fontWeight: 600,
-              fontSize: "0.875rem",
-              minHeight: 44,
-            },
-          }}
+      {trainingHandoff && (
+        <Alert
+          severity="info"
+          sx={{ mb: 3, borderRadius: "8px" }}
+          onClose={() => setTrainingHandoff(null)}
+          action={
+            <Button
+              size="small"
+              color="inherit"
+              onClick={() => {
+                setActiveTab(0);
+                setShowWizard(true);
+                setActiveStep(1);
+              }}
+            >
+              Review Dataset
+            </Button>
+          }
         >
-          <Tab icon={<AddIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="Create Job" />
-          <Tab
-            icon={<TrainingIcon sx={{ fontSize: 18 }} />}
-            iconPosition="start"
-            label={`Training Jobs (${jobs.length})`}
-          />
-          <Tab icon={<AdapterIcon sx={{ fontSize: 18 }} />} iconPosition="start" label={`Adapters (${adapters.length})`} />
-          <Tab icon={<UncensorIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="Uncensor Model" />
-        </Tabs>
-      </Box>
+          <strong>{trainingHandoff.name || trainingHandoff.id}</strong> is selected for this training job.
+          Confirm the base model and LoRA settings before starting.
+        </Alert>
+      )}
+      {modelHandoff && (
+        <Alert
+          severity="info"
+          sx={{ mb: 3, borderRadius: "8px" }}
+          onClose={() => setModelHandoff(null)}
+          action={
+            <Button
+              size="small"
+              color="inherit"
+              onClick={() => {
+                setActiveTab(0);
+                setShowWizard(true);
+                setActiveStep(0);
+              }}
+            >
+              Review Model
+            </Button>
+          }
+        >
+          <strong>{modelHandoff.name}</strong> is selected as the base model.
+          Add datasets and tune LoRA settings before starting.
+        </Alert>
+      )}
 
       {/* Tab Panels */}
       {activeTab === 0 && (
-        <Grid container spacing={3}>
+        <Grid container spacing={1.5}>
           {/* Create Job Wizard */}
-          <Grid item xs={12} lg={8}>
+          <Grid item xs={12}>
             <SectionCard
               title="Create Training Job"
-              subtitle="Configure and start a new LoRA fine-tuning job"
               icon={<AddIcon />}
               accentColor={accentColors.primary}
               action={
@@ -923,29 +966,55 @@ export const FineTuningPage: React.FC = () => {
                 </Button>
               }
             >
+              {fineTuningModeControls}
+              {resourceEstimateStrip}
               {showWizard ? (
                 <Box>
                   {/* Stepper */}
-                  <Stepper activeStep={activeStep} sx={{ mb: 4 }}>
-                    {wizardSteps.map((label, index) => (
-                      <Step key={label}>
-                        <StepLabel
-                          StepIconProps={{
-                            sx: {
-                              "&.Mui-active": { color: accentColors.primary },
-                              "&.Mui-completed": { color: accentColors.success },
-                            },
-                          }}
-                        >
-                          {label}
-                        </StepLabel>
-                      </Step>
-                    ))}
-                  </Stepper>
+                  <Box
+                    sx={{
+                      mb: 1,
+                      px: 0.25,
+                      display: "grid",
+                      gridTemplateColumns: { xs: "auto minmax(0, 1fr)", sm: "auto minmax(180px, 0.35fr) minmax(0, 1fr)" },
+                      alignItems: "center",
+                      columnGap: 0.75,
+                      rowGap: 0.5,
+                    }}
+                  >
+                    <Chip
+                      size="small"
+                      label={`${activeStep + 1} / ${wizardSteps.length}`}
+                      sx={{ height: 22, fontSize: "0.68rem", fontWeight: 800 }}
+                    />
+                    <Typography variant="body2" sx={{ fontWeight: 800 }} noWrap>
+                      {wizardSteps[activeStep]}
+                    </Typography>
+                    <LinearProgress
+                      variant="determinate"
+                      value={((activeStep + 1) / wizardSteps.length) * 100}
+                      sx={{
+                        gridColumn: { xs: "1 / -1", sm: "auto" },
+                        height: 4,
+                        borderRadius: "3px",
+                        bgcolor: alpha(accentColors.primary, 0.12),
+                        "& .MuiLinearProgress-bar": {
+                          borderRadius: "3px",
+                          bgcolor: accentColors.primary,
+                        },
+                      }}
+                    />
+                  </Box>
 
                   {/* Step 0: Model Selection */}
                   {activeStep === 0 && (
-                    <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
+                    <Box
+                      sx={{
+                        display: "grid",
+                        gridTemplateColumns: { xs: "1fr", md: "minmax(220px, 0.8fr) minmax(360px, 1.2fr)" },
+                        gap: 1,
+                      }}
+                    >
                       <TextField
                         label="Job Name"
                         value={form.name}
@@ -953,7 +1022,6 @@ export const FineTuningPage: React.FC = () => {
                         placeholder="e.g., llama3-coding-assistant"
                         fullWidth
                         size="small"
-                        helperText="A descriptive name for your training job"
                       />
                       <Autocomplete
                         freeSolo
@@ -993,7 +1061,6 @@ export const FineTuningPage: React.FC = () => {
                             label="Base Model"
                             placeholder="Select or enter HuggingFace model ID"
                             size="small"
-                            helperText={registeredModels.length > 0 ? `${registeredModels.length} models available from your models page` : "Enter a HuggingFace model ID"}
                           />
                         )}
                         renderOption={(props, option) => (
@@ -1014,7 +1081,7 @@ export const FineTuningPage: React.FC = () => {
 
                   {/* Step 1: Dataset Selection */}
                   {activeStep === 1 && (
-                    <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
                       <FormControl fullWidth size="small">
                         <InputLabel>Training Datasets</InputLabel>
                         <Select
@@ -1035,11 +1102,13 @@ export const FineTuningPage: React.FC = () => {
                             <MenuItem key={d.id} value={d.id}>
                               {d.name} ({d.format})
                             </MenuItem>
-                          ))}\n                        </Select>\n                      </FormControl>
+                          ))}
+                        </Select>
+                      </FormControl>
                       {datasets.length === 0 && (
-                        <Alert severity="info" sx={{ mt: 1 }}>
+                        <Alert severity="info" sx={{ mt: 0.25, py: 0.25, borderRadius: "8px" }}>
                           No datasets found.{" "}
-                          <Button size="small" onClick={() => navigate("/datasets")}>
+                          <Button size="small" onClick={() => navigate(datasetsPath)}>
                             Upload a dataset
                           </Button>
                         </Alert>
@@ -1465,7 +1534,8 @@ export const FineTuningPage: React.FC = () => {
                     <Box>
                       <Grid container spacing={2} sx={{ mb: 3 }}>
                         <Grid item xs={12} sm={6}>
-                          <StatBox
+                          <MetricTile
+                            variant="horizontal"
                             label="Model"
                             value={form.base_model.split("/").pop() || form.base_model}
                             icon={<ModelIcon />}
@@ -1473,7 +1543,8 @@ export const FineTuningPage: React.FC = () => {
                           />
                         </Grid>
                         <Grid item xs={12} sm={6}>
-                          <StatBox
+                          <MetricTile
+                            variant="horizontal"
                             label="Datasets"
                             value={form.dataset_ids.length > 0 ? form.dataset_ids.map(id => datasets.find(d => d.id === id)?.name || id).join(', ') : "-"}
                             icon={<DatasetIcon />}
@@ -1481,16 +1552,17 @@ export const FineTuningPage: React.FC = () => {
                           />
                         </Grid>
                         <Grid item xs={6} sm={3}>
-                          <StatBox label="LoRA Rank" value={form.lora_config.rank} icon={<LayersIcon />} color={accentColors.purple} />
+                          <MetricTile variant="horizontal" label="LoRA Rank" value={form.lora_config.rank} icon={<LayersIcon />} color={accentColors.purple} />
                         </Grid>
                         <Grid item xs={6} sm={3}>
-                          <StatBox label="Batch Size" value={form.training_config.batch_size} icon={<SpeedIcon />} color={accentColors.success} />
+                          <MetricTile variant="horizontal" label="Batch Size" value={form.training_config.batch_size} icon={<SpeedIcon />} color={accentColors.success} />
                         </Grid>
                         <Grid item xs={6} sm={3}>
-                          <StatBox label="Epochs" value={form.training_config.num_epochs} icon={<TimelineIcon />} color={accentColors.warning} />
+                          <MetricTile variant="horizontal" label="Epochs" value={form.training_config.num_epochs} icon={<TimelineIcon />} color={accentColors.warning} />
                         </Grid>
                         <Grid item xs={6} sm={3}>
-                          <StatBox
+                          <MetricTile
+                            variant="horizontal"
                             label="QLoRA"
                             value={form.qlora_config.enabled ? "ON" : "OFF"}
                             icon={<BoltIcon />}
@@ -1523,17 +1595,27 @@ export const FineTuningPage: React.FC = () => {
                   )}
 
                   {/* Navigation Buttons */}
-                  <Box sx={{ display: "flex", justifyContent: "space-between", mt: 4 }}>
-                    <Button disabled={activeStep === 0} onClick={() => setActiveStep((s) => (s - 1) as WizardStep)}>
-                      Back
-                    </Button>
+                  <Box sx={{ display: "flex", justifyContent: activeStep > 0 ? "space-between" : "flex-end", alignItems: "center", mt: 1.5 }}>
+                    {activeStep > 0 && (
+                      <Button
+                        size="small"
+                        onClick={() => setActiveStep((s) => (s - 1) as WizardStep)}
+                        sx={{ height: 34, borderRadius: "8px", fontWeight: 800 }}
+                      >
+                        Back
+                      </Button>
+                    )}
                     <Box sx={{ display: "flex", gap: 1 }}>
                       {activeStep < 3 ? (
                         <Button
+                          size="small"
                           variant="contained"
                           onClick={() => setActiveStep((s) => (s + 1) as WizardStep)}
                           disabled={!canProceed(activeStep)}
                           sx={{
+                            height: 34,
+                            borderRadius: "8px",
+                            fontWeight: 800,
                             background: `linear-gradient(135deg, ${accentColors.primary} 0%, ${accentColors.purple} 100%)`,
                           }}
                         >
@@ -1541,10 +1623,14 @@ export const FineTuningPage: React.FC = () => {
                         </Button>
                       ) : (
                         <Button
+                          size="small"
                           variant="contained"
                           onClick={() => onSubmit()}
                           startIcon={<StartIcon />}
                           sx={{
+                            height: 34,
+                            borderRadius: "8px",
+                            fontWeight: 800,
                             background: `linear-gradient(135deg, ${accentColors.success} 0%, ${accentColors.info} 100%)`,
                           }}
                         >
@@ -1638,38 +1724,6 @@ export const FineTuningPage: React.FC = () => {
             </SectionCard>
           </Grid>
 
-          {/* VRAM Estimate Sidebar */}
-          <Grid item xs={12} lg={4}>
-            <SectionCard title="Resource Estimate" subtitle="Based on current configuration" icon={<MemoryIcon />} accentColor={accentColors.info}>
-              {vramEstimate ? (
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <StatBox label="VRAM Required" value={`${vramEstimate.total_gb} GB`} icon={<MemoryIcon />} color={accentColors.info} />
-                  <StatBox
-                    label="Recommended GPU"
-                    value={vramEstimate.recommended_gpu}
-                    icon={<SpeedIcon />}
-                    color={accentColors.success}
-                  />
-                  <StatBox
-                    label="Model Size"
-                    value={`~${vramEstimate.estimated_params_b}B`}
-                    icon={<ModelIcon />}
-                    color={accentColors.purple}
-                  />
-                  {vramEstimate.warning && (
-                    <Alert severity="warning" sx={{ mt: 1 }}>
-                      {vramEstimate.warning}
-                    </Alert>
-                  )}
-                </Box>
-              ) : (
-                <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
-                  <MemoryIcon sx={{ fontSize: 40, opacity: 0.3, mb: 1 }} />
-                  <Typography variant="body2">Configure model to see estimates</Typography>
-                </Box>
-              )}
-            </SectionCard>
-          </Grid>
         </Grid>
       )}
       {/* Training Jobs Tab */}
@@ -1678,16 +1732,28 @@ export const FineTuningPage: React.FC = () => {
           <Grid item xs={12} lg={8}>
             <SectionCard
               title="Training Jobs"
-              subtitle={`${jobs.length} jobs total`}
+              subtitle={jobs.length > 0 ? `${jobs.length} jobs total` : undefined}
               icon={<TrainingIcon />}
               accentColor={accentColors.success}
             >
+              {fineTuningModeControls}
               {jobs.length === 0 ? (
-                <Box sx={{ p: 4, textAlign: "center" }}>
-                  <TrainingIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-                  <Typography color="text.secondary">No training jobs yet</Typography>
-                  <Button sx={{ mt: 2 }} variant="outlined" onClick={() => setActiveTab(0)}>
-                    Create Your First Job
+                <Box
+                  sx={{
+                    p: 1.5,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 1,
+                    border: "1px solid",
+                    borderColor: "divider",
+                    borderRadius: "8px",
+                    bgcolor: "action.hover",
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">No training jobs yet.</Typography>
+                  <Button size="small" variant="outlined" onClick={() => setActiveTab(0)} sx={{ height: 32, borderRadius: "8px", fontWeight: 800 }}>
+                    Create
                   </Button>
                 </Box>
               ) : (
@@ -1722,7 +1788,7 @@ export const FineTuningPage: React.FC = () => {
                             </Typography>
                           </TableCell>
                           <TableCell>
-                            <StatusChip status={job.status} />
+                            <StatusChip status={job.status} statusConfig={trainingStatusConfig} />
                           </TableCell>
                           <TableCell align="right">
                             <Box sx={{ display: "flex", alignItems: "center", gap: 1, justifyContent: "flex-end" }}>
@@ -1809,16 +1875,7 @@ export const FineTuningPage: React.FC = () => {
                           variant="outlined"
                           fullWidth
                           color="error"
-                          onClick={async () => {
-                            if (window.confirm("Are you sure you want to stop this training job?")) {
-                              try {
-                                await fetch(`/api/v1/finetune/jobs/${selected.id}`, { method: "DELETE" });
-                                fetchJobs();
-                              } catch (e) {
-                                console.error("Failed to stop job:", e);
-                              }
-                            }
-                          }}
+                          onClick={() => requestStopJob(selected)}
                           sx={{ py: 1 }}
                         >
                           Stop
@@ -1854,16 +1911,7 @@ export const FineTuningPage: React.FC = () => {
                           variant="outlined"
                           fullWidth
                           color="error"
-                          onClick={async () => {
-                            if (window.confirm("Are you sure you want to stop this training job?")) {
-                              try {
-                                await fetch(`/api/v1/finetune/jobs/${selected.id}`, { method: "DELETE" });
-                                fetchJobs();
-                              } catch (e) {
-                                console.error("Failed to stop job:", e);
-                              }
-                            }
-                          }}
+                          onClick={() => requestStopJob(selected)}
                           sx={{ py: 1 }}
                         >
                           Stop
@@ -1942,6 +1990,70 @@ export const FineTuningPage: React.FC = () => {
                     </Box>
                   )}
 
+                  {selected.status === "completed" && (
+                    <Box
+                      sx={{
+                        p: 2,
+                        bgcolor: alpha(accentColors.success, 0.08),
+                        border: `1px solid ${alpha(accentColors.success, 0.18)}`,
+                        borderRadius: 2,
+                      }}
+                    >
+                      <Typography variant="subtitle2" sx={{ mb: 1.5, display: "flex", alignItems: "center", gap: 1 }}>
+                        <AdapterIcon sx={{ fontSize: 18 }} /> Adapter Next Steps
+                      </Typography>
+                      <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1, mb: 1 }}>
+                        <Button
+                          variant="contained"
+                          size="small"
+                          startIcon={<MetricsIcon />}
+                          onClick={() =>
+                            navigate(evaluationPath, {
+                              state: { adapter: adapterHandoffFromTrainingJob(selected) },
+                            })
+                          }
+                          disabled={!selected.adapter_path}
+                          sx={{ bgcolor: accentColors.info }}
+                        >
+                          Evaluate
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<CompareIcon />}
+                          onClick={() =>
+                            navigate(comparePath, {
+                              state: { adapters: [adapterHandoffFromTrainingJob(selected)] },
+                            })
+                          }
+                          disabled={!selected.adapter_path}
+                        >
+                          Compare
+                        </Button>
+                      </Box>
+                      <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<MergeIcon />}
+                          onClick={() => handleMerge(selected.id)}
+                          disabled={!selected.adapter_path}
+                        >
+                          Merge
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<ExportIcon />}
+                          onClick={() => handleExport(selected.id)}
+                          disabled={!selected.adapter_path}
+                        >
+                          Export
+                        </Button>
+                      </Box>
+                    </Box>
+                  )}
+
                   {/* Delete Job Button - for completed/failed/cancelled jobs */}
                   {(selected.status === "completed" || selected.status === "failed" || selected.status === "cancelled") && (
                     <Box sx={{ mt: 2 }}>
@@ -1949,17 +2061,7 @@ export const FineTuningPage: React.FC = () => {
                         variant="outlined"
                         fullWidth
                         color="error"
-                        onClick={async () => {
-                          if (window.confirm(`Delete job "${selected.name}" and all associated files? This cannot be undone.`)) {
-                            try {
-                              await fetch(`/api/v1/finetune/jobs/${selected.id}`, { method: "DELETE" });
-                              setSelectedJob(null);
-                              fetchJobs();
-                            } catch (e) {
-                              console.error("Failed to delete job:", e);
-                            }
-                          }
-                        }}
+                        onClick={() => requestDeleteJob(selected)}
                         sx={{ py: 1 }}
                       >
                         Delete Job
@@ -1968,9 +2070,8 @@ export const FineTuningPage: React.FC = () => {
                   )}
                 </Box>
               ) : (
-                <Box sx={{ p: 4, textAlign: "center" }}>
-                  <MetricsIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-                  <Typography color="text.secondary">Select a job to view metrics</Typography>
+                <Box sx={{ p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: "8px", bgcolor: "action.hover" }}>
+                  <Typography variant="body2" color="text.secondary">Select a job to view metrics.</Typography>
                 </Box>
               )}
             </SectionCard>
@@ -1991,7 +2092,7 @@ export const FineTuningPage: React.FC = () => {
                 variant="outlined"
                 size="small"
                 startIcon={<MetricsIcon />}
-                onClick={() => navigate("/finetuning/compare")}
+                onClick={() => navigate(comparePath)}
                 sx={{
                   borderColor: accentColors.purple,
                   color: accentColors.purple,
@@ -2003,112 +2104,124 @@ export const FineTuningPage: React.FC = () => {
             )
           }
         >
+          {fineTuningModeControls}
           {adapters.length === 0 ? (
-            <Box sx={{ p: 4, textAlign: "center" }}>
-              <AdapterIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-              <Typography color="text.secondary">No adapters yet. Complete a training job to create one.</Typography>
+            <Box sx={{ p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: "8px", bgcolor: "action.hover" }}>
+              <Typography variant="body2" color="text.secondary">No adapters yet. Complete a training job to create one.</Typography>
             </Box>
-          ) : (
-            <Grid container spacing={2}>
-              {adapters.map((adapter) => (
-                <Grid item xs={12} sm={6} md={4} key={adapter.job_id}>
-                  <Card
-                    sx={{
-                      bgcolor: "rgba(255,255,255,0.02)",
-                      border: "1px solid rgba(255,255,255,0.06)",
-                      borderRadius: 2,
-                    }}
-                  >
-                    <CardContent>
-                      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", mb: 2 }}>
-                        <Box>
-                          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                            {adapter.name}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            {adapter.base_model}
-                          </Typography>
-                        </Box>
-                        <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                          <StatusChip status={adapter.status} />
-                          {adapter.merge_status === "completed" && (
-                            <Chip
-                              label="Merged"
-                              size="small"
-                              sx={{
-                                bgcolor: alpha(accentColors.success, 0.1),
-                                color: accentColors.success,
-                                border: `1px solid ${alpha(accentColors.success, 0.3)}`,
-                                fontWeight: 600,
-                                fontSize: "0.7rem",
-                                height: 24,
-                              }}
-                            />
-                          )}
-                          {adapter.merge_status === "in_progress" && (
-                            <Chip
-                              label="Merging..."
-                              size="small"
-                              sx={{
-                                bgcolor: alpha(accentColors.info, 0.1),
-                                color: accentColors.info,
-                                border: `1px solid ${alpha(accentColors.info, 0.3)}`,
-                                fontWeight: 600,
-                                fontSize: "0.7rem",
-                                height: 24,
-                              }}
-                            />
-                          )}
-                        </Box>
-                      </Box>
+	          ) : (
+	            <Grid container spacing={1.5}>
+	              {adapters.map((adapter) => (
+	                <Grid item xs={12} sm={6} md={4} key={adapter.job_id}>
+	                  <Box
+	                    sx={{
+	                      height: "100%",
+	                      p: 2,
+	                      bgcolor: "action.hover",
+	                      border: "1px solid",
+	                      borderColor: "divider",
+	                      borderRadius: "8px",
+	                    }}
+	                  >
+	                    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", mb: 2 }}>
+	                      <Box>
+	                        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+	                          {adapter.name}
+	                        </Typography>
+	                        <Typography variant="caption" color="text.secondary">
+	                          {adapter.base_model}
+	                        </Typography>
+	                      </Box>
+	                      <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+	                        <StatusChip status={adapter.status} />
+	                        {adapter.merge_status === "completed" && (
+	                          <StatusChip status="merged" statusConfig={fineTuningStatusConfig} />
+	                        )}
+	                        {adapter.merge_status === "in_progress" && (
+	                          <StatusChip status="merging" statusConfig={fineTuningStatusConfig} />
+	                        )}
+	                      </Box>
+	                    </Box>
 
-                      <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
-                        <Tooltip title={adapter.merge_status === "completed" ? "Already merged - check Models page" : "Merge LoRA weights into base model"}>
-                          <span>
-                            <Button
-                              size="small"
-                              startIcon={<MergeIcon />}
-                              onClick={() => handleMerge(adapter.job_id)}
-                              disabled={adapter.status !== "completed" || adapter.merge_status === "completed" || adapter.merge_status === "in_progress"}
-                              sx={{ fontSize: "0.7rem" }}
-                            >
-                              {adapter.merge_status === "completed" ? "Merged" : adapter.merge_status === "in_progress" ? "Merging..." : "Merge"}
-                            </Button>
-                          </span>
-                        </Tooltip>
-                        <Tooltip title="Delete this adapter">
-                          <span>
-                            <Button
-                              size="small"
-                              color="error"
-                              startIcon={<DeleteIcon />}
-                              onClick={async () => {
-                                if (window.confirm(`Delete adapter "${adapter.name}"? This cannot be undone.`)) {
-                                  try {
-                                    await fetch(`/api/v1/finetune/adapters/registry/${adapter.job_id}`, { method: "DELETE" });
-                                    // Refresh adapters list
-                                    const res = await fetch("/api/v1/finetune/adapters");
-                                    if (res.ok) {
-                                      const data = await res.json();
-                                      setAdapters(data.adapters || []);
-                                    }
-                                  } catch (e) {
-                                    console.error("Failed to delete adapter:", e);
-                                  }
-                                }
-                              }}
-                              sx={{ fontSize: "0.7rem" }}
-                            >
-                              Delete
-                            </Button>
-                          </span>
-                        </Tooltip>
-                      </Box>
-                    </CardContent>
-                  </Card>
-                </Grid>
-              ))}
-            </Grid>
+	                    <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+	                      <Tooltip title="Open this adapter in side-by-side evaluation">
+	                        <span>
+	                          <Button
+	                            size="small"
+	                            startIcon={<MetricsIcon />}
+	                            onClick={() =>
+	                              navigate(evaluationPath, {
+	                                state: { adapter: adapterHandoffFromRegistryAdapter(adapter) },
+	                              })
+	                            }
+	                            disabled={!isAdapterActionable(adapter.status)}
+	                            sx={{ fontSize: "0.7rem", borderRadius: "8px" }}
+	                          >
+	                            Evaluate
+	                          </Button>
+	                        </span>
+	                      </Tooltip>
+	                      <Tooltip title="Add this adapter to the comparison workspace">
+	                        <span>
+	                          <Button
+	                            size="small"
+	                            startIcon={<CompareIcon />}
+	                            onClick={() =>
+	                              navigate(comparePath, {
+	                                state: { adapters: [adapterHandoffFromRegistryAdapter(adapter)] },
+	                              })
+	                            }
+	                            disabled={!isAdapterActionable(adapter.status)}
+	                            sx={{ fontSize: "0.7rem", borderRadius: "8px" }}
+	                          >
+	                            Compare
+	                          </Button>
+	                        </span>
+	                      </Tooltip>
+	                      <Tooltip title={adapter.merge_status === "completed" ? "Already merged - check Models page" : "Merge LoRA weights into base model"}>
+	                        <span>
+	                          <Button
+	                            size="small"
+	                            startIcon={<MergeIcon />}
+	                            onClick={() => handleMerge(adapter.job_id)}
+	                            disabled={adapter.status !== "completed" || adapter.merge_status === "completed" || adapter.merge_status === "in_progress"}
+	                            sx={{ fontSize: "0.7rem", borderRadius: "8px" }}
+	                          >
+	                            {adapter.merge_status === "completed" ? "Merged" : adapter.merge_status === "in_progress" ? "Merging..." : "Merge"}
+	                          </Button>
+	                        </span>
+	                      </Tooltip>
+	                      <Tooltip title="Export this adapter as a GGUF model">
+	                        <span>
+	                          <Button
+	                            size="small"
+	                            startIcon={<ExportIcon />}
+	                            onClick={() => handleExport(adapter.job_id)}
+	                            disabled={adapter.status !== "completed"}
+	                            sx={{ fontSize: "0.7rem", borderRadius: "8px" }}
+	                          >
+	                            Export
+	                          </Button>
+	                        </span>
+	                      </Tooltip>
+	                      <Tooltip title="Delete this adapter">
+	                        <span>
+	                          <Button
+	                            size="small"
+	                            color="error"
+	                            startIcon={<DeleteIcon />}
+	                            onClick={() => requestDeleteAdapter(adapter)}
+	                            sx={{ fontSize: "0.7rem", borderRadius: "8px" }}
+	                          >
+	                            Delete
+	                          </Button>
+	                        </span>
+	                      </Tooltip>
+	                    </Box>
+	                  </Box>
+	                </Grid>
+	              ))}
+	            </Grid>
           )}
         </SectionCard>
       )}
@@ -2123,6 +2236,7 @@ export const FineTuningPage: React.FC = () => {
               icon={<UncensorIcon />}
               accentColor={accentColors.rose}
             >
+              {fineTuningModeControls}
               <Box sx={{ p: 2 }}>
                 <Alert severity="warning" sx={{ mb: 3 }}>
                   This process uses a specialized dataset to remove safety alignment. The resulting model may generate harmful content. Use with caution.
@@ -2190,6 +2304,13 @@ export const FineTuningPage: React.FC = () => {
         </Grid>
       )}
 
+      <ConfirmationDialog
+        action={confirmAction}
+        loading={confirmingAction}
+        onClose={closeConfirmDialog}
+        onConfirm={handleConfirmAction}
+      />
+
       {/* Real-time Training Dashboard Dialog */}
       <Dialog
         open={showDashboard}
@@ -2229,7 +2350,7 @@ export const FineTuningPage: React.FC = () => {
           </Box>
         </DialogContent>
       </Dialog>
-    </Box>
+    </PageShell>
   );
 };
 

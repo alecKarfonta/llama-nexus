@@ -1,20 +1,18 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Box,
   Grid,
   Typography,
-  Card,
-  CardContent,
   TextField,
   Button,
   IconButton,
-  Chip,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
   List,
   ListItem,
+  ListItemButton,
   ListItemText,
   ListItemSecondaryAction,
   Tooltip,
@@ -22,13 +20,10 @@ import {
   CircularProgress,
   Divider,
   InputAdornment,
-  Paper,
-  Tabs,
-  Tab,
   Menu,
   MenuItem,
-  Badge,
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import {
   Add as AddIcon,
   Search as SearchIcon,
@@ -44,11 +39,14 @@ import {
   Folder as FolderIcon,
   BarChart as ChartIcon,
   Download as DownloadIcon,
-  Upload as UploadIcon,
+  FilterAltOff as ClearFiltersIcon,
   MoreVert as MoreIcon,
   PlayArrow as UseIcon,
 } from '@mui/icons-material'
+import { PageShell, SectionCard, StatusChip, type StatusChipConfigMap } from '@/components/common'
+import { useClipboard } from '@/hooks/useClipboard'
 import { apiService } from '@/services/api'
+import { accentColors } from '@/utils/theme'
 
 interface PromptTemplate {
   id: string
@@ -93,7 +91,45 @@ const getCategoryIcon = (icon: string) => {
   }
 }
 
+const formatNumber = (value: number): string => {
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`
+  return value.toString()
+}
+
+const PROMPT_LIBRARY_STATUS_CONFIG: StatusChipConfigMap = {
+  all: { color: accentColors.primary, label: 'All prompts' },
+  categories: { color: accentColors.success, label: 'Categories' },
+  category: { color: accentColors.info, label: 'Category' },
+  favorites: { color: accentColors.warning, label: 'Favorites' },
+  library: { color: accentColors.success, label: 'Prompt library' },
+  prompts: { color: accentColors.primary, label: 'Prompts' },
+  system: { color: accentColors.rose, label: 'System' },
+  tag: { color: accentColors.slate, label: 'Tag' },
+  tools: { color: accentColors.info, label: 'Tools' },
+  variables: { color: accentColors.primary, label: 'Variables' },
+}
+
+const promptLibraryPanelSx = {
+  borderRadius: '8px',
+  bgcolor: 'background.paper',
+  border: '1px solid',
+  borderColor: 'divider',
+} as const
+
+const promptLibraryIconButtonSx = {
+  width: 34,
+  height: 34,
+  borderRadius: '8px',
+  border: '1px solid',
+  borderColor: 'divider',
+  bgcolor: 'action.hover',
+  '&:hover': { bgcolor: 'action.selected' },
+} as const
+
 export default function PromptLibraryPage() {
+  const copyToClipboard = useClipboard()
+
   // State
   const [prompts, setPrompts] = useState<PromptTemplate[]>([])
   const [categories, setCategories] = useState<PromptCategory[]>([])
@@ -200,6 +236,30 @@ export default function PromptLibraryPage() {
     }
   }
 
+  const handleQuickCreatePrompt = async () => {
+    if (!formData.name.trim() || !formData.content.trim()) return
+
+    try {
+      await apiService.createPrompt({
+        ...formData,
+        name: formData.name.trim(),
+        content: formData.content.trim(),
+        description: formData.description.trim(),
+      })
+      setFormData({
+        name: '',
+        description: '',
+        content: '',
+        category: selectedCategory || 'general',
+        tags: [],
+        is_system_prompt: false,
+      })
+      loadData()
+    } catch (err: any) {
+      setError(err.message || 'Failed to save prompt')
+    }
+  }
+
   const handleDeletePrompt = async () => {
     if (!promptToDelete) return
     try {
@@ -224,7 +284,10 @@ export default function PromptLibraryPage() {
   }
 
   const handleCopyContent = (content: string) => {
-    navigator.clipboard.writeText(content)
+    copyToClipboard(content, {
+      successMessage: 'Prompt content copied.',
+      successTitle: 'Prompt copied',
+    })
   }
 
   const handleViewHistory = async (prompt: PromptTemplate) => {
@@ -303,127 +366,338 @@ export default function PromptLibraryPage() {
     }
   }
 
-  return (
-    <Box sx={{ p: 3 }}>
-      {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h5" sx={{ fontWeight: 600 }}>
-          Prompt Library
-        </Typography>
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Tooltip title="Export all prompts">
-            <IconButton onClick={handleExport}>
-              <DownloadIcon />
-            </IconButton>
-          </Tooltip>
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={handleCreatePrompt}
-          >
-            New Prompt
-          </Button>
-        </Box>
-      </Box>
+  const selectedCategoryMeta = categories.find((category) => category.id === selectedCategory)
+  const totalLibraryPrompts = categories.reduce((total, category) => total + category.prompt_count, 0)
+  const favoriteCount = prompts.filter((prompt) => prompt.is_favorite).length
+  const systemPromptCount = prompts.filter((prompt) => prompt.is_system_prompt).length
+  const variablePromptCount = prompts.filter((prompt) => prompt.variables.length > 0).length
+  const totalUses = prompts.reduce((total, prompt) => total + prompt.use_count, 0)
+  const libraryHasPrompts = totalLibraryPrompts > 0 || prompts.length > 0
+  const activeFilterLabel = showFavoritesOnly
+    ? 'Favorites'
+    : selectedCategoryMeta?.name || 'All prompts'
+  const activeFilterStatus = showFavoritesOnly
+    ? 'favorites'
+    : selectedCategoryMeta
+      ? 'category'
+      : 'all'
+  const hasActivePromptFilters = Boolean(searchQuery || selectedCategory || showFavoritesOnly)
+  const showPromptLibraryTools = libraryHasPrompts || hasActivePromptFilters
+  const hasGeneralCategory = categories.some((category) => category.id === 'general')
+  const canQuickCreatePrompt = formData.name.trim().length > 0 && formData.content.trim().length > 0
+  const canSavePrompt = formData.name.trim().length > 0 && formData.content.trim().length > 0
 
+  const handleClearPromptFilters = () => {
+    setSearchQuery('')
+    setSelectedCategory(null)
+    setShowFavoritesOnly(false)
+  }
+  const promptHeaderActions = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      <TextField
+        placeholder="Search prompts..."
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+        size="small"
+        sx={{ width: { xs: '100%', sm: 250, lg: 320 }, '& .MuiInputBase-root': { height: 34 } }}
+        InputProps={{
+          startAdornment: (
+            <InputAdornment position="start">
+              <SearchIcon />
+            </InputAdornment>
+          ),
+        }}
+      />
+      {hasActivePromptFilters && (
+        <Tooltip title="Clear filters">
+          <IconButton
+            aria-label="Clear filters"
+            size="small"
+            onClick={handleClearPromptFilters}
+            sx={promptLibraryIconButtonSx}
+          >
+            <ClearFiltersIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+      <Tooltip title={showFavoritesOnly ? 'Show all prompts' : 'Show favorites'}>
+        <IconButton
+          aria-label={showFavoritesOnly ? 'Show all prompts' : 'Show favorites'}
+          size="small"
+          onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+          sx={{
+            ...promptLibraryIconButtonSx,
+            borderColor: showFavoritesOnly ? alpha(accentColors.warning, 0.45) : 'divider',
+            color: accentColors.warning,
+            bgcolor: showFavoritesOnly ? alpha(accentColors.warning, 0.12) : 'transparent',
+          }}
+        >
+          <StarIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+      {libraryHasPrompts && (
+        <Tooltip title="Export prompts">
+          <IconButton
+            aria-label="Export prompts"
+            size="small"
+            onClick={handleExport}
+            sx={promptLibraryIconButtonSx}
+          >
+            <DownloadIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+      <Button size="small" variant="contained" onClick={handleCreatePrompt} startIcon={<AddIcon />} sx={{ height: 34, borderRadius: '8px', fontWeight: 800, px: 1.25 }}>
+        New
+      </Button>
+    </Box>
+  )
+  const promptSummaryRow = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+      <StatusChip status={activeFilterStatus} label={activeFilterLabel} statusConfig={PROMPT_LIBRARY_STATUS_CONFIG} height={22} />
+      <StatusChip status="prompts" label={`${formatNumber(prompts.length)} visible`} statusConfig={PROMPT_LIBRARY_STATUS_CONFIG} height={22} />
+      {favoriteCount > 0 && (
+        <StatusChip status="favorites" label={`${formatNumber(favoriteCount)} favorites`} statusConfig={PROMPT_LIBRARY_STATUS_CONFIG} height={22} />
+      )}
+      {(totalUses > 0 || systemPromptCount > 0 || variablePromptCount > 0) && (
+        <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
+          {totalUses > 0 ? `${formatNumber(totalUses)} uses` : ''}
+          {systemPromptCount > 0 ? `${totalUses > 0 ? ' / ' : ''}${formatNumber(systemPromptCount)} system` : ''}
+          {variablePromptCount > 0 ? `${totalUses > 0 || systemPromptCount > 0 ? ' / ' : ''}${formatNumber(variablePromptCount)} variables` : ''}
+        </Typography>
+      )}
+    </Box>
+  )
+
+  return (
+    <PageShell
+      sx={{
+        py: 1.25,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1.25,
+        overflow: 'visible',
+      }}
+    >
       {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+        <Alert severity="error" sx={{ mb: 1.25 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
 
-      <Grid container spacing={3}>
+      <Grid
+        container
+        spacing={1.5}
+        data-prompt-library-workspace
+        sx={{
+          alignItems: 'flex-start',
+          overflow: 'visible',
+        }}
+      >
         {/* Sidebar - Categories */}
-        <Grid item xs={12} md={3}>
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 600 }}>
-              Categories
-            </Typography>
-            <List dense>
-              <ListItem
-                button
+        {showPromptLibraryTools && (
+        <Grid item xs={12} md={3} lg={2.4}>
+          <SectionCard
+              title="Categories"
+              icon={<FolderIcon />}
+              accentColor={accentColors.success}
+              action={<StatusChip status="categories" label={`${formatNumber(categories.length)} groups`} statusConfig={PROMPT_LIBRARY_STATUS_CONFIG} height={22} />}
+            >
+            <List dense disablePadding>
+              <ListItemButton
                 selected={selectedCategory === null}
                 onClick={() => setSelectedCategory(null)}
-              >
-                <ListItemText primary="All Prompts" />
-                <Chip size="small" label={prompts.length} />
-              </ListItem>
+                  sx={{ borderRadius: '8px', mb: 0.25, minHeight: 34, py: 0.25, px: 1 }}
+                >
+                  <ListItemText
+                    primary="All Prompts"
+                    primaryTypographyProps={{ noWrap: true, fontSize: '0.84rem', fontWeight: 700 }}
+                  />
+                  <StatusChip status="prompts" label={formatNumber(totalLibraryPrompts || prompts.length)} statusConfig={PROMPT_LIBRARY_STATUS_CONFIG} height={22} />
+                </ListItemButton>
               {categories.map(cat => (
-                <ListItem
+                <ListItemButton
                   key={cat.id}
-                  button
                   selected={selectedCategory === cat.id}
                   onClick={() => setSelectedCategory(cat.id)}
+                  sx={{ borderRadius: '8px', mb: 0.25, minHeight: 34, py: 0.25, px: 1 }}
                 >
-                  <Box sx={{ mr: 1, color: cat.color }}>
+                  <Box sx={{ mr: 0.75, color: cat.color, display: 'flex', '& .MuiSvgIcon-root': { fontSize: 18 } }}>
                     {getCategoryIcon(cat.icon)}
                   </Box>
-                  <ListItemText primary={cat.name} />
-                  <Chip size="small" label={cat.prompt_count} />
-                </ListItem>
-              ))}
+                    <ListItemText
+                      primary={cat.name}
+                      primaryTypographyProps={{ noWrap: true, fontSize: '0.84rem', fontWeight: 700 }}
+                    />
+                    <StatusChip status="category" label={formatNumber(cat.prompt_count)} statusConfig={PROMPT_LIBRARY_STATUS_CONFIG} height={22} />
+                  </ListItemButton>
+                ))}
             </List>
-            <Divider sx={{ my: 2 }} />
-            <Button
-              fullWidth
-              variant={showFavoritesOnly ? 'contained' : 'outlined'}
-              color="warning"
-              startIcon={<StarIcon />}
-              onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
-              size="small"
-            >
-              Favorites Only
-            </Button>
-          </Paper>
+          </SectionCard>
         </Grid>
+        )}
 
         {/* Main Content */}
-        <Grid item xs={12} md={9}>
-          {/* Search Bar */}
-          <TextField
-            fullWidth
-            placeholder="Search prompts..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            sx={{ mb: 2 }}
-            InputProps={{
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon />
-                </InputAdornment>
-              ),
-            }}
-          />
+        <Grid item xs={12} md={showPromptLibraryTools ? 9 : 12} lg={showPromptLibraryTools ? 9.6 : 12}>
+          <SectionCard
+            title="Prompts"
+            subtitle={showPromptLibraryTools ? `${formatNumber(prompts.length)} visible in ${activeFilterLabel.toLowerCase()}` : undefined}
+            icon={<ChatIcon />}
+            accentColor={accentColors.primary}
+            action={showPromptLibraryTools ? promptHeaderActions : undefined}
+          >
+            {showPromptLibraryTools && promptSummaryRow}
+            {loading ? (
+              <Box sx={{ minHeight: 120, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                <CircularProgress />
+              </Box>
+            ) : prompts.length === 0 ? (
+              <Box
+                data-prompt-library-empty-state
+                sx={{
+                  p: 1.25,
+                  borderRadius: '8px',
+                  border: '1px dashed',
+                  borderColor: 'divider',
+                  bgcolor: alpha(accentColors.primary, 0.04),
+                }}
+              >
+                <Box
+                  sx={{
+                    width: '100%',
+                    display: 'grid',
+                    gridTemplateColumns: { xs: '1fr', lg: hasActivePromptFilters ? 'minmax(0, 1fr) auto' : '1fr' },
+                    gap: 1,
+                    alignItems: 'start',
+                  }}
+                >
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                      {hasActivePromptFilters ? 'No matching prompts' : 'No prompts yet'}
+                    </Typography>
+                    {hasActivePromptFilters && (
+                      <Typography variant="caption" color="text.secondary">
+                        {activeFilterLabel}
+                      </Typography>
+                    )}
+                  </Box>
 
-          {/* Prompts List */}
-          {loading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-              <CircularProgress />
-            </Box>
-          ) : prompts.length === 0 ? (
-            <Paper sx={{ p: 4, textAlign: 'center' }}>
-              <Typography color="text.secondary">
-                No prompts found. Create your first prompt to get started.
-              </Typography>
-            </Paper>
-          ) : (
-            <Grid container spacing={2}>
-              {prompts.map(prompt => (
-                <Grid item xs={12} key={prompt.id}>
-                  <Card sx={{ 
-                    '&:hover': { boxShadow: 4 },
-                    borderLeft: `4px solid ${categories.find(c => c.id === prompt.category)?.color || '#6B7280'}`,
-                  }}>
-                    <CardContent>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  {hasActivePromptFilters ? (
+                    <Box sx={{ display: 'flex', gap: 0.75, justifyContent: { xs: 'flex-start', lg: 'flex-end' }, flexWrap: 'wrap' }}>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={handleClearPromptFilters}
+                        sx={{ height: 34, borderRadius: '8px', borderColor: 'divider', fontWeight: 800 }}
+                      >
+                        Clear
+                      </Button>
+                    </Box>
+                  ) : (
+                    <Box
+                      sx={{
+                        display: 'grid',
+                        gridTemplateColumns: {
+                          xs: '1fr',
+                          sm: canQuickCreatePrompt
+                            ? 'minmax(180px, 0.7fr) minmax(140px, 0.35fr) auto'
+                            : 'minmax(180px, 0.7fr) minmax(140px, 0.35fr)',
+                        },
+                        gap: 0.75,
+                        alignItems: 'start',
+                      }}
+                    >
+                      <TextField
+                        label="Name"
+                        value={formData.name}
+                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                        size="small"
+                        fullWidth
+                      />
+                      <TextField
+                        select
+                        label="Category"
+                        value={formData.category}
+                        onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                        size="small"
+                        fullWidth
+                      >
+                        {!hasGeneralCategory && <MenuItem value="general">General</MenuItem>}
+                        {categories.map(category => (
+                          <MenuItem key={category.id} value={category.id}>{category.name}</MenuItem>
+                        ))}
+                      </TextField>
+                      <TextField
+                        label="Prompt"
+                        value={formData.content}
+                        onChange={(e) => setFormData({ ...formData, content: e.target.value })}
+                        size="small"
+                        fullWidth
+                        multiline
+                        minRows={3}
+                        sx={{ gridColumn: { xs: 'auto', sm: '1 / -1' } }}
+                      />
+                      {canQuickCreatePrompt && (
+                        <Button
+                          size="small"
+                          variant="contained"
+                          onClick={handleQuickCreatePrompt}
+                          sx={{
+                            height: 34,
+                            minWidth: 96,
+                            borderRadius: '8px',
+                            fontWeight: 800,
+                            px: 1.25,
+                            whiteSpace: 'nowrap',
+                            justifySelf: { xs: 'end', sm: 'stretch' },
+                            gridColumn: { xs: 'auto', sm: '3 / 4' },
+                            gridRow: { xs: 'auto', sm: '1' },
+                          }}
+                        >
+                          Create
+                        </Button>
+                      )}
+                    </Box>
+                  )}
+                </Box>
+              </Box>
+            ) : (
+              <Grid
+                container
+                spacing={1.25}
+                sx={{ alignContent: 'flex-start' }}
+              >
+                {prompts.map(prompt => {
+                  const categoryColor = categories.find(c => c.id === prompt.category)?.color || accentColors.slate
+
+                  return (
+                    <Grid item xs={12} key={prompt.id}>
+                        <Box
+                          sx={{
+                            height: '100%',
+                            p: 2,
+                            borderRadius: '8px',
+                            bgcolor: 'background.paper',
+                            border: '1px solid',
+                            borderColor: 'divider',
+                            borderLeft: `4px solid ${categoryColor}`,
+                            transition: 'border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease',
+                            '&:hover': {
+                              borderColor: alpha(accentColors.success, 0.36),
+                              boxShadow: `0 16px 42px ${alpha('#000', 0.18)}`,
+                              transform: 'translateY(-1px)',
+                            },
+                          }}
+                        >
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                         <Box sx={{ flex: 1 }}>
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                             <Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 600 }}>
                               {prompt.name}
                             </Typography>
-                            {prompt.is_system_prompt && (
-                              <Chip size="small" label="System" color="error" />
-                            )}
+                              {prompt.is_system_prompt && (
+                                <StatusChip status="system" statusConfig={PROMPT_LIBRARY_STATUS_CONFIG} />
+                              )}
                             {prompt.is_favorite && (
                               <StarIcon sx={{ color: 'warning.main', fontSize: 18 }} />
                             )}
@@ -438,7 +712,7 @@ export default function PromptLibraryPage() {
                             sx={{
                               bgcolor: 'action.hover',
                               p: 1,
-                              borderRadius: 1,
+                              borderRadius: '8px',
                               fontFamily: 'monospace',
                               fontSize: '0.8rem',
                               maxHeight: 80,
@@ -452,16 +726,17 @@ export default function PromptLibraryPage() {
                               : prompt.content}
                           </Typography>
                           <Box sx={{ display: 'flex', gap: 1, mt: 1, flexWrap: 'wrap', alignItems: 'center' }}>
-                            {prompt.variables.length > 0 && (
-                              <Chip
-                                size="small"
-                                variant="outlined"
-                                label={`${prompt.variables.length} variable${prompt.variables.length > 1 ? 's' : ''}`}
-                              />
-                            )}
-                            {prompt.tags.map(tag => (
-                              <Chip key={tag} size="small" label={tag} />
-                            ))}
+                              {prompt.variables.length > 0 && (
+                                <StatusChip
+                                  status="variables"
+                                  label={`${prompt.variables.length} variable${prompt.variables.length > 1 ? 's' : ''}`}
+                                  statusConfig={PROMPT_LIBRARY_STATUS_CONFIG}
+                                  height={22}
+                                />
+                              )}
+                              {prompt.tags.map(tag => (
+                                <StatusChip key={tag} status="tag" label={tag} statusConfig={PROMPT_LIBRARY_STATUS_CONFIG} height={22} />
+                              ))}
                             <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
                               Used {prompt.use_count} times
                             </Typography>
@@ -492,14 +767,15 @@ export default function PromptLibraryPage() {
                           >
                             <MoreIcon />
                           </IconButton>
+                          </Box>
                         </Box>
-                      </Box>
-                    </CardContent>
-                  </Card>
-                </Grid>
-              ))}
-            </Grid>
-          )}
+                        </Box>
+                      </Grid>
+                  )
+                })}
+              </Grid>
+            )}
+          </SectionCard>
         </Grid>
       </Grid>
 
@@ -576,22 +852,29 @@ export default function PromptLibraryPage() {
             </TextField>
             <Box>
               <Typography variant="body2" sx={{ mb: 1 }}>Tags</Typography>
-              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
-                {formData.tags.map(tag => (
-                  <Chip
-                    key={tag}
-                    label={tag}
-                    onDelete={() => handleRemoveTag(tag)}
-                    size="small"
-                  />
-                ))}
-              </Box>
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
+                  {formData.tags.map(tag => (
+                    <StatusChip
+                      key={tag}
+                      status="tag"
+                      label={tag}
+                      statusConfig={PROMPT_LIBRARY_STATUS_CONFIG}
+                      onDelete={() => handleRemoveTag(tag)}
+                      height={22}
+                    />
+                  ))}
+                </Box>
               <TextField
                 size="small"
                 placeholder="Add tag..."
                 value={tagInput}
                 onChange={(e) => setTagInput(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleAddTag()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleAddTag()
+                  }
+                }}
                 InputProps={{
                   endAdornment: (
                     <Button size="small" onClick={handleAddTag}>Add</Button>
@@ -603,13 +886,14 @@ export default function PromptLibraryPage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEditDialogOpen(false)}>Cancel</Button>
-          <Button
-            variant="contained"
-            onClick={handleSavePrompt}
-            disabled={!formData.name || !formData.content}
-          >
-            Save
-          </Button>
+          {canSavePrompt && (
+            <Button
+              variant="contained"
+              onClick={handleSavePrompt}
+            >
+              Save
+            </Button>
+          )}
         </DialogActions>
       </Dialog>
 
@@ -650,7 +934,7 @@ export default function PromptLibraryPage() {
                           mt: 1,
                           p: 1,
                           bgcolor: 'action.hover',
-                          borderRadius: 1,
+                          borderRadius: '8px',
                           fontFamily: 'monospace',
                           fontSize: '0.75rem',
                           maxHeight: 100,
@@ -708,19 +992,19 @@ export default function PromptLibraryPage() {
           {renderedContent && (
             <Box sx={{ mt: 2 }}>
               <Typography variant="subtitle2" sx={{ mb: 1 }}>Rendered Output:</Typography>
-              <Paper sx={{ p: 2, bgcolor: 'action.hover' }}>
-                <Typography
-                  sx={{
-                    fontFamily: 'monospace',
+                <Box sx={{ p: 2, ...promptLibraryPanelSx }}>
+                  <Typography
+                    sx={{
+                      fontFamily: 'monospace',
                     fontSize: '0.85rem',
                     whiteSpace: 'pre-wrap',
                   }}
-                >
-                  {renderedContent}
-                </Typography>
-              </Paper>
-            </Box>
-          )}
+                  >
+                    {renderedContent}
+                  </Typography>
+                </Box>
+              </Box>
+            )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setUseDialogOpen(false)}>Cancel</Button>
@@ -741,6 +1025,6 @@ export default function PromptLibraryPage() {
           </Button>
         </DialogActions>
       </Dialog>
-    </Box>
+    </PageShell>
   )
 }

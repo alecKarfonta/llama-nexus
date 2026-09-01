@@ -1,14 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Box,
   Grid,
   Typography,
-  Card,
-  CardContent,
   TextField,
   Button,
   IconButton,
-  Chip,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -21,18 +18,13 @@ import {
   CircularProgress,
   Divider,
   InputAdornment,
-  Paper,
   Rating,
-  LinearProgress,
-  Tab,
-  Tabs,
+  alpha,
 } from '@mui/material'
 import {
   Search as SearchIcon,
   Star as StarIcon,
   Memory as MemoryIcon,
-  Speed as SpeedIcon,
-  Storage as StorageIcon,
   Refresh as RefreshIcon,
   Delete as DeleteIcon,
   Info as InfoIcon,
@@ -40,7 +32,10 @@ import {
   Download as DownloadIcon,
   CloudDownload as CloudIcon,
 } from '@mui/icons-material'
+import { ConfirmationDialog, PageShell, SectionCard, StatusChip, type StatusChipConfigMap } from '@/components/common'
+import { useConfirmableAction } from '@/hooks/useConfirmableAction'
 import { apiService } from '@/services/api'
+import { accentColors } from '@/utils/theme'
 
 interface CachedModel {
   id: string
@@ -102,6 +97,17 @@ const formatNumber = (num: number): string => {
   return num.toString()
 }
 
+const MODEL_REGISTRY_STATUS_CONFIG: StatusChipConfigMap = {
+  catalog: { color: accentColors.info, label: 'Catalog' },
+  registry: { color: accentColors.primary, label: 'Registry' },
+  type: { color: accentColors.primary, label: 'Type' },
+  license: { color: accentColors.slate, label: 'License' },
+  usage: { color: accentColors.success, label: 'Usage' },
+  coverage: { color: accentColors.warning, label: 'Coverage' },
+  tag: { color: accentColors.info, label: 'Tag' },
+  quantization: { color: accentColors.primary, label: 'Quantization' },
+}
+
 export default function ModelRegistryPage() {
   // State
   const [models, setModels] = useState<CachedModel[]>([])
@@ -110,7 +116,6 @@ export default function ModelRegistryPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [tabValue, setTabValue] = useState(0)
   
   // Dialog states
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false)
@@ -118,6 +123,13 @@ export default function ModelRegistryPage() {
   const [modelVariants, setModelVariants] = useState<ModelVariant[]>([])
   const [modelRating, setModelRating] = useState<number | null>(null)
   const [ratingNotes, setRatingNotes] = useState('')
+  const {
+    confirmationAction: confirmAction,
+    confirmationLoading: confirmingAction,
+    requestConfirmation,
+    closeConfirmation: closeConfirmDialog,
+    confirmAction: handleConfirmAction,
+  } = useConfirmableAction()
   
   // Cache model dialog
   const [cacheDialogOpen, setCacheDialogOpen] = useState(false)
@@ -129,6 +141,7 @@ export default function ModelRegistryPage() {
     model_type: '',
     license: '',
   })
+  const canCacheModel = cacheFormData.repo_id.trim().length > 0 && cacheFormData.name.trim().length > 0
 
   // Load data
   const loadData = useCallback(async () => {
@@ -187,8 +200,7 @@ export default function ModelRegistryPage() {
     }
   }
 
-  const handleDeleteModel = async (model: CachedModel) => {
-    if (!confirm(`Delete "${model.name}" from cache?`)) return
+  const deleteModel = async (model: CachedModel) => {
     try {
       await apiService.deleteCachedModel(model.repo_id)
       loadData()
@@ -197,9 +209,25 @@ export default function ModelRegistryPage() {
     }
   }
 
+  const handleDeleteModel = (model: CachedModel) => {
+    requestConfirmation({
+      title: 'Delete cached model?',
+      message: `Delete "${model.name}" from cache? The model metadata and usage history will be removed from this registry.`,
+      confirmLabel: 'Delete model',
+      destructive: true,
+      onConfirm: () => deleteModel(model),
+    })
+  }
+
   const handleCacheModel = async () => {
+    if (!canCacheModel) return
+
     try {
-      await apiService.cacheModel(cacheFormData)
+      await apiService.cacheModel({
+        ...cacheFormData,
+        repo_id: cacheFormData.repo_id.trim(),
+        name: cacheFormData.name.trim(),
+      })
       setCacheDialogOpen(false)
       setCacheFormData({
         repo_id: '',
@@ -215,220 +243,374 @@ export default function ModelRegistryPage() {
     }
   }
 
-  return (
-    <Box sx={{ p: 3 }}>
-      {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h5" sx={{ fontWeight: 600 }}>
-          Model Registry
-        </Typography>
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Tooltip title="Refresh">
-            <IconButton onClick={loadData}>
-              <RefreshIcon />
-            </IconButton>
-          </Tooltip>
-          <Button
-            variant="contained"
-            startIcon={<CloudIcon />}
-            onClick={() => setCacheDialogOpen(true)}
-          >
-            Cache Model
-          </Button>
-        </Box>
-      </Box>
+  const totalTokenCount = usageStats.reduce((total, usage) => total + usage.total_tokens_generated, 0)
+  const cachedModelCount = stats?.cached_models ?? models.length
+  const ratedModelCount = stats?.rated_models ?? 0
+  const ratingCoverage = cachedModelCount > 0 ? Math.round((ratedModelCount / cachedModelCount) * 100) : 0
+  const hasSearchQuery = searchQuery.trim().length > 0
+  const showRegistryList = loading || cachedModelCount > 0 || models.length > 0 || hasSearchQuery
+  const shouldShowRegistrySearch = cachedModelCount > 0 || models.length > 0 || hasSearchQuery
+  const prioritizeCacheForm = !showRegistryList
+  const showRegistrySummaryRow = shouldShowRegistrySearch
+    || cachedModelCount > 0
+    || ratedModelCount > 0
+    || (stats?.total_variants ?? 0) > 0
+    || (stats?.total_inferences ?? 0) > 0
+    || totalTokenCount > 0
+  const registryRefreshAction = (
+    <Tooltip title="Refresh registry">
+      <IconButton
+        aria-label="Refresh registry"
+        size="small"
+        onClick={loadData}
+        sx={{
+          width: 32,
+          height: 32,
+          borderRadius: '8px',
+          border: '1px solid',
+          borderColor: 'divider',
+          bgcolor: 'action.hover',
+        }}
+      >
+        <RefreshIcon sx={{ fontSize: 18 }} />
+      </IconButton>
+    </Tooltip>
+  )
 
+  return (
+    <PageShell sx={{ py: 1.25 }}>
       {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+        <Alert severity="error" sx={{ mb: 1.25 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
 
-      {/* Stats Cards */}
-      {stats && (
-        <Grid container spacing={2} sx={{ mb: 3 }}>
-          <Grid item xs={6} md={2.4}>
-            <Card>
-              <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                <MemoryIcon color="primary" />
-                <Typography variant="h5">{stats.cached_models}</Typography>
-                <Typography variant="caption" color="text.secondary">Cached Models</Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-          <Grid item xs={6} md={2.4}>
-            <Card>
-              <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                <StorageIcon color="secondary" />
-                <Typography variant="h5">{stats.total_variants}</Typography>
-                <Typography variant="caption" color="text.secondary">Variants</Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-          <Grid item xs={6} md={2.4}>
-            <Card>
-              <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                <DownloadIcon color="info" />
-                <Typography variant="h5">{formatNumber(stats.total_loads)}</Typography>
-                <Typography variant="caption" color="text.secondary">Total Loads</Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-          <Grid item xs={6} md={2.4}>
-            <Card>
-              <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                <SpeedIcon color="success" />
-                <Typography variant="h5">{formatNumber(stats.total_inferences)}</Typography>
-                <Typography variant="caption" color="text.secondary">Inferences</Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-          <Grid item xs={6} md={2.4}>
-            <Card>
-              <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                <StarIcon color="warning" />
-                <Typography variant="h5">{stats.rated_models}</Typography>
-                <Typography variant="caption" color="text.secondary">Rated</Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-        </Grid>
-      )}
+      <Grid container spacing={1.5} alignItems="flex-start">
+        {showRegistryList && (
+          <Grid
+            item
+            xs={12}
+            lg={8}
+            sx={{ order: { xs: 2, lg: prioritizeCacheForm ? 2 : 1 } }}
+          >
+            <SectionCard
+              title="Cached models"
+              icon={<MemoryIcon />}
+              accentColor={accentColors.primary}
+              action={registryRefreshAction}
+            >
+              {showRegistrySummaryRow && (
+                <Box
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: { xs: '1fr', md: 'minmax(0, 1fr) auto' },
+                    alignItems: 'center',
+                    gap: 0.75,
+                    mb: 1,
+                  }}
+                >
+                  <Box sx={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 0.6, flexWrap: 'wrap' }}>
+                    {cachedModelCount > 0 && (
+                      <StatusChip status="catalog" label={`${cachedModelCount} cached`} statusConfig={MODEL_REGISTRY_STATUS_CONFIG} height={22} />
+                    )}
+                    {models.length > 0 && models.length !== cachedModelCount && (
+                      <StatusChip status="catalog" label={`${models.length} visible`} statusConfig={MODEL_REGISTRY_STATUS_CONFIG} height={22} />
+                    )}
+                    {cachedModelCount > 0 && ratedModelCount > 0 && (
+                      <StatusChip status="coverage" label={`${ratingCoverage}% rated`} statusConfig={MODEL_REGISTRY_STATUS_CONFIG} height={22} />
+                    )}
+                    {(stats?.total_variants ?? 0) > 0 && (
+                      <StatusChip status="registry" label={`${stats?.total_variants ?? 0} variants`} statusConfig={MODEL_REGISTRY_STATUS_CONFIG} height={22} />
+                    )}
+                    {(stats?.total_inferences ?? 0) > 0 && (
+                      <StatusChip status="usage" label={`${formatNumber(stats?.total_inferences ?? 0)} inferences`} statusConfig={MODEL_REGISTRY_STATUS_CONFIG} height={22} />
+                    )}
+                    {totalTokenCount > 0 && (
+                      <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
+                        {formatNumber(totalTokenCount)} generated tokens recorded.
+                      </Typography>
+                    )}
+                  </Box>
 
-      {/* Tabs */}
-      <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)} sx={{ mb: 2 }}>
-        <Tab label="Cached Models" />
-        <Tab label="Usage Statistics" />
-      </Tabs>
+                  {shouldShowRegistrySearch && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0, justifyContent: { xs: 'flex-start', md: 'flex-end' } }}>
+                      <TextField
+                        placeholder="Search cached models"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        InputProps={{
+                          startAdornment: (
+                            <InputAdornment position="start">
+                              <SearchIcon sx={{ fontSize: 18 }} />
+                            </InputAdornment>
+                          ),
+                        }}
+                        size="small"
+                        sx={{
+                          minWidth: { xs: 0, sm: 220 },
+                          width: { xs: '100%', sm: 260 },
+                          '& .MuiInputBase-root': { height: 32, borderRadius: '8px' },
+                        }}
+                      />
+                    </Box>
+                  )}
+                </Box>
+              )}
 
-      {tabValue === 0 && (
-        <>
-          {/* Search Bar */}
-          <TextField
-            fullWidth
-            placeholder="Search models..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            sx={{ mb: 2 }}
-            InputProps={{
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon />
-                </InputAdornment>
-              ),
-            }}
-          />
-
-          {/* Models List */}
-          {loading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-              <CircularProgress />
-            </Box>
-          ) : models.length === 0 ? (
-            <Paper sx={{ p: 4, textAlign: 'center' }}>
-              <Typography color="text.secondary">
-                No cached models found. Cache a model to get started.
-              </Typography>
-            </Paper>
-          ) : (
-            <Grid container spacing={2}>
-              {models.map(model => (
-                <Grid item xs={12} md={6} key={model.id}>
-                  <Card sx={{ 
-                    '&:hover': { boxShadow: 4 },
-                    height: '100%',
-                  }}>
-                    <CardContent>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <Box sx={{ flex: 1 }}>
-                          <Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 600 }}>
-                            {model.name}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                            {model.repo_id}
-                          </Typography>
-                          {model.description && (
-                            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                              {model.description.length > 100
-                                ? model.description.substring(0, 100) + '...'
-                                : model.description}
+              {loading ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 3, minHeight: 120 }}>
+                  <CircularProgress />
+                </Box>
+              ) : models.length === 0 ? (
+                <Box
+                  sx={{
+                    p: 1.25,
+                    bgcolor: alpha(accentColors.primary, 0.04),
+                    borderRadius: '8px',
+                    border: '1px dashed',
+                    borderColor: 'divider',
+                  }}
+                >
+                  <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                    {hasSearchQuery ? 'No matching cached models' : 'No cached models'}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {hasSearchQuery
+                      ? 'Adjust the search term or refresh the registry.'
+                      : 'Cache a repository.'}
+                  </Typography>
+                </Box>
+              ) : (
+                <Grid container spacing={1.25}>
+                  {models.map(model => (
+                    <Grid item xs={12} md={6} key={model.id}>
+                      <Box
+                        sx={{
+                          height: '100%',
+                          p: 1.5,
+                          borderRadius: '8px',
+                          border: '1px solid',
+                          borderColor: 'divider',
+                          bgcolor: 'background.paper',
+                          transition: 'border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease',
+                          '&:hover': {
+                            borderColor: alpha(accentColors.primary, 0.42),
+                            bgcolor: alpha(accentColors.primary, 0.05),
+                            transform: 'translateY(-1px)',
+                          },
+                        }}
+                      >
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 1.5 }}>
+                          <Box sx={{ flex: 1, minWidth: 0 }}>
+                            <Typography variant="h6" sx={{ fontSize: '0.95rem', fontWeight: 700, lineHeight: 1.25, wordBreak: 'break-word' }}>
+                              {model.name}
                             </Typography>
-                          )}
-                          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
-                            {model.model_type && (
-                              <Chip size="small" label={model.model_type} color="primary" variant="outlined" />
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1, wordBreak: 'break-all' }}>
+                              {model.repo_id}
+                            </Typography>
+                            {model.description && (
+                              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.25 }}>
+                                {model.description.length > 100
+                                  ? model.description.substring(0, 100) + '...'
+                                  : model.description}
+                              </Typography>
                             )}
-                            {model.license && (
-                              <Chip size="small" label={model.license} variant="outlined" />
-                            )}
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              <DownloadIcon sx={{ fontSize: 14, opacity: 0.6 }} />
-                              <Typography variant="caption">{formatNumber(model.downloads)}</Typography>
-                            </Box>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              <StarIcon sx={{ fontSize: 14, opacity: 0.6 }} />
-                              <Typography variant="caption">{formatNumber(model.likes)}</Typography>
-                            </Box>
+                          </Box>
+                          <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0 }}>
+                            <Tooltip title="View details">
+                              <IconButton
+                                size="small"
+                                onClick={() => handleViewDetails(model)}
+                                aria-label={`View details for ${model.name}`}
+                                sx={{
+                                  width: 32,
+                                  height: 32,
+                                  borderRadius: '8px',
+                                  border: '1px solid',
+                                  borderColor: 'divider',
+                                }}
+                              >
+                                <InfoIcon sx={{ fontSize: 17 }} />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Delete from cache">
+                              <IconButton
+                                size="small"
+                                onClick={() => handleDeleteModel(model)}
+                                color="error"
+                                aria-label={`Delete ${model.name} from cache`}
+                                sx={{
+                                  width: 32,
+                                  height: 32,
+                                  borderRadius: '8px',
+                                  border: '1px solid',
+                                  borderColor: alpha(accentColors.rose, 0.3),
+                                }}
+                              >
+                                <DeleteIcon sx={{ fontSize: 17 }} />
+                              </IconButton>
+                            </Tooltip>
                           </Box>
                         </Box>
-                        <Box sx={{ display: 'flex', gap: 0.5 }}>
-                          <Tooltip title="View Details">
-                            <IconButton size="small" onClick={() => handleViewDetails(model)}>
-                              <InfoIcon />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title="Delete from cache">
-                            <IconButton size="small" onClick={() => handleDeleteModel(model)} color="error">
-                              <DeleteIcon />
-                            </IconButton>
-                          </Tooltip>
+
+                        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center', mt: 1.25 }}>
+                          {model.model_type && (
+                            <StatusChip status="type" label={model.model_type} statusConfig={MODEL_REGISTRY_STATUS_CONFIG} />
+                          )}
+                          {model.license && (
+                            <StatusChip status="license" label={model.license} statusConfig={MODEL_REGISTRY_STATUS_CONFIG} />
+                          )}
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: 'text.secondary' }}>
+                            <DownloadIcon sx={{ fontSize: 14 }} />
+                            <Typography variant="caption">{formatNumber(model.downloads)}</Typography>
+                          </Box>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: 'text.secondary' }}>
+                            <StarIcon sx={{ fontSize: 14 }} />
+                            <Typography variant="caption">{formatNumber(model.likes)}</Typography>
+                          </Box>
                         </Box>
                       </Box>
-                    </CardContent>
-                  </Card>
+                    </Grid>
+                  ))}
                 </Grid>
-              ))}
-            </Grid>
-          )}
-        </>
-      )}
+              )}
+            </SectionCard>
+          </Grid>
+        )}
 
-      {tabValue === 1 && (
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="h6" sx={{ mb: 2 }}>Model Usage Statistics</Typography>
-          {usageStats.length === 0 ? (
-            <Typography color="text.secondary">No usage data recorded yet.</Typography>
-          ) : (
-            <List>
-              {usageStats.map((usage, index) => (
-                <ListItem key={index} divider>
-                  <ListItemText
-                    primary={usage.name || usage.repo_id || 'Unknown Model'}
-                    secondary={
-                      <Box sx={{ display: 'flex', gap: 2, mt: 0.5 }}>
-                        <Typography variant="caption">
-                          Loads: {usage.load_count}
-                        </Typography>
-                        <Typography variant="caption">
-                          Inferences: {usage.inference_count}
-                        </Typography>
-                        <Typography variant="caption">
-                          Tokens: {formatNumber(usage.total_tokens_generated)}
-                        </Typography>
-                        {usage.last_used && (
-                          <Typography variant="caption" color="text.secondary">
-                            Last used: {new Date(usage.last_used).toLocaleDateString()}
-                          </Typography>
-                        )}
-                      </Box>
-                    }
-                  />
-                </ListItem>
-              ))}
-            </List>
-          )}
-        </Paper>
-      )}
+        <Grid
+          item
+          xs={12}
+          lg={showRegistryList ? 4 : 8}
+          xl={showRegistryList ? 4 : 7}
+          sx={{ order: { xs: 1, lg: prioritizeCacheForm ? 1 : 2 } }}
+        >
+          <Box sx={{ display: 'grid', gap: 1.5 }}>
+            <SectionCard
+              title="Cache model"
+              icon={<CloudIcon />}
+              accentColor={accentColors.info}
+              action={!showRegistryList ? registryRefreshAction : undefined}
+            >
+              <Box
+                sx={{
+                  display: 'grid',
+                  gap: 1.25,
+                  gridTemplateColumns: {
+                    xs: '1fr',
+                    sm: prioritizeCacheForm || !showRegistryList ? 'repeat(2, minmax(0, 1fr))' : '1fr',
+                    xl: prioritizeCacheForm || !showRegistryList ? 'repeat(2, minmax(0, 1fr))' : '1fr',
+                  },
+                }}
+              >
+                <TextField
+                  label="Repository ID"
+                  value={cacheFormData.repo_id}
+                  onChange={(e) => setCacheFormData({ ...cacheFormData, repo_id: e.target.value })}
+                  fullWidth
+                  required
+                  size="small"
+                  placeholder="meta-llama/Llama-3.1-8B"
+                />
+                <TextField
+                  label="Model name"
+                  value={cacheFormData.name}
+                  onChange={(e) => setCacheFormData({ ...cacheFormData, name: e.target.value })}
+                  fullWidth
+                  required
+                  size="small"
+                />
+                <TextField
+                  label="Type"
+                  value={cacheFormData.model_type}
+                  onChange={(e) => setCacheFormData({ ...cacheFormData, model_type: e.target.value })}
+                  fullWidth
+                  size="small"
+                  placeholder="chat"
+                />
+                <TextField
+                  label="License"
+                  value={cacheFormData.license}
+                  onChange={(e) => setCacheFormData({ ...cacheFormData, license: e.target.value })}
+                  fullWidth
+                  size="small"
+                  placeholder="Apache-2.0"
+                />
+                <Box sx={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', gap: 1, flexWrap: 'wrap' }}>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    onClick={() => setCacheDialogOpen(true)}
+                    sx={{ height: 34, borderRadius: '8px', borderColor: 'divider', fontWeight: 800 }}
+                  >
+                    More fields
+                  </Button>
+                  {canCacheModel && (
+                    <Button
+                      variant="contained"
+                      size="small"
+                      onClick={handleCacheModel}
+                      sx={{ height: 34, borderRadius: '8px', fontWeight: 800 }}
+                    >
+                      Cache
+                    </Button>
+                  )}
+                </Box>
+              </Box>
+            </SectionCard>
+
+            {usageStats.length > 0 && (
+              <SectionCard
+                title="Usage"
+                subtitle="Loads, inferences, and token activity."
+                icon={<StatsIcon />}
+                accentColor={accentColors.success}
+                action={<StatusChip status="usage" label={`${usageStats.length} records`} statusConfig={MODEL_REGISTRY_STATUS_CONFIG} />}
+              >
+                <List disablePadding sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  {usageStats.map((usage, index) => (
+                    <ListItem
+                      key={`${usage.model_id}-${usage.variant ?? index}`}
+                      sx={{
+                        px: 1.25,
+                        py: 1,
+                        alignItems: 'flex-start',
+                        borderRadius: '8px',
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        bgcolor: 'background.paper',
+                      }}
+                    >
+                      <ListItemText
+                        primary={usage.name || usage.repo_id || 'Unknown Model'}
+                        primaryTypographyProps={{ fontWeight: 700, fontSize: '0.85rem', sx: { wordBreak: 'break-word' } }}
+                        secondary={
+                          <Box sx={{ display: 'flex', gap: 1.25, flexWrap: 'wrap', mt: 0.5 }}>
+                            <Typography variant="caption">
+                              Loads: {usage.load_count}
+                            </Typography>
+                            <Typography variant="caption">
+                              Runs: {usage.inference_count}
+                            </Typography>
+                            <Typography variant="caption">
+                              Tokens: {formatNumber(usage.total_tokens_generated)}
+                            </Typography>
+                            {usage.last_used && (
+                              <Typography variant="caption" color="text.secondary">
+                                Last: {new Date(usage.last_used).toLocaleDateString()}
+                              </Typography>
+                            )}
+                          </Box>
+                        }
+                      />
+                    </ListItem>
+                  ))}
+                </List>
+              </SectionCard>
+            )}
+          </Box>
+        </Grid>
+      </Grid>
 
       {/* Model Details Dialog */}
       <Dialog open={detailsDialogOpen} onClose={() => setDetailsDialogOpen(false)} maxWidth="md" fullWidth>
@@ -477,7 +659,13 @@ export default function ModelRegistryPage() {
                   <Typography variant="body2" sx={{ mb: 1 }}><strong>Tags:</strong></Typography>
                   <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                     {selectedModel.tags.map(tag => (
-                      <Chip key={tag} size="small" label={tag} />
+                      <StatusChip
+                        key={tag}
+                        status="tag"
+                        label={tag}
+                        variant="outlined"
+                        statusConfig={MODEL_REGISTRY_STATUS_CONFIG}
+                      />
                     ))}
                   </Box>
                 </Box>
@@ -499,7 +687,11 @@ export default function ModelRegistryPage() {
                         primary={variant.filename}
                         secondary={
                           <Box sx={{ display: 'flex', gap: 2 }}>
-                            <Chip size="small" label={variant.quantization} color="primary" />
+                            <StatusChip
+                              status="quantization"
+                              label={variant.quantization}
+                              statusConfig={MODEL_REGISTRY_STATUS_CONFIG}
+                            />
                             {variant.size_bytes && (
                               <Typography variant="caption">
                                 Size: {formatBytes(variant.size_bytes)}
@@ -608,15 +800,23 @@ export default function ModelRegistryPage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setCacheDialogOpen(false)}>Cancel</Button>
-          <Button
-            variant="contained"
-            onClick={handleCacheModel}
-            disabled={!cacheFormData.repo_id || !cacheFormData.name}
-          >
-            Cache Model
-          </Button>
+          {canCacheModel && (
+            <Button
+              variant="contained"
+              onClick={handleCacheModel}
+            >
+              Cache Model
+            </Button>
+          )}
         </DialogActions>
       </Dialog>
-    </Box>
+
+      <ConfirmationDialog
+        action={confirmAction}
+        loading={confirmingAction}
+        onClose={closeConfirmDialog}
+        onConfirm={handleConfirmAction}
+      />
+    </PageShell>
   )
 }

@@ -1,128 +1,149 @@
-import React, { useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  Typography,
-  Card,
-  CardContent,
-  Box,
-  Button,
   Alert,
+  Box,
+  IconButton,
+  Switch,
+  Tooltip,
+  Typography,
 } from '@mui/material';
 import {
-  ArrowForward as ArrowForwardIcon,
-  Settings as SettingsIcon,
+  ContentCopy as CopyIcon,
+  Tune as TuneIcon,
 } from '@mui/icons-material';
+import { PageShell, SectionCard, StatusChip, type StatusChipConfigMap } from '@/components/common';
+import { useClipboard } from '@/hooks/useClipboard';
+import { useLocalPreferences } from '@/hooks/useLocalPreferences';
+import {
+  localPreferenceOrder,
+  localPreferences,
+} from '@/utils/preferences';
+import { accentColors } from '@/utils/theme';
+
+const CONFIG_STATUS_CONFIG: StatusChipConfigMap = {
+  stable: { color: accentColors.success, label: 'Local' },
+};
 
 export const ConfigurationPage: React.FC = () => {
-  useEffect(() => {
-    // Auto-redirect to Deploy page after a short delay to show the message
-    const timer = setTimeout(() => {
-      window.location.href = '/deploy';
-    }, 3000);
+  const { preferenceValues, updatePreference } = useLocalPreferences();
+  const [copied, setCopied] = useState(false);
+  const copyToClipboard = useClipboard();
+  const baseUrl = window.location.origin;
 
-    return () => clearTimeout(timer);
-  }, []);
+  const preferenceCount = useMemo(
+    () => Object.values(preferenceValues).filter(Boolean).length,
+    [preferenceValues]
+  );
 
-  const handleRedirectNow = () => {
-    window.location.href = '/deploy';
+  const copyBaseUrl = async () => {
+    const ok = await copyToClipboard(baseUrl, {
+      successMessage: 'Base URL copied.',
+      successTitle: 'URL copied',
+    });
+    if (ok) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    }
   };
 
   return (
-    <Box sx={{ 
-      p: { xs: 2, sm: 3, md: 4 },
-      maxWidth: '100%',
-      overflow: 'hidden',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      minHeight: '60vh'
-    }}>
-      <Card sx={{ 
-        maxWidth: 600,
-        width: '100%',
-        borderRadius: 2, 
-        boxShadow: '0 4px 6px 0 rgba(0, 0, 0, 0.1)',
-        border: '1px solid rgba(255, 255, 255, 0.1)',
-        bgcolor: 'background.paper',
-        textAlign: 'center'
-      }}>
-        <CardContent sx={{ p: 4 }}>
-          <Box sx={{ mb: 3 }}>
-            <SettingsIcon sx={{ fontSize: 48, color: 'primary.main', mb: 2 }} />
-            <Typography 
-              variant="h4" 
-              sx={{ 
-                fontWeight: 700, 
-                color: 'text.primary',
-                mb: 1
-              }}
-            >
-              Configuration Moved
-            </Typography>
-            <Typography 
-              variant="h6" 
-              color="text.secondary" 
-              sx={{ mb: 3 }}
-            >
-              All configuration options are now available in the Deploy page
-            </Typography>
+    <PageShell sx={{ py: 1.25, display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+      {copied && (
+        <Alert severity="success" onClose={() => setCopied(false)}>
+          Base URL copied.
+        </Alert>
+      )}
+
+      <SectionCard
+        title="Preferences"
+        icon={<TuneIcon />}
+        accentColor={accentColors.warning}
+        action={
+          <StatusChip
+            status="stable"
+            label={`${preferenceCount.toLocaleString()} enabled`}
+            statusConfig={CONFIG_STATUS_CONFIG}
+          />
+        }
+      >
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1fr) minmax(280px, 360px)' },
+            gap: 1.25,
+            alignItems: 'start',
+          }}
+        >
+          <Box sx={{ display: 'grid', gap: 0.5 }}>
+            {localPreferenceOrder.map((preferenceId) => {
+              const preference = localPreferences[preferenceId];
+
+              return (
+                <Box
+                  key={preferenceId}
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: 'auto minmax(0, 1fr)',
+                    gap: 1,
+                    alignItems: 'center',
+                    minHeight: 48,
+                    py: 0.65,
+                    px: 0.75,
+                    borderRadius: '8px',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    bgcolor: 'rgba(255, 255, 255, 0.018)',
+                  }}
+                >
+                  <Switch
+                    size="small"
+                    checked={preferenceValues[preferenceId]}
+                    onChange={(event) => updatePreference(preferenceId, event.target.checked)}
+                  />
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+                      {preference.label}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.25 }}>
+                      {preference.description}
+                    </Typography>
+                  </Box>
+                </Box>
+              );
+            })}
           </Box>
 
-          <Alert 
-            severity="info" 
-            sx={{ 
-              mb: 3,
-              textAlign: 'left',
-              borderRadius: 1,
-              '& .MuiAlert-message': {
-                width: '100%'
-              }
+          <Box
+            sx={{
+              p: 1,
+              borderRadius: '8px',
+              border: '1px solid',
+              borderColor: 'divider',
+              bgcolor: 'rgba(2, 6, 23, 0.28)',
+              minWidth: 0,
             }}
           >
-            <Typography variant="body2" sx={{ mb: 1, fontWeight: 600 }}>
-              The Deploy page now includes:
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontWeight: 800 }}>
+              Base URL
             </Typography>
-            <Box component="ul" sx={{ m: 0, pl: 2 }}>
-              <li>API Key configuration (Server tab)</li>
-              <li>Model selection and parameters</li>
-              <li>Sampling configuration</li>
-              <li>Performance settings</li>
-              <li>Context extension options</li>
-              <li>LlamaCPP version management</li>
-              <li>Real-time command preview</li>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+              <Typography
+                variant="body2"
+                sx={{ fontFamily: 'monospace', minWidth: 0, flex: 1 }}
+                noWrap
+                title={baseUrl}
+              >
+                {baseUrl}
+              </Typography>
+              <Tooltip title="Copy base URL">
+                <IconButton size="small" onClick={copyBaseUrl} sx={{ borderRadius: '8px' }}>
+                  <CopyIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
             </Box>
-          </Alert>
-
-          <Button
-            variant="contained"
-            size="large"
-            startIcon={<ArrowForwardIcon />}
-            onClick={handleRedirectNow}
-            sx={{ 
-              borderRadius: 1,
-              fontWeight: 600,
-              fontSize: '1rem',
-              textTransform: 'none',
-              px: 4,
-              py: 1.5,
-              boxShadow: 'none',
-              '&:hover': { 
-                boxShadow: '0 2px 4px 0 rgba(0, 0, 0, 0.1)' 
-              }
-            }}
-          >
-            Go to Deploy Page
-          </Button>
-
-          <Typography 
-            variant="body2" 
-            color="text.secondary" 
-            sx={{ mt: 2 }}
-          >
-            You will be redirected automatically in 3 seconds...
-          </Typography>
-        </CardContent>
-      </Card>
-    </Box>
+          </Box>
+        </Box>
+      </SectionCard>
+    </PageShell>
   );
 };

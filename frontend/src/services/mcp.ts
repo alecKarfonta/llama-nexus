@@ -15,7 +15,6 @@ import type {
     PopularServersResponse,
     ServerToolsResponse,
     ServerResourcesResponse,
-    ExecuteToolRequest,
     ExecuteToolResponse,
     AllToolsResponse,
     MCPServer,
@@ -37,7 +36,7 @@ class MCPService {
      */
     async listServers(): Promise<MCPServer[]> {
         const response: ListServersResponse = await apiService.get(`${this.baseUrl}/servers`);
-        return response.servers;
+        return Array.isArray(response?.servers) ? response.servers : [];
     }
 
     /**
@@ -58,7 +57,10 @@ class MCPService {
      * List available popular MCP servers
      */
     async listPopularServers(): Promise<PopularServersResponse> {
-        return apiService.get(`${this.baseUrl}/servers/popular`);
+        const response: PopularServersResponse = await apiService.get(`${this.baseUrl}/servers/popular`);
+        return {
+            servers: Array.isArray(response?.servers) ? response.servers : [],
+        };
     }
 
     /**
@@ -128,7 +130,12 @@ class MCPService {
      * List all tools from all connected MCP servers (OpenAI format)
      */
     async listAllTools(): Promise<AllToolsResponse> {
-        return apiService.get(`${this.baseUrl}/tools`);
+        const response: AllToolsResponse = await apiService.get(`${this.baseUrl}/tools`);
+        const tools = Array.isArray(response?.tools) ? response.tools : [];
+        return {
+            tools,
+            count: typeof response?.count === 'number' ? response.count : tools.length,
+        };
     }
 
     /**

@@ -1,5 +1,123 @@
 # Notes
 
+## 2026-08-27 Qwen3.8-Flash-Next (qwen4exp) deploy prep
+
+**Model:** `unsloth/Qwen3.8-Flash-Next-GGUF` `UD-Q4_K_XL` (~111 GB, 4-shard split) + `mmproj-F16.gguf` (vision, 0.9 GB). New `qwen4exp` arch (Qwen4 preview: 125B MoE A6B + 51B n-gram PLE + QSA sparse attention, 262K native ctx).
+
+**No `Q4_K_M` exists** in this repo — Unsloth ships Dynamic 2.0 quants only. 4-bit choices: `UD-Q4_K_XL` (111 GB) or `UD-IQ4_XS` (94 GB). K-quant chosen over IQ because IQ runs slow on CPU and this deploy offloads some experts to CPU.
+
+**llama.cpp support is PR-only:** [PR #27742](https://github.com/ggml-org/llama.cpp/pull/27742) (unsloth, opened 2026-08-26, still open). Not in any b-tagged release (latest b10656 is 2026-08-27 and does not contain it). `Dockerfile` `LLAMA_CPP_REF` now supports `pull/N/head` refs; pinned to `pull/27742/head`, build tag `b10631-qwen4exp`. Images must be rebuilt from source — prebuilt release download path cannot work for this model.
+
+**Offload design (the "cpu offload" ask):**
+- The 51B n-gram (PLE) table (~33 GB in UD-Q4_K_XL) is *designed* to live in **host RAM via mmap** — host-side row-index lookups, near-zero compute. Don't pass `--no-mmap`/`--mlock`; the pages stay cold/evictable.
+- Remaining ~78 GB GPU weights + <1 GB KV (q8_0 at 64K ctx; only 12/48 layers hold KV thanks to QSA sparse attention + GDN linear attention).
+- Rig state at deploy: GPU2 held by moss-tts (16.2 GB) → default deploy uses **GPUs 0,1,3** (~71 GB free) + `n_cpu_moe=4` (~6 GB experts on CPU). Free GPU2 (stop moss-tts) to go all-4-GPU with `n_cpu_moe=0`.
+- `.env` `N_CPU_MOE=21` is the backend default for the old 27B model — override per-deploy via Deploy UI or the config PUT; don't rely on env default.
+
+**Day-0 PR gotchas (from PR thread):** `--split-mode tensor` aborts on this arch (keep `layer`); multi-slot `--parallel` hits an indexer-cache assert (keep `parallel_slots=1`); `--fit on` hits `GGML_ASSERT(obj_new)` (don't use); garbage output on some rigs → reduce `gpu_layers`; load aborts → `LLAMA_ATTN_ROT_DISABLE=1`. The `--override-tensor` trick isn't wired into the backend (no `override_tensor` config key) — `n_cpu_moe` is the supported offload knob.
+
+**Code changes for this deploy:**
+- `Dockerfile` — `pull/N/head` ref support + PR pin (see above).
+- `docker-compose.yml` — builder + llamacpp-api build args bumped to `pull/27742/head` / `b10631-qwen4exp`.
+- `llamacpp_manager.py` `build_command()` — glob fallback for `{variant}/{name}-{variant}-00001-of-*.gguf` (any shard count; hardcoded list only knew 2/3-shard).
+- `download_manager.py` `_parse_name_variant()` — handle `UD-*`/`IQ*` variant suffixes (`Qwen3.8-Flash-Next-UD-Q4_K_XL` → name `Qwen3.8-Flash-Next`, variant `UD-Q4_K_XL`) and strip subdir prefixes.
+- `scripts/start.sh` — same glob fallback + 4-shard patterns.
+- `scripts/deploy_qwen38_flash.sh` (new) — end-to-end deploy via backend API with offload presets (`GPU_SET`/`CPU_MOE`/`CTX` env overrides).
+
+**Sampling (from model card):** thinking mode `temp 1.0 / top_p 0.95 / top_k 20 / min_p 0 / presence 0 / repeat 1.0`; instruct mode `temp 0.7 / top_p 0.8 / top_k 20 / presence_penalty 1.5`. Disable thinking via `chat_template_kwargs: {"enable_thinking": false}`.
+
+**Files in `gpt_oss_models` volume:** `UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-0000{1..4}-of-00004.gguf` + `mmproj-F16.gguf`.
+
+**Working deploy config (verified 2026-08-27, ~18 tok/s gen, 3-GPU + CPU offload):**
+
+| knob | value | why |
+|---|---|---|
+| GPUs | 0,1,3 | GPU 2 held by moss-tts (16.2 GB) |
+| `override_tensor` | `per_layer_token_embd=CPU,blk[.](3|7|...|46)[.].*_exps[.]weight=CPU` | PLE table (~33 GB) to host RAM; every other layer's MoE experts (~30 GB) to CPU — evens out across the 3-way layer split |
+| `n_cpu_moe` | 0 | `-ot` handles expert offload instead (per-layer spread) |
+| `gpu_layers` | 999 | all layers on GPU (experts via `-ot` are separate) |
+| `split_mode` | layer | `tensor` mode aborts on qwen4exp (PR known issue) |
+| `parallel_slots` | 1 | multi-slot hits indexer-cache assert (PR known issue) |
+| ctx | 65536 | q8_0 KV; 262K native but KV grows with ctx |
+| sampling | temp 1.0 / top_p 0.95 / top_k 20 | thinking mode (model card) |
+
+**Balance math (why `-ot`, not `--fit`):** `--fit` refuses to combine with `-ot` ("tensor_buft_overrides already set by user, abort"). Even 3-way layer split puts 16 layers/GPU ≈ 26-27 GB on devices with 22-24 GB free. Offloading every other layer's `*_exps.weight` (~1.26 GB/layer) via regex sidesteps both problems. Expert tensor names: `blk.N.ffn_{up,down,gate}_exps.weight` — note **no dot** between `ffn` and `_exps`. PLE tensor: `per_layer_token_embd.weight` (dims 160×320M, ~33 GB q4).
+
+**Known-issue workarounds applied:** none of `LLAMA_ATTN_ROT_DISABLE` etc. needed on this rig — clean load on build `b10716-e36130336` (PR head rebased). `--image-min-tokens 1024` warning appears for the VL path but text works.
+
+**Deploy/verify:** `./scripts/deploy_qwen38_flash.sh` (env: `GPU_SET`, `CPU_MOE`, `CTX`, `OVERRIDE_TENSOR`, `GPU_LAYERS_CFG`). Frontend Deploy page also works — the backend now wires `override_tensor` (`--override-tensor`) as a config key. Vision path untested — text-only verified.
+
+## 2026-08-30 TPS tuning: MTP depth, poll, tensor-split, ubatch (4×3090 Ti, all-GPU)
+
+**Question:** what else lifts decode TPS now that MTP + cache-reuse are on? Ran a 5-experiment series with a fixed harness (`scripts/bench_tps.sh`: prose/code/JSON × 2 runs, temp 0, thinking off; `scripts/qwen_set.sh` to push config + restart + wait for health).
+
+**Experiment A — MTP draft depth (`--spec-draft-n-max`) / strictness (`p_min`):**
+
+| config | prose | code | JSON | STRUCT avg | acceptance |
+|---|---|---|---|---|---|
+| n3 / p.75 (start) | 34.9 | 65.4 | 73.0 | 69.2 | 0.98, len 3.8 |
+| n5 / p.75 | 32.7 | 69.4 | 88.3 | 78.8 | 0.98, len 5.3 |
+| n8 / p.75 | 33.5 | 79.4 | 101.3 | 90.3 | 0.99, len 8.0 |
+| **n16 / p.75** | **35.8** | **79.9** | **103.4** | **91.7** | 0.88, len 9.7 |
+| n16 / p.90 | 35.3 | 79.8 | 101.8 | 90.8 | 0.90, len 9.2 |
+
+Depth is the dominant knob — JSON nearly +42% from n3→n16. Acceptance stays ≥0.88 even at depth 16; p_min 0.9 buys nothing over 0.75. **Winner: n_max=16, p_min=0.75.**
+
+**Experiment B — busy-poll (`--poll 100 --spec-draft-poll 1`):** +4% across all workloads (prose 37.2, code 82.2, JSON 107.9; STRUCT 95.1). Wired `poll`/`draft_poll` into `mtp` config (`llamacpp_manager.py` `build_command` + `normalize_mtp_config` in `mtp_deploy.py`). Kept.
+
+**Experiment C — `tensor_split 0.85,1.1,1.0,1.05`:** evens VRAM 23.7/20.3→22.0/22.0 GB, code +4%, prose +2%. Kept — also freed ~2.5 GB on GPU0, which unblocked Experiment E.
+
+**Experiment D — power/clock check (`nvidia-smi dmon -s pc` under load):** 50-129 W of a 350 W limit, clocks pinned 1860-1935 MHz, temps ≤50°C. **No thermal/power throttling — workload is launch/latency-bound, not power-bound. Power-limit tinkering is pointless on this rig.**
+
+**Experiment E — drop `mmproj` (vision tower, 0.9 GB) + retry `ubatch_size 1024`:** without the vision tower, ubatch 1024 fits (previously OOM'd on GPU0). Decode flat, **cold prefill 905→996 tok/s (+10%)**. `mmproj: null` + ubatch 1024 kept.
+
+**Final config (applied, verified via public endpoint):** `draft_n_max 16, draft_p_min 0.75, poll 100, draft_poll 1, tensor_split 0.85,1.1,1.0,1.05, mmproj off, ubatch 1024` → prose 38.9 / code 85.4 / JSON 106.3 tok/s (STRUCT 95.9 vs 69.2 at session start, **+39%**; decode ~76.9 avg all-workload vs 57.8).
+
+**New tooling:** `scripts/bench_tps.sh` (fixed 3-workload decode bench), `scripts/qwen_set.sh` (config push + restart + health-wait helper), `scripts/bench_prefill.py` (cold-prefill tok/s).
+
+## 2026-08-30 (round 2) p_min drift fix, parallel slots unlocked, ctx 128k
+
+**Round-2 findings (continuation of the 5-experiment series above):**
+
+- **Drift bug found:** the round-1 "final" actually ran `draft_p_min 0.9` (a leftover from experiment A's last variant), not the declared 0.75 winner. Proper A/B under the full combo: 0.9 → STRUCT 95.9 vs 0.75 → 90.9. **0.9 is the real winner** — the round-1 matrix underestimated it because p_min variants were tested at n16 only after poll/split were applied... reversed: with poll+split+ubatch the stricter p_min pays. Keep 0.9.
+- **`--parallel 2` now works** on the patched MTP build — the day-0 indexer-cache assert is gone. Single-stream TPS unchanged (decode serializes) but concurrency improves: 2 streams → **aggregate 65.6-68.7 tok/s vs 59.7 queued** (+10-15%), wall -20%. Note `--parallel N` divides per-slot ctx.
+- **ctx 65536 → 131072** fits with mmproj dropped (max 23.8/24.5 GB) — restores full 64k per slot under `--parallel 2`. Decode unchanged.
+- **threads 46 vs 40:** wash (PLE table lookups don't parallelize further; 40 kept).
+- **cache-reuse window 128 vs 512:** no TTFT difference on agent-style reuse (exact-prefix prompt cache does the work); 128 kept.
+
+**Current live config:** `draft_n_max 16, draft_p_min 0.9, poll 100, draft_poll 1, tensor_split 0.85,1.1,1.0,1.05, parallel 2, ctx 131072 (64k/slot), ubatch 1024, threads 40, cache_reuse 128, mmproj off`. Decode: prose ~37 / code ~77 / JSON ~104-107; 2-stream aggregate ~68; cold prefill ~996 tok/s; warm agent TTFT ~1.25s (5.7x reuse gap).
+
+**New tooling (round 2):** `scripts/bench_concur.sh` (N-stream concurrent throughput + TTFT), `scripts/bench_ttft.sh` (agent-style cold/warm TTFT with reuse-gap ratio).
+
+## 2026-08-30 (round 3) Cursor-specific MTP draft head — capture pipeline foundation
+
+**Goal:** raise MTP draft acceptance on Cursor traffic (~0.83-0.91 today) toward 0.95+ by training the 4B draft head on this server's own outputs on Cursor-shaped requests (self-distillation). The trained artifact is a sidecar GGUF swap (`--model-draft`) — zero serving-code changes, instant rollback.
+
+**Pipeline (all live):**
+
+```
+Cursor → https://mlapi.us/cursor/v1 (new key sk-mlapi-cursor-*)
+      → nginx (192.168.50.4) /cursor/ location → capture-tee (rig :8601)
+      → llama-server (:8600);  tee writes /data/captures/captures-YYYY-MM-DD.jsonl
+      → scripts/dataset_build.py → train/val shards → (stage 3) LoRA on 4B head
+```
+
+**Pieces built:**
+- `backend/capture_tee.py` — stdlib-only streaming reverse proxy. SSE passes through chunk-by-chunk (TTFT untouched; verified parity). After stream end it tees a record: request (messages/tools/sampling), response (content/tool_calls/finish_reason), usage/timings, and **exact server-side prompt token IDs** via `/apply-template` + `/tokenize` (template_ok flag marks unverified). Capture runs in a background thread — never on the response path. Client keys are swapped for the llama `--api-key` upstream (env `TEE_UPSTREAM_API_KEY`); records keep only the client key id.
+- `docker-compose.yml` — `capture-tee` service (profile `extra`, port 8601, `datasets` volume). Note: `llamacpp-api` has no DNS alias on the bridge network; upstream is the host gateway `172.18.0.1:8600`.
+- nginx (remote) — `cursor.conf` location + `host196_capturetee` upstream; key appended to `/etc/nginx/api_keys`. **Gotcha: `nginx-key-auth` re-reads the file per request, but a stale systemd unit needed `sudo systemctl restart nginx-key-auth` before the new key validated.**
+- `scripts/dataset_build.py` — filters (template_ok only, finish in stop/tool_calls, min chars), dedupes (exact sample hash + per tool-schema-prefix cap — Cursor resends identical tool lists every turn), optional PII scrub, 98/2 train/val shards + build_report.json. Run inside the tee container (volume needs root): `docker cp scripts/dataset_build.py llamacpp-capture-tee:/ && docker exec llamacpp-capture-tee python3 /dataset_build.py --scrub`.
+- `scripts/acceptance_log.py` — acceptance trending from `docker logs llamacpp-api` (llama-server logs to **stderr**; acceptance can be exactly `1.00000`). `tail` / `trend` / `live --csv`. **Baseline 2026-08-30: 0.832 avg acceptance, mean len 6.28** — this is the number the retrained head must beat.
+
+**Verified:** non-stream + SSE through the full public path, bad-key 401, TTFT parity, records with token-exact prompt ids landing in the volume, builder round-trip (534-char completion → kept → val shard).
+
+**Cursor config:** base URL `https://mlapi.us/cursor/v1`, model `qwen38-flash`, dedicated `sk-mlapi-cursor-*` key (stored only on the rig / nginx, not in git). The `/qwen/` route stays capture-free for non-Cursor use.
+
+**Stage 3 (training window, not yet run):** stop `llamacpp-api` → LoRA r=32 on the BF16 head export (`dzannotti/Qwen3.8-Flash-Next-MTP-BF16.gguf` → safetensors, verify `blk.48.*` 34 tensors) on 2× 3090 Ti → merge → `convert_hf_to_gguf.py --mtp` on the patched tree → `llama-quantize` Q4_K_M (Q4_K output/embedding) → drop into models volume → swap `speculative.model_draft`, restart, gate: acceptance ≥0.93 and STRUCT bench not regressed.
+
+
+
+
 ## 2026-06-18 Multi-GPU deploy only attached one GPU (FIXED)
 
 **Symptom:** Last `Qwen3.6-27B-Q6_K` deploy targeting host GPUs 1+3 (both RTX 5060 Ti) crashed with `cudaMalloc failed: out of memory` — llama.cpp log only listed `CUDA0` (single GPU) instead of `CUDA0`+`CUDA1`, so the ~21 GB Q6_K couldn't split across two 16 GB cards.

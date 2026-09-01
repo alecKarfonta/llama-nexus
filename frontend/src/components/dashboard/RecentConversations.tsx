@@ -28,7 +28,6 @@ import {
   alpha,
   Divider,
   Autocomplete,
-  Stack,
 } from '@mui/material'
 import {
   Chat as ChatIcon,
@@ -48,6 +47,7 @@ import {
 } from '@mui/icons-material'
 import { useNavigate } from 'react-router-dom'
 import { apiService } from '@/services/api'
+import { getRoutePath } from '@/config/navigation'
 
 interface Conversation {
   id: string
@@ -66,7 +66,7 @@ interface ConversationStats {
   total_messages: number
   recent_activity: number
   tags_used: string[]
-  models_used: string[]
+  models_used: Array<{ model: string; count: number }>
 }
 
 // Predefined research tags for quick categorization
@@ -93,6 +93,21 @@ const getTagColor = (tag: string): string => {
   return colors[Math.abs(hash) % colors.length]
 }
 
+const normalizeConversation = (conversation: {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  model?: string
+  tags?: string[]
+  message_count: number
+  is_archived?: boolean
+}): Conversation => ({
+  ...conversation,
+  tags: conversation.tags || [],
+  is_archived: conversation.is_archived === true,
+})
+
 interface RecentConversationsProps {
   limit?: number
   showSearch?: boolean
@@ -107,6 +122,7 @@ export const RecentConversations: React.FC<RecentConversationsProps> = ({
   compact = false,
 }) => {
   const navigate = useNavigate()
+  const chatPath = getRoutePath('chat')
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [stats, setStats] = useState<ConversationStats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -122,11 +138,15 @@ export const RecentConversations: React.FC<RecentConversationsProps> = ({
   const fetchConversations = useCallback(async () => {
     setLoading(true)
     try {
-      const params: any = { limit, search: search || undefined }
-      if (filterTag) params.tags = filterTag
-      
+      const params: {
+        limit: number
+        search?: string
+        tags?: string[]
+      } = { limit, search: search || undefined }
+      if (filterTag) params.tags = [filterTag]
+
       const response = await apiService.listConversations(params)
-      setConversations(response.conversations)
+      setConversations(response.conversations.map(normalizeConversation))
     } catch (error) {
       console.error('Failed to fetch conversations:', error)
     } finally {
@@ -137,8 +157,8 @@ export const RecentConversations: React.FC<RecentConversationsProps> = ({
   // Fetch stats
   const fetchStats = useCallback(async () => {
     try {
-      const response = await apiService.get('/api/v1/conversations/stats')
-      setStats(response.data)
+      const response = await apiService.get<ConversationStats>('/api/v1/conversations/stats')
+      setStats(response)
     } catch (error) {
       console.error('Failed to fetch stats:', error)
     }
@@ -240,7 +260,7 @@ export const RecentConversations: React.FC<RecentConversationsProps> = ({
 
   // Navigate to conversation
   const handleOpenConversation = (conversationId: string) => {
-    navigate(`/chat?conversation=${conversationId}`)
+    navigate(`${chatPath}?conversation=${conversationId}`)
   }
 
   // Open tag dialog
@@ -381,131 +401,236 @@ export const RecentConversations: React.FC<RecentConversationsProps> = ({
           <Button
             size="small"
             startIcon={<AddIcon />}
-            onClick={() => navigate('/chat')}
+            onClick={() => navigate(chatPath)}
             sx={{ mt: 2, textTransform: 'none' }}
           >
             Start a conversation
           </Button>
         </Box>
       ) : (
-        <List disablePadding sx={{ mx: -1 }}>
-          {conversations.map((conversation, index) => (
-            <ListItem
-              key={conversation.id}
-              disablePadding
-              sx={{
-                borderBottom: index < conversations.length - 1 ? '1px solid rgba(255, 255, 255, 0.04)' : 'none',
-              }}
-            >
-              <ListItemButton
-                onClick={() => handleOpenConversation(conversation.id)}
-                sx={{ 
-                  px: 1,
-                  py: compact ? 1 : 1.5,
-                  borderRadius: 1,
-                  '&:hover': {
-                    bgcolor: 'rgba(255, 255, 255, 0.03)',
-                  },
-                }}
-              >
-                <ListItemIcon sx={{ minWidth: 36 }}>
-                  <Box
+        <List disablePadding sx={{ mx: compact ? 0 : -1, overflow: 'hidden' }}>
+          {conversations.map((conversation, index) => {
+            const metadata = (
+              <>
+                <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                  {formatTime(conversation.updated_at)}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                  {conversation.message_count} msg
+                </Typography>
+                {conversation.model && (
+                  <Typography
+                    variant="caption"
                     sx={{
-                      width: 28,
-                      height: 28,
-                      borderRadius: 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      bgcolor: alpha('#06b6d4', 0.1),
+                      color: alpha('#fff', 0.42),
+                      display: { xs: 'none', sm: 'block' },
+                      minWidth: 0,
+                      maxWidth: 130,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
                     }}
                   >
-                    <ChatIcon sx={{ fontSize: 14, color: '#06b6d4' }} />
+                    {conversation.model.split('/').pop()}
+                  </Typography>
+                )}
+              </>
+            )
+
+            if (compact) {
+              return (
+                <Box
+                  key={conversation.id}
+                  tabIndex={0}
+                  aria-label={`Open conversation ${conversation.title}`}
+                  onClick={() => handleOpenConversation(conversation.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      handleOpenConversation(conversation.id)
+                    }
+                  }}
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: {
+                      xs: 'minmax(0, 1fr) auto',
+                      md: 'minmax(0, 1fr) minmax(120px, auto) auto',
+                    },
+                    alignItems: 'center',
+                    gap: 1,
+                    px: 1,
+                    py: 0.35,
+                    minHeight: 32,
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    borderBottom: index < conversations.length - 1 ? '1px solid rgba(255, 255, 255, 0.04)' : 'none',
+                    '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.03)' },
+                    '&:focus-visible': {
+                      outline: '2px solid',
+                      outlineColor: alpha('#06b6d4', 0.55),
+                      outlineOffset: 1,
+                    },
+                  }}
+                >
+                  <Box sx={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                    <ChatIcon sx={{ fontSize: 15, color: '#06b6d4', flexShrink: 0 }} />
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        minWidth: 0,
+                        flex: 1,
+                        fontWeight: 700,
+                        fontSize: '0.8rem',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {conversation.title}
+                    </Typography>
                   </Box>
-                </ListItemIcon>
-                <ListItemText
-                  primary={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Typography
-                        variant="body2"
-                        sx={{
-                          fontWeight: 500,
-                          fontSize: '0.8125rem',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          flex: 1,
-                        }}
-                      >
-                        {conversation.title}
-                      </Typography>
-                      {conversation.tags?.slice(0, 2).map((tag) => (
-                        <Chip
-                          key={tag}
-                          label={tag}
-                          size="small"
-                          sx={{
-                            height: 18,
-                            fontSize: '0.625rem',
-                            bgcolor: alpha(getTagColor(tag), 0.15),
-                            color: getTagColor(tag),
-                            border: 'none',
-                            '& .MuiChip-label': { px: 0.75 },
-                          }}
-                        />
-                      ))}
+                  <Box
+                    sx={{
+                      display: { xs: 'none', md: 'flex' },
+                      alignItems: 'center',
+                      justifyContent: 'flex-end',
+                      gap: 1,
+                      minWidth: 0,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {metadata}
+                  </Box>
+                  <IconButton
+                    size="small"
+                    aria-label={`Conversation actions for ${conversation.title}`}
+                    onClick={(event) => handleMenuOpen(event, conversation)}
+                    sx={{ width: 28, height: 28 }}
+                  >
+                    <MoreIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+              )
+            }
+
+            return (
+              <ListItem
+                key={conversation.id}
+                disablePadding
+                sx={{
+                  borderBottom: index < conversations.length - 1 ? '1px solid rgba(255, 255, 255, 0.04)' : 'none',
+                }}
+              >
+                <ListItemButton
+                  onClick={() => handleOpenConversation(conversation.id)}
+                  sx={{
+                    px: 1,
+                    py: 1.5,
+                    borderRadius: 1,
+                    '&:hover': {
+                      bgcolor: 'rgba(255, 255, 255, 0.03)',
+                    },
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 36 }}>
+                    <Box
+                      sx={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        bgcolor: alpha('#06b6d4', 0.1),
+                      }}
+                    >
+                      <ChatIcon sx={{ fontSize: 14, color: '#06b6d4' }} />
                     </Box>
-                  }
-                  secondary={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 0.5 }}>
-                      <Typography
-                        variant="caption"
-                        sx={{ 
-                          color: 'text.secondary',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 0.5,
-                        }}
-                      >
-                        <TimeIcon sx={{ fontSize: 12 }} />
-                        {formatTime(conversation.updated_at)}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {conversation.message_count} messages
-                      </Typography>
-                      {conversation.model && (
-                        <Typography 
-                          variant="caption" 
-                          sx={{ 
-                            color: alpha('#fff', 0.4),
-                            display: { xs: 'none', sm: 'block' },
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontWeight: 500,
+                            fontSize: '0.8125rem',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            flex: 1,
                           }}
                         >
-                          {conversation.model.split('/').pop()}
+                          {conversation.title}
                         </Typography>
-                      )}
-                    </Box>
-                  }
-                />
-                <IconButton
-                  size="small"
-                  onClick={(e) => handleMenuOpen(e, conversation)}
-                  sx={{ ml: 1 }}
-                >
-                  <MoreIcon fontSize="small" />
-                </IconButton>
-              </ListItemButton>
-            </ListItem>
-          ))}
+                        {conversation.tags?.slice(0, 2).map((tag) => (
+                          <Chip
+                            key={tag}
+                            label={tag}
+                            size="small"
+                            sx={{
+                              height: 18,
+                              fontSize: '0.625rem',
+                              bgcolor: alpha(getTagColor(tag), 0.15),
+                              color: getTagColor(tag),
+                              border: 'none',
+                              '& .MuiChip-label': { px: 0.75 },
+                            }}
+                          />
+                        ))}
+                      </Box>
+                    }
+                    secondary={
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 0.5 }}>
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            color: 'text.secondary',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 0.5,
+                          }}
+                        >
+                          <TimeIcon sx={{ fontSize: 12 }} />
+                          {formatTime(conversation.updated_at)}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {conversation.message_count} messages
+                        </Typography>
+                        {conversation.model && (
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              color: alpha('#fff', 0.4),
+                              display: { xs: 'none', sm: 'block' },
+                            }}
+                          >
+                            {conversation.model.split('/').pop()}
+                          </Typography>
+                        )}
+                      </Box>
+                    }
+                  />
+                  <IconButton
+                    size="small"
+                    onClick={(e) => handleMenuOpen(e, conversation)}
+                    sx={{ ml: 1 }}
+                  >
+                    <MoreIcon fontSize="small" />
+                  </IconButton>
+                </ListItemButton>
+              </ListItem>
+            )
+          })}
         </List>
       )}
 
       {/* View All Button */}
-      {conversations.length > 0 && (
+      {conversations.length > 0 && !compact && (
         <Box sx={{ mt: 2, textAlign: 'center' }}>
           <Button
             size="small"
-            onClick={() => navigate('/chat')}
+            onClick={() => navigate(chatPath)}
             sx={{ 
               textTransform: 'none', 
               fontSize: '0.75rem',

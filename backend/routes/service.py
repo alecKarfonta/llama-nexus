@@ -1,14 +1,16 @@
 """Service management routes for LlamaCPP and Embedding services."""
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse, JSONResponse
 from typing import Dict, Any
 from datetime import datetime
 import copy
 import json
 import httpx
 import logging
+import os
 
 from modules.chat_proxy import chat_proxy_body_unchanged, parse_chat_proxy_body
+from modules.inference_targets import vllm_proxy_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,86 @@ def get_embedding_manager(request: Request):
 def get_merge_config_func(request: Request):
     """Get the config merge function from app state."""
     return getattr(request.app.state, 'merge_and_persist_config', None)
+
+
+def _set_server_managed_auth(headers: Dict[str, Any], api_key: str) -> None:
+    """Forward the active backend key instead of any browser/client key."""
+    for key in list(headers):
+        if key.lower() == "authorization":
+            headers.pop(key, None)
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+
+def _prepare_proxy_headers(request: Request, api_key: str) -> Dict[str, Any]:
+    headers = dict(request.headers)
+    for h in ("host", "content-length", "transfer-encoding"):
+        headers.pop(h, None)
+    _set_server_managed_auth(headers, api_key)
+    return headers
+
+
+def _active_inference_target(request: Request) -> tuple[str, str, str]:
+    llamacpp_mgr = get_manager(request)
+    vllm_mgr = get_vllm_manager(request)
+
+    if vllm_mgr and vllm_mgr.is_running():
+        api_key = vllm_mgr.config.get("server", {}).get("api_key", "")
+        target = vllm_proxy_base_url(vllm_mgr.internal_http_base())
+        return target or vllm_mgr.internal_http_base(), api_key, "vllm"
+
+    if llamacpp_mgr and llamacpp_mgr.is_running():
+        target = os.getenv("LLAMACPP_PROXY_BASE_URL") or os.getenv("INFERENCE_BACKEND_URL")
+        if target:
+            api_key = llamacpp_mgr.config.get("server", {}).get("api_key", "")
+            return target.rstrip("/"), api_key, "llamacpp"
+        if llamacpp_mgr.use_docker:
+            target = "http://llamacpp-api:8080"
+        else:
+            target = "http://localhost:8080"
+        api_key = llamacpp_mgr.config.get("server", {}).get("api_key", "")
+        return target, api_key, "llamacpp"
+
+    raise HTTPException(status_code=503, detail="No inference backend is running. Start llama.cpp or vLLM first.")
+
+
+def _empty_metrics_response(reason: str) -> PlainTextResponse:
+    content = (
+        "# HELP llama_nexus_metrics_available Whether inference metrics are available.\n"
+        "# TYPE llama_nexus_metrics_available gauge\n"
+        "llama_nexus_metrics_available 0\n"
+        f"# llama_nexus_metrics_unavailable_reason {reason}\n"
+    )
+    return PlainTextResponse(content, media_type="text/plain; version=0.0.4")
+
+
+@router.get("/metrics")
+async def get_prometheus_metrics(request: Request):
+    """Proxy active inference Prometheus metrics without surfacing stopped runtimes as 502s."""
+    try:
+        target, api_key, _backend = _active_inference_target(request)
+    except HTTPException as exc:
+        return _empty_metrics_response(str(exc.detail))
+
+    headers: Dict[str, str] = {"Accept": "text/plain"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{target}/metrics", headers=headers)
+            if response.status_code >= 400:
+                return _empty_metrics_response(f"metrics endpoint returned {response.status_code}")
+            return PlainTextResponse(response.text, media_type=response.headers.get("content-type", "text/plain; version=0.0.4"))
+    except httpx.HTTPError as exc:
+        logger.debug("Metrics endpoint unavailable: %s", exc)
+        return _empty_metrics_response(str(exc))
+
+
+@router.get("/api/metrics")
+async def get_prometheus_metrics_legacy(request: Request):
+    """Legacy alias for the frontend metrics fallback path."""
+    return await get_prometheus_metrics(request)
 
 
 # =============================================================================
@@ -455,33 +537,8 @@ async def proxy_chat_completions(request: Request):
     """
     body = await request.body()
     body = chat_proxy_body_unchanged(body)
-    headers = dict(request.headers)
-    # Remove hop-by-hop headers that shouldn't be forwarded
-    for h in ("host", "content-length", "transfer-encoding"):
-        headers.pop(h, None)
-
-    # Determine which backend is active
-    llamacpp_mgr = get_manager(request)
-    vllm_mgr = get_vllm_manager(request)
-
-    if vllm_mgr and vllm_mgr.is_running():
-        target = vllm_mgr.internal_http_base()
-        # Inject vLLM API key if client didn't provide one
-        if "authorization" not in {k.lower() for k in headers}:
-            vllm_key = vllm_mgr.config.get("server", {}).get("api_key", "")
-            if vllm_key:
-                headers["Authorization"] = f"Bearer {vllm_key}"
-    elif llamacpp_mgr and llamacpp_mgr.is_running():
-        if llamacpp_mgr.use_docker:
-            target = f"http://llamacpp-api:8080"
-        else:
-            target = f"http://localhost:8080"
-        if "authorization" not in {k.lower() for k in headers}:
-            llamacpp_key = llamacpp_mgr.config.get("server", {}).get("api_key", "")
-            if llamacpp_key:
-                headers["Authorization"] = f"Bearer {llamacpp_key}"
-    else:
-        raise HTTPException(status_code=503, detail="No inference backend is running. Start llama.cpp or vLLM first.")
+    target, api_key, _backend = _active_inference_target(request)
+    headers = _prepare_proxy_headers(request, api_key)
 
     url = f"{target}/v1/chat/completions"
 
@@ -503,37 +560,42 @@ async def proxy_chat_completions(request: Request):
 async def proxy_completions(request: Request):
     """Proxy text completion requests to the active inference backend."""
     body = await request.body()
-    headers = dict(request.headers)
-    for h in ("host", "content-length", "transfer-encoding"):
-        headers.pop(h, None)
-
-    llamacpp_mgr = get_manager(request)
-    vllm_mgr = get_vllm_manager(request)
-
-    if vllm_mgr and vllm_mgr.is_running():
-        target = vllm_mgr.internal_http_base()
-        if "authorization" not in {k.lower() for k in headers}:
-            vllm_key = vllm_mgr.config.get("server", {}).get("api_key", "")
-            if vllm_key:
-                headers["Authorization"] = f"Bearer {vllm_key}"
-    elif llamacpp_mgr and llamacpp_mgr.is_running():
-        if llamacpp_mgr.use_docker:
-            target = f"http://llamacpp-api:8080"
-        else:
-            target = f"http://localhost:8080"
-        if "authorization" not in {k.lower() for k in headers}:
-            llamacpp_key = llamacpp_mgr.config.get("server", {}).get("api_key", "")
-            if llamacpp_key:
-                headers["Authorization"] = f"Bearer {llamacpp_key}"
-    else:
-        raise HTTPException(status_code=503, detail="No inference backend is running.")
+    target, api_key, _backend = _active_inference_target(request)
+    headers = _prepare_proxy_headers(request, api_key)
 
     return await _proxy_non_stream(f"{target}/v1/completions", body, headers)
 
 
-async def _proxy_non_stream(url: str, body: bytes, headers: dict):
+@router.api_route("/completion", methods=["POST"])
+async def proxy_native_completion(request: Request):
+    """Proxy llama.cpp-compatible native completion requests to the deployed backend."""
+    body = await request.body()
+    target, api_key, _backend = _active_inference_target(request)
+    headers = _prepare_proxy_headers(request, api_key)
+    return await _proxy_non_stream(f"{target}/completion", body, headers, timeout=600.0)
+
+
+@router.api_route("/tokenize", methods=["POST"])
+async def proxy_tokenize(request: Request):
+    """Proxy tokenizer requests to the deployed backend."""
+    body = await request.body()
+    target, api_key, _backend = _active_inference_target(request)
+    headers = _prepare_proxy_headers(request, api_key)
+    return await _proxy_non_stream(f"{target}/tokenize", body, headers, timeout=120.0)
+
+
+@router.api_route("/detokenize", methods=["POST"])
+async def proxy_detokenize(request: Request):
+    """Proxy detokenizer requests to the deployed backend."""
+    body = await request.body()
+    target, api_key, _backend = _active_inference_target(request)
+    headers = _prepare_proxy_headers(request, api_key)
+    return await _proxy_non_stream(f"{target}/detokenize", body, headers, timeout=120.0)
+
+
+async def _proxy_non_stream(url: str, body: bytes, headers: dict, timeout: float = 120.0):
     """Proxy a non-streaming request."""
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             response = await client.post(url, content=body, headers=headers)
             return JSONResponse(
@@ -555,22 +617,29 @@ async def _proxy_stream(request: Request, url: str, body: bytes, headers: dict):
     """
     import json as _json
 
-    async with httpx.AsyncClient(timeout=10.0) as preflight:
-        # Read just the status + headers to detect errors early
-        preflight_req = preflight.build_request("POST", url, content=body, headers=headers)
-        preflight_resp = await preflight.send(preflight_req, stream=True)
-        if preflight_resp.status_code != 200:
-            error_body = await preflight_resp.aread()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as preflight:
+            # Read just the status + headers to detect errors early.
+            preflight_req = preflight.build_request("POST", url, content=body, headers=headers)
+            preflight_resp = await preflight.send(preflight_req, stream=True)
+            if preflight_resp.status_code != 200:
+                error_body = await preflight_resp.aread()
+                await preflight_resp.aclose()
+                try:
+                    error_json = _json.loads(error_body)
+                except Exception:
+                    error_json = {"error": error_body.decode(errors="replace")}
+                raise HTTPException(
+                    status_code=preflight_resp.status_code,
+                    detail=error_json,
+                )
             await preflight_resp.aclose()
-            try:
-                error_json = _json.loads(error_body)
-            except Exception:
-                error_json = {"error": error_body.decode(errors="replace")}
-            raise HTTPException(
-                status_code=preflight_resp.status_code,
-                detail=error_json,
-            )
-        await preflight_resp.aclose()
+    except HTTPException:
+        raise
+    except httpx.ConnectError:
+        raise HTTPException(status_code=502, detail="Cannot connect to inference backend")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Inference backend timed out")
 
     async def stream_generator():
         async with httpx.AsyncClient(timeout=300.0) as client:

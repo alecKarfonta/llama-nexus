@@ -33,6 +33,7 @@ import {
   Summarize as SummaryIcon,
 } from '@mui/icons-material';
 import { MarkdownContent } from './MarkdownContent';
+import { useClipboard } from '@/hooks/useClipboard';
 
 interface ThinkingVisualizerProps {
   reasoningContent: string;
@@ -78,6 +79,7 @@ export const ThinkingVisualizer: React.FC<ThinkingVisualizerProps> = memo(({
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [viewMode, setViewMode] = useState<'steps' | 'full'>('steps');
   const [copied, setCopied] = useState(false);
+  const copyToClipboard = useClipboard();
 
   // Parse reasoning into steps
   const steps = useMemo(() => {
@@ -103,9 +105,14 @@ export const ThinkingVisualizer: React.FC<ThinkingVisualizerProps> = memo(({
 
   // Handle copy
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(reasoningContent);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const ok = await copyToClipboard(reasoningContent, {
+      successMessage: 'Reasoning trace copied.',
+      successTitle: 'Thinking copied',
+    });
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   // Detect model type for styling
@@ -325,7 +332,7 @@ export const ThinkingVisualizer: React.FC<ThinkingVisualizerProps> = memo(({
           {viewMode === 'steps' && steps.length > 1 ? (
             /* Steps View */
             <Stepper orientation="vertical" sx={{ '& .MuiStepConnector-line': { minHeight: 16 } }}>
-              {steps.map((step, index) => (
+              {steps.map((step) => (
                 <Step key={step.id} active expanded>
                   <StepLabel
                     StepIconComponent={() => (

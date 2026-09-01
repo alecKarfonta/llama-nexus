@@ -10,12 +10,7 @@ import {
     Box,
     Typography,
     Button,
-    Paper,
     Grid,
-    Card,
-    CardContent,
-    CardActions,
-    Chip,
     IconButton,
     Dialog,
     DialogTitle,
@@ -41,6 +36,7 @@ import {
     Switch,
     FormControlLabel,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import {
     Add as AddIcon,
     Refresh as RefreshIcon,
@@ -57,9 +53,22 @@ import {
     ContentCopy as CopyIcon,
     Terminal as TerminalIcon,
     Language as HttpIcon,
+    Close as CloseIcon,
+    ArrowBack as BackIcon,
 } from '@mui/icons-material';
+import {
+    ConfirmationDialog,
+    PageShell,
+    SectionCard,
+    StatusChip,
+    type StatusChipConfigMap,
+} from '@/components/common';
+import { useClipboard } from '@/hooks/useClipboard';
+import { useConfirmableAction } from '@/hooks/useConfirmableAction';
 import { mcpService } from '@/services/mcp';
 import type { MCPServer, PopularMCPServer, MCPTool, MCPResource, TransportType } from '@/types/mcp';
+import { accentColors } from '@/utils/theme';
+import { debugLog } from '@/utils/debug';
 
 // Tab panel component
 interface TabPanelProps {
@@ -77,7 +86,36 @@ function TabPanel(props: TabPanelProps) {
     );
 }
 
+const MCP_STATUS_CONFIG: StatusChipConfigMap = {
+    catalog: { color: accentColors.purple, label: 'Catalog' },
+    checking: { color: accentColors.info, label: 'Checking servers' },
+    connected: { color: accentColors.success, label: 'Connected' },
+    disconnected: { color: accentColors.warning, label: 'Disconnected' },
+    empty: { color: accentColors.rose, label: 'No servers' },
+    http: { color: accentColors.info, label: 'HTTP' },
+    latency: { color: accentColors.warning, label: 'Latency' },
+    mime: { color: accentColors.slate, label: 'MIME' },
+    resource: { color: accentColors.success, label: 'Resource' },
+    resources: { color: accentColors.success, label: 'Resources' },
+    schema: { color: accentColors.primary, label: 'Schema' },
+    stdio: { color: accentColors.warning, label: 'STDIO' },
+    tool: { color: accentColors.primary, label: 'Tool' },
+    tool_servers: { color: accentColors.rose, label: 'Tool servers' },
+    tools: { color: accentColors.primary, label: 'Tools' },
+    transport: { color: accentColors.info, label: 'Transport' },
+    unavailable: { color: accentColors.warning, label: 'API unavailable' },
+};
+
+const mcpPanelSx = {
+    borderRadius: '8px',
+    bgcolor: 'background.paper',
+    border: '1px solid',
+    borderColor: 'divider',
+} as const;
+
 export default function MCPServersPage() {
+    const copyToClipboard = useClipboard();
+
     // State
     const [servers, setServers] = useState<MCPServer[]>([]);
     const [popularServers, setPopularServers] = useState<PopularMCPServer[]>([]);
@@ -92,6 +130,13 @@ export default function MCPServersPage() {
     // Dialog state
     const [addDialogOpen, setAddDialogOpen] = useState(false);
     const [addDialogTab, setAddDialogTab] = useState(0);
+    const {
+        confirmationAction: confirmAction,
+        confirmationLoading: confirmingAction,
+        requestConfirmation,
+        closeConfirmation: closeConfirmDialog,
+        confirmAction: handleConfirmAction,
+    } = useConfirmableAction();
     const [newServerName, setNewServerName] = useState('');
     const [newServerTransport, setNewServerTransport] = useState<TransportType>('stdio');
     const [newServerCommand, setNewServerCommand] = useState('');
@@ -126,7 +171,7 @@ export default function MCPServersPage() {
             const response = await mcpService.listPopularServers();
             setPopularServers(response.servers);
         } catch (err) {
-            console.error('Failed to load popular servers:', err);
+            debugLog('MCPServersPage', 'Failed to load popular servers:', err);
         }
     }, []);
 
@@ -147,7 +192,7 @@ export default function MCPServersPage() {
             setServerTools(toolsResponse.tools);
             setServerResources(resourcesResponse.resources);
         } catch (err) {
-            console.error('Failed to load server details:', err);
+            debugLog('MCPServersPage', 'Failed to load server details:', err);
         }
     };
 
@@ -165,13 +210,24 @@ export default function MCPServersPage() {
         try {
             const result = await mcpService.connectServer(server.name);
             if (result.connected) {
-                await loadServers();
+                const updatedServer: MCPServer = {
+                    ...server,
+                    connected: true,
+                    tools_count: result.tools_count ?? server.tools_count,
+                    resources_count: result.resources_count ?? server.resources_count,
+                    latency_ms: result.latency_ms ?? server.latency_ms,
+                    error: null,
+                };
                 if (selectedServer?.name === server.name) {
-                    await loadServerDetails({ ...server, connected: true });
+                    setSelectedServer(updatedServer);
+                    await loadServerDetails(updatedServer);
                 }
+                await loadServers();
+            } else if (result.error) {
+                setError(result.error);
             }
         } catch (err: any) {
-            console.error('Failed to connect:', err);
+            setError(err.message || `Failed to connect ${server.name}`);
         }
     };
 
@@ -181,27 +237,34 @@ export default function MCPServersPage() {
             await mcpService.disconnectServer(server.name);
             await loadServers();
             if (selectedServer?.name === server.name) {
+                setSelectedServer({ ...server, connected: false });
                 setServerTools([]);
                 setServerResources([]);
             }
         } catch (err: any) {
-            console.error('Failed to disconnect:', err);
+            setError(err.message || `Failed to disconnect ${server.name}`);
         }
     };
 
     // Delete server
-    const handleDelete = async (server: MCPServer) => {
-        if (!confirm(`Are you sure you want to delete "${server.name}"?`)) return;
-
-        try {
-            await mcpService.deleteServer(server.name);
-            await loadServers();
-            if (selectedServer?.name === server.name) {
-                setSelectedServer(null);
-            }
-        } catch (err: any) {
-            console.error('Failed to delete:', err);
-        }
+    const handleDelete = (server: MCPServer) => {
+        requestConfirmation({
+            title: 'Delete MCP server?',
+            message: `Delete "${server.name}" from your MCP server list?`,
+            confirmLabel: 'Delete server',
+            destructive: true,
+            onConfirm: async () => {
+                try {
+                    await mcpService.deleteServer(server.name);
+                    await loadServers();
+                    if (selectedServer?.name === server.name) {
+                        setSelectedServer(null);
+                    }
+                } catch (err: any) {
+                    setError(err.message || `Failed to delete ${server.name}`);
+                }
+            },
+        });
     };
 
     // Add custom server
@@ -224,7 +287,7 @@ export default function MCPServersPage() {
             resetAddForm();
             await loadServers();
         } catch (err: any) {
-            console.error('Failed to add server:', err);
+            setError(err.message || 'Failed to add MCP server');
         } finally {
             setAddingServer(false);
         }
@@ -248,7 +311,7 @@ export default function MCPServersPage() {
             setPopularEnvVars({});
             await loadServers();
         } catch (err: any) {
-            console.error('Failed to add popular server:', err);
+            setError(err.message || 'Failed to add popular MCP server');
         } finally {
             setAddingServer(false);
         }
@@ -287,128 +350,331 @@ export default function MCPServersPage() {
         return transport === 'stdio' ? <TerminalIcon fontSize="small" /> : <HttpIcon fontSize="small" />;
     };
 
-    return (
-        <Box sx={{ p: 3, height: '100%', overflow: 'auto' }}>
-            {/* Header */}
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-                <Box>
-                    <Typography variant="h4" fontWeight="bold">
-                        MCP Servers
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                        Manage Model Context Protocol server connections for extended tool capabilities
-                    </Typography>
-                </Box>
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                    <Button
-                        variant="outlined"
-                        startIcon={<RefreshIcon />}
+    const connectedServers = servers.filter(server => server.connected);
+    const disconnectedServers = servers.length - connectedServers.length;
+    const totalTools = servers.reduce((total, server) => total + (server.tools_count || 0), 0);
+    const totalResources = servers.reduce((total, server) => total + (server.resources_count || 0), 0);
+    const latencySamples = connectedServers
+        .map(server => server.latency_ms)
+        .filter((latency): latency is number => typeof latency === 'number');
+    const averageLatency = latencySamples.length
+        ? `${Math.round(latencySamples.reduce((sum, latency) => sum + latency, 0) / latencySamples.length)}ms`
+        : 'n/a';
+    const popularPreviewServers = popularServers.slice(0, 4);
+    const selectedServerCommand = selectedServer?.command
+        ? `${selectedServer.command} ${selectedServer.args?.join(' ') || ''}`.trim()
+        : '';
+    const mcpApiUnavailable = Boolean(error && /not found|404/i.test(error));
+    const serviceStatus = loading
+        ? 'checking'
+        : mcpApiUnavailable
+            ? 'unavailable'
+            : connectedServers.length > 0
+                ? 'connected'
+                : servers.length > 0
+                    ? 'disconnected'
+                    : 'empty';
+    const serviceLabel = loading
+        ? 'Checking servers'
+        : mcpApiUnavailable
+            ? 'API unavailable'
+            : connectedServers.length > 0
+                ? `${connectedServers.length} connected`
+                : servers.length > 0
+                    ? 'Disconnected'
+                    : 'No servers';
+    const openPopularServer = (server: PopularMCPServer) => {
+        setSelectedPopular(server);
+        setAddDialogTab(0);
+        setAddDialogOpen(true);
+    };
+    const mcpHeaderActions = (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <Tooltip title="Refresh MCP servers">
+                <span>
+                    <IconButton
+                        aria-label="Refresh MCP servers"
+                        size="small"
                         onClick={loadServers}
                         disabled={loading}
+                        sx={{
+                            width: 34,
+                            height: 34,
+                            borderRadius: '8px',
+                            border: '1px solid',
+                            borderColor: 'divider',
+                            bgcolor: 'action.hover',
+                            '&:hover': { bgcolor: alpha(accentColors.rose, 0.12) },
+                        }}
                     >
-                        Refresh
-                    </Button>
-                    <Button
-                        variant="contained"
-                        startIcon={<AddIcon />}
-                        onClick={() => setAddDialogOpen(true)}
-                    >
-                        Add Server
-                    </Button>
-                </Box>
-            </Box>
+                        {loading ? <CircularProgress size={16} /> : <RefreshIcon sx={{ fontSize: 18 }} />}
+                    </IconButton>
+                </span>
+            </Tooltip>
+            {!mcpApiUnavailable && (
+                <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={<AddIcon />}
+                    onClick={() => setAddDialogOpen(true)}
+                    sx={{ height: 34, borderRadius: '8px', fontWeight: 800, px: 1.25 }}
+                >
+                    Add Server
+                </Button>
+            )}
+        </Box>
+    );
+    const mcpSummaryRow = (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+            <StatusChip status={serviceStatus} label={serviceLabel} statusConfig={MCP_STATUS_CONFIG} height={22} />
+            {servers.length > 0 && (
+                <>
+                    <StatusChip status="tools" label={`${totalTools.toLocaleString()} tools`} statusConfig={MCP_STATUS_CONFIG} height={22} />
+                    <StatusChip status="resources" label={`${totalResources.toLocaleString()} resources`} statusConfig={MCP_STATUS_CONFIG} height={22} />
+                </>
+            )}
+            {latencySamples.length > 0 && (
+                <StatusChip status="latency" label={`Latency ${averageLatency}`} statusConfig={MCP_STATUS_CONFIG} height={22} />
+            )}
+            {popularServers.length > 0 && (
+                <StatusChip status="catalog" label={`${popularServers.length.toLocaleString()} templates`} statusConfig={MCP_STATUS_CONFIG} height={22} />
+            )}
+            <Typography variant="caption" color="text.secondary">
+                {mcpApiUnavailable
+                    ? 'Backend route missing'
+                    : `${servers.length.toLocaleString()} servers / ${disconnectedServers.toLocaleString()} offline`}
+            </Typography>
+        </Box>
+    );
 
-            {/* Error Alert */}
-            {error && (
-                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+    return (
+        <PageShell sx={{ py: 1.25 }}>
+            {error && !mcpApiUnavailable && (
+                <Alert severity="error" sx={{ mb: 1.25 }} onClose={() => setError(null)}>
                     {error}
                 </Alert>
             )}
 
-            {/* Main Content */}
-            <Grid container spacing={3}>
-                {/* Server List */}
-                <Grid item xs={12} md={selectedServer ? 5 : 12}>
-                    {loading ? (
-                        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-                            <CircularProgress />
-                        </Box>
-                    ) : servers.length === 0 ? (
-                        <Paper sx={{ p: 4, textAlign: 'center' }}>
-                            <Typography variant="h6" color="text.secondary" gutterBottom>
-                                No MCP Servers Configured
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                                Add an MCP server to extend your LLM's capabilities with external tools
-                            </Typography>
-                            <Button
-                                variant="contained"
-                                startIcon={<AddIcon />}
-                                onClick={() => setAddDialogOpen(true)}
+            <Grid container spacing={2.5}>
+                <Grid item xs={12} lg={selectedServer ? 5 : 12}>
+                    <SectionCard
+                        title="Server inventory"
+                        subtitle={
+                            mcpApiUnavailable
+                                ? 'Backend route unavailable'
+                                : servers.length
+                                ? `${servers.length} configured, ${connectedServers.length} connected`
+                                : 'No servers configured'
+                        }
+                        icon={<ToolIcon />}
+                        accentColor={accentColors.rose}
+                        action={mcpHeaderActions}
+                    >
+                        {mcpSummaryRow}
+                        {loading ? (
+                            <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+                                <CircularProgress />
+                            </Box>
+                        ) : mcpApiUnavailable ? (
+                            <Box
+                                sx={{
+                                    ...mcpPanelSx,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    gap: 1.5,
+                                    flexWrap: 'wrap',
+                                    p: 1.25,
+                                    bgcolor: alpha(accentColors.warning, 0.06),
+                                    borderColor: alpha(accentColors.warning, 0.24),
+                                }}
                             >
-                                Add Your First Server
-                            </Button>
-                        </Paper>
-                    ) : (
-                        <Grid container spacing={2}>
-                            {servers.map(server => (
-                                <Grid item xs={12} sm={selectedServer ? 12 : 6} lg={selectedServer ? 12 : 4} key={server.name}>
-                                    <Card
+                                <Box sx={{ minWidth: 0 }}>
+                                    <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                                        MCP backend endpoint unavailable
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                        `/api/v1/mcp/servers` returned Not Found.
+                                    </Typography>
+                                </Box>
+                                <Button
+                                    size="small"
+                                    variant="outlined"
+                                    startIcon={<RefreshIcon />}
+                                    onClick={loadServers}
+                                    sx={{ height: 32, borderRadius: '8px', fontWeight: 800 }}
+                                >
+                                    Retry
+                                </Button>
+                            </Box>
+                        ) : servers.length === 0 ? (
+                            <Box
+                                sx={{
+                                    ...mcpPanelSx,
+                                    display: 'grid',
+                                    gap: 1,
+                                    borderStyle: 'dashed',
+                                    p: 1.25,
+                                }}
+                            >
+                                <Box sx={{ minWidth: 0 }}>
+                                    <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                                        No MCP servers configured
+                                    </Typography>
+                                    {popularPreviewServers.length > 0 && (
+                                        <Typography variant="caption" color="text.secondary">
+                                            Templates
+                                        </Typography>
+                                    )}
+                                </Box>
+                                {popularPreviewServers.length > 0 && (
+                                    <Box
                                         sx={{
-                                            cursor: 'pointer',
-                                            border: selectedServer?.name === server.name ? 2 : 1,
-                                            borderColor: selectedServer?.name === server.name ? 'primary.main' : 'divider',
-                                            transition: 'all 0.2s',
-                                            '&:hover': {
-                                                borderColor: 'primary.main',
-                                                boxShadow: 2,
-                                            },
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            flexWrap: 'wrap',
+                                            gap: 0.5,
                                         }}
-                                        onClick={() => handleSelectServer(server)}
                                     >
-                                        <CardContent>
-                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                                                <Typography variant="h6" sx={{ fontSize: '1.1rem' }}>
-                                                    {server.icon || '🔧'} {server.name}
+                                        {popularPreviewServers.map((server) => (
+                                            <Box
+                                                component="button"
+                                                key={server.id}
+                                                onClick={() => openPopularServer(server)}
+                                                sx={{
+                                                    appearance: 'none',
+                                                    minWidth: 0,
+                                                    flex: { xs: '1 1 calc(50% - 4px)', sm: '0 1 176px' },
+                                                    maxWidth: { xs: 'calc(50% - 4px)', sm: 176 },
+                                                    minHeight: 30,
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'space-between',
+                                                    gap: 0.65,
+                                                    px: 0.85,
+                                                    py: 0.45,
+                                                    border: '1px solid',
+                                                    borderColor: 'divider',
+                                                    borderRadius: '8px',
+                                                    bgcolor: 'background.paper',
+                                                    color: 'text.primary',
+                                                    cursor: 'pointer',
+                                                    font: 'inherit',
+                                                    textAlign: 'left',
+                                                    '&:hover': {
+                                                        borderColor: alpha(accentColors.rose, 0.42),
+                                                        bgcolor: alpha(accentColors.rose, 0.07),
+                                                    },
+                                                    '&:focus-visible': {
+                                                        outline: `2px solid ${alpha(accentColors.rose, 0.5)}`,
+                                                        outlineOffset: 2,
+                                                    },
+                                                }}
+                                            >
+                                                <Box sx={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 0.65 }}>
+                                                    <Typography aria-hidden sx={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>
+                                                        {server.icon}
+                                                    </Typography>
+                                                    <Typography component="span" variant="caption" noWrap sx={{ fontWeight: 800, color: 'text.primary' }}>
+                                                        {server.name}
+                                                    </Typography>
+                                                </Box>
+                                                <Typography component="span" variant="caption" color="text.secondary" sx={{ flexShrink: 0, fontSize: '0.68rem' }}>
+                                                    {server.tools.length}
                                                 </Typography>
-                                                <Chip
-                                                    size="small"
-                                                    icon={server.connected ? <ConnectedIcon /> : <ErrorIcon />}
-                                                    label={server.connected ? 'Connected' : 'Disconnected'}
-                                                    color={server.connected ? 'success' : 'default'}
-                                                    sx={{ ml: 'auto' }}
-                                                />
                                             </Box>
+                                        ))}
+                                    </Box>
+                                )}
+                            </Box>
+                        ) : (
+                            <Box sx={{ display: 'grid', gap: 1.25 }}>
+                                {servers.map(server => {
+                                    const isSelected = selectedServer?.name === server.name;
+                                    const rowColor = server.connected ? accentColors.success : server.error ? accentColors.rose : accentColors.warning;
 
-                                            {server.description && (
-                                                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                                                    {server.description}
-                                                </Typography>
-                                            )}
-
-                                            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                                                <Chip
-                                                    size="small"
-                                                    icon={<TransportIcon transport={server.transport} />}
-                                                    label={server.transport.toUpperCase()}
-                                                    variant="outlined"
-                                                />
-                                                {server.connected && server.tools_count > 0 && (
-                                                    <Chip
-                                                        size="small"
+                                    return (
+                                        <Box
+                                            key={server.name}
+                                            onClick={() => handleSelectServer(server)}
+                                            sx={{
+                                                ...mcpPanelSx,
+                                                p: 1.5,
+                                                borderColor: isSelected ? alpha(accentColors.rose, 0.45) : 'divider',
+                                                bgcolor: isSelected ? alpha(accentColors.rose, 0.1) : alpha(rowColor, 0.05),
+                                                cursor: 'pointer',
+                                                transition: 'border-color 0.2s ease, background-color 0.2s ease',
+                                                '&:hover': {
+                                                    borderColor: alpha(rowColor, 0.55),
+                                                    bgcolor: alpha(rowColor, 0.09),
+                                                },
+                                            }}
+                                        >
+                                            <Box
+                                                sx={{
+                                                    display: 'flex',
+                                                    alignItems: { xs: 'flex-start', sm: 'center' },
+                                                    justifyContent: 'space-between',
+                                                    flexDirection: { xs: 'column', sm: 'row' },
+                                                    gap: 1,
+                                                }}
+                                            >
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                                                    {server.icon ? (
+                                                        <Typography aria-hidden sx={{ fontSize: 20, lineHeight: 1 }}>
+                                                            {server.icon}
+                                                        </Typography>
+                                                    ) : (
+                                                        <ToolIcon sx={{ color: rowColor }} />
+                                                    )}
+                                                    <Box sx={{ minWidth: 0 }}>
+                                                        <Typography variant="subtitle2" sx={{ fontWeight: 800 }} noWrap title={server.name}>
+                                                            {server.name}
+                                                        </Typography>
+                                                        <Typography variant="caption" color="text.secondary" noWrap title={server.description || server.transport}>
+                                                            {server.description || `${server.transport.toUpperCase()} server`}
+                                                        </Typography>
+                                                    </Box>
+                                                </Box>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                                                    <StatusChip
+                                                        status={server.connected ? 'connected' : 'disconnected'}
+                                                        icon={server.connected ? <ConnectedIcon /> : <ErrorIcon />}
+                                                        label={server.connected ? 'Connected' : 'Disconnected'}
+                                                        statusConfig={MCP_STATUS_CONFIG}
+                                                    />
+                                                    <StatusChip
+                                                        status={server.transport}
+                                                        icon={<TransportIcon transport={server.transport} />}
+                                                        label={server.transport.toUpperCase()}
+                                                        variant="outlined"
+                                                        statusConfig={MCP_STATUS_CONFIG}
+                                                    />
+                                                    <StatusChip
+                                                        status="tools"
                                                         icon={<ToolIcon />}
-                                                        label={`${server.tools_count} tools`}
+                                                        label={`${server.tools_count || 0} tools`}
                                                         variant="outlined"
-                                                        color="primary"
+                                                        statusConfig={MCP_STATUS_CONFIG}
                                                     />
-                                                )}
-                                                {server.latency_ms && (
-                                                    <Chip
-                                                        size="small"
-                                                        label={`${Math.round(server.latency_ms)}ms`}
-                                                        variant="outlined"
-                                                    />
-                                                )}
+                                                    {server.resources_count > 0 && (
+                                                        <StatusChip
+                                                            status="resources"
+                                                            icon={<ResourceIcon />}
+                                                            label={`${server.resources_count} resources`}
+                                                            variant="outlined"
+                                                            statusConfig={MCP_STATUS_CONFIG}
+                                                        />
+                                                    )}
+                                                    {typeof server.latency_ms === 'number' && (
+                                                        <StatusChip
+                                                            status="latency"
+                                                            label={`${Math.round(server.latency_ms)}ms`}
+                                                            variant="outlined"
+                                                            statusConfig={MCP_STATUS_CONFIG}
+                                                        />
+                                                    )}
+                                                </Box>
                                             </Box>
 
                                             {server.error && (
@@ -416,59 +682,74 @@ export default function MCPServersPage() {
                                                     {server.error}
                                                 </Alert>
                                             )}
-                                        </CardContent>
 
-                                        <CardActions sx={{ justifyContent: 'flex-end' }}>
-                                            {server.connected ? (
-                                                <Button
-                                                    size="small"
-                                                    startIcon={<DisconnectIcon />}
-                                                    onClick={(e) => { e.stopPropagation(); handleDisconnect(server); }}
-                                                >
-                                                    Disconnect
-                                                </Button>
-                                            ) : (
-                                                <Button
-                                                    size="small"
-                                                    startIcon={<ConnectIcon />}
-                                                    onClick={(e) => { e.stopPropagation(); handleConnect(server); }}
-                                                    color="primary"
-                                                >
-                                                    Connect
-                                                </Button>
-                                            )}
-                                            <IconButton
-                                                size="small"
-                                                onClick={(e) => { e.stopPropagation(); handleDelete(server); }}
-                                                color="error"
-                                            >
-                                                <DeleteIcon />
-                                            </IconButton>
-                                        </CardActions>
-                                    </Card>
-                                </Grid>
-                            ))}
-                        </Grid>
-                    )}
+                                            <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mt: 1 }}>
+                                                {server.connected ? (
+                                                    <Button
+                                                        size="small"
+                                                        startIcon={<DisconnectIcon />}
+                                                        onClick={(e) => { e.stopPropagation(); handleDisconnect(server); }}
+                                                    >
+                                                        Disconnect
+                                                    </Button>
+                                                ) : (
+                                                    <Button
+                                                        size="small"
+                                                        startIcon={<ConnectIcon />}
+                                                        onClick={(e) => { e.stopPropagation(); handleConnect(server); }}
+                                                        color="primary"
+                                                    >
+                                                        Connect
+                                                    </Button>
+                                                )}
+                                                <Tooltip title="Delete server">
+                                                    <IconButton
+                                                        size="small"
+                                                        onClick={(e) => { e.stopPropagation(); handleDelete(server); }}
+                                                        color="error"
+                                                    >
+                                                        <DeleteIcon />
+                                                    </IconButton>
+                                                </Tooltip>
+                                            </Box>
+                                        </Box>
+                                    );
+                                })}
+                            </Box>
+                        )}
+                    </SectionCard>
                 </Grid>
 
-                {/* Server Details Panel */}
                 {selectedServer && (
-                    <Grid item xs={12} md={7}>
-                        <Paper sx={{ p: 2, height: 'calc(100vh - 250px)', overflow: 'auto' }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                                <Typography variant="h6">
-                                    {selectedServer.icon || '🔧'} {selectedServer.name}
+                    <Grid item xs={12} lg={7}>
+                        <SectionCard
+                            title={selectedServer.name}
+                            subtitle={selectedServer.connected ? `${serverTools.length} tools loaded` : 'Disconnected'}
+                            icon={selectedServer.icon ? (
+                                <Typography aria-hidden sx={{ fontSize: 22, lineHeight: 1 }}>
+                                    {selectedServer.icon}
                                 </Typography>
-                                <IconButton
-                                    size="small"
-                                    sx={{ ml: 'auto' }}
-                                    onClick={() => setSelectedServer(null)}
-                                >
-                                    ✕
-                                </IconButton>
-                            </Box>
-
+                            ) : (
+                                <ToolIcon />
+                            )}
+                            accentColor={selectedServer.connected ? accentColors.success : accentColors.warning}
+                            fullHeight
+                            action={
+                                <>
+                                    <StatusChip
+                                        status={selectedServer.connected ? 'connected' : 'disconnected'}
+                                        icon={selectedServer.connected ? <ConnectedIcon /> : <ErrorIcon />}
+                                        label={selectedServer.connected ? 'Connected' : 'Disconnected'}
+                                        statusConfig={MCP_STATUS_CONFIG}
+                                    />
+                                    <Tooltip title="Close details">
+                                        <IconButton size="small" onClick={() => setSelectedServer(null)}>
+                                            <CloseIcon fontSize="small" />
+                                        </IconButton>
+                                    </Tooltip>
+                                </>
+                            }
+                        >
                             <Tabs value={detailsTab} onChange={(_, v) => setDetailsTab(v)} sx={{ mb: 2 }}>
                                 <Tab label={`Tools (${serverTools.length})`} icon={<ToolIcon />} iconPosition="start" />
                                 <Tab label={`Resources (${serverResources.length})`} icon={<ResourceIcon />} iconPosition="start" />
@@ -481,14 +762,22 @@ export default function MCPServersPage() {
                                         Connect to the server to view available tools
                                     </Alert>
                                 ) : serverTools.length === 0 ? (
-                                    <Typography color="text.secondary">No tools available</Typography>
+                                    <Box sx={{ py: 4, textAlign: 'center' }}>
+                                        <Typography color="text.secondary">No tools available</Typography>
+                                    </Box>
                                 ) : (
-                                    <List dense>
+                                    <List dense sx={{ py: 0 }}>
                                         {serverTools.map(tool => (
                                             <Box key={tool.name}>
                                                 <ListItem
                                                     button
                                                     onClick={() => toggleToolExpanded(tool.name)}
+                                                    sx={{
+                                                        ...mcpPanelSx,
+                                                        borderRadius: '8px',
+                                                        mb: 1,
+                                                        bgcolor: alpha(accentColors.primary, 0.05),
+                                                    }}
                                                 >
                                                     <ListItemIcon>
                                                         <ToolIcon />
@@ -504,14 +793,13 @@ export default function MCPServersPage() {
                                                         <Typography variant="caption" color="text.secondary">
                                                             Schema:
                                                         </Typography>
-                                                        <Paper variant="outlined" sx={{ p: 1, mt: 0.5, bgcolor: 'background.default' }}>
+                                                        <Box sx={{ ...mcpPanelSx, p: 1, mt: 0.5, bgcolor: alpha(accentColors.primary, 0.04) }}>
                                                             <pre style={{ margin: 0, fontSize: '0.75rem', overflow: 'auto' }}>
                                                                 {JSON.stringify(tool.inputSchema, null, 2)}
                                                             </pre>
-                                                        </Paper>
+                                                        </Box>
                                                     </Box>
                                                 </Collapse>
-                                                <Divider />
                                             </Box>
                                         ))}
                                     </List>
@@ -524,11 +812,21 @@ export default function MCPServersPage() {
                                         Connect to the server to view available resources
                                     </Alert>
                                 ) : serverResources.length === 0 ? (
-                                    <Typography color="text.secondary">No resources available</Typography>
+                                    <Box sx={{ py: 4, textAlign: 'center' }}>
+                                        <Typography color="text.secondary">No resources available</Typography>
+                                    </Box>
                                 ) : (
-                                    <List dense>
+                                    <List dense sx={{ py: 0 }}>
                                         {serverResources.map(resource => (
-                                            <ListItem key={resource.uri}>
+                                            <ListItem
+                                                key={resource.uri}
+                                                sx={{
+                                                    ...mcpPanelSx,
+                                                    borderRadius: '8px',
+                                                    mb: 1,
+                                                    bgcolor: alpha(accentColors.success, 0.05),
+                                                }}
+                                            >
                                                 <ListItemIcon>
                                                     <ResourceIcon />
                                                 </ListItemIcon>
@@ -537,7 +835,12 @@ export default function MCPServersPage() {
                                                     secondary={resource.description || resource.uri}
                                                 />
                                                 {resource.mimeType && (
-                                                    <Chip size="small" label={resource.mimeType} variant="outlined" />
+                                                    <StatusChip
+                                                        status="mime"
+                                                        label={resource.mimeType}
+                                                        variant="outlined"
+                                                        statusConfig={MCP_STATUS_CONFIG}
+                                                    />
                                                 )}
                                             </ListItem>
                                         ))}
@@ -546,7 +849,7 @@ export default function MCPServersPage() {
                             </TabPanel>
 
                             <TabPanel value={detailsTab} index={2}>
-                                <List dense>
+                                <List dense sx={{ py: 0 }}>
                                     <ListItem>
                                         <ListItemText primary="Transport" secondary={selectedServer.transport} />
                                     </ListItem>
@@ -556,14 +859,15 @@ export default function MCPServersPage() {
                                             <ListItem>
                                                 <ListItemText
                                                     primary="Command"
-                                                    secondary={`${selectedServer.command} ${selectedServer.args?.join(' ') || ''}`}
+                                                    secondary={selectedServerCommand}
                                                 />
                                                 <ListItemSecondaryAction>
                                                     <IconButton
                                                         size="small"
-                                                        onClick={() => navigator.clipboard.writeText(
-                                                            `${selectedServer.command} ${selectedServer.args?.join(' ') || ''}`
-                                                        )}
+                                                        onClick={() => copyToClipboard(selectedServerCommand, {
+                                                            successMessage: 'MCP command copied.',
+                                                            successTitle: 'Command copied',
+                                                        })}
                                                     >
                                                         <CopyIcon fontSize="small" />
                                                     </IconButton>
@@ -577,7 +881,13 @@ export default function MCPServersPage() {
                                             <ListItem>
                                                 <ListItemText primary="URL" secondary={selectedServer.url} />
                                                 <ListItemSecondaryAction>
-                                                    <IconButton size="small" onClick={() => navigator.clipboard.writeText(selectedServer.url || '')}>
+                                                    <IconButton
+                                                        size="small"
+                                                        onClick={() => copyToClipboard(selectedServer.url || '', {
+                                                            successMessage: 'MCP server URL copied.',
+                                                            successTitle: 'URL copied',
+                                                        })}
+                                                    >
                                                         <CopyIcon fontSize="small" />
                                                     </IconButton>
                                                 </ListItemSecondaryAction>
@@ -594,7 +904,7 @@ export default function MCPServersPage() {
                                     </ListItem>
                                 </List>
                             </TabPanel>
-                        </Paper>
+                        </SectionCard>
                     </Grid>
                 )}
             </Grid>
@@ -616,8 +926,8 @@ export default function MCPServersPage() {
                     <TabPanel value={addDialogTab} index={0}>
                         {selectedPopular ? (
                             <Box>
-                                <Button onClick={() => setSelectedPopular(null)} sx={{ mb: 2 }}>
-                                    ← Back to list
+                                <Button startIcon={<BackIcon />} onClick={() => setSelectedPopular(null)} sx={{ mb: 2 }}>
+                                    Back to list
                                 </Button>
                                 <Typography variant="h6" gutterBottom>
                                     {selectedPopular.icon} {selectedPopular.name}
@@ -664,7 +974,13 @@ export default function MCPServersPage() {
                                         </Typography>
                                         <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                                             {selectedPopular.tools.map(tool => (
-                                                <Chip key={tool} size="small" label={tool} variant="outlined" />
+                                                <StatusChip
+                                                    key={tool}
+                                                    status="tool"
+                                                    label={tool}
+                                                    variant="outlined"
+                                                    statusConfig={MCP_STATUS_CONFIG}
+                                                />
                                             ))}
                                         </Box>
                                     </Box>
@@ -687,23 +1003,35 @@ export default function MCPServersPage() {
                             <Grid container spacing={2}>
                                 {popularServers.map(server => (
                                     <Grid item xs={12} sm={6} key={server.id}>
-                                        <Card
-                                            sx={{ cursor: 'pointer', '&:hover': { borderColor: 'primary.main' } }}
-                                            variant="outlined"
+                                        <Box
                                             onClick={() => setSelectedPopular(server)}
+                                            sx={{
+                                                ...mcpPanelSx,
+                                                height: '100%',
+                                                p: 2,
+                                                cursor: 'pointer',
+                                                transition: 'border-color 0.2s ease, background-color 0.2s ease',
+                                                '&:hover': {
+                                                    borderColor: alpha(accentColors.rose, 0.35),
+                                                    bgcolor: alpha(accentColors.rose, 0.07),
+                                                },
+                                            }}
                                         >
-                                            <CardContent>
-                                                <Typography variant="h6" sx={{ fontSize: '1rem' }}>
-                                                    {server.icon} {server.name}
-                                                </Typography>
-                                                <Typography variant="body2" color="text.secondary">
-                                                    {server.description}
-                                                </Typography>
-                                                <Box sx={{ mt: 1 }}>
-                                                    <Chip size="small" label={`${server.tools.length} tools`} variant="outlined" />
-                                                </Box>
-                                            </CardContent>
-                                        </Card>
+                                            <Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 800 }}>
+                                                {server.icon} {server.name}
+                                            </Typography>
+                                            <Typography variant="body2" color="text.secondary">
+                                                {server.description}
+                                            </Typography>
+                                            <Box sx={{ mt: 1 }}>
+                                                <StatusChip
+                                                    status="tools"
+                                                    label={`${server.tools.length} tools`}
+                                                    variant="outlined"
+                                                    statusConfig={MCP_STATUS_CONFIG}
+                                                />
+                                            </Box>
+                                        </Box>
                                     </Grid>
                                 ))}
                             </Grid>
@@ -819,6 +1147,13 @@ export default function MCPServersPage() {
                     )}
                 </DialogActions>
             </Dialog>
-        </Box>
+
+            <ConfirmationDialog
+                action={confirmAction}
+                loading={confirmingAction}
+                onClose={closeConfirmDialog}
+                onConfirm={handleConfirmAction}
+            />
+        </PageShell>
     );
 }

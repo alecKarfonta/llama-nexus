@@ -9,7 +9,7 @@
  * - Job selection for comparison
  */
 
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import {
     Box,
     Typography,
@@ -55,25 +55,17 @@ import {
     Tooltip as RechartsTooltip,
     Legend,
 } from "recharts";
-
-// Accent colors matching ModelEvaluationPage
-const accentColors = {
-    primary: "#6366f1",
-    success: "#10b981",
-    warning: "#f59e0b",
-    info: "#06b6d4",
-    purple: "#8b5cf6",
-    rose: "#f43f5e",
-};
+import { StatusChip } from "@/components/common";
+import { accentColors } from "@/utils/theme";
 
 // Chart colors for multiple models
 const chartColors = [
-    "#10b981", // Green - local model
-    "#6366f1", // Purple
-    "#f59e0b", // Orange
-    "#06b6d4", // Cyan
-    "#f43f5e", // Rose
-    "#8b5cf6", // Violet
+    accentColors.success,
+    accentColors.primary,
+    accentColors.warning,
+    accentColors.info,
+    accentColors.rose,
+    accentColors.purple,
 ];
 
 // Public reference colors (more muted)
@@ -121,32 +113,6 @@ interface BenchmarkResultsPanelProps {
 }
 
 type ViewMode = "table" | "radar" | "bar";
-
-// Status chip component
-const StatusChip: React.FC<{ status: string }> = ({ status }) => {
-    const config: Record<string, { color: string; label: string }> = {
-        completed: { color: accentColors.success, label: "Completed" },
-        running: { color: accentColors.info, label: "Running" },
-        failed: { color: accentColors.rose, label: "Failed" },
-        pending: { color: accentColors.warning, label: "Pending" },
-    };
-    const { color, label } = config[status] || { color: "#64748b", label: status };
-
-    return (
-        <Chip
-            label={label}
-            size="small"
-            sx={{
-                bgcolor: alpha(color, 0.1),
-                color: color,
-                border: `1px solid ${alpha(color, 0.3)}`,
-                fontWeight: 600,
-                fontSize: "0.7rem",
-                height: 24,
-            }}
-        />
-    );
-};
 
 // Custom tooltip for charts
 interface TooltipPayload {

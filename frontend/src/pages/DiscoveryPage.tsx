@@ -1,7 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type KeyboardEvent } from 'react';
 import {
   Box,
-  Paper,
   Typography,
   Grid,
   TextField,
@@ -15,51 +14,36 @@ import {
   InputLabel,
   Select,
   MenuItem,
-  Chip,
-  List,
-  ListItem,
-  ListItemText,
-  Card,
-  CardContent,
-  CardActions,
-  Tabs,
-  Tab,
   Alert,
   CircularProgress,
-  Divider,
   LinearProgress,
   Checkbox,
   FormControlLabel,
-  Tooltip,
-  Badge,
   Skeleton,
-  Rating,
-  alpha,
-  useTheme,
+  Tooltip,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import {
   Search as SearchIcon,
   Refresh as RefreshIcon,
-  Check as CheckIcon,
   Close as CloseIcon,
   Visibility as ViewIcon,
-  OpenInNew as OpenInNewIcon,
   ThumbUp as ApproveIcon,
   ThumbDown as RejectIcon,
-  AutoAwesome as AIIcon,
   CloudDownload as DownloadIcon,
-  FilterList as FilterIcon,
   Queue as QueueIcon,
-  Explore as ExploreIcon,
   TravelExplore as WebSearchIcon,
-  Article as ArticleIcon,
   Link as LinkIcon,
-  BarChart as StatsIcon,
-  SelectAll as SelectAllIcon,
-  CheckBox as CheckBoxIcon,
-  CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon,
 } from '@mui/icons-material';
+import {
+  PageShell,
+  SectionCard,
+  StatusChip,
+  type StatusChipConfigMap,
+} from '../components/common';
 import { apiService as api } from '../services/api';
+import { accentColors, gradients } from '../utils/theme';
+import { debugLog } from '../utils/debug';
 
 // Types
 interface DiscoveredDocument {
@@ -92,17 +76,83 @@ interface DiscoveryStats {
   avg_quality: number;
 }
 
-// Status configuration
-const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
-  pending: { color: '#F59E0B', label: 'Pending Review' },
-  approved: { color: '#10B981', label: 'Approved' },
-  rejected: { color: '#EF4444', label: 'Rejected' },
-  processing: { color: '#3B82F6', label: 'Processing' },
-  error: { color: '#6B7280', label: 'Error' },
+const isRecord = (value: unknown): value is Record<string, any> => (
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+);
+
+const toNumber = (value: unknown, fallback = 0): number => (
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback
+);
+
+const normalizeDomainList = (value: unknown): Domain[] => (
+  Array.isArray(value) ? value.filter(isRecord) as Domain[] : []
+);
+
+const normalizeDiscoveryDocuments = (value: unknown): DiscoveredDocument[] => (
+  Array.isArray(value) ? value.filter(isRecord) as DiscoveredDocument[] : []
+);
+
+const normalizeDiscoveryStats = (value: unknown): DiscoveryStats | null => {
+  if (!isRecord(value)) return null;
+
+  return {
+    total: toNumber(value.total),
+    by_status: isRecord(value.by_status) ? value.by_status as Record<string, number> : {},
+    by_source: isRecord(value.by_source) ? value.by_source as Record<string, number> : {},
+    avg_relevance: toNumber(value.avg_relevance),
+    avg_quality: toNumber(value.avg_quality),
+  };
 };
 
+const STATUS_CONFIG: StatusChipConfigMap = {
+  all: { color: accentColors.info, label: 'All statuses' },
+  approved: { color: accentColors.success, label: 'Approved' },
+  discovery: { color: accentColors.purple, label: 'Document discovery' },
+  domain: { color: accentColors.purple, label: 'Domain' },
+  error: { color: accentColors.slate, label: 'Error' },
+  pending: { color: accentColors.warning, label: 'Pending Review' },
+  processing: { color: accentColors.info, label: 'Processing' },
+  query: { color: accentColors.info, label: 'Query' },
+  rejected: { color: accentColors.rose, label: 'Rejected' },
+  source: { color: accentColors.slate, label: 'Source' },
+};
+
+const REVIEW_STATUS_KEYS = ['pending', 'processing', 'approved', 'rejected', 'error'] as const;
+const REVIEW_STATUS_OPTIONS = REVIEW_STATUS_KEYS.map((status) => [status, STATUS_CONFIG[status]] as const);
+
+const getDiscoveryStatusConfig = (status: string) => {
+  const normalizedStatus = status.toLowerCase();
+  const config = STATUS_CONFIG[normalizedStatus] ?? {};
+
+  return {
+    color: config.color ?? accentColors.slate,
+    label: config.label ?? status,
+  };
+};
+
+const getScoreColor = (score: number) => {
+  if (score > 0.7) return accentColors.success;
+  if (score > 0.4) return accentColors.warning;
+  return accentColors.rose;
+};
+
+const discoveryPanelSx = {
+  borderRadius: '8px',
+  bgcolor: 'background.paper',
+  border: '1px solid',
+  borderColor: 'divider',
+} as const;
+
 // Document Card Component
-const DiscoveredDocumentCard: React.FC<{
+const DiscoveredDocumentCard = ({
+  doc,
+  selected,
+  onSelect,
+  onApprove,
+  onReject,
+  onExtract,
+  onView,
+}: {
   doc: DiscoveredDocument;
   selected: boolean;
   onSelect: () => void;
@@ -110,25 +160,27 @@ const DiscoveredDocumentCard: React.FC<{
   onReject: () => void;
   onExtract: () => void;
   onView: () => void;
-}> = ({ doc, selected, onSelect, onApprove, onReject, onExtract, onView }) => {
-  const statusConfig = STATUS_CONFIG[doc.status] || STATUS_CONFIG.pending;
+}) => {
+  const relevanceColor = getScoreColor(doc.relevance_score);
+  const qualityColor = getScoreColor(doc.quality_score);
 
   return (
-    <Card
+    <Box
       sx={{
         mb: 2,
-        border: selected ? '2px solid' : '1px solid',
-        borderColor: selected ? '#6366F1' : 'rgba(255,255,255,0.1)',
-        bgcolor: selected ? alpha('#6366F1', 0.05) : 'transparent',
+        ...discoveryPanelSx,
+        borderWidth: selected ? 2 : 1,
+        borderColor: selected ? accentColors.primary : 'divider',
+        bgcolor: selected ? alpha(accentColors.primary, 0.05) : 'transparent',
         transition: 'all 0.2s',
         '&:hover': {
-          borderColor: alpha('#6366F1', 0.5),
+          borderColor: alpha(accentColors.primary, 0.5),
           transform: 'translateY(-2px)',
-          boxShadow: `0 8px 32px ${alpha('#6366F1', 0.15)}`,
+          boxShadow: `0 8px 32px ${alpha(accentColors.primary, 0.15)}`,
         },
       }}
     >
-      <CardContent>
+      <Box sx={{ p: 2 }}>
         <Box sx={{ display: 'flex', gap: 2 }}>
           <Checkbox
             checked={selected}
@@ -140,14 +192,10 @@ const DiscoveredDocumentCard: React.FC<{
               <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1 }}>
                 {doc.title || 'Untitled'}
               </Typography>
-              <Chip
-                label={statusConfig.label}
-                size="small"
-                sx={{
-                  bgcolor: alpha(statusConfig.color, 0.15),
-                  color: statusConfig.color,
-                  ml: 1,
-                }}
+              <StatusChip
+                status={doc.status}
+                statusConfig={STATUS_CONFIG}
+                sx={{ ml: 1, flexShrink: 0 }}
               />
             </Box>
 
@@ -187,10 +235,11 @@ const DiscoveredDocumentCard: React.FC<{
                     sx={{
                       flex: 1,
                       height: 6,
-                      borderRadius: 3,
-                      bgcolor: alpha('#10B981', 0.1),
+                      borderRadius: '3px',
+                      bgcolor: alpha(relevanceColor, 0.1),
                       '& .MuiLinearProgress-bar': {
-                        bgcolor: doc.relevance_score > 0.7 ? '#10B981' : doc.relevance_score > 0.4 ? '#F59E0B' : '#EF4444',
+                        borderRadius: '3px',
+                        bgcolor: relevanceColor,
                       },
                     }}
                   />
@@ -208,10 +257,11 @@ const DiscoveredDocumentCard: React.FC<{
                     sx={{
                       flex: 1,
                       height: 6,
-                      borderRadius: 3,
-                      bgcolor: alpha('#3B82F6', 0.1),
+                      borderRadius: '3px',
+                      bgcolor: alpha(qualityColor, 0.1),
                       '& .MuiLinearProgress-bar': {
-                        bgcolor: doc.quality_score > 0.7 ? '#10B981' : doc.quality_score > 0.4 ? '#F59E0B' : '#EF4444',
+                        borderRadius: '3px',
+                        bgcolor: qualityColor,
                       },
                     }}
                   />
@@ -232,26 +282,30 @@ const DiscoveredDocumentCard: React.FC<{
 
             {/* Meta info */}
             <Box sx={{ display: 'flex', gap: 1, mt: 2 }}>
-              <Chip
+              <StatusChip
+                status="source"
                 label={doc.source || 'Unknown'}
-                size="small"
                 variant="outlined"
-                sx={{ height: 20, fontSize: 10 }}
+                statusConfig={STATUS_CONFIG}
+                height={20}
+                sx={{ fontSize: 10 }}
               />
               {doc.search_query && (
-                <Chip
+                <StatusChip
+                  status="query"
                   label={`Query: ${doc.search_query}`}
-                  size="small"
                   variant="outlined"
-                  sx={{ height: 20, fontSize: 10 }}
+                  statusConfig={STATUS_CONFIG}
+                  height={20}
+                  sx={{ fontSize: 10 }}
                 />
               )}
             </Box>
           </Box>
         </Box>
-      </CardContent>
+      </Box>
       
-      <CardActions sx={{ px: 2, pb: 2, pt: 0, justifyContent: 'flex-end' }}>
+      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, px: 2, pb: 2, pt: 0, flexWrap: 'wrap' }}>
         {doc.status === 'pending' && !doc.content && (
           <Button
             size="small"
@@ -284,21 +338,25 @@ const DiscoveredDocumentCard: React.FC<{
               startIcon={<ApproveIcon />}
               onClick={onApprove}
               variant="contained"
-              sx={{ background: 'linear-gradient(135deg, #10B981 0%, #06B6D4 100%)' }}
+              sx={{ background: gradients.success }}
             >
               Approve
             </Button>
           </>
         )}
-      </CardActions>
-    </Card>
+      </Box>
+    </Box>
   );
 };
 
+const formatNumber = (value: number): string => {
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
+  return value.toString();
+};
+
 // Main Component
-const DiscoveryPage: React.FC = () => {
-  const theme = useTheme();
-  const [tabValue, setTabValue] = useState(0);
+const DiscoveryPage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<DiscoveredDocument[]>([]);
@@ -321,8 +379,11 @@ const DiscoveryPage: React.FC = () => {
   // Load domains
   useEffect(() => {
     api.get('/api/v1/rag/domains').then(res => {
-      setDomains(res.data.domains || []);
-    }).catch(() => {});
+      const data = isRecord(res.data) ? res.data : {};
+      setDomains(normalizeDomainList(data.domains));
+    }).catch((err) => {
+      debugLog('discovery', 'Failed to load domains', err);
+    });
   }, []);
 
   // Load queue
@@ -332,10 +393,14 @@ const DiscoveryPage: React.FC = () => {
       const res = await api.get('/api/v1/rag/discover/queue', {
         params: { status: statusFilter || undefined, limit: 50 }
       });
-      setQueue(res.data.documents || []);
-      setQueueTotal(res.data.total || 0);
+      const data = isRecord(res.data) ? res.data : {};
+      const documents = normalizeDiscoveryDocuments(data.documents ?? res.data);
+      setQueue(documents);
+      setQueueTotal(toNumber(data.total, documents.length));
     } catch (err) {
-      console.error('Failed to load queue:', err);
+      debugLog('discovery', 'Failed to load queue', err);
+      setQueue([]);
+      setQueueTotal(0);
     } finally {
       setQueueLoading(false);
     }
@@ -345,9 +410,10 @@ const DiscoveryPage: React.FC = () => {
   const loadStats = useCallback(async () => {
     try {
       const res = await api.get('/api/v1/rag/discover/statistics');
-      setStats(res.data);
+      setStats(normalizeDiscoveryStats(res.data));
     } catch (err) {
-      console.error('Failed to load stats:', err);
+      debugLog('discovery', 'Failed to load stats', err);
+      setStats(null);
     }
   }, []);
 
@@ -448,209 +514,248 @@ const DiscoveryPage: React.FC = () => {
     }
   };
 
-  return (
-    <Box sx={{ p: 3 }}>
-      {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Box>
-          <Typography variant="h4" sx={{ 
-            fontWeight: 700, 
-            mb: 0.5,
-            background: 'linear-gradient(135deg, #8B5CF6 0%, #EC4899 100%)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-          }}>
-            Document Discovery
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Search the web and review documents for your knowledge base
-          </Typography>
-        </Box>
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <IconButton onClick={() => { loadQueue(); loadStats(); }}>
-            <RefreshIcon />
-          </IconButton>
-        </Box>
-      </Box>
+  const pendingCount = stats?.by_status?.pending || 0;
+  const approvedCount = stats?.by_status?.approved || 0;
+  const rejectedCount = stats?.by_status?.rejected || 0;
+  const selectedDomainName = domains.find(domain => domain.id === selectedDomain)?.name || 'No target selected';
+  const activeStatusConfig = statusFilter
+    ? getDiscoveryStatusConfig(statusFilter)
+    : { color: accentColors.info, label: 'All statuses' };
+  const activeStatusLabel = activeStatusConfig.label;
+  const averageRelevance = stats?.avg_relevance || 0;
+  const topSource = stats?.by_source
+    ? Object.entries(stats.by_source).sort((a, b) => b[1] - a[1])[0]
+    : null;
+  const hasDiscoverySummary = Boolean(
+    selectedDomain ||
+    topSource ||
+    queueTotal > 0 ||
+    approvedCount > 0 ||
+    rejectedCount > 0 ||
+    averageRelevance > 0
+  );
+  const showQueueFilters = queueTotal > 0 || searchResults.length > 0 || selectedDocs.size > 0 || Boolean(selectedDomain);
+  const showBulkApproveAction = selectedDocs.size > 0;
+  const showSearchAction = searching || searchQuery.trim().length > 0;
 
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      handleSearch();
+    }
+  };
+  const discoveryHeaderActions = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      <TextField
+        size="small"
+        placeholder="Search the web..."
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+        onKeyDown={handleSearchKeyDown}
+        InputProps={{
+          startAdornment: <SearchIcon sx={{ mr: 1, color: 'text.disabled', fontSize: 18 }} />,
+        }}
+        sx={{ width: { xs: '100%', sm: 250, lg: 340 }, '& .MuiInputBase-root': { height: 34 } }}
+      />
+
+      {showQueueFilters && (
+        <>
+          <FormControl size="small" sx={{ width: { xs: '100%', sm: 160 } }}>
+            <InputLabel>Status</InputLabel>
+            <Select
+              value={statusFilter}
+              label="Status"
+              onChange={(e) => setStatusFilter(e.target.value)}
+              sx={{ height: 34 }}
+            >
+              <MenuItem value="">All</MenuItem>
+              {REVIEW_STATUS_OPTIONS.map(([key, config]) => (
+                <MenuItem key={key} value={key}>{config.label}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          <FormControl size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
+            <InputLabel>Domain</InputLabel>
+            <Select
+              value={selectedDomain}
+              label="Domain"
+              onChange={(e) => setSelectedDomain(e.target.value)}
+              sx={{ height: 34 }}
+            >
+              <MenuItem value="">No target</MenuItem>
+              {domains.map(domain => (
+                <MenuItem key={domain.id} value={domain.id}>{domain.name}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </>
+      )}
+
+      <Tooltip title="Refresh queue">
+        <IconButton
+          aria-label="Refresh queue"
+          size="small"
+          onClick={() => { loadQueue(); loadStats(); }}
+          sx={{
+            width: 34,
+            height: 34,
+            borderRadius: '8px',
+            border: '1px solid',
+            borderColor: 'divider',
+            bgcolor: 'action.hover',
+            '&:hover': { bgcolor: alpha(accentColors.purple, 0.12) },
+          }}
+        >
+          <RefreshIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+
+      {showBulkApproveAction && (
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={<ApproveIcon />}
+          onClick={handleBulkApprove}
+          disabled={!selectedDomain}
+          sx={{ height: 34, borderRadius: '8px', fontWeight: 700, px: 1.25 }}
+        >
+          Approve
+        </Button>
+      )}
+
+      {showSearchAction && (
+        <Button
+          variant="contained"
+          size="small"
+          startIcon={searching ? <CircularProgress size={16} color="inherit" /> : <SearchIcon />}
+          onClick={handleSearch}
+          disabled={searching || !searchQuery.trim()}
+          sx={{ height: 34, borderRadius: '8px', fontWeight: 800, px: 1.25 }}
+        >
+          {searching ? 'Searching' : 'Search'}
+        </Button>
+      )}
+    </Box>
+  );
+  const discoverySummaryRow = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+      {(stats?.total || 0) > 0 && (
+        <StatusChip status="query" label={`${formatNumber(stats?.total || 0)} discovered`} statusConfig={STATUS_CONFIG} height={22} />
+      )}
+      {pendingCount > 0 && (
+        <StatusChip status="pending" label={`${formatNumber(pendingCount)} pending`} statusConfig={STATUS_CONFIG} height={22} />
+      )}
+      {selectedDocs.size > 0 && (
+        <StatusChip status="domain" label={`${formatNumber(selectedDocs.size)} selected`} statusConfig={STATUS_CONFIG} height={22} />
+      )}
+      {selectedDomain && (
+        <StatusChip
+          status="domain"
+          label={selectedDomainName}
+          statusConfig={STATUS_CONFIG}
+          height={22}
+          sx={{ maxWidth: 220, '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+        />
+      )}
+      {hasDiscoverySummary && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          noWrap
+          sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          {topSource ? `${topSource[0]} leads` : `${formatNumber(queueTotal)} queued`} / {formatNumber(approvedCount)} approved / {formatNumber(rejectedCount)} rejected / {Math.round(averageRelevance * 100)}% relevance
+        </Typography>
+      )}
+    </Box>
+  );
+
+  return (
+    <PageShell
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1.25,
+        py: 1.25,
+        overflow: 'visible',
+      }}
+    >
       {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+        <Alert severity="error" onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
 
-      {/* Stats Cards */}
-      {stats && (
-        <Grid container spacing={2} sx={{ mb: 3 }}>
-          {[
-            { label: 'Total Discovered', value: stats.total, color: '#6366F1', icon: <ExploreIcon /> },
-            { label: 'Pending Review', value: stats.by_status?.pending || 0, color: '#F59E0B', icon: <QueueIcon /> },
-            { label: 'Approved', value: stats.by_status?.approved || 0, color: '#10B981', icon: <ApproveIcon /> },
-            { label: 'Avg Relevance', value: `${Math.round((stats.avg_relevance || 0) * 100)}%`, color: '#3B82F6', icon: <StatsIcon /> },
-          ].map((stat, i) => (
-            <Grid item xs={3} key={i}>
-              <Card sx={{ 
-                background: `linear-gradient(135deg, ${alpha(stat.color, 0.15)} 0%, ${alpha(stat.color, 0.05)} 100%)`,
-                border: `1px solid ${alpha(stat.color, 0.3)}`,
-              }}>
-                <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 2 }}>
-                  <Box sx={{ 
-                    p: 1.5, 
-                    borderRadius: 2, 
-                    background: alpha(stat.color, 0.2),
-                    color: stat.color,
-                  }}>
-                    {stat.icon}
-                  </Box>
-                  <Box>
-                    <Typography variant="h5" sx={{ fontWeight: 700, color: stat.color }}>
-                      {stat.value}
+      <Box
+        data-discovery-workspace
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1.25,
+          overflow: 'visible',
+        }}
+      >
+      {searchResults.length > 0 && (
+          <SectionCard
+            title={`Search Results (${searchResults.length})`}
+            subtitle="Review discovered links before adding them to the queue"
+            icon={<WebSearchIcon />}
+            accentColor={accentColors.purple}
+          >
+            <Grid container spacing={1.25}>
+              {searchResults.map(doc => (
+                <Grid item xs={12} md={6} key={doc.id}>
+                  <Box
+                    sx={{
+                      ...discoveryPanelSx,
+                      p: 1.5,
+                      '&:hover': { borderColor: alpha(accentColors.purple, 0.5) },
+                    }}
+                  >
+                    <Typography variant="subtitle2" noWrap sx={{ mb: 0.75 }}>
+                      {doc.title}
                     </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {stat.label}
+                    <Typography
+                      variant="caption"
+                      component="a"
+                      href={doc.url}
+                      target="_blank"
+                      color="text.secondary"
+                      sx={{
+                        display: 'block',
+                        mb: 0.75,
+                        textDecoration: 'none',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        '&:hover': { textDecoration: 'underline' },
+                      }}
+                    >
+                      {doc.url}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}>
+                      {doc.snippet}
                     </Typography>
                   </Box>
-                </CardContent>
-              </Card>
+                </Grid>
+              ))}
             </Grid>
-          ))}
-        </Grid>
+          </SectionCard>
       )}
 
-      <Grid container spacing={3}>
-        {/* Search Panel */}
-        <Grid item xs={12}>
-          <Paper sx={{ 
-            p: 3,
-            background: 'linear-gradient(135deg, rgba(26, 26, 46, 0.9) 0%, rgba(15, 15, 26, 0.9) 100%)',
-            border: '1px solid rgba(139, 92, 246, 0.2)',
-          }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
-              <WebSearchIcon sx={{ color: '#8B5CF6' }} />
-              <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                Web Search
-              </Typography>
-            </Box>
-            
-            <Box sx={{ display: 'flex', gap: 2 }}>
-              <TextField
-                fullWidth
-                placeholder="Search for documents to add to your knowledge base..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                InputProps={{
-                  startAdornment: <SearchIcon sx={{ mr: 1, color: 'text.disabled' }} />,
-                }}
-              />
-              <Button
-                variant="contained"
-                onClick={handleSearch}
-                disabled={searching || !searchQuery.trim()}
-                sx={{ 
-                  minWidth: 140,
-                  background: 'linear-gradient(135deg, #8B5CF6 0%, #EC4899 100%)',
-                }}
-              >
-                {searching ? <CircularProgress size={20} /> : 'Search Web'}
-              </Button>
-            </Box>
-
-            {/* Search Results */}
-            {searchResults.length > 0 && (
-              <Box sx={{ mt: 3 }}>
-                <Typography variant="subtitle2" sx={{ mb: 2 }}>
-                  Search Results ({searchResults.length})
-                </Typography>
-                <Grid container spacing={2}>
-                  {searchResults.map(doc => (
-                    <Grid item xs={6} key={doc.id}>
-                      <Card sx={{ 
-                        p: 2,
-                        border: '1px solid rgba(255,255,255,0.1)',
-                        '&:hover': { borderColor: alpha('#8B5CF6', 0.5) },
-                      }}>
-                        <Typography variant="subtitle2" noWrap sx={{ mb: 1 }}>
-                          {doc.title}
-                        </Typography>
-                        <Typography
-                          variant="caption"
-                          component="a"
-                          href={doc.url}
-                          target="_blank"
-                          color="text.secondary"
-                          sx={{ 
-                            display: 'block', 
-                            mb: 1,
-                            textDecoration: 'none',
-                            '&:hover': { textDecoration: 'underline' },
-                          }}
-                        >
-                          {doc.url}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary" sx={{ 
-                          display: '-webkit-box',
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: 'vertical',
-                          overflow: 'hidden',
-                        }}>
-                          {doc.snippet}
-                        </Typography>
-                      </Card>
-                    </Grid>
-                  ))}
-                </Grid>
-              </Box>
-            )}
-          </Paper>
-        </Grid>
-
-        {/* Review Queue */}
-        <Grid item xs={12}>
-          <Paper sx={{ 
-            p: 3,
-            background: 'linear-gradient(135deg, rgba(26, 26, 46, 0.9) 0%, rgba(15, 15, 26, 0.9) 100%)',
-            border: '1px solid rgba(139, 92, 246, 0.2)',
-          }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                <QueueIcon sx={{ color: '#F59E0B' }} />
-                <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                  Review Queue
-                </Typography>
-                <Badge badgeContent={queueTotal} color="warning">
-                  <Chip label="pending" size="small" />
-                </Badge>
-              </Box>
-              <Box sx={{ display: 'flex', gap: 2 }}>
-                <FormControl size="small" sx={{ minWidth: 120 }}>
-                  <InputLabel>Status</InputLabel>
-                  <Select
-                    value={statusFilter}
-                    label="Status"
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                  >
-                    <MenuItem value="">All</MenuItem>
-                    {Object.entries(STATUS_CONFIG).map(([key, config]) => (
-                      <MenuItem key={key} value={key}>{config.label}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                <FormControl size="small" sx={{ minWidth: 150 }}>
-                  <InputLabel>Target Domain</InputLabel>
-                  <Select
-                    value={selectedDomain}
-                    label="Target Domain"
-                    onChange={(e) => setSelectedDomain(e.target.value)}
-                  >
-                    <MenuItem value="">Select domain...</MenuItem>
-                    {domains.map(domain => (
-                      <MenuItem key={domain.id} value={domain.id}>{domain.name}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              </Box>
-            </Box>
+          <SectionCard
+            title="Review Queue"
+            subtitle={`${formatNumber(queueTotal)} documents matching ${activeStatusLabel.toLowerCase()}`}
+            icon={<QueueIcon />}
+            accentColor={accentColors.warning}
+            action={discoveryHeaderActions}
+          >
+            {discoverySummaryRow}
 
             {/* Bulk actions */}
             {selectedDocs.size > 0 && (
@@ -671,7 +776,7 @@ const DiscoveryPage: React.FC = () => {
                       variant="contained"
                       onClick={handleBulkApprove}
                       disabled={!selectedDomain}
-                      sx={{ background: 'linear-gradient(135deg, #10B981 0%, #06B6D4 100%)' }}
+                      sx={{ background: gradients.success }}
                     >
                       Approve {selectedDocs.size} Documents
                     </Button>
@@ -683,59 +788,80 @@ const DiscoveryPage: React.FC = () => {
             )}
 
             {/* Select all */}
-            <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={queue.length > 0 && selectedDocs.size === queue.length}
-                    indeterminate={selectedDocs.size > 0 && selectedDocs.size < queue.length}
-                    onChange={selectAll}
-                  />
-                }
-                label="Select All"
-              />
-            </Box>
+            {queue.length > 0 && (
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1.25 }}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={selectedDocs.size === queue.length}
+                      indeterminate={selectedDocs.size > 0 && selectedDocs.size < queue.length}
+                      onChange={selectAll}
+                    />
+                  }
+                  label="Select All"
+                />
+              </Box>
+            )}
 
             {/* Queue list */}
             {queueLoading ? (
-              <Box sx={{ py: 4 }}>
+              <Box sx={{ minHeight: 120, py: 1 }}>
                 {[1, 2, 3].map(i => (
-                  <Skeleton key={i} variant="rectangular" height={180} sx={{ mb: 2, borderRadius: 2 }} />
+                  <Skeleton key={i} variant="rectangular" height={120} sx={{ mb: 1.25, borderRadius: '8px' }} />
                 ))}
               </Box>
             ) : queue.length === 0 ? (
-              <Box sx={{ textAlign: 'center', py: 8 }}>
-                <QueueIcon sx={{ fontSize: 64, color: 'text.disabled', mb: 2 }} />
-                <Typography variant="h6" color="text.secondary">
-                  No documents in queue
-                </Typography>
-                <Typography variant="body2" color="text.disabled">
-                  Use web search above to discover new documents
-                </Typography>
+              <Box
+                data-discovery-empty-queue
+                sx={{
+                  p: 1.25,
+                  display: 'flex',
+                  alignItems: { xs: 'flex-start', sm: 'center' },
+                  justifyContent: 'space-between',
+                  gap: 1,
+                  flexWrap: 'wrap',
+                  borderRadius: '8px',
+                  border: '1px dashed',
+                  borderColor: 'divider',
+                  bgcolor: alpha(accentColors.warning, 0.04),
+                }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                  <QueueIcon sx={{ fontSize: 20, color: 'text.disabled', flexShrink: 0 }} />
+                  <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="body2" color="text.primary" sx={{ fontWeight: 800 }}>
+                    No documents in queue
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Search the web above to collect candidates for review.
+                  </Typography>
+                  </Box>
+                </Box>
               </Box>
             ) : (
-              queue.map(doc => (
-                <DiscoveredDocumentCard
-                  key={doc.id}
-                  doc={doc}
-                  selected={selectedDocs.has(doc.id)}
-                  onSelect={() => toggleSelection(doc.id)}
-                  onApprove={() => {
-                    setApprovingDoc(doc);
-                    setApproveDialogOpen(true);
-                  }}
-                  onReject={() => handleReject(doc.id)}
-                  onExtract={() => handleExtract(doc.id)}
-                  onView={() => {
-                    setViewingDoc(doc);
-                    setViewDialogOpen(true);
-                  }}
-                />
-              ))
+              <Box>
+                {queue.map(doc => (
+                  <DiscoveredDocumentCard
+                    key={doc.id}
+                    doc={doc}
+                    selected={selectedDocs.has(doc.id)}
+                    onSelect={() => toggleSelection(doc.id)}
+                    onApprove={() => {
+                      setApprovingDoc(doc);
+                      setApproveDialogOpen(true);
+                    }}
+                    onReject={() => handleReject(doc.id)}
+                    onExtract={() => handleExtract(doc.id)}
+                    onView={() => {
+                      setViewingDoc(doc);
+                      setViewDialogOpen(true);
+                    }}
+                  />
+                ))}
+              </Box>
             )}
-          </Paper>
-        </Grid>
-      </Grid>
+          </SectionCard>
+      </Box>
 
       {/* View Document Dialog */}
       <Dialog open={viewDialogOpen} onClose={() => setViewDialogOpen(false)} maxWidth="md" fullWidth>
@@ -760,10 +886,11 @@ const DiscoveryPage: React.FC = () => {
         </DialogTitle>
         <DialogContent>
           {viewingDoc?.content ? (
-            <Paper
+            <Box
               sx={{
+                ...discoveryPanelSx,
                 p: 2,
-                bgcolor: alpha('#000', 0.3),
+                bgcolor: alpha(accentColors.slate, 0.16),
                 maxHeight: 500,
                 overflow: 'auto',
                 whiteSpace: 'pre-wrap',
@@ -772,7 +899,7 @@ const DiscoveryPage: React.FC = () => {
               }}
             >
               {viewingDoc.content}
-            </Paper>
+            </Box>
           ) : (
             <Alert severity="info">
               Content has not been extracted yet. Click "Extract Content" to fetch the document.
@@ -800,7 +927,7 @@ const DiscoveryPage: React.FC = () => {
                   setApproveDialogOpen(true);
                 }}
                 variant="contained"
-                sx={{ background: 'linear-gradient(135deg, #10B981 0%, #06B6D4 100%)' }}
+                sx={{ background: gradients.success }}
               >
                 Approve
               </Button>
@@ -835,13 +962,13 @@ const DiscoveryPage: React.FC = () => {
             onClick={() => approvingDoc && handleApprove(approvingDoc.id, selectedDomain)}
             variant="contained"
             disabled={!selectedDomain}
-            sx={{ background: 'linear-gradient(135deg, #10B981 0%, #06B6D4 100%)' }}
+            sx={{ background: gradients.success }}
           >
             Approve & Add
           </Button>
         </DialogActions>
       </Dialog>
-    </Box>
+    </PageShell>
   );
 };
 

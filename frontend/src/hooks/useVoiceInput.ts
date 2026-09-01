@@ -7,6 +7,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { apiService } from '@/services/api'
+import { debugLog } from '@/utils/debug'
 
 export interface VoiceInputConfig {
   // VAD settings
@@ -95,7 +96,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
       return
     }
     
-    console.log('Starting transcription, blob size:', audioBlob.size)
+    debugLog('voice-input', 'Starting transcription', { blobSize: audioBlob.size })
     isTranscribingRef.current = true
     setState(prev => ({ ...prev, isTranscribing: true, error: null, lastNoSpeechProb: null }))
     
@@ -106,7 +107,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
         response_format: 'verbose_json',  // Get segment probabilities
       })
       
-      console.log('Transcription result:', result)
+      debugLog('voice-input', 'Transcription result', result)
       
       // Check no_speech_prob from segments
       let avgNoSpeechProb: number | null = null
@@ -117,7 +118,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
         
         if (probs.length > 0) {
           avgNoSpeechProb = probs.reduce((a, b) => a + b, 0) / probs.length
-          console.log(`Average no_speech_prob: ${(avgNoSpeechProb * 100).toFixed(1)}% (threshold: ${(configRef.current.noSpeechThreshold * 100).toFixed(0)}%)`)
+          debugLog('voice-input', `Average no_speech_prob: ${(avgNoSpeechProb * 100).toFixed(1)}% (threshold: ${(configRef.current.noSpeechThreshold * 100).toFixed(0)}%)`)
         }
       }
       
@@ -126,7 +127,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
       
       // Filter out low-confidence speech
       if (avgNoSpeechProb !== null && avgNoSpeechProb > configRef.current.noSpeechThreshold) {
-        console.log(`Rejecting transcription - no_speech_prob ${(avgNoSpeechProb * 100).toFixed(1)}% exceeds threshold ${(configRef.current.noSpeechThreshold * 100).toFixed(0)}%`)
+        debugLog('voice-input', `Rejecting transcription - no_speech_prob ${(avgNoSpeechProb * 100).toFixed(1)}% exceeds threshold ${(configRef.current.noSpeechThreshold * 100).toFixed(0)}%`)
         return
       }
       
@@ -146,18 +147,21 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
       silenceStartRef.current = null
       recordingStartRef.current = null
       
-      console.log('Transcription complete, ready for next recording. isListening:', isListeningRef.current)
+      debugLog('voice-input', 'Transcription complete, ready for next recording', { isListening: isListeningRef.current })
     }
   }, [])
 
   // Start recording
   const startRecordingInternal = useCallback(() => {
     if (!mediaRecorderRef.current || isRecordingRef.current) {
-      console.log('Cannot start recording - recorder:', !!mediaRecorderRef.current, 'already recording:', isRecordingRef.current)
+      debugLog('voice-input', 'Cannot start recording', {
+        hasRecorder: Boolean(mediaRecorderRef.current),
+        alreadyRecording: isRecordingRef.current,
+      })
       return
     }
     
-    console.log('Starting recording')
+    debugLog('voice-input', 'Starting recording')
     chunksRef.current = []
     recordingStartRef.current = Date.now()
     silenceStartRef.current = null
@@ -175,7 +179,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
       return
     }
     
-    console.log('Stopping recording')
+    debugLog('voice-input', 'Stopping recording')
     isRecordingRef.current = false
     setState(prev => ({ ...prev, isRecording: false }))
     configRef.current.onSpeechEnd?.()
@@ -250,7 +254,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
             silenceDuration >= config.silenceDuration &&
             recordingDuration >= config.minRecordingTime
           ) {
-            console.log('Silence threshold reached, stopping recording. Duration:', recordingDuration, 'Silence:', silenceDuration)
+            debugLog('voice-input', 'Silence threshold reached, stopping recording', { recordingDuration, silenceDuration })
             stopRecordingInternal()
             // Don't return - keep the loop running for next utterance
           }
@@ -259,13 +263,13 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
       
       // Check max recording time
       if (recordingDuration >= config.maxRecordingTime) {
-        console.log('Max recording time reached')
+        debugLog('voice-input', 'Max recording time reached')
         stopRecordingInternal()
       }
     } else if (!isTranscribingRef.current) {
       // Not recording and not transcribing - check if we should start
       if (isSpeaking) {
-        console.log('Voice detected, starting recording')
+        debugLog('voice-input', 'Voice detected, starting recording')
         startRecordingInternal()
       }
     }
@@ -273,7 +277,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
 
   // Cleanup function
   const cleanup = useCallback(() => {
-    console.log('Cleaning up voice input')
+    debugLog('voice-input', 'Cleaning up voice input')
     
     // Reset refs first to stop the processing loop
     isListeningRef.current = false
@@ -322,7 +326,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
       setState(prev => ({ ...prev, error: null }))
       
       // Get microphone access
-      console.log('Requesting microphone access...')
+      debugLog('voice-input', 'Requesting microphone access')
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -331,17 +335,17 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
         }
       })
       streamRef.current = stream
-      console.log('Microphone access granted')
+      debugLog('voice-input', 'Microphone access granted')
       
       // Set up audio context for VAD
       const audioContext = new AudioContext()
       audioContextRef.current = audioContext
-      console.log('AudioContext created, state:', audioContext.state)
+      debugLog('voice-input', 'AudioContext created', { state: audioContext.state })
       
       // Resume audio context if suspended (required by some browsers)
       if (audioContext.state === 'suspended') {
         await audioContext.resume()
-        console.log('AudioContext resumed')
+        debugLog('voice-input', 'AudioContext resumed')
       }
       
       const source = audioContext.createMediaStreamSource(stream)
@@ -353,7 +357,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
       
       // Set up media recorder
       const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
-      console.log('Using MIME type:', mimeType)
+      debugLog('voice-input', 'Using MIME type', mimeType)
       const mediaRecorder = new MediaRecorder(stream, { mimeType })
       
       mediaRecorder.ondataavailable = (event) => {
@@ -363,7 +367,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
       }
       
       mediaRecorder.onstop = async () => {
-        console.log('MediaRecorder stopped, chunks:', chunksRef.current.length)
+        debugLog('voice-input', 'MediaRecorder stopped', { chunks: chunksRef.current.length })
         const audioBlob = new Blob(chunksRef.current, { type: mimeType })
         chunksRef.current = []
         
@@ -383,7 +387,7 @@ export function useVoiceInput(userConfig: Partial<VoiceInputConfig> = {}) {
       setState(prev => ({ ...prev, isListening: true }))
       
       // Start audio processing loop
-      console.log('Starting continuous audio processing loop')
+      debugLog('voice-input', 'Starting continuous audio processing loop')
       animationFrameRef.current = requestAnimationFrame(processAudio)
       
     } catch (error) {

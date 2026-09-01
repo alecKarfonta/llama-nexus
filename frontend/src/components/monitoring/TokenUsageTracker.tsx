@@ -26,46 +26,56 @@ import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 
 interface TokenUsageTrackerProps {
   timeRange?: '1h' | '24h' | '7d' | '30d';
+  compact?: boolean;
 }
 
 export const TokenUsageTracker: React.FC<TokenUsageTrackerProps> = ({
   timeRange = '24h',
+  compact = false,
 }) => {
   const { data: tokenUsage, isLoading, error } = useTokenUsage(timeRange);
 
-  if (isLoading) {
-    return (
+  const wrapContent = (content: React.ReactNode) => (
+    compact ? (
+      <Box>{content}</Box>
+    ) : (
       <Card>
-        <CardContent>
-          <Typography variant="h6" gutterBottom>Token Usage</Typography>
-          <LinearProgress />
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
-            Loading token usage data...
-          </Typography>
-        </CardContent>
+        <CardContent>{content}</CardContent>
       </Card>
+    )
+  );
+
+  if (isLoading) {
+    return wrapContent(
+      <>
+        {!compact && <Typography variant="h6" gutterBottom>Token Usage</Typography>}
+        <LinearProgress />
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          Loading token usage data...
+        </Typography>
+      </>
     );
   }
 
   if (!tokenUsage || tokenUsage.length === 0) {
-    return (
-      <Card>
-        <CardContent>
-          <Typography variant="h6" gutterBottom>Token Usage</Typography>
-          {error ? (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <ErrorOutlineIcon color="error" />
-              <Typography variant="body2" color="error">
-                Failed to load token usage. Ensure backend endpoint `/v1/usage/tokens` is running.
-              </Typography>
-            </Box>
-          ) : (
+    return wrapContent(
+      <>
+        {!compact && <Typography variant="h6" gutterBottom>Token Usage</Typography>}
+        {error ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minHeight: compact ? 44 : undefined }}>
+            <ErrorOutlineIcon color="error" fontSize="small" />
+            <Typography variant="body2" color="error">
+              Failed to load token usage. Ensure backend endpoint `/v1/usage/tokens` is running.
+            </Typography>
+          </Box>
+        ) : (
+          <Box sx={{ minHeight: compact ? 44 : undefined, display: 'flex', alignItems: 'center' }}>
             <Typography variant="body2" color="text.secondary">
               No token usage data available for the selected time period.
             </Typography>
-          )}
-        </CardContent>
-      </Card>
+          </Box>
+        )}
+      </>
     );
   }
 
@@ -79,11 +89,10 @@ export const TokenUsageTracker: React.FC<TokenUsageTrackerProps> = ({
     (b.promptTokens + b.completionTokens) - (a.promptTokens + a.completionTokens)
   );
 
-  return (
-    <Card>
-      <CardContent>
+  return wrapContent(
+    <>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-          <Typography variant="h6">Token Usage</Typography>
+          {!compact && <Typography variant="h6">Token Usage</Typography>}
           <Chip 
             label={`Last ${timeRange}`} 
             size="small" 
@@ -178,7 +187,6 @@ export const TokenUsageTracker: React.FC<TokenUsageTrackerProps> = ({
             </TableBody>
           </Table>
         </TableContainer>
-      </CardContent>
-    </Card>
+    </>
   );
 };

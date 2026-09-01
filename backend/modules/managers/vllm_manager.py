@@ -16,8 +16,12 @@ from datetime import datetime
 from collections import deque
 
 from enhanced_logger import enhanced_logger as logger
+from local_paths import backend_data_path
+from modules.inference_targets import vllm_proxy_base_url_candidates
 
-VLLM_DEPLOY_CONFIG_PATH = os.getenv("VLLM_DEPLOY_CONFIG_PATH", "/data/vllm_deploy_config.json")
+VLLM_DEPLOY_CONFIG_PATH = os.getenv("VLLM_DEPLOY_CONFIG_PATH") or str(
+    backend_data_path("vllm_deploy_config.json")
+)
 
 
 def _deep_merge_dict(base: Dict[str, Any], incoming: Dict[str, Any]) -> None:
@@ -588,18 +592,23 @@ class VLLMManager:
 
     async def get_health(self) -> Dict[str, Any]:
         """Check health of the vLLM service."""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.internal_http_base()}/health", timeout=5.0,
-                )
-                return {
-                    "healthy": response.status_code == 200,
-                    "status_code": response.status_code,
-                    "response": response.text,
-                }
-        except Exception as e:
-            return {"healthy": False, "error": str(e)}
+        errors: list[str] = []
+        async with httpx.AsyncClient() as client:
+            for base_url in vllm_proxy_base_url_candidates(self.internal_http_base()):
+                try:
+                    response = await client.get(f"{base_url}/health", timeout=5.0)
+                    result = {
+                        "healthy": response.status_code == 200,
+                        "status_code": response.status_code,
+                        "response": response.text,
+                        "base_url": base_url,
+                    }
+                    if result["healthy"]:
+                        return result
+                    errors.append(f"{base_url}: HTTP {response.status_code}")
+                except Exception as e:
+                    errors.append(f"{base_url}: {e}")
+        return {"healthy": False, "error": "; ".join(errors)}
 
     def get_status(self) -> Dict[str, Any]:
         """Get current status of the vLLM service."""

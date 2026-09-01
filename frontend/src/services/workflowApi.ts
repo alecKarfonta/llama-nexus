@@ -9,7 +9,6 @@ import type {
   WorkflowNode,
   WorkflowConnection,
   WorkflowExecution,
-  NodeExecution,
   NodeTypeDefinition,
   WorkflowSettings,
 } from '@/types/workflow';
@@ -72,6 +71,39 @@ interface VersionInfo {
   createdAt: string;
 }
 
+const isRecord = (value: unknown): value is Record<string, any> => (
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+);
+
+const toNumber = (value: unknown, fallback: number): number => (
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback
+);
+
+const normalizeWorkflowListResponse = (
+  data: unknown,
+  params?: { limit?: number; offset?: number }
+): WorkflowListResponse => {
+  const record = isRecord(data) ? data : {};
+  const workflows = Array.isArray(data)
+    ? data as Workflow[]
+    : Array.isArray(record.workflows)
+      ? record.workflows as Workflow[]
+      : Array.isArray(record.items)
+        ? record.items as Workflow[]
+        : [];
+  const total = toNumber(record.total, workflows.length);
+  const limit = toNumber(record.limit, params?.limit ?? workflows.length);
+  const offset = toNumber(record.offset, params?.offset ?? 0);
+
+  return {
+    workflows,
+    total,
+    limit,
+    offset,
+    has_more: typeof record.has_more === 'boolean' ? record.has_more : offset + workflows.length < total,
+  };
+};
+
 class WorkflowApiService {
   /**
    * List all workflows
@@ -82,7 +114,7 @@ class WorkflowApiService {
     search?: string;
   }): Promise<WorkflowListResponse> {
     const response = await apiService.get('/api/v1/workflows', { params });
-    return response.data;
+    return normalizeWorkflowListResponse(response.data, params);
   }
 
   /**

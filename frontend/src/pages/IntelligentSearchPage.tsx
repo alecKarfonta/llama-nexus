@@ -2,24 +2,16 @@
  * IntelligentSearchPage - Unified search interface with GraphRAG integration
  * Provides hybrid search with LLM answer generation
  */
-import React, { useState, useEffect, useCallback } from 'react';
+import { Fragment, useState, useEffect, useCallback, type KeyboardEvent } from 'react';
 import {
   Box,
-  Paper,
   Typography,
   TextField,
   Button,
-  Card,
-  CardContent,
-  Chip,
   List,
-  ListItem,
-  ListItemText,
   CircularProgress,
   Alert,
   Divider,
-  alpha,
-  useTheme,
   FormControl,
   InputLabel,
   Select,
@@ -31,22 +23,28 @@ import {
   Tooltip,
   LinearProgress,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import {
   Search as SearchIcon,
   Psychology as IntentIcon,
-  TrendingUp as ScoreIcon,
   Description as SourceIcon,
   AccountTree as GraphIcon,
   AutoAwesome as AutoIcon,
   ShowChart as VectorIcon,
-  Lightbulb as SuggestionIcon,
   ExpandMore as ExpandIcon,
   Refresh as RefreshIcon,
   Hub as HybridIcon,
   TextFields as KeywordIcon,
   Psychology,
 } from '@mui/icons-material';
+import {
+  PageShell,
+  SectionCard,
+  StatusChip,
+  type StatusChipConfigMap,
+} from '../components/common';
 import { apiService as api } from '../services/api';
+import { accentColors } from '../utils/theme';
 
 type SearchType = 'auto' | 'hybrid' | 'vector' | 'graph' | 'keyword';
 
@@ -64,45 +62,77 @@ interface QueryAnalysis {
   complexity?: number;
 }
 
-const IntelligentSearchPage: React.FC = () => {
-  const theme = useTheme();
-  
+const INTELLIGENT_SEARCH_STATUS_CONFIG: StatusChipConfigMap = {
+  answer: { color: accentColors.success, label: 'Generated answer' },
+  auto: { color: accentColors.primary, label: 'Auto' },
+  checking: { color: accentColors.warning, label: 'Checking GraphRAG' },
+  complexity: { color: accentColors.warning, label: 'Complexity' },
+  degraded: { color: accentColors.rose, label: 'GraphRAG degraded' },
+  entity: { color: accentColors.primary, label: 'Entity' },
+  graph: { color: accentColors.purple, label: 'Graph' },
+  healthy: { color: accentColors.success, label: 'GraphRAG ready' },
+  hybrid: { color: accentColors.success, label: 'Hybrid' },
+  intent: { color: accentColors.primary, label: 'Intent' },
+  keyword: { color: accentColors.warning, label: 'Keyword' },
+  knowledge: { color: accentColors.info, label: 'Knowledge search' },
+  metadata: { color: accentColors.slate, label: 'Metadata' },
+  score: { color: accentColors.success, label: 'Score' },
+  sources: { color: accentColors.info, label: 'Sources' },
+  suggestion: { color: accentColors.info, label: 'Suggestion' },
+  tools: { color: accentColors.info, label: 'Search tools' },
+  vector: { color: accentColors.info, label: 'Vector' },
+};
+
+const searchSurfacePanelSx = {
+  borderRadius: '8px',
+  bgcolor: 'background.paper',
+  border: '1px solid',
+  borderColor: 'divider',
+} as const;
+
+const IntelligentSearchPage = () => {
   // Search state
   const [query, setQuery] = useState('');
   const [searchType, setSearchType] = useState<SearchType>('auto');
   const [searching, setSearching] = useState(false);
-  
+
   // Results
   const [answer, setAnswer] = useState<string | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [queryAnalysis, setQueryAnalysis] = useState<QueryAnalysis | null>(null);
   const [searchMethodUsed, setSearchMethodUsed] = useState<string | null>(null);
-  
+
   // UI state
   const [error, setError] = useState<string | null>(null);
   const [domains, setDomains] = useState<string[]>([]);
   const [selectedDomain, setSelectedDomain] = useState<string>('');
   const [expandedSource, setExpandedSource] = useState<string | null>(null);
+  const [graphStatus, setGraphStatus] = useState<'checking' | 'healthy' | 'degraded'>('checking');
 
-  // Check GraphRAG status on mount
-  useEffect(() => {
-    checkServiceStatus();
-  }, []);
-
-  const checkServiceStatus = async () => {
+  const checkServiceStatus = useCallback(async () => {
     try {
       const health = await api.getGraphRAGHealth();
-      if (!health.available) {
-        setError('GraphRAG service is not available. Please ensure the service is running.');
+      const healthy = ['healthy', 'ok', 'available'].includes(health.status?.toLowerCase?.() || '');
+
+      if (!healthy) {
+        setGraphStatus('degraded');
+        setError(health.message || health.error || 'GraphRAG service is not available. Please ensure the service is running.');
       } else {
-        // Load domains
+        setGraphStatus('healthy');
+        setError(null);
         const domainsRes = await api.getGraphRAGDomains();
         setDomains(domainsRes.domains || []);
       }
     } catch (err: any) {
+      setGraphStatus('degraded');
       setError(err.message || 'Failed to connect to GraphRAG service');
     }
-  };
+  }, []);
+
+  // Check GraphRAG status on mount
+  useEffect(() => {
+    checkServiceStatus();
+  }, [checkServiceStatus]);
 
   const handleSearch = async () => {
     if (!query.trim()) return;
@@ -121,7 +151,7 @@ const IntelligentSearchPage: React.FC = () => {
         domain: selectedDomain || undefined,
       });
 
-      setAnswer(result.answer);
+      setAnswer(result.answer ?? null);
       setResults(result.results || []);
       setQueryAnalysis(result.query_analysis || null);
       setSearchMethodUsed(result.search_method_used || searchType);
@@ -132,7 +162,7 @@ const IntelligentSearchPage: React.FC = () => {
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyPress = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSearch();
@@ -141,133 +171,189 @@ const IntelligentSearchPage: React.FC = () => {
 
   const getSearchTypeConfig = (type: SearchType) => {
     const configs = {
-      auto: { icon: <AutoIcon />, color: '#6366f1', label: 'Auto (Recommended)' },
-      hybrid: { icon: <HybridIcon />, color: '#10b981', label: 'Hybrid' },
-      vector: { icon: <VectorIcon />, color: '#3b82f6', label: 'Vector' },
-      graph: { icon: <GraphIcon />, color: '#8b5cf6', label: 'Graph' },
-      keyword: { icon: <KeywordIcon />, color: '#f59e0b', label: 'Keyword' },
+      auto: { icon: <AutoIcon />, color: accentColors.primary, label: 'Auto (Recommended)' },
+      hybrid: { icon: <HybridIcon />, color: accentColors.success, label: 'Hybrid' },
+      vector: { icon: <VectorIcon />, color: accentColors.info, label: 'Vector' },
+      graph: { icon: <GraphIcon />, color: accentColors.purple, label: 'Graph' },
+      keyword: { icon: <KeywordIcon />, color: accentColors.warning, label: 'Keyword' },
     };
     return configs[type];
   };
 
-  return (
-    <Box sx={{ p: 3 }}>
-      {/* Header */}
-      <Box sx={{ mb: 3 }}>
-        <Typography variant="h4" fontWeight={700} gutterBottom>
-          Intelligent Search
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Powered by GraphRAG - Hybrid search combining vector similarity, knowledge graph traversal, and keyword matching with LLM answer generation.
-        </Typography>
-      </Box>
+  const entityCount = queryAnalysis?.entities?.length || 0;
+  const keywordCount = queryAnalysis?.keywords?.length || 0;
+  const searchUnavailable = graphStatus === 'degraded';
+  const unavailableMessage = error || 'Start GraphRAG, then refresh service status to search indexed documents.';
+  const searchHeaderActions = searchUnavailable ? (
+    <Button
+      size="small"
+      variant="outlined"
+      startIcon={<RefreshIcon />}
+      onClick={checkServiceStatus}
+      sx={{ height: 34, borderRadius: '8px', borderColor: 'divider', fontWeight: 800 }}
+    >
+      Retry
+    </Button>
+  ) : (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      <TextField
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={handleKeyPress}
+        placeholder="Search indexed documents..."
+        size="small"
+        sx={{ width: { xs: '100%', sm: 320, lg: 420 }, '& .MuiInputBase-root': { height: 34 } }}
+      />
 
-      {error && (
-        <Alert severity="error" onClose={() => setError(null)} sx={{ mb: 2 }}>
+      <FormControl size="small" sx={{ width: { xs: '100%', sm: 164 } }}>
+        <InputLabel>Method</InputLabel>
+        <Select
+          value={searchType}
+          label="Method"
+          onChange={(e) => setSearchType(e.target.value as SearchType)}
+          renderValue={(value) => getSearchTypeConfig(value as SearchType).label.replace(' (Recommended)', '')}
+          sx={{ height: 34 }}
+        >
+          {(['auto', 'hybrid', 'vector', 'graph', 'keyword'] as SearchType[]).map(type => {
+            const config = getSearchTypeConfig(type);
+            return (
+              <MenuItem key={type} value={type}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Box sx={{ color: config.color, display: 'flex' }}>{config.icon}</Box>
+                  {config.label}
+                </Box>
+              </MenuItem>
+            );
+          })}
+        </Select>
+      </FormControl>
+
+      {domains.length > 0 && (
+        <FormControl size="small" sx={{ width: { xs: '100%', sm: 190 } }}>
+          <InputLabel>Domain</InputLabel>
+          <Select
+            value={selectedDomain}
+            label="Domain"
+            onChange={(e) => setSelectedDomain(e.target.value)}
+            sx={{ height: 34 }}
+          >
+            <MenuItem value="">All Domains</MenuItem>
+            {domains.map(domain => (
+              <MenuItem key={domain} value={domain}>{domain}</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      )}
+
+      <Tooltip title="Refresh GraphRAG status">
+        <IconButton
+          aria-label="Refresh GraphRAG status"
+          size="small"
+          onClick={checkServiceStatus}
+          sx={{ width: 34, height: 34, borderRadius: '8px', border: '1px solid', borderColor: 'divider', bgcolor: 'action.hover', '&:hover': { bgcolor: alpha(accentColors.info, 0.12) } }}
+        >
+          <RefreshIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+      <Button
+        variant="contained"
+        size="small"
+        startIcon={searching ? <CircularProgress size={16} color="inherit" /> : <SearchIcon />}
+        onClick={handleSearch}
+        disabled={searching || !query.trim() || searchUnavailable}
+        sx={{ height: 34, borderRadius: '8px', fontWeight: 800, px: 1.25 }}
+      >
+        {searching ? 'Searching' : 'Search'}
+      </Button>
+    </Box>
+  );
+  const searchSummaryRow = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
+      <StatusChip status={graphStatus} statusConfig={INTELLIGENT_SEARCH_STATUS_CONFIG} height={22} />
+      <StatusChip status={searchType} label={getSearchTypeConfig(searchType).label.replace(' (Recommended)', '')} statusConfig={INTELLIGENT_SEARCH_STATUS_CONFIG} height={22} />
+      {results.length > 0 && (
+        <StatusChip status="sources" label={`${results.length} sources`} statusConfig={INTELLIGENT_SEARCH_STATUS_CONFIG} height={22} />
+      )}
+    </Box>
+  );
+
+  return (
+    <PageShell
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1.25,
+        py: 1.25,
+        overflow: 'visible',
+      }}
+    >
+      <SectionCard
+        title="Knowledge Search"
+        subtitle={searchUnavailable ? 'GraphRAG service unavailable' : 'Indexed documents, entities, and graph context'}
+        icon={<SearchIcon />}
+        accentColor={searchUnavailable ? accentColors.rose : accentColors.info}
+        action={searchHeaderActions}
+      >
+        {searchUnavailable ? (
+          <Box
+            data-search-empty-state
+            sx={{
+              p: 1,
+              borderRadius: '8px',
+              border: '1px solid',
+              borderColor: alpha(accentColors.warning, 0.28),
+              bgcolor: alpha(accentColors.warning, 0.08),
+            }}
+          >
+            <Typography variant="body2" sx={{ color: accentColors.warning, fontWeight: 700 }}>
+              {unavailableMessage}
+            </Typography>
+          </Box>
+        ) : searchSummaryRow}
+      </SectionCard>
+
+      <Box
+        data-search-workspace
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1.25,
+          overflow: 'visible',
+        }}
+      >
+      {searchMethodUsed && searchMethodUsed !== searchType && (
+        <Alert severity="info">
+          Using <strong>{searchMethodUsed}</strong> search based on query analysis.
+        </Alert>
+      )}
+
+      {error && !searchUnavailable && (
+        <Alert severity="error" onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
 
-      {/* Search Input Card */}
-      <Card sx={{ mb: 3 }}>
-        <CardContent>
-          <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-            <TextField
-              fullWidth
-              multiline
-              rows={2}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="Ask anything... (e.g., What are the main components? How does the system work?)"
-              variant="outlined"
-              sx={{
-                '& .MuiOutlinedInput-root': {
-                  fontSize: '1.1rem',
-                },
-              }}
-            />
-          </Box>
-
-          <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
-            <FormControl size="small" sx={{ minWidth: 200 }}>
-              <InputLabel>Search Method</InputLabel>
-              <Select
-                value={searchType}
-                label="Search Method"
-                onChange={(e) => setSearchType(e.target.value as SearchType)}
-              >
-                {(['auto', 'hybrid', 'vector', 'graph', 'keyword'] as SearchType[]).map(type => {
-                  const config = getSearchTypeConfig(type);
-                  return (
-                    <MenuItem key={type} value={type}>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Box sx={{ color: config.color, display: 'flex' }}>{config.icon}</Box>
-                        {config.label}
-                      </Box>
-                    </MenuItem>
-                  );
-                })}
-              </Select>
-            </FormControl>
-
-            {domains.length > 0 && (
-              <FormControl size="small" sx={{ minWidth: 180 }}>
-                <InputLabel>Domain Filter</InputLabel>
-                <Select
-                  value={selectedDomain}
-                  label="Domain Filter"
-                  onChange={(e) => setSelectedDomain(e.target.value)}
-                >
-                  <MenuItem value="">All Domains</MenuItem>
-                  {domains.map(domain => (
-                    <MenuItem key={domain} value={domain}>{domain}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            )}
-
-            <Button
-              variant="contained"
-              size="large"
-              startIcon={searching ? <CircularProgress size={20} color="inherit" /> : <SearchIcon />}
-              onClick={handleSearch}
-              disabled={searching || !query.trim()}
-              sx={{ minWidth: 120 }}
-            >
-              {searching ? 'Searching...' : 'Search'}
-            </Button>
-          </Box>
-
-          {searchMethodUsed && searchMethodUsed !== searchType && (
-            <Alert severity="info" sx={{ mt: 2 }}>
-              Using <strong>{searchMethodUsed}</strong> search method based on query analysis
-            </Alert>
-          )}
-        </CardContent>
-      </Card>
-
       {/* Query Analysis */}
       {queryAnalysis && (
-        <Card sx={{ mb: 3 }}>
-          <CardContent>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-              <IntentIcon sx={{ color: '#6366f1' }} />
-              <Typography variant="h6">Query Analysis</Typography>
-            </Box>
+        <SectionCard
+          title="Query Analysis"
+          subtitle={`${entityCount} entities, ${keywordCount} keywords`}
+          icon={<IntentIcon />}
+          accentColor={accentColors.primary}
+        >
             <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
               {queryAnalysis.intent && (
-                <Chip
+                <StatusChip
+                  status="intent"
                   label={`Intent: ${queryAnalysis.intent}`}
-                  size="small"
-                  sx={{ bgcolor: alpha('#6366f1', 0.1), color: '#6366f1' }}
+                  statusConfig={INTELLIGENT_SEARCH_STATUS_CONFIG}
                 />
               )}
               {queryAnalysis.complexity !== undefined && (
-                <Chip
+                <StatusChip
+                  status="complexity"
                   label={`Complexity: ${queryAnalysis.complexity}/10`}
-                  size="small"
-                  sx={{ bgcolor: alpha('#f59e0b', 0.1), color: '#f59e0b' }}
+                  statusConfig={INTELLIGENT_SEARCH_STATUS_CONFIG}
                 />
               )}
               {queryAnalysis.entities && queryAnalysis.entities.length > 0 && (
@@ -277,36 +363,35 @@ const IntelligentSearchPage: React.FC = () => {
                     Entities:
                   </Typography>
                   {queryAnalysis.entities.map((entity, idx) => (
-                    <Chip
+                    <StatusChip
                       key={idx}
+                      status="entity"
                       label={entity}
-                      size="small"
                       variant="outlined"
-                      color="primary"
+                      statusConfig={INTELLIGENT_SEARCH_STATUS_CONFIG}
                     />
                   ))}
                 </>
               )}
             </Box>
-          </CardContent>
-        </Card>
+        </SectionCard>
       )}
 
       {/* Answer Card */}
       {answer && (
-        <Card sx={{ mb: 3, borderLeft: '4px solid', borderColor: '#10b981' }}>
-          <CardContent>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-              <Psychology sx={{ color: '#10b981', fontSize: 28 }} />
-              <Typography variant="h6" fontWeight={600}>
-                Answer
-              </Typography>
-              <Chip
+        <SectionCard
+          title="Answer"
+          subtitle="Generated from retrieved context"
+          icon={<Psychology />}
+          accentColor={accentColors.success}
+          action={
+              <StatusChip
+                status="sources"
                 label={`Based on ${results.length} sources`}
-                size="small"
-                sx={{ ml: 'auto', bgcolor: alpha('#10b981', 0.1), color: '#10b981' }}
+                statusConfig={INTELLIGENT_SEARCH_STATUS_CONFIG}
               />
-            </Box>
+          }
+        >
             <Typography
               variant="body1"
               sx={{
@@ -317,27 +402,29 @@ const IntelligentSearchPage: React.FC = () => {
             >
               {answer}
             </Typography>
-          </CardContent>
-        </Card>
+        </SectionCard>
       )}
 
       {/* Sources Panel */}
       {results.length > 0 && (
-        <Card>
-          <CardContent>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-              <SourceIcon sx={{ color: '#3b82f6' }} />
-              <Typography variant="h6">Sources ({results.length})</Typography>
-              <Chip
+        <SectionCard
+          title={`Sources (${results.length})`}
+          subtitle="Retrieved evidence and metadata"
+          icon={<SourceIcon />}
+          accentColor={accentColors.info}
+          action={
+              <StatusChip
+                status={searchMethodUsed || searchType}
                 label={searchMethodUsed || searchType}
-                size="small"
-                sx={{ ml: 'auto', textTransform: 'capitalize' }}
+                statusConfig={INTELLIGENT_SEARCH_STATUS_CONFIG}
+                sx={{ textTransform: 'capitalize' }}
               />
-            </Box>
+          }
+        >
 
             <List sx={{ width: '100%' }}>
               {results.map((result, idx) => (
-                <React.Fragment key={idx}>
+                <Fragment key={idx}>
                   {idx > 0 && <Divider component="li" />}
                   <Accordion
                     expanded={expandedSource === `source-${idx}`}
@@ -358,8 +445,8 @@ const IntelligentSearchPage: React.FC = () => {
                             width: 32,
                             height: 32,
                             borderRadius: '50%',
-                            bgcolor: alpha('#3b82f6', 0.1),
-                            color: '#3b82f6',
+                            bgcolor: alpha(accentColors.info, 0.1),
+                            color: accentColors.info,
                             fontWeight: 600,
                             fontSize: '0.9rem',
                           }}
@@ -374,26 +461,22 @@ const IntelligentSearchPage: React.FC = () => {
                             {result.content.substring(0, 120)}...
                           </Typography>
                         </Box>
-                        <Chip
+                        <StatusChip
+                          status="score"
                           label={`${(result.score * 100).toFixed(0)}%`}
-                          size="small"
+                          statusConfig={INTELLIGENT_SEARCH_STATUS_CONFIG}
                           sx={{
-                            bgcolor: alpha('#10b981', 0.1),
-                            color: '#10b981',
                             fontWeight: 600,
                           }}
                         />
                       </Box>
                     </AccordionSummary>
                     <AccordionDetails>
-                      <Paper
-                        elevation={0}
+                      <Box
                         sx={{
+                          ...searchSurfacePanelSx,
                           p: 2,
-                          bgcolor: alpha('#6366f1', 0.03),
-                          border: '1px solid',
-                          borderColor: 'divider',
-                          borderRadius: 1,
+                          bgcolor: alpha(accentColors.primary, 0.03),
                         }}
                       >
                         <Typography
@@ -412,119 +495,50 @@ const IntelligentSearchPage: React.FC = () => {
                             </Typography>
                             <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                               {Object.entries(result.metadata).map(([key, value]) => (
-                                <Chip
+                                <StatusChip
                                   key={key}
+                                  status="metadata"
                                   label={`${key}: ${value}`}
-                                  size="small"
                                   variant="outlined"
+                                  statusConfig={INTELLIGENT_SEARCH_STATUS_CONFIG}
                                   sx={{ fontSize: '0.7rem' }}
                                 />
                               ))}
                             </Box>
                           </Box>
                         )}
-                      </Paper>
+                      </Box>
                     </AccordionDetails>
                   </Accordion>
-                </React.Fragment>
+                </Fragment>
               ))}
             </List>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Empty State */}
-      {!answer && !searching && (
-        <Card sx={{ mt: 3 }}>
-          <CardContent>
-            <Box
-              sx={{
-                py: 8,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: 2,
-              }}
-            >
-              <SearchIcon sx={{ fontSize: 80, color: 'text.disabled', opacity: 0.3 }} />
-              <Typography variant="h6" color="text.secondary">
-                Enter a query to search across your knowledge base
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', justifyContent: 'center' }}>
-                <Chip
-                  icon={<SuggestionIcon />}
-                  label="What are the main components?"
-                  onClick={() => setQuery('What are the main components?')}
-                  clickable
-                />
-                <Chip
-                  icon={<SuggestionIcon />}
-                  label="How does the system work?"
-                  onClick={() => setQuery('How does the system work?')}
-                  clickable
-                />
-                <Chip
-                  icon={<SuggestionIcon />}
-                  label="Compare X and Y"
-                  onClick={() => setQuery('Compare X and Y')}
-                  clickable
-                />
-              </Box>
-            </Box>
-          </CardContent>
-        </Card>
+        </SectionCard>
       )}
 
       {/* Loading State */}
       {searching && (
-        <Card>
-          <CardContent>
-            <Box sx={{ py: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-              <CircularProgress size={60} />
-              <Typography variant="h6" color="text.secondary">
-                Analyzing query and searching knowledge base...
-              </Typography>
-              <LinearProgress sx={{ width: '60%' }} />
-            </Box>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Search Method Info */}
-      <Paper
-        elevation={0}
-        sx={{
-          mt: 3,
-          p: 2,
-          bgcolor: alpha('#6366f1', 0.05),
-          border: '1px solid',
-          borderColor: alpha('#6366f1', 0.1),
-        }}
-      >
-        <Typography variant="subtitle2" gutterBottom>
-          Search Methods Explained
-        </Typography>
-        <Box component="ul" sx={{ m: 0, pl: 2 }}>
-          <Typography component="li" variant="caption" color="text.secondary">
-            <strong>Auto:</strong> Automatically selects the best search method based on query analysis
+        <Box
+          sx={{
+            ...searchSurfacePanelSx,
+            width: '100%',
+            borderTop: `2px solid ${accentColors.info}`,
+            p: 1.25,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1.25,
+          }}
+        >
+          <CircularProgress size={20} />
+          <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 700 }}>
+            Searching knowledge base
           </Typography>
-          <Typography component="li" variant="caption" color="text.secondary">
-            <strong>Hybrid:</strong> Combines vector similarity, knowledge graph traversal, and keyword matching
-          </Typography>
-          <Typography component="li" variant="caption" color="text.secondary">
-            <strong>Vector:</strong> Semantic similarity search using embeddings
-          </Typography>
-          <Typography component="li" variant="caption" color="text.secondary">
-            <strong>Graph:</strong> Knowledge graph traversal using entities and relationships
-          </Typography>
-          <Typography component="li" variant="caption" color="text.secondary">
-            <strong>Keyword:</strong> Traditional keyword-based text search
-          </Typography>
+          <LinearProgress sx={{ flex: 1, minWidth: 160 }} />
         </Box>
-      </Paper>
-    </Box>
+      )}
+      </Box>
+    </PageShell>
   );
 };
 
 export default IntelligentSearchPage;
-

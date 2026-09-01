@@ -69,7 +69,7 @@ def resample_audio(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarra
     return output
 
 
-async def test_streaming_stt(audio: np.ndarray, expected_text: str):
+async def run_streaming_stt(audio: np.ndarray, expected_text: str):
     """Send audio through the streaming STT WebSocket."""
     
     ws_url = "ws://localhost:8009/ws/stt"
@@ -238,7 +238,7 @@ async def main():
     print(f"   Max: {audio.max():.4f}")
     
     # Run test
-    success = await test_streaming_stt(audio, expected_text)
+    success = await run_streaming_stt(audio, expected_text)
     
     if success:
         print("\n✅ Model is working with clean audio!")

@@ -18,7 +18,6 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
-  Chip,
   Button,
   alpha,
   useTheme,
@@ -34,7 +33,6 @@ import {
   Hub as RadialIcon,
   GridOn as GridIcon,
   ScatterPlot as ForceIcon,
-  Settings as SettingsIcon,
   ExpandMore as ExpandIcon,
   Palette as PaletteIcon,
   Speed as SpeedIcon,
@@ -228,7 +226,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
         <ToggleButtonGroup
           value={currentLayout}
           exclusive
-          onChange={(e, value) => value && onLayoutChange(value)}
+          onChange={(_event, value) => value && onLayoutChange(value)}
           size="small"
           fullWidth
           sx={{ flexWrap: 'wrap' }}
@@ -252,7 +250,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
       {/* Detailed Settings */}
       <Accordion
         expanded={expandedPanel === 'display'}
-        onChange={(e, isExpanded) => setExpandedPanel(isExpanded ? 'display' : false)}
+        onChange={(_event, isExpanded) => setExpandedPanel(isExpanded ? 'display' : false)}
       >
         <AccordionSummary expandIcon={<ExpandIcon />}>
           <VisibilityIcon sx={{ mr: 1 }} />
@@ -265,7 +263,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
             </Typography>
             <Slider
               value={settings.nodeSize}
-              onChange={(e, value) => handleSettingChange('nodeSize', value)}
+              onChange={(_event, value) => handleSettingChange('nodeSize', value)}
               min={10}
               max={100}
               valueLabelDisplay="auto"
@@ -277,7 +275,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
             </Typography>
             <Slider
               value={settings.edgeWidth}
-              onChange={(e, value) => handleSettingChange('edgeWidth', value)}
+              onChange={(_event, value) => handleSettingChange('edgeWidth', value)}
               min={1}
               max={10}
               valueLabelDisplay="auto"
@@ -289,7 +287,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
             </Typography>
             <Slider
               value={settings.labelSize}
-              onChange={(e, value) => handleSettingChange('labelSize', value)}
+              onChange={(_event, value) => handleSettingChange('labelSize', value)}
               min={8}
               max={24}
               valueLabelDisplay="auto"
@@ -345,7 +343,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
 
       <Accordion
         expanded={expandedPanel === 'physics'}
-        onChange={(e, isExpanded) => setExpandedPanel(isExpanded ? 'physics' : false)}
+        onChange={(_event, isExpanded) => setExpandedPanel(isExpanded ? 'physics' : false)}
       >
         <AccordionSummary expandIcon={<ExpandIcon />}>
           <SpeedIcon sx={{ mr: 1 }} />
@@ -358,7 +356,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
             </Typography>
             <Slider
               value={settings.animationSpeed}
-              onChange={(e, value) => handleSettingChange('animationSpeed', value)}
+              onChange={(_event, value) => handleSettingChange('animationSpeed', value)}
               min={0.1}
               max={3}
               step={0.1}
@@ -371,7 +369,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
             </Typography>
             <Slider
               value={settings.physics.forceStrength}
-              onChange={(e, value) => handleSettingChange('physics.forceStrength', value)}
+              onChange={(_event, value) => handleSettingChange('physics.forceStrength', value)}
               min={-100}
               max={0}
               valueLabelDisplay="auto"
@@ -384,7 +382,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
             </Typography>
             <Slider
               value={settings.physics.linkDistance}
-              onChange={(e, value) => handleSettingChange('physics.linkDistance', value)}
+              onChange={(_event, value) => handleSettingChange('physics.linkDistance', value)}
               min={50}
               max={300}
               valueLabelDisplay="auto"
@@ -397,7 +395,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
             </Typography>
             <Slider
               value={settings.physics.chargeStrength}
-              onChange={(e, value) => handleSettingChange('physics.chargeStrength', value)}
+              onChange={(_event, value) => handleSettingChange('physics.chargeStrength', value)}
               min={-1000}
               max={0}
               valueLabelDisplay="auto"
@@ -410,7 +408,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
 
       <Accordion
         expanded={expandedPanel === 'filters'}
-        onChange={(e, isExpanded) => setExpandedPanel(isExpanded ? 'filters' : false)}
+        onChange={(_event, isExpanded) => setExpandedPanel(isExpanded ? 'filters' : false)}
       >
         <AccordionSummary expandIcon={<ExpandIcon />}>
           <FilterIcon sx={{ mr: 1 }} />
@@ -423,7 +421,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
             </Typography>
             <Slider
               value={settings.filters.minConfidence}
-              onChange={(e, value) => handleSettingChange('filters.minConfidence', value)}
+              onChange={(_event, value) => handleSettingChange('filters.minConfidence', value)}
               min={0}
               max={1}
               step={0.1}
@@ -437,7 +435,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
             </Typography>
             <Slider
               value={settings.filters.maxNodes}
-              onChange={(e, value) => handleSettingChange('filters.maxNodes', value)}
+              onChange={(_event, value) => handleSettingChange('filters.maxNodes', value)}
               min={50}
               max={1000}
               step={50}
@@ -461,7 +459,7 @@ export const GraphVisualizationControls: React.FC<GraphVisualizationControlsProp
 
       <Accordion
         expanded={expandedPanel === 'colors'}
-        onChange={(e, isExpanded) => setExpandedPanel(isExpanded ? 'colors' : false)}
+        onChange={(_event, isExpanded) => setExpandedPanel(isExpanded ? 'colors' : false)}
       >
         <AccordionSummary expandIcon={<ExpandIcon />}>
           <PaletteIcon sx={{ mr: 1 }} />

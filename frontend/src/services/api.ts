@@ -5,6 +5,7 @@
 
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { settingsManager } from '@/utils/settings';
+import { debugLog } from '@/utils/debug';
 import type {
   ModelInfo,
   ModelDownloadRequest,
@@ -23,9 +24,306 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
   TokenUsageData,
-  LlamaCppCommit,
   LlamaCppCommitsResponse
 } from '@/types/api';
+
+type GraphRAGCapability = {
+  id: string;
+  label: string;
+  llama_nexus_path: string;
+  upstream_paths: string[];
+};
+
+type GraphRAGServiceCapability = {
+  enabled: boolean;
+  url?: string | null;
+  url_source?: string;
+  url_source_label?: string;
+  auto_discovered?: boolean;
+  explicit?: boolean;
+};
+
+type GraphRAGCapabilitiesResponse = {
+  enabled: boolean;
+  configured_service_count?: number;
+  graphrag_url_configured: boolean;
+  services: {
+    graphrag: GraphRAGServiceCapability;
+    ner: GraphRAGServiceCapability;
+    rel: GraphRAGServiceCapability;
+    code_rag: GraphRAGServiceCapability;
+    reddit_crawler: GraphRAGServiceCapability;
+  };
+  capabilities: GraphRAGCapability[];
+  upstream_bridge: {
+    available: boolean;
+    base_path: string;
+    allowed_prefixes: string[];
+  };
+};
+
+type GraphRAGDiagnosticFeature = {
+  id: string;
+  label: string;
+  configured: boolean;
+  ready: boolean;
+  status: string;
+  required_env: string[];
+  message?: string;
+  next_step?: string;
+  url?: string | null;
+  urls?: Record<string, string | null>;
+  url_source?: string;
+  url_source_label?: string;
+  auto_discovered?: boolean;
+  explicit?: boolean;
+  url_sources?: Record<string, {
+    source?: string;
+    url_source?: string;
+    label?: string;
+    url_source_label?: string;
+    auto_discovered?: boolean;
+    explicit?: boolean;
+  }>;
+  command?: string;
+};
+
+type GraphRAGDeploymentDiagnostics = {
+  enabled: boolean;
+  status: string;
+  summary?: string;
+  source_summary?: string;
+  configured_service_count?: number;
+  explicit_url_count?: number;
+  auto_discovered_count?: number;
+  auto_discovered_services?: string[];
+  url_sources?: Record<string, unknown>;
+  docker_runtime?: boolean;
+  features: Record<string, GraphRAGDiagnosticFeature>;
+  warnings: string[];
+  commands: Record<string, string>;
+  environment: Record<string, unknown>;
+};
+
+type GraphRAGUpstreamRequestOptions = {
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  params?: Record<string, unknown>;
+  data?: unknown;
+  headers?: Record<string, string>;
+  timeout?: number;
+};
+
+type GraphRAGQueryComplexity = {
+  query: string;
+  primary_reasoning?: string;
+  detected_patterns?: string[];
+  complexity_level?: string;
+  requires_multi_hop?: boolean;
+  error?: string;
+};
+
+type GraphRAGEnhancedExtractionResponse = {
+  text: string;
+  domain: string;
+  entities: Array<Record<string, unknown>>;
+  relationships: Array<Record<string, unknown>>;
+  claims?: unknown[];
+  entity_count: number;
+  relationship_count: number;
+  extraction_method: string;
+  extraction_metadata?: Record<string, unknown>;
+  span_extractions?: unknown[];
+  dependency_extractions?: unknown[];
+  linked_entities?: unknown[];
+};
+
+type GraphRAGEvaluationStatusResponse = {
+  retrieval?: Record<string, unknown>;
+  chunking?: Record<string, unknown>;
+  available?: boolean;
+};
+
+type GraphRAGFeedbackRating = -1 | 0 | 1;
+
+type GraphRAGFeedbackRequest = {
+  query: string;
+  rating: GraphRAGFeedbackRating;
+  comment?: string;
+  quality_signals?: Record<string, unknown>;
+  source?: string;
+  domain?: string;
+};
+
+type GraphRAGFeedbackAnalyticsParams = {
+  days?: number;
+  domain?: string;
+};
+
+type GraphRAGTestSuiteName = 'unit' | 'integration' | 'performance' | 'quality' | 'comprehensive';
+
+type GraphRAGChunkingEvaluationRequest = {
+  dataset?: string;
+  subset?: string;
+  sample_size?: number;
+  force_download?: boolean;
+};
+
+type GraphRAGChunkingComparativeRequest = {
+  subsets?: string[];
+  sample_size?: number;
+  include_baseline?: boolean;
+  baseline_chunk_size?: number;
+};
+
+type GraphRAGRetrievalEvaluationRequest = {
+  book_name?: string;
+  max_questions?: number;
+  method?: 'baseline' | 'hybrid' | 'both';
+  force_download?: boolean;
+};
+
+type GraphRAGRetrievalComparativeRequest = {
+  book_names?: string[];
+  max_questions_per_book?: number;
+  include_baseline?: boolean;
+};
+
+type GraphRAGRelationExtractionRequest = {
+  text: string;
+  relations?: Array<Record<string, unknown>>;
+  entity_labels?: string[];
+  threshold?: number;
+};
+
+type GraphRAGRelationBatchExtractionRequest = {
+  texts: string[];
+  relations?: Array<Record<string, unknown>>;
+  entity_labels?: string[];
+  threshold?: number;
+};
+
+type GraphRAGEnhancedQueryRequest = {
+  query: string;
+  search_type?: 'vector' | 'graph' | 'keyword' | 'hybrid';
+  top_k?: number;
+  domain?: string;
+  filters?: Record<string, unknown>;
+};
+
+type GraphRAGChatContextRequest = {
+  query: string;
+  mode?: 'v1' | 'v2' | 'unified';
+  top_k?: number;
+  domain?: string;
+  pipeline_run_id?: string;
+  pipeline_run_ids?: string[];
+  use_local_pipeline_context?: boolean;
+  include_local_pipeline?: boolean;
+  include_graph?: boolean;
+  source?: string;
+  target?: string;
+  bridge?: string;
+  relation?: string;
+  rag_enabled?: boolean;
+  rag_domains?: string[];
+  rag_search_mode?: 'domain' | 'global';
+};
+
+type GraphRAGProcessDocumentOptions = {
+  useSemanticChunking?: boolean;
+  buildKnowledgeGraph?: boolean;
+  domain?: string;
+  sampleLimit?: number;
+  submitStructuredText?: boolean;
+  submitAsync?: boolean;
+};
+
+type GraphRAGProcessDocumentWithNEROptions = GraphRAGProcessDocumentOptions & {
+  extractEntities?: boolean;
+};
+
+type GraphRAGTextIngestionRequest = {
+  text: string;
+  filename?: string;
+  domain?: string;
+  content_type?: string;
+  use_semantic_chunking?: boolean;
+  build_knowledge_graph?: boolean;
+};
+
+type GraphRAGCodeRAGIngestionRequest = {
+  file_paths: string[];
+  project_name: string;
+  language?: string;
+};
+
+type GraphRAGRedditCrawlRequest = {
+  query: string;
+  subreddits?: string[];
+  sort_by?: 'relevance' | 'hot' | 'top' | 'new' | 'comments';
+  time_filter?: 'hour' | 'day' | 'week' | 'month' | 'year' | 'all';
+  max_posts?: number;
+  max_comments_per_post?: number;
+  comment_depth?: number;
+  include_replies?: boolean;
+  auto_ingest?: boolean;
+  filter_nsfw?: boolean;
+};
+
+type GraphRAGSocialMemoryPlatform = 'twitch' | 'youtube' | 'kick' | 'rumble';
+
+type GraphRAGSocialMemoryEvalSuite = 'all' | 'locomo' | 'vtuber';
+
+type GraphRAGSocialMemoryIngestMessage = {
+  platform: GraphRAGSocialMemoryPlatform;
+  platform_user_id: string;
+  display_name: string;
+  text: string;
+  timestamp: string;
+  message_id: string;
+  stream_id?: string | null;
+  session_id?: string | null;
+  previous_messages?: string[];
+  priority?: number;
+};
+
+type GraphRAGSocialMemoryContextParams = {
+  platform: GraphRAGSocialMemoryPlatform;
+  platform_user_id: string;
+  query?: string;
+  max_facts?: number;
+  include_recent_episodes?: number;
+  as_of?: string;
+};
+
+type GraphRAGSocialMemoryExplainParams = {
+  platform: GraphRAGSocialMemoryPlatform;
+  platform_user_id: string;
+  query: string;
+  max_facts?: number;
+};
+
+type GraphRAGSocialMemoryMergeIdentitiesRequest = {
+  primary_person_id: string;
+  secondary_person_id: string;
+  confidence: number;
+  reason?: string;
+};
+
+type GraphRAGSocialMemoryCorrectFactRequest = {
+  fact_id: string;
+  new_fact_text: string;
+  corrected_by: string;
+  predicate?: string;
+  entity_name?: string;
+  entity_type?: string;
+};
+
+type GraphRAGSocialMemoryReplayRequest = {
+  transcript_path: string;
+  sandbox_tag?: string;
+  sync?: boolean;
+};
 
 class ApiService {
   private client: AxiosInstance;
@@ -33,9 +331,13 @@ class ApiService {
   private baseURL: string;
   private backendBaseURL: string;
 
-  private getAuthHeaders() {
+  private getAuthHeaders(): Record<string, string> {
     const apiKey = settingsManager.getApiKey();
     return apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {};
+  }
+
+  private getGraphRAGAdminHeaders(adminApiKey?: string): Record<string, string> | undefined {
+    return adminApiKey ? { 'X-API-Key': adminApiKey } : undefined;
   }
 
   constructor() {
@@ -71,7 +373,7 @@ class ApiService {
       backendBaseUrl = apiBaseUrl; // fallback
     }
     this.backendBaseURL = backendBaseUrl;
-    console.log('API Base URL:', this.baseURL || 'using relative URLs (proxy mode)');
+    debugLog('api', 'API Base URL', this.baseURL || 'using relative URLs (proxy mode)');
 
     this.client = axios.create({
       baseURL: this.baseURL,
@@ -96,7 +398,7 @@ class ApiService {
     // Request interceptor for main client
     this.client.interceptors.request.use(
       (config: any) => {
-        console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
+        debugLog('api', `API Request: ${config.method?.toUpperCase()} ${config.url}`);
         // Inject API key dynamically
         const authHeaders = this.getAuthHeaders();
         config.headers = { ...config.headers, ...authHeaders };
@@ -111,7 +413,7 @@ class ApiService {
     // Request interceptor for backend client
     this.backendClient.interceptors.request.use(
       (config: any) => {
-        console.log(`Backend Request: ${config.method?.toUpperCase()} ${config.url}`);
+        debugLog('api', `Backend Request: ${config.method?.toUpperCase()} ${config.url}`);
         // Inject API key dynamically
         const authHeaders = this.getAuthHeaders();
         config.headers = { ...config.headers, ...authHeaders };
@@ -139,12 +441,22 @@ class ApiService {
 
   private transformError(error: AxiosError): Error {
     const data = error.response?.data as any;
+    if (!error.response) {
+      const requestPath = String(error.config?.url || '').trim();
+      const requestLabel = requestPath ? ` while calling ${requestPath}` : '';
+      const timeout = error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '');
+      const message = timeout
+        ? `Backend request timed out${requestLabel}. The document may be large or the service may be overloaded; retry after the backend is healthy.`
+        : `Backend API did not respond${requestLabel}. Verify the Llama Nexus backend is running and reachable, then retry.`;
+      return new Error(message);
+    }
+
     const message = data?.error || data?.detail || error.message || 'Unknown API error';
     return new Error(message);
   }
 
   // Generic HTTP methods for flexibility
-  async get(url: string, config?: any): Promise<any> {
+  async get<T = any>(url: string, config?: any): Promise<T> {
     const response = await this.backendClient.get(url, config);
     return response.data;
   }
@@ -380,6 +692,9 @@ class ApiService {
 
   async archiveModel(request: ModelArchiveRequest): Promise<ModelArchiveResponse> {
     const response = await this.backendClient.post<ApiResponse<ModelArchiveResponse>>('/v1/models/archive', request);
+    if (!response.data.data) {
+      throw new Error('Archive response missing data');
+    }
     return response.data.data;
   }
 
@@ -666,14 +981,15 @@ class ApiService {
   async createChatCompletionStream(request: ChatCompletionRequest): Promise<ReadableStream<ChatCompletionChunk>> {
     // Use fetch API for better streaming support
     const authHeaders = this.getAuthHeaders();
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      ...authHeaders,
+    };
     const response = await fetch(`/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        ...authHeaders,
-      },
+      headers,
       body: JSON.stringify({ ...request, stream: true })
     });
 
@@ -829,6 +1145,10 @@ class ApiService {
     const response = await this.backendClient.get('/api/v1/benchmark/bfcl');
     const benchmarks = response.data;
 
+    if (benchmarkId && benchmarks[benchmarkId]) {
+      return benchmarks[benchmarkId];
+    }
+
     // Get the most recent benchmark
     const benchmarkIds = Object.keys(benchmarks);
     if (benchmarkIds.length === 0) {
@@ -948,6 +1268,7 @@ class ApiService {
     offset?: number;
     search?: string;
     tags?: string[];
+    include_archived?: boolean;
   }): Promise<{
     conversations: Array<{
       id: string;
@@ -957,6 +1278,7 @@ class ApiService {
       model?: string;
       tags: string[];
       message_count: number;
+      is_archived: boolean;
     }>;
     total: number;
     limit: number;
@@ -969,6 +1291,7 @@ class ApiService {
         offset: params?.offset || 0,
         search: params?.search,
         tags: params?.tags?.join(','),
+        include_archived: params?.include_archived,
       },
     });
     return response.data;
@@ -998,6 +1321,7 @@ class ApiService {
     model?: string;
     settings?: Record<string, any>;
     tags: string[];
+    is_archived: boolean;
   }> {
     const response = await this.backendClient.post('/api/v1/conversations', data);
     return response.data;
@@ -1022,6 +1346,7 @@ class ApiService {
     model?: string;
     settings?: Record<string, any>;
     tags: string[];
+    is_archived: boolean;
   }> {
     const response = await this.backendClient.get(`/api/v1/conversations/${conversationId}`);
     return response.data;
@@ -1036,6 +1361,7 @@ class ApiService {
     model?: string;
     settings?: Record<string, any>;
     tags?: string[];
+    is_archived?: boolean;
   }): Promise<{
     id: string;
     title: string;
@@ -1045,6 +1371,7 @@ class ApiService {
     model?: string;
     settings?: Record<string, any>;
     tags: string[];
+    is_archived: boolean;
   }> {
     const response = await this.backendClient.put(`/api/v1/conversations/${conversationId}`, data);
     return response.data;
@@ -1585,10 +1912,48 @@ class ApiService {
   // ============================================================================
 
   /**
+   * Get the GraphRAG capability catalog exposed by the backend bridge
+   */
+  async getGraphRAGCapabilities(): Promise<GraphRAGCapabilitiesResponse> {
+    const response = await this.backendClient.get('/api/v1/graphrag/capabilities');
+    return response.data;
+  }
+
+  async getGraphRAGDeploymentDiagnostics(): Promise<GraphRAGDeploymentDiagnostics> {
+    const response = await this.backendClient.get('/api/v1/graphrag/deployment/diagnostics');
+    return response.data;
+  }
+
+  /**
+   * Call an allowlisted GraphRAG upstream endpoint through the backend bridge.
+   */
+  async callGraphRAGUpstream<T = unknown>(
+    path: string,
+    options: GraphRAGUpstreamRequestOptions = {},
+  ): Promise<T> {
+    const cleanPath = path.trim().replace(/^\/+/, '');
+    const response = await this.backendClient.request<T>({
+      url: `/api/v1/graphrag/upstream/${cleanPath}`,
+      method: options.method || 'GET',
+      params: options.params,
+      data: options.data,
+      headers: options.headers,
+      timeout: options.timeout,
+    });
+    return response.data;
+  }
+
+  /**
    * Check if GraphRAG service is available
    */
   async getGraphRAGHealth(): Promise<{
     status: string;
+    graphrag_enabled?: boolean;
+    graph_available?: boolean;
+    extraction_available?: boolean;
+    code_rag_available?: boolean;
+    reddit_crawler_available?: boolean;
+    services?: Record<string, any>;
     timestamp?: string;
     message?: string;
     error?: string;
@@ -1598,16 +1963,23 @@ class ApiService {
     return response.data;
   }
 
+  async getGraphRAGServicesStatus(): Promise<Record<string, any>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/services/status');
+    return response.data;
+  }
+
   /**
    * Get knowledge graph statistics from GraphRAG service
    */
-  async getGraphRAGStats(): Promise<{
+  async getGraphRAGStats(domain?: string): Promise<{
     nodes: number;
     edges: number;
     communities: number;
     domain: string | null;
   }> {
-    const response = await this.backendClient.get('/api/v1/graphrag/stats');
+    const response = await this.backendClient.get('/api/v1/graphrag/stats', {
+      params: domain ? { domain } : undefined,
+    });
     return response.data;
   }
 
@@ -1666,8 +2038,20 @@ class ApiService {
     domain?: string;
     limit?: number;
     min_occurrence?: number;
+    entity_type?: string;
   }): Promise<{
+    available?: boolean;
+    message?: string;
+    error?: string;
     entities: Array<{
+      name: string;
+      type: string;
+      occurrence: number;
+      confidence: number;
+      domain: string;
+      description?: string;
+    }>;
+    top_entities?: Array<{
       name: string;
       type: string;
       occurrence: number;
@@ -1687,6 +2071,7 @@ class ApiService {
     domain?: string;
     limit?: number;
     min_weight?: number;
+    relationship_type?: string;
   }): Promise<{
     relationships: Array<{
       source: string;
@@ -1698,6 +2083,25 @@ class ApiService {
     }>;
   }> {
     const response = await this.backendClient.get('/api/v1/graphrag/top-relationships', { params });
+    return response.data;
+  }
+
+  /**
+   * Get a one-hop neighborhood around a knowledge graph entity.
+   */
+  async getGraphRAGEntityNeighborhood(params: {
+    entity_name: string;
+    domain?: string;
+    limit?: number;
+  }): Promise<{
+    entity: string;
+    nodes: Array<Record<string, unknown>>;
+    edges: Array<Record<string, unknown>>;
+    stats?: Record<string, unknown>;
+    available?: boolean;
+    message?: string;
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/entity-neighborhood', params);
     return response.data;
   }
 
@@ -1741,6 +2145,15 @@ class ApiService {
     query: string;
     top_k?: number;
     threshold?: number;
+    domain?: string;
+    pipeline_run_id?: string;
+    pipeline_run_ids?: string[];
+    use_local_pipeline_context?: boolean;
+    include_local_pipeline?: boolean;
+    search_mode?: 'remote' | 'local_pipeline';
+    local_only?: boolean;
+    source?: string;
+    target?: string;
   }): Promise<{
     query: string;
     results: Array<{
@@ -1751,6 +2164,11 @@ class ApiService {
       metadata?: Record<string, unknown>;
     }>;
     total_results: number;
+    source?: string;
+    search_method_used?: string;
+    local_pipeline?: Record<string, unknown>;
+    graph_overview?: Record<string, unknown>;
+    warnings?: string[];
   }> {
     const response = await this.backendClient.post('/api/v1/graphrag/search', params);
     return response.data;
@@ -1761,10 +2179,18 @@ class ApiService {
    */
   async advancedSearchGraphRAG(params: {
     query: string;
-    search_type?: 'vector' | 'graph' | 'keyword' | 'hybrid';
+    search_type?: 'vector' | 'graph' | 'keyword' | 'hybrid' | 'local_pipeline';
     top_k?: number;
     domain?: string;
     filters?: Record<string, unknown>;
+    pipeline_run_id?: string;
+    pipeline_run_ids?: string[];
+    use_local_pipeline_context?: boolean;
+    include_local_pipeline?: boolean;
+    search_mode?: 'remote' | 'local_pipeline';
+    local_only?: boolean;
+    source?: string;
+    target?: string;
   }): Promise<{
     query: string;
     search_type: string;
@@ -1776,6 +2202,11 @@ class ApiService {
       metadata?: Record<string, unknown>;
     }>;
     total_results: number;
+    source?: string;
+    search_method_used?: string;
+    local_pipeline?: Record<string, unknown>;
+    graph_overview?: Record<string, unknown>;
+    warnings?: string[];
   }> {
     const response = await this.backendClient.post('/api/v1/graphrag/search/advanced', params);
     return response.data;
@@ -1810,6 +2241,292 @@ class ApiService {
     return response.data;
   }
 
+  async ingestGraphRAGText(params: GraphRAGTextIngestionRequest): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/ingest', params, {
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async previewGraphRAGIngestionPipeline(file: File, options?: GraphRAGProcessDocumentOptions): Promise<Record<string, unknown>> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('domain', options?.domain || 'general');
+    formData.append('use_semantic_chunking', String(options?.useSemanticChunking ?? true));
+    formData.append('build_knowledge_graph', String(options?.buildKnowledgeGraph ?? true));
+    formData.append('sample_limit', String(options?.sampleLimit ?? 5));
+    formData.append('submit_structured_text', String(options?.submitStructuredText ?? true));
+
+    const response = await this.backendClient.post('/api/v1/graphrag/ingest/pipeline/preview', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async uploadGraphRAGDocumentWithPipeline(file: File, options?: GraphRAGProcessDocumentOptions): Promise<Record<string, unknown>> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('domain', options?.domain || 'general');
+    formData.append('use_semantic_chunking', String(options?.useSemanticChunking ?? true));
+    formData.append('build_knowledge_graph', String(options?.buildKnowledgeGraph ?? true));
+    formData.append('sample_limit', String(options?.sampleLimit ?? 5));
+    formData.append('submit_structured_text', String(options?.submitStructuredText ?? true));
+    formData.append('submit_async', String(options?.submitAsync ?? false));
+
+    const response = await this.backendClient.post('/api/v1/graphrag/ingest/pipeline/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async uploadGraphRAGDocumentsWithPipeline(files: File[], options?: GraphRAGProcessDocumentOptions & {
+    maxConcurrency?: number;
+  }): Promise<Record<string, unknown>> {
+    const formData = new FormData();
+    files.forEach(file => {
+      formData.append('files', file);
+    });
+    formData.append('domain', options?.domain || 'general');
+    formData.append('use_semantic_chunking', String(options?.useSemanticChunking ?? true));
+    formData.append('build_knowledge_graph', String(options?.buildKnowledgeGraph ?? true));
+    formData.append('sample_limit', String(options?.sampleLimit ?? 5));
+    formData.append('submit_structured_text', String(options?.submitStructuredText ?? true));
+    formData.append('max_concurrency', String(options?.maxConcurrency ?? 3));
+
+    const response = await this.backendClient.post('/api/v1/graphrag/ingest/pipeline/batch', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 600000,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGIngestionPipelineRun(runId: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get(`/api/v1/graphrag/ingest/pipeline/${encodeURIComponent(runId)}`);
+    return response.data;
+  }
+
+  async getGraphRAGIngestionPipelineArtifacts(runId: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get(`/api/v1/graphrag/ingest/pipeline/${encodeURIComponent(runId)}/artifacts`);
+    return response.data;
+  }
+
+  async exportGraphRAGIngestionPipelineArtifact(runId: string, artifactKind: string, download = true): Promise<Blob> {
+    const response = await this.backendClient.get(
+      `/api/v1/graphrag/ingest/pipeline/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactKind)}`,
+      {
+        params: { download },
+        responseType: 'blob',
+      },
+    );
+    return response.data;
+  }
+
+  async listGraphRAGIngestionPipelineRuns(options?: {
+    limit?: number;
+    status?: string;
+    domain?: string;
+  }): Promise<Record<string, unknown>> {
+    const params = {
+      ...(options?.limit ? { limit: options.limit } : {}),
+      ...(options?.status ? { status: options.status } : {}),
+      ...(options?.domain ? { domain: options.domain } : {}),
+    };
+    const response = await this.backendClient.get('/api/v1/graphrag/ingest/pipeline', { params });
+    return response.data;
+  }
+
+  async processGraphRAGDocument(file: File, options?: GraphRAGProcessDocumentOptions): Promise<Record<string, unknown>> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('use_semantic_chunking', String(options?.useSemanticChunking ?? true));
+
+    const response = await this.backendClient.post('/api/v1/graphrag/process-document', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async processGraphRAGDocumentsBatch(files: File[], options?: GraphRAGProcessDocumentOptions): Promise<Record<string, unknown>> {
+    const formData = new FormData();
+    files.forEach(file => formData.append('files', file));
+    formData.append('use_semantic_chunking', String(options?.useSemanticChunking ?? true));
+
+    const response = await this.backendClient.post('/api/v1/graphrag/process-documents-batch', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async processGraphRAGDocumentWithNER(file: File, options?: GraphRAGProcessDocumentWithNEROptions): Promise<Record<string, unknown>> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('use_semantic_chunking', String(options?.useSemanticChunking ?? true));
+    formData.append('extract_entities', String(options?.extractEntities ?? true));
+
+    const response = await this.backendClient.post('/api/v1/graphrag/process-document-with-ner', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async addDocumentsToGraphRAGVectorStore(files: File[]): Promise<Record<string, unknown>> {
+    const formData = new FormData();
+    files.forEach(file => formData.append('files', file));
+
+    const response = await this.backendClient.post('/api/v1/graphrag/vector-store/add', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGDomainStats(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/domain-stats');
+    return response.data;
+  }
+
+  async routeGraphRAGCodeFile(file: File, projectName?: string): Promise<Record<string, unknown>> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (projectName) {
+      formData.append('project_name', projectName);
+    }
+
+    const response = await this.backendClient.post('/api/v1/graphrag/code/route', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async ingestGraphRAGCodePaths(params: GraphRAGCodeRAGIngestionRequest): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/code/ingest', params, {
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async uploadGraphRAGCodeFiles(files: File[], projectName = 'uploaded_project'): Promise<Record<string, unknown>> {
+    const formData = new FormData();
+    files.forEach(file => formData.append('files', file));
+    formData.append('project_name', projectName);
+
+    const response = await this.backendClient.post('/api/v1/graphrag/code/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGCodeIngestionStatus(taskId: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get(`/api/v1/graphrag/code/ingest/${taskId}`);
+    return response.data;
+  }
+
+  async analyzeGraphRAGCodeFile(filePath: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/code/analyze', {
+      file_path: filePath,
+    }, {
+      timeout: 120000,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGCodeStatistics(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/code/statistics');
+    return response.data;
+  }
+
+  async clearGraphRAGCodeIndex(confirm: boolean): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.delete('/api/v1/graphrag/code/index', {
+      params: { confirm },
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGRedditCrawlerHealth(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/reddit/health');
+    return response.data;
+  }
+
+  async startGraphRAGRedditCrawl(params: GraphRAGRedditCrawlRequest): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/reddit/crawl', params, {
+      timeout: 60000,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGRedditCrawlStatus(crawlId: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get(`/api/v1/graphrag/reddit/crawl/${encodeURIComponent(crawlId)}/status`);
+    return response.data;
+  }
+
+  async getGraphRAGRedditCrawlResults(crawlId: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get(`/api/v1/graphrag/reddit/crawl/${encodeURIComponent(crawlId)}/results`, {
+      timeout: 60000,
+    });
+    return response.data;
+  }
+
+  async cancelGraphRAGRedditCrawl(crawlId: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.delete(`/api/v1/graphrag/reddit/crawl/${encodeURIComponent(crawlId)}`);
+    return response.data;
+  }
+
+  async listGraphRAGRedditCrawls(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/reddit/crawls');
+    return response.data;
+  }
+
+  async testGraphRAGEnhancedExtraction(params: {
+    text: string;
+    domain?: string;
+  }): Promise<Record<string, unknown>> {
+    const formData = new FormData();
+    formData.append('text', params.text);
+    formData.append('domain', params.domain || 'general');
+
+    const response = await this.backendClient.post('/api/v1/graphrag/extraction/test-enhanced', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000,
+    });
+    return response.data;
+  }
+
+  async clearGraphRAGData(confirm: boolean): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.delete('/api/v1/graphrag/admin/clear-all', {
+      params: { confirm },
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
   /**
    * Get NER service status from GraphRAG
    */
@@ -1836,26 +2553,136 @@ class ApiService {
     return response.data;
   }
 
+  async extractGraphRAGNER(text: string, options?: {
+    returnOffsets?: boolean;
+    returnScores?: boolean;
+  }): Promise<{
+    text: string;
+    entities: Array<Record<string, unknown>>;
+    entity_count: number;
+    extraction_method?: string;
+    timestamp?: string;
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/ner/extract', {
+      text,
+      return_offsets: options?.returnOffsets ?? true,
+      return_scores: options?.returnScores ?? true,
+    });
+    return response.data;
+  }
+
+  async extractGraphRAGNERBatch(texts: string[], options?: {
+    returnOffsets?: boolean;
+    returnScores?: boolean;
+  }): Promise<{
+    results: Array<{
+      text: string;
+      entities: Array<Record<string, unknown>>;
+      entity_count: number;
+    }>;
+    total_texts: number;
+    extraction_method?: string;
+    timestamp?: string;
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/ner/extract-batch', {
+      texts,
+      return_offsets: options?.returnOffsets ?? true,
+      return_scores: options?.returnScores ?? true,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGNERModelInfo(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/ner/model-info');
+    return response.data;
+  }
+
+  async getGraphRAGNEREntities(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/ner/entities');
+    return response.data;
+  }
+
+  async getGraphRAGRELStatus(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/rel/status');
+    return response.data;
+  }
+
+  async getGraphRAGRELModelInfo(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/rel/model-info');
+    return response.data;
+  }
+
+  async getGraphRAGRELCapabilities(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/rel/capabilities');
+    return response.data;
+  }
+
+  async extractGraphRAGRelations(params: GraphRAGRelationExtractionRequest): Promise<{
+    text: string;
+    relations: Array<Record<string, unknown>>;
+    relation_count: number;
+    processing_time?: number;
+    model_info?: Record<string, unknown>;
+    timestamp?: string;
+  }> {
+    const response = await this.backendClient.post('/api/v1/graphrag/rel/extract', params);
+    return response.data;
+  }
+
+  async extractGraphRAGRelationsBatch(params: GraphRAGRelationBatchExtractionRequest): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/rel/extract-batch', params, {
+      timeout: 240000,
+    });
+    return response.data;
+  }
+
   /**
    * Perform multi-hop reasoning using GraphRAG service
    */
   async multiHopReasoningGraphRAG(params: {
     query: string;
+    source?: string;
+    target?: string;
     max_hops?: number;
+    domain?: string;
+    pipeline_run_id?: string;
+    pipeline_run_ids?: string[];
+    use_local_pipeline_context?: boolean;
+    include_local_pipeline?: boolean;
+    reasoning_mode?: 'remote' | 'local_pipeline';
+    search_mode?: 'remote' | 'local_pipeline';
+    local_only?: boolean;
+    local_fallback?: boolean;
   }): Promise<{
     query: string;
+    reasoning_source?: string;
+    reasoning_method?: string;
     reasoning_path: Array<{
       hop: number;
       entity: string;
       relation: string;
       confidence: number;
+      source?: string;
+      target?: string;
+      evidence?: string;
+      provenance?: string;
+      metadata?: Record<string, unknown>;
     }>;
+    reasoning_paths?: Array<Record<string, unknown>>;
+    paths?: Array<Record<string, unknown>>;
+    direct_relationships?: Array<Record<string, unknown>>;
+    bridge_entities?: Array<Record<string, unknown>>;
     answer?: string;
     sources: Array<{
       content: string;
       source: string;
       score: number;
+      metadata?: Record<string, unknown>;
     }>;
+    local_pipeline?: Record<string, unknown>;
+    local_pipeline_reasoning?: Record<string, unknown>;
+    graph_overview?: Record<string, unknown>;
+    warnings?: string[];
   }> {
     const response = await this.backendClient.post('/api/v1/graphrag/reasoning/multi-hop', params);
     return response.data;
@@ -2021,27 +2848,69 @@ class ApiService {
     return response.data;
   }
 
+  async enhancedGraphRAGQuery(params: GraphRAGEnhancedQueryRequest): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/query/enhanced', params);
+    return response.data;
+  }
+
+  async getGraphRAGChatContext(params: GraphRAGChatContextRequest): Promise<Record<string, unknown>> {
+    const { mode = 'v2', ...payload } = params;
+    const endpoint = mode === 'v1' ? '/api/v1/graphrag/chat-context' : '/api/v1/graphrag/chat-context-v2';
+    const response = await this.backendClient.post(endpoint, payload, {
+      timeout: 120000,
+    });
+    return response.data;
+  }
+
+  async enhancedGraphRAGAnswer(query: string, context?: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/query/enhanced-answer', { query, context });
+    return response.data;
+  }
+
+  async getGraphRAGQueryStatistics(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/query/statistics');
+    return response.data;
+  }
+
+  async getGraphRAGReasoningGraphStatistics(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/reasoning/graph-statistics');
+    return response.data;
+  }
+
   /**
    * Intelligent search with automatic method selection
    */
   async intelligentSearch(params: {
     query: string;
-    search_type?: 'auto' | 'hybrid' | 'vector' | 'graph' | 'keyword';
+    search_type?: 'auto' | 'hybrid' | 'vector' | 'graph' | 'keyword' | 'local_pipeline';
     top_k?: number;
     domain?: string;
     filters?: Record<string, any>;
+    pipeline_run_id?: string;
+    pipeline_run_ids?: string[];
+    use_local_pipeline_context?: boolean;
+    include_local_pipeline?: boolean;
+    search_mode?: 'remote' | 'local_pipeline';
+    local_only?: boolean;
+    source?: string;
+    target?: string;
   }): Promise<{
-    answer: string;
+    answer?: string;
     results: Array<{
       content: string;
       source: string;
       score: number;
+      result_type?: string;
       metadata?: any;
     }>;
-    query_analysis: any;
+    query_analysis?: any;
     search_method_used: string;
     total_results: number;
     sources?: string[];
+    source?: string;
+    local_pipeline?: Record<string, unknown>;
+    graph_overview?: Record<string, unknown>;
+    warnings?: string[];
   }> {
     const response = await this.backendClient.post('/api/v1/graphrag/search/intelligent', params);
     return response.data;
@@ -2053,6 +2922,17 @@ class ApiService {
   async explainRelationship(params: {
     source: string;
     target: string;
+    query?: string;
+    domain?: string;
+    pipeline_run_id?: string;
+    pipeline_run_ids?: string[];
+    max_hops?: number;
+    use_local_pipeline_context?: boolean;
+    include_local_pipeline?: boolean;
+    reasoning_mode?: 'remote' | 'local_pipeline';
+    search_mode?: 'remote' | 'local_pipeline';
+    local_only?: boolean;
+    local_fallback?: boolean;
     entities?: any[];
     relationships?: any[];
   }): Promise<{
@@ -2060,9 +2940,265 @@ class ApiService {
     target: string;
     explanation: string;
     paths: any[];
+    reasoning_source?: string;
+    reasoning_path?: any[];
+    direct_relationships?: any[];
+    evidence?: Array<Record<string, unknown>>;
+    local_pipeline?: Record<string, unknown>;
+    local_pipeline_reasoning?: Record<string, unknown>;
+    graph_overview?: Record<string, unknown>;
+    warnings?: string[];
     confidence: number;
   }> {
     const response = await this.backendClient.post('/api/v1/graphrag/reasoning/explain', params);
+    return response.data;
+  }
+
+  /**
+   * Analyze whether a query needs causal, comparative, multi-hop, or simpler retrieval.
+   */
+  async analyzeGraphRAGQueryComplexity(query: string): Promise<GraphRAGQueryComplexity> {
+    const response = await this.backendClient.post('/api/v1/graphrag/query/complexity', { query });
+    return response.data;
+  }
+
+  /**
+   * Run GraphRAG's enhanced extraction pipeline with optional SpanBERT/dependency/linking methods.
+   */
+  async enhancedGraphRAGExtraction(params: {
+    text: string;
+    domain?: string;
+    useSpanbert?: boolean;
+    useDependency?: boolean;
+    useEntityLinking?: boolean;
+  }): Promise<GraphRAGEnhancedExtractionResponse> {
+    const response = await this.backendClient.post('/api/v1/graphrag/extract/enhanced', {
+      text: params.text,
+      domain: params.domain || 'general',
+      use_spanbert: params.useSpanbert ?? true,
+      use_dependency: params.useDependency ?? true,
+      use_entity_linking: params.useEntityLinking ?? true,
+    }, {
+      timeout: 120000,
+    });
+    return response.data;
+  }
+
+  /**
+   * Get GraphRAG retrieval and chunking evaluation readiness in one call.
+   */
+  async getGraphRAGEvaluationStatus(): Promise<GraphRAGEvaluationStatusResponse> {
+    const response = await this.backendClient.get('/api/v1/graphrag/evaluation/status');
+    return response.data;
+  }
+
+  async submitGraphRAGFeedback(params: GraphRAGFeedbackRequest): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/feedback', params);
+    return response.data;
+  }
+
+  async getGraphRAGFeedbackAnalytics(params: GraphRAGFeedbackAnalyticsParams = {}): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/analytics', {
+      params,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGRetrievalEvaluationStatus(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/evaluation/retrieval/status');
+    return response.data;
+  }
+
+  async getGraphRAGChunkingEvaluationStatus(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/evaluation/chunking/status');
+    return response.data;
+  }
+
+  async evaluateGraphRAGEntityExtraction(params: {
+    test_documents: string[];
+    ground_truth: Record<string, Array<Record<string, unknown>>>;
+  }): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/evaluation/entity-extraction', params);
+    return response.data;
+  }
+
+  async evaluateGraphRAGQueryResponses(params: {
+    test_queries: string[];
+    expected_answers: string[];
+  }): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/evaluation/query-responses', params);
+    return response.data;
+  }
+
+  async evaluateGraphRAGGraphCompleteness(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/evaluation/graph-completeness');
+    return response.data;
+  }
+
+  async evaluateGraphRAGRetrievalRelevance(params: {
+    test_queries: string[];
+    relevance_scores: number[];
+  }): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/evaluation/retrieval-relevance', params);
+    return response.data;
+  }
+
+  async evaluateGraphRAGComprehensive(testData: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/evaluation/comprehensive', testData);
+    return response.data;
+  }
+
+  async evaluateGraphRAGChunking(params: GraphRAGChunkingEvaluationRequest = {}): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/evaluation/chunking', params, {
+      timeout: 600000,
+    });
+    return response.data;
+  }
+
+  async evaluateGraphRAGChunkingComparative(params: GraphRAGChunkingComparativeRequest = {}): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/evaluation/chunking/comparative', params, {
+      timeout: 600000,
+    });
+    return response.data;
+  }
+
+  async evaluateGraphRAGRetrieval(params: GraphRAGRetrievalEvaluationRequest = {}): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/evaluation/retrieval', params, {
+      timeout: 600000,
+    });
+    return response.data;
+  }
+
+  async evaluateGraphRAGRetrievalComparative(params: GraphRAGRetrievalComparativeRequest = {}): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/evaluation/retrieval/comparative', params, {
+      timeout: 600000,
+    });
+    return response.data;
+  }
+
+  async runGraphRAGTestSuite(suite: GraphRAGTestSuiteName): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post(`/api/v1/graphrag/evaluation/test-suite/${suite}`, undefined, {
+      timeout: 600000,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGTestReports(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/evaluation/test-suite/reports');
+    return response.data;
+  }
+
+  async getGraphRAGSocialMemoryMetrics(): Promise<string> {
+    const response = await this.backendClient.get('/api/v1/graphrag/social-memory/metrics', {
+      responseType: 'text',
+    });
+    return response.data;
+  }
+
+  async getGraphRAGSocialMemoryHealth(): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/social-memory/health');
+    return response.data;
+  }
+
+  async migrateGraphRAGSocialMemory(adminApiKey?: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/social-memory/admin/migrate', undefined, {
+      headers: this.getGraphRAGAdminHeaders(adminApiKey),
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async ingestGraphRAGSocialMemoryMessage(
+    message: GraphRAGSocialMemoryIngestMessage,
+    options?: { sync?: boolean }
+  ): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/social-memory/ingest', message, {
+      params: { sync: options?.sync ?? false },
+      timeout: options?.sync ? 300000 : 120000,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGSocialMemoryContext(
+    params: GraphRAGSocialMemoryContextParams
+  ): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/social-memory/context', { params });
+    return response.data;
+  }
+
+  async getGraphRAGSocialMemoryPersonFacts(personId: string, asOf?: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get(`/api/v1/graphrag/social-memory/person/${personId}/facts`, {
+      params: asOf ? { as_of: asOf } : undefined,
+    });
+    return response.data;
+  }
+
+  async explainGraphRAGSocialMemoryRetrieval(
+    params: GraphRAGSocialMemoryExplainParams
+  ): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/social-memory/explain', { params });
+    return response.data;
+  }
+
+  async mergeGraphRAGSocialMemoryIdentities(
+    params: GraphRAGSocialMemoryMergeIdentitiesRequest,
+    adminApiKey?: string
+  ): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/social-memory/identities/merge', params, {
+      headers: this.getGraphRAGAdminHeaders(adminApiKey),
+    });
+    return response.data;
+  }
+
+  async correctGraphRAGSocialMemoryFact(
+    params: GraphRAGSocialMemoryCorrectFactRequest,
+    adminApiKey?: string
+  ): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/social-memory/facts/correct', params, {
+      headers: this.getGraphRAGAdminHeaders(adminApiKey),
+    });
+    return response.data;
+  }
+
+  async replayGraphRAGSocialMemoryTranscript(
+    params: GraphRAGSocialMemoryReplayRequest,
+    adminApiKey?: string
+  ): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/social-memory/admin/replay', params, {
+      headers: this.getGraphRAGAdminHeaders(adminApiKey),
+      timeout: 600000,
+    });
+    return response.data;
+  }
+
+  async purgeGraphRAGSocialMemoryReplay(sandboxTag: string, adminApiKey?: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.delete(`/api/v1/graphrag/social-memory/admin/replay/${sandboxTag}`, {
+      headers: this.getGraphRAGAdminHeaders(adminApiKey),
+      timeout: 300000,
+    });
+    return response.data;
+  }
+
+  async runGraphRAGSocialMemoryEval(
+    suite: GraphRAGSocialMemoryEvalSuite = 'all',
+    options?: { baselinePath?: string; adminApiKey?: string }
+  ): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.post('/api/v1/graphrag/social-memory/admin/eval', undefined, {
+      params: {
+        suite,
+        baseline_path: options?.baselinePath,
+      },
+      headers: this.getGraphRAGAdminHeaders(options?.adminApiKey),
+      timeout: 600000,
+    });
+    return response.data;
+  }
+
+  async getGraphRAGSocialMemoryCommunityReport(adminApiKey?: string): Promise<Record<string, unknown>> {
+    const response = await this.backendClient.get('/api/v1/graphrag/social-memory/admin/community-report', {
+      headers: this.getGraphRAGAdminHeaders(adminApiKey),
+      timeout: 300000,
+    });
     return response.data;
   }
 

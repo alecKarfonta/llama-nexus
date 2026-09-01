@@ -9,7 +9,14 @@ export interface ModelInfo {
   name: string;
   variant: string;
   size: number; // Size in bytes
-  status: 'available' | 'downloading' | 'loading' | 'error' | 'running' | 'stopped' | 'archived';
+  status:
+    | "available"
+    | "downloading"
+    | "loading"
+    | "error"
+    | "running"
+    | "stopped"
+    | "archived";
   downloadProgress?: number; // 0-100 percentage
   repositoryId?: string; // HuggingFace repository ID
   contextLength?: number;
@@ -20,7 +27,7 @@ export interface ModelInfo {
   vramRequired?: number; // GB required
   lastModified?: Date;
   // Additional fields for running models
-  framework?: 'transformers' | 'llama.cpp' | 'vllm' | 'ggml' | 'onnx';
+  framework?: "transformers" | "llama.cpp" | "vllm" | "ggml" | "onnx";
   port?: number;
   latency?: string;
   memory?: string;
@@ -35,7 +42,7 @@ export interface ModelInfo {
   archiveNotes?: string;
   performanceNotes?: string;
   // Training metadata (for fine-tuned models)
-  source?: 'trained' | 'downloaded' | 'local';
+  source?: "trained" | "downloaded" | "local";
   trainingJobId?: string;
   baseModel?: string;
   mergedAt?: string;
@@ -57,7 +64,7 @@ export interface ModelInfo {
 export interface ModelDownload {
   modelId: string;
   progress: number; // 0-100
-  status: 'queued' | 'downloading' | 'completed' | 'failed' | 'cancelled';
+  status: "queued" | "downloading" | "completed" | "failed" | "cancelled";
   totalSize: number; // bytes
   downloadedSize: number; // bytes
   speed: number; // bytes per second
@@ -141,7 +148,7 @@ export interface ResourceMetrics {
 
 // Service Status Types
 export interface ServiceStatus {
-  health: 'healthy' | 'degraded' | 'unhealthy' | 'starting' | 'stopped';
+  health: "healthy" | "degraded" | "unhealthy" | "starting" | "stopped";
   uptime: number; // seconds
   version: string;
   modelLoaded: boolean;
@@ -177,7 +184,7 @@ export interface ConfigurationPreset {
   id: string;
   name: string;
   description: string;
-  category: 'coding' | 'creative' | 'reasoning' | 'custom';
+  category: "coding" | "creative" | "reasoning" | "custom";
   config: Partial<ServiceConfig>;
   isDefault: boolean;
   createdAt: Date;
@@ -186,23 +193,23 @@ export interface ConfigurationPreset {
 
 // Webhook/Event Types for real-time updates
 export interface WebSocketMessage {
-  type: 'metrics' | 'status' | 'download' | 'error';
+  type: "metrics" | "status" | "download" | "error";
   payload: any;
   timestamp: Date;
 }
 
 export interface MetricsUpdate extends WebSocketMessage {
-  type: 'metrics';
+  type: "metrics";
   payload: ResourceMetrics;
 }
 
 export interface StatusUpdate extends WebSocketMessage {
-  type: 'status';
+  type: "status";
   payload: ServiceStatus;
 }
 
 export interface DownloadUpdate extends WebSocketMessage {
-  type: 'download';
+  type: "download";
   payload: ModelDownload;
 }
 
@@ -218,7 +225,7 @@ export interface ApiError {
 export interface ModelDownloadRequest {
   repositoryId: string; // e.g., "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
   filename: string; // e.g., "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
-  priority?: 'low' | 'normal' | 'high';
+  priority?: "low" | "normal" | "high";
 }
 
 export interface ConfigUpdateRequest {
@@ -234,15 +241,17 @@ export interface ServiceActionResponse {
 }
 
 export interface ServiceActionRequest {
-  action: 'start' | 'stop' | 'restart' | 'reload';
-  backend?: 'llamacpp' | 'vllm';
+  action: "start" | "stop" | "restart" | "reload";
+  backend?: "llamacpp" | "vllm";
   config?: Partial<ServiceConfig>;
 }
 
 // Chat Completion Types (OpenAI-compatible)
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+  role: "system" | "user" | "assistant" | "tool";
+  content:
+    | string
+    | Array<{ type: string; text?: string; image_url?: { url: string } }>;
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
@@ -255,7 +264,8 @@ export interface ChatCompletionRequest {
   model?: string;
   messages: ChatMessage[];
   tools?: Tool[];
-  tool_choice?: 'none' | 'auto' | { type: 'function'; function: { name: string } };
+  tool_choice?:
+    "none" | "auto" | { type: "function"; function: { name: string } };
   temperature?: number;
   top_p?: number;
   top_k?: number;
@@ -266,8 +276,9 @@ export interface ChatCompletionRequest {
   presence_penalty?: number;
   repeat_penalty?: number;
   stream_options?: { include_usage?: boolean };
+  chat_template_kwargs?: Record<string, unknown>;
   response_format?: {
-    type: 'json_schema' | 'json_object' | 'text';
+    type: "json_schema" | "json_object" | "text";
     json_schema?: {
       name?: string;
       schema: object;
@@ -279,13 +290,13 @@ export interface ChatCompletionRequest {
 
 export interface ChatCompletionResponse {
   id: string;
-  object: 'chat.completion';
+  object: "chat.completion";
   created: number;
   model: string;
   choices: Array<{
     index: number;
     message: ChatMessage;
-    finish_reason: 'stop' | 'length' | 'content_filter' | 'tool_calls' | null;
+    finish_reason: "stop" | "length" | "content_filter" | "tool_calls" | null;
   }>;
   usage: {
     prompt_tokens: number;
@@ -296,7 +307,7 @@ export interface ChatCompletionResponse {
 
 export interface ChatCompletionChunk {
   id: string;
-  object: 'chat.completion.chunk';
+  object: "chat.completion.chunk";
   created: number;
   model: string;
   choices: Array<{
@@ -307,7 +318,7 @@ export interface ChatCompletionChunk {
       reasoning_content?: string;
       tool_calls?: ToolCall[];
     };
-    finish_reason: 'stop' | 'length' | 'content_filter' | 'tool_calls' | null;
+    finish_reason: "stop" | "length" | "content_filter" | "tool_calls" | null;
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -333,13 +344,13 @@ export interface FunctionDefinition {
 }
 
 export interface Tool {
-  type: 'function';
+  type: "function";
   function: FunctionDefinition;
 }
 
 export interface ToolCall {
   id: string;
-  type: 'function';
+  type: "function";
   function: {
     name: string;
     arguments: string;
@@ -347,7 +358,7 @@ export interface ToolCall {
 }
 
 export interface ToolMessage extends ChatMessage {
-  role: 'tool';
+  role: "tool";
   tool_call_id: string;
   content: string;
 }
@@ -376,7 +387,7 @@ export interface Conversation {
 
 export interface ConversationMessage {
   id: number;
-  role: 'system' | 'user' | 'assistant' | 'tool';
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
   name?: string;
   tool_calls?: ToolCall[];
@@ -432,7 +443,7 @@ export interface VRAMEstimate {
 // Built-in example tools for testing
 export interface WeatherQuery {
   location: string;
-  unit?: 'celsius' | 'fahrenheit';
+  unit?: "celsius" | "fahrenheit";
 }
 
 export interface CalculatorQuery {
@@ -440,7 +451,7 @@ export interface CalculatorQuery {
 }
 
 export interface CodeExecutionQuery {
-  language: 'python' | 'javascript' | 'bash';
+  language: "python" | "javascript" | "bash";
   code: string;
 }
 

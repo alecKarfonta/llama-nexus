@@ -9,7 +9,6 @@ import {
   Chip,
   Tooltip,
   alpha,
-  Divider,
   ToggleButton,
   ToggleButtonGroup,
   Dialog,
@@ -21,12 +20,12 @@ import {
   Compare as CompareIcon,
   Add as AddIcon,
   Remove as RemoveIcon,
-  SwapHoriz as SwapIcon,
   ContentCopy as CopyIcon,
   Check as CheckIcon,
   Visibility as ViewIcon,
   VisibilityOff as HideIcon,
 } from '@mui/icons-material'
+import { useClipboard } from '@/hooks/useClipboard'
 
 interface SemanticDiffProps {
   original: string
@@ -107,8 +106,9 @@ function computeWordDiff(original: string, revised: string): DiffSegment[] {
   // Merge consecutive segments of same type
   const merged: DiffSegment[] = []
   for (const segment of segments) {
-    if (merged.length > 0 && merged[merged.length - 1].type === segment.type) {
-      merged[merged.length - 1].content += segment.content
+    const previous = merged[merged.length - 1]
+    if (previous && previous.type === segment.type) {
+      previous.content = `${previous.content || ''}${segment.content || ''}`
     } else {
       merged.push(segment)
     }
@@ -287,6 +287,7 @@ export const SemanticDiff: React.FC<SemanticDiffProps> = ({ original, revised, o
   const [viewMode, setViewMode] = useState<'inline' | 'side-by-side'>('inline')
   const [showConcepts, setShowConcepts] = useState(true)
   const [copied, setCopied] = useState(false)
+  const copyToClipboard = useClipboard()
 
   // Compute diff
   const diff = useMemo(() => computeWordDiff(original, revised), [original, revised])
@@ -315,7 +316,7 @@ export const SemanticDiff: React.FC<SemanticDiffProps> = ({ original, revised, o
     return { added, removed, unchanged }
   }, [diff])
 
-  const handleCopy = () => {
+  const handleCopy = async () => {
     const report = `Semantic Diff Report
 ==================
 
@@ -336,9 +337,14 @@ ${original}
 Revised:
 ${revised}
 `
-    navigator.clipboard.writeText(report)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    const ok = await copyToClipboard(report, {
+      successMessage: 'Semantic diff report copied.',
+      successTitle: 'Diff copied',
+    })
+    if (ok) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
   }
 
   const getSimilarityColor = (score: number) => {

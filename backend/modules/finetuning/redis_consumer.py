@@ -7,6 +7,7 @@ TrainingManager / JobStore accordingly. Also broadcasts events to WebSocket clie
 
 import asyncio
 import json
+import os
 import threading
 from datetime import datetime
 from typing import Optional, Callable, Any, List
@@ -43,9 +44,9 @@ def broadcast_training_event(event_type: str, data: dict):
 
 
 class TrainingEventConsumer:
-    def __init__(self, manager: TrainingManager, redis_url: str = "redis://redis:6379/0"):
+    def __init__(self, manager: TrainingManager, redis_url: Optional[str] = None):
         self.manager = manager
-        self.redis_url = redis_url
+        self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://redis:6379/0")
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
@@ -62,44 +63,50 @@ class TrainingEventConsumer:
             self._thread.join(timeout=5)
 
     def _run(self):
-        client = redis.from_url(self.redis_url, decode_responses=True)
-        pubsub = client.pubsub()
-        pubsub.psubscribe("training:status:*", "training:logs:*")
-        for message in pubsub.listen():
-            if self._stop.is_set():
-                break
-            if message["type"] != "pmessage":
-                continue
-            channel = message.get("channel", "")
-            payload_raw = message.get("data")
-            try:
-                payload = json.loads(payload_raw)
-            except Exception:
-                logger.warning("Failed to parse training event payload", extra={"channel": channel})
-                continue
-            job_id = channel.split(":")[-1]
-            if "status" in channel:
-                self.manager.handle_status_event(job_id, payload)
-                # Broadcast status update to WebSocket clients
-                broadcast_training_event("training_status", {
-                    "job_id": job_id,
-                    "step": payload.get("step", 0),
-                    "total_steps": payload.get("total_steps", 0),
-                    "loss": payload.get("loss"),
-                    "status": payload.get("status"),
-                    "adapter_path": payload.get("adapter_path"),
-                    "metrics": payload.get("metrics", {}),
-                    "progress": (payload.get("step", 0) / max(payload.get("total_steps", 1), 1)) * 100,
-                    "timestamp": datetime.now().isoformat(),
-                })
-            elif "logs" in channel:
-                msg = payload.get("message", "")
-                if msg:
-                    self.manager.handle_log_event(job_id, msg)
-                    # Broadcast log update to WebSocket clients
-                    broadcast_training_event("training_log", {
+        pubsub = None
+        try:
+            client = redis.from_url(self.redis_url, decode_responses=True)
+            pubsub = client.pubsub()
+            pubsub.psubscribe("training:status:*", "training:logs:*")
+            for message in pubsub.listen():
+                if self._stop.is_set():
+                    break
+                if message["type"] != "pmessage":
+                    continue
+                channel = message.get("channel", "")
+                payload_raw = message.get("data")
+                try:
+                    payload = json.loads(payload_raw)
+                except Exception:
+                    logger.warning("Failed to parse training event payload", extra={"channel": channel})
+                    continue
+                job_id = channel.split(":")[-1]
+                if "status" in channel:
+                    self.manager.handle_status_event(job_id, payload)
+                    # Broadcast status update to WebSocket clients
+                    broadcast_training_event("training_status", {
                         "job_id": job_id,
-                        "message": msg,
+                        "step": payload.get("step", 0),
+                        "total_steps": payload.get("total_steps", 0),
+                        "loss": payload.get("loss"),
+                        "status": payload.get("status"),
+                        "adapter_path": payload.get("adapter_path"),
+                        "metrics": payload.get("metrics", {}),
+                        "progress": (payload.get("step", 0) / max(payload.get("total_steps", 1), 1)) * 100,
                         "timestamp": datetime.now().isoformat(),
                     })
-        pubsub.close()
+                elif "logs" in channel:
+                    msg = payload.get("message", "")
+                    if msg:
+                        self.manager.handle_log_event(job_id, msg)
+                        # Broadcast log update to WebSocket clients
+                        broadcast_training_event("training_log", {
+                            "job_id": job_id,
+                            "message": msg,
+                            "timestamp": datetime.now().isoformat(),
+                        })
+        except redis.RedisError as exc:
+            logger.warning("Training event Redis consumer unavailable", extra={"redis_url": self.redis_url, "error": str(exc)})
+        finally:
+            if pubsub is not None:
+                pubsub.close()

@@ -15,6 +15,11 @@ from fastapi import HTTPException
 from huggingface_hub import hf_hub_url, HfApi
 from enhanced_logger import enhanced_logger as logger
 from modules.managers.base import DOCKER_AVAILABLE, docker_client
+from modules.chat_template import (
+    TEMPLATE_EMBEDDED_JINJA,
+    is_custom_template_file,
+    is_embedded_jinja,
+)
 
 try:
     import docker
@@ -114,6 +119,10 @@ class LlamaCPPManager:
         env = {
             "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            # [TIME] | INFO | LLAMACPP_MANAGER.DOCKER_RUN_PARAMS | qwen4exp attention
+            # path does not support the quantized-KV activation rotation (#21038);
+            # without this the server aborts at load (see dzannotti MTP-GGUF README)
+            "LLAMA_ATTN_ROT_DISABLE": "1",
         }
         caps = [["gpu", "compute", "utility"]]
         if dev and dev.lower() != "all":
@@ -255,6 +264,20 @@ class LlamaCPPManager:
                 logger.info(f"Found model file at: {path}")
                 break
         
+        # [TIME] | INFO | LLAMACPP_MANAGER.BUILD_COMMAND | Glob fallback for split GGUFs of any shard count
+        # (e.g. Qwen3.8-Flash-Next UD-Q4_K_XL ships as 4 shards inside UD-Q4_K_XL/)
+        if model_path is None:
+            models_root = Path("/home/llamacpp/models")
+            stem = f"{model_name}-{variant}"
+            for candidate_dir in (models_root, models_root / variant):
+                matches = sorted(
+                    candidate_dir.glob(f"{stem}-00001-of-*.gguf")
+                )
+                if matches:
+                    model_path = str(matches[0])
+                    logger.info(f"Found split model via glob: {model_path}")
+                    break
+        
         # If no path exists, use the default pattern
         if model_path is None:
             model_path = possible_paths[0]
@@ -299,6 +322,9 @@ class LlamaCPPManager:
             add_param_if_set(cmd, "--n-gpu-layers", self.config["model"].get("gpu_layers"))
         
         add_param_if_set(cmd, "--n-cpu-moe", self.config["model"].get("n_cpu_moe"))
+        # [TIME] | INFO | LLAMACPP_MANAGER.BUILD_COMMAND | --override-tensor keeps selected
+        # tensors in host RAM (e.g. qwen4exp n-gram/PLE: per_layer_token_embd=CPU)
+        add_param_if_set(cmd, "--override-tensor", self.config["model"].get("override_tensor"))
         
         # Add optional RoPE parameters
         add_param_if_set(cmd, "--rope-scaling", self.config["model"].get("rope_scaling"))
@@ -375,6 +401,9 @@ class LlamaCPPManager:
         
         # Add optional server parameters
         add_param_if_set(cmd, "--timeout", self.config["server"].get("timeout"))
+        # [TIME] | INFO | LLAMACPP_MANAGER.BUILD_COMMAND | --alias gives the model a clean
+        # public ID (e.g. "qwen38-flash") instead of the GGUF shard path, for OpenAI clients
+        add_param_if_set(cmd, "--alias", self.config["server"].get("alias"))
         add_param_if_set(cmd, "--system-prompt-file", self.config["server"].get("system_prompt_file"))
         add_param_if_set(cmd, "--log-format", self.config["server"].get("log_format"))
         add_param_if_set(cmd, "--cache-reuse", config["server"].get("cache_reuse"))
@@ -463,19 +492,50 @@ class LlamaCPPManager:
         if mtp_enabled_in_config(config):
             mtp = normalize_mtp_config(config)
             cmd.extend(["--spec-type", "draft-mtp"])
+            # [TIME] | INFO | LLAMACPP_MANAGER.BUILD_COMMAND | sidecar draft head (-md):
+            # when speculative.model_draft is set, draft-mtp loads the external MTP head
+            # GGUF instead of requiring embedded nextn heads in the target GGUF
+            spec = self.config.get("speculative") or {}
+            model_draft = spec.get("model_draft")
+            if model_draft:
+                draft_path = model_draft
+                if os.sep not in model_draft:
+                    draft_path = f"/home/llamacpp/models/{model_draft}"
+                add_param_if_set(cmd, "--model-draft", draft_path)
+                add_param_if_set(cmd, "--gpu-layers-draft", spec.get("gpu_layers_draft"))
             add_param_if_set(cmd, "--spec-draft-n-max", mtp.get("draft_n_max"))
             add_param_if_set(cmd, "--spec-draft-n-min", mtp.get("draft_n_min"))
             add_param_if_set(cmd, "--spec-draft-p-min", mtp.get("draft_p_min"))
+            # [TIME] | INFO | LLAMACPP_MANAGER.BUILD_COMMAND | busy-poll shrinks the
+            # kernel-launch/sync gap between draft and target passes (a third of each
+            # pass on this graph); draft poll follows the main poll by default
+            add_param_if_set(cmd, "--poll", mtp.get("poll"))
+            add_param_if_set(cmd, "--spec-draft-poll", mtp.get("draft_poll"))
 
         # Classic speculative decoding (separate draft model file)
-        if "speculative" in self.config:
+        mtp_on = mtp_enabled_in_config(config)
+        if "speculative" in self.config and not mtp_on:
             spec = self.config["speculative"]
+            # bare draft filenames resolve against the models volume
+            model_draft = spec.get("model_draft")
+            if model_draft and os.sep not in model_draft:
+                spec = {**spec, "model_draft": f"/home/llamacpp/models/{model_draft}"}
+            # [TIME] | INFO | LLAMACPP_MANAGER.BUILD_COMMAND | spec_type selects the
+            # speculative strategy: draft-simple/draft-eagle3 (model-draft file),
+            # draft-mtp (in-GGUF heads), or ngram-* (no draft model needed at all —
+            # drafts from prompt/context n-gram matches, ideal for agent workloads).
+            add_param_if_set(cmd, "--spec-type", spec.get("spec_type"))
             add_param_if_set(cmd, "--model-draft", spec.get("model_draft"))
             add_param_if_set(cmd, "--gpu-layers-draft", spec.get("gpu_layers_draft"))
             add_param_if_set(cmd, "--ctx-size-draft", spec.get("ctx_size_draft"))
             add_param_if_set(cmd, "--draft-max", spec.get("draft_max"))
             add_param_if_set(cmd, "--draft-min", spec.get("draft_min"))
             add_param_if_set(cmd, "--draft-p-min", spec.get("draft_p_min"))
+            # [TIME] | INFO | LLAMACPP_MANAGER.BUILD_COMMAND | ngram variant tuning
+            # (spec-type ngram-*); sensible with ngram-simple: size_n 12 / size_m 48
+            add_param_if_set(cmd, "--spec-ngram-simple-size-n", spec.get("ngram_simple_size_n"))
+            add_param_if_set(cmd, "--spec-ngram-simple-size-m", spec.get("ngram_simple_size_m"))
+            add_param_if_set(cmd, "--spec-ngram-simple-min-hits", spec.get("ngram_simple_min_hits"))
         
         # Add context extension parameters if set
         if "context_extension" in self.config:
@@ -486,13 +546,19 @@ class LlamaCPPManager:
             add_param_if_set(cmd, "--grp-attn-n", self.config["context_extension"].get("group_attn_n"))
             add_param_if_set(cmd, "--grp-attn-w", self.config["context_extension"].get("group_attn_w"))
         
-        # Only add chat template file if one is selected (not empty)
-        if self.config.get("template", {}).get("selected"):
+        template_selected = self.config.get("template", {}).get("selected", "")
+
+        # GGUF embedded template + Jinja only (no custom file)
+        if is_embedded_jinja(template_selected):
+            if "--jinja" not in cmd and "--no-jinja" not in cmd:
+                cmd.append("--jinja")
+        elif is_custom_template_file(template_selected):
             # Always enable jinja when using a custom template file
             if "--jinja" not in cmd and "--no-jinja" not in cmd:
                 cmd.append("--jinja")
             cmd.extend([
-                "--chat-template-file", str(Path(self.config["template"]["directory"]) / self.config["template"]["selected"]),
+                "--chat-template-file",
+                str(Path(self.config["template"]["directory"]) / template_selected),
             ])
         
         return cmd
@@ -510,7 +576,7 @@ class LlamaCPPManager:
         """Validate MTP settings; returns {errors, warnings}."""
         cfg = dict(self.config)
         if config:
-            for section in ("model", "performance", "mtp", "sampling", "server"):
+            for section in ("model", "performance", "mtp", "sampling", "server", "speculative"):
                 if section in config and isinstance(config[section], dict):
                     cfg[section] = {**cfg.get(section, {}), **config[section]}
         cfg = apply_mtp_workload_profile(cfg)
@@ -527,6 +593,11 @@ class LlamaCPPManager:
     def _model_mtp_capable_for_config(self, config: Dict[str, Any]) -> bool:
         model_name = config.get("model", {}).get("name")
         variant = config.get("model", {}).get("variant")
+        # [TIME] | INFO | LLAMACPP_MANAGER.MODEL_MTP_CAPABLE | a separate draft head
+        # (-md sidecar, e.g. dzannotti Qwen3.8-Flash-Next-MTP-Q4_K_M.gguf) makes the
+        # deployment MTP-capable even though the target GGUF has no embedded heads
+        if (config.get("speculative") or {}).get("model_draft"):
+            return True
         if not model_name or not variant or not self.download_manager:
             return False
         meta = self.download_manager._load_model_metadata(model_name, variant)
@@ -850,9 +921,14 @@ class LlamaCPPManager:
                 logger.error(f"Model file validation failed: {error_msg}")
                 raise HTTPException(status_code=400, detail=error_msg)
             
-            # Validate chat template file exists (only if one is selected)
-            if self.config["template"]["selected"]:
-                template_path = str(Path(self.config["template"]["directory"]) / self.config["template"]["selected"]) 
+            # Validate chat template file exists (only for custom .jinja files)
+            template_selected = self.config["template"].get("selected", "")
+            if is_embedded_jinja(template_selected):
+                logger.info("Using GGUF embedded chat template with --jinja (no custom template file)")
+            elif is_custom_template_file(template_selected):
+                template_path = str(
+                    Path(self.config["template"]["directory"]) / template_selected
+                )
                 logger.info(f"Validating chat template file at path='{template_path}'")
                 if not os.path.exists(template_path):
                     error_msg = f"Chat template file not found: {template_path}"
@@ -1411,6 +1487,10 @@ class LlamaCPPManager:
             pass
         
         return status
+
+    def is_running(self) -> bool:
+        """Lightweight compatibility check used by proxy routes."""
+        return bool(self.get_status().get("running", False))
     
     def get_field_metadata(self) -> Dict[str, Any]:
         """Return metadata describing which config fields exist for llama.cpp,
@@ -1422,6 +1502,7 @@ class LlamaCPPManager:
                 "context_size": {"scope": "llamacpp", "type": "number", "description": "Context window size in tokens.", "llamacpp_flag": "--ctx-size", "vllm_equivalent": "performance.max_model_len", "mapping_note": "llama.cpp: context_size, vLLM: max_model_len", "min": 512, "max": 1000000},
                 "gpu_layers": {"scope": "llamacpp", "type": "number", "description": "Number of model layers to offload to GPU. -1 for all, 0 for CPU only.", "llamacpp_flag": "--n-gpu-layers", "vllm_equivalent": None, "note": "vLLM auto-offloads all layers; use gpu_memory_utilization to control VRAM usage", "min": -1, "max": 999},
                 "n_cpu_moe": {"scope": "llamacpp", "type": "number", "description": "Run MoE experts on CPU (0=GPU, >0=number of CPU MoE layers).", "llamacpp_flag": "--n-cpu-moe", "vllm_equivalent": None},
+                "override_tensor": {"scope": "llamacpp", "type": "text", "description": "Tensor buffer overrides (e.g. per_layer_token_embd=CPU to keep n-gram/PLE tables in host RAM).", "llamacpp_flag": "--override-tensor", "vllm_equivalent": None},
                 "flash_attn": {"scope": "llamacpp", "type": "select", "description": "Flash attention mode.", "llamacpp_flag": "--flash-attn", "options": ["auto", "on", "off"], "vllm_equivalent": None, "note": "vLLM uses flash attention by default when available"},
                 "mmproj": {"scope": "llamacpp", "type": "text", "description": "Vision projection model file for multimodal models.", "llamacpp_flag": "--mmproj", "vllm_equivalent": None},
                 "lora": {"scope": "llamacpp", "type": "text", "description": "Path to LoRA adapter file.", "llamacpp_flag": "--lora", "vllm_equivalent": None, "note": "vLLM handles LoRA differently via its own adapter system"},
@@ -1504,6 +1585,7 @@ class LlamaCPPManager:
                 "metrics": {"scope": "llamacpp", "type": "boolean", "description": "Enable metrics endpoint.", "llamacpp_flag": "--metrics", "vllm_equivalent": None, "note": "vLLM exposes metrics at /metrics by default"},
                 "cache_prompt": {"scope": "llamacpp", "type": "boolean", "description": "Cache processed prompts.", "llamacpp_flag": "--cache-prompt / --no-cache-prompt", "vllm_equivalent": None},
                 "reasoning_format": {"scope": "llamacpp", "type": "select", "description": "Format for reasoning content extraction.", "llamacpp_flag": "--reasoning-format", "options": ["deepseek", "none"], "vllm_equivalent": "reasoning.reasoning_parser", "mapping_note": "llama.cpp: reasoning_format, vLLM: reasoning_parser"},
+                "alias": {"scope": "llamacpp", "type": "text", "description": "Public model name/ID reported by /v1/models (e.g. qwen38-flash).", "llamacpp_flag": "--alias", "vllm_equivalent": "served-model-name", "mapping_note": "llama.cpp: alias, vLLM: served_model_name"},
                 "reasoning_budget": {"scope": "llamacpp", "type": "number", "description": "Maximum reasoning tokens.", "llamacpp_flag": "--reasoning-budget", "vllm_equivalent": None},
                 "jinja": {"scope": "llamacpp", "type": "boolean", "description": "Enable Jinja template processing.", "llamacpp_flag": "--jinja", "vllm_equivalent": None},
                 "chat_template_kwargs": {"scope": "llamacpp", "type": "text", "description": "JSON kwargs passed to the chat template (--chat-template-kwargs). Agent profile sets enable_thinking=false.", "llamacpp_flag": "--chat-template-kwargs"},

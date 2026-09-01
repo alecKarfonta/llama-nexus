@@ -6,16 +6,13 @@ import {
   Box,
   Typography,
   Paper,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
   TextField,
   InputAdornment,
   alpha,
   Tooltip,
+  MenuItem,
 } from '@mui/material';
 import {
-  ExpandMore as ExpandIcon,
   Search as SearchIcon,
   PlayArrow as TriggerIcon,
   Psychology as LlmIcon,
@@ -33,7 +30,6 @@ import {
   BUILTIN_NODE_TYPES,
   NodeTypeDefinition,
   NodeCategory,
-  CategoryInfo,
 } from '@/types/workflow';
 
 // Category icons mapping
@@ -52,11 +48,14 @@ const categoryIconComponents: Record<NodeCategory, React.ReactNode> = {
 
 interface NodePaletteProps {
   disabled?: boolean;
+  onNodeSelect?: (nodeType: string) => void;
 }
 
-export const NodePalette: React.FC<NodePaletteProps> = ({ disabled }) => {
+const NODE_RESULT_LIMIT = 8;
+
+export const NodePalette: React.FC<NodePaletteProps> = ({ disabled, onNodeSelect }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [expandedCategories, setExpandedCategories] = useState<string[]>(['trigger', 'llm']);
+  const [activeCategory, setActiveCategory] = useState<NodeCategory>('trigger');
 
   // Handle drag start
   const onDragStart = (event: React.DragEvent, nodeType: string) => {
@@ -68,50 +67,45 @@ export const NodePalette: React.FC<NodePaletteProps> = ({ disabled }) => {
     event.dataTransfer.effectAllowed = 'move';
   };
 
-  // Filter nodes by search query
-  const filteredNodeTypes = searchQuery
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+
+  // Filter nodes by search query or the selected category.
+  const filteredNodeTypes = normalizedQuery
     ? BUILTIN_NODE_TYPES.filter(
         (node) =>
-          node.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          node.description.toLowerCase().includes(searchQuery.toLowerCase())
+          node.displayName.toLowerCase().includes(normalizedQuery) ||
+          node.description.toLowerCase().includes(normalizedQuery)
       )
-    : BUILTIN_NODE_TYPES;
+    : BUILTIN_NODE_TYPES.filter((node) => node.category === activeCategory);
 
-  // Group by category
-  const nodesByCategory = NODE_CATEGORIES.map((category) => ({
-    ...category,
-    nodes: filteredNodeTypes.filter((node) => node.category === category.id),
-  })).filter((cat) => cat.nodes.length > 0);
-
-  // Handle accordion expand
-  const handleAccordionChange = (categoryId: string) => (
-    _: React.SyntheticEvent,
-    isExpanded: boolean
-  ) => {
-    setExpandedCategories((prev) =>
-      isExpanded
-        ? [...prev, categoryId]
-        : prev.filter((id) => id !== categoryId)
-    );
-  };
+  const visibleNodeTypes = filteredNodeTypes.slice(0, NODE_RESULT_LIMIT);
+  const hiddenNodeCount = Math.max(filteredNodeTypes.length - visibleNodeTypes.length, 0);
+  const activeCategoryDef = NODE_CATEGORIES.find((category) => category.id === activeCategory);
 
   return (
     <Box
       sx={{
-        width: 280,
+        width: { xs: 176, sm: 244 },
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
         borderRight: '1px solid',
         borderColor: 'divider',
         bgcolor: 'background.paper',
+        overflow: 'hidden',
       }}
     >
       {/* Header */}
-      <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
-        <Typography variant="subtitle2" fontWeight={600} gutterBottom>
-          Node Palette
-        </Typography>
+      <Box
+        sx={{
+          p: { xs: 0.75, sm: 1 },
+          borderBottom: '1px solid',
+          borderColor: 'divider',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 0.75,
+        }}
+      >
         <TextField
           size="small"
           fullWidth
@@ -128,93 +122,111 @@ export const NodePalette: React.FC<NodePaletteProps> = ({ disabled }) => {
           sx={{
             '& .MuiOutlinedInput-root': {
               bgcolor: 'background.default',
+              height: { xs: 34, sm: 36 },
+            },
+            '& .MuiInputBase-input': {
+              fontSize: { xs: '0.82rem', sm: '0.875rem' },
             },
           }}
         />
-      </Box>
-
-      {/* Node categories */}
-      <Box sx={{ flex: 1, overflow: 'auto', p: 1 }}>
-        {nodesByCategory.map((category) => (
-          <Accordion
-            key={category.id}
-            expanded={expandedCategories.includes(category.id) || !!searchQuery}
-            onChange={handleAccordionChange(category.id)}
-            disableGutters
-            elevation={0}
+        {!normalizedQuery && (
+          <TextField
+            select
+            fullWidth
+            size="small"
+            aria-label="Node category"
+            value={activeCategory}
+            onChange={(event) => setActiveCategory(event.target.value as NodeCategory)}
             sx={{
-              bgcolor: 'transparent',
-              '&:before': { display: 'none' },
-              '& .MuiAccordionSummary-root': {
-                minHeight: 40,
-                px: 1,
+              '& .MuiOutlinedInput-root': {
+                bgcolor: 'background.default',
+                height: 32,
+              },
+              '& .MuiSelect-select': {
+                display: 'flex',
+                alignItems: 'center',
+                fontSize: '0.8rem',
+                fontWeight: 800,
               },
             }}
           >
-            <AccordionSummary
-              expandIcon={<ExpandIcon fontSize="small" />}
-              sx={{
-                '& .MuiAccordionSummary-content': {
-                  alignItems: 'center',
-                  gap: 1,
-                  my: 0.5,
-                },
-              }}
-            >
-              <Box sx={{ color: category.color, display: 'flex' }}>
-                {categoryIconComponents[category.id as NodeCategory]}
-              </Box>
-              <Typography variant="body2" fontWeight={500}>
-                {category.name}
-              </Typography>
-              <Typography
-                variant="caption"
-                sx={{
-                  ml: 'auto',
-                  mr: 1,
-                  color: 'text.secondary',
-                }}
-              >
-                {category.nodes.length}
-              </Typography>
-            </AccordionSummary>
-            <AccordionDetails sx={{ p: 0.5, pt: 0 }}>
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                {category.nodes.map((node) => (
-                  <NodeItem
-                    key={node.type}
-                    node={node}
-                    categoryColor={category.color}
-                    onDragStart={onDragStart}
-                    disabled={disabled}
-                  />
-                ))}
-              </Box>
-            </AccordionDetails>
-          </Accordion>
-        ))}
+            {NODE_CATEGORIES.map((category) => {
+              const categoryId = category.id as NodeCategory;
+              const nodeCount = BUILTIN_NODE_TYPES.filter((node) => node.category === category.id).length;
 
-        {nodesByCategory.length === 0 && searchQuery && (
-          <Box sx={{ p: 2, textAlign: 'center' }}>
+              return (
+                <MenuItem key={category.id} value={category.id}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, width: '100%' }}>
+                    <Box sx={{ display: 'flex', color: category.color, '& svg': { fontSize: 16 } }}>
+                      {categoryIconComponents[categoryId]}
+                    </Box>
+                    <Typography variant="body2" noWrap sx={{ flex: 1, fontWeight: 700 }}>
+                      {category.name}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {nodeCount}
+                    </Typography>
+                  </Box>
+                </MenuItem>
+              );
+            })}
+          </TextField>
+        )}
+      </Box>
+
+      <Box sx={{ flex: 1, minHeight: 0, p: { xs: 0.75, sm: 0.85 }, overflow: 'hidden' }}>
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 1,
+            mb: 0.75,
+            px: 0.25,
+          }}
+        >
+          <Typography variant="caption" color="text.secondary" fontWeight={800}>
+            {normalizedQuery ? 'Matches' : activeCategoryDef?.name || 'Nodes'}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: { xs: 'none', sm: 'block' } }}>
+            {filteredNodeTypes.length}
+          </Typography>
+        </Box>
+
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+          {visibleNodeTypes.map((node) => {
+            const category = NODE_CATEGORIES.find((item) => item.id === node.category);
+
+            return (
+              <NodeItem
+                key={node.type}
+                node={node}
+                categoryColor={category?.color || '#6366f1'}
+                onDragStart={onDragStart}
+                onNodeSelect={onNodeSelect}
+                disabled={disabled}
+              />
+            );
+          })}
+        </Box>
+
+        {filteredNodeTypes.length === 0 && normalizedQuery && (
+          <Box sx={{ p: 1.5, textAlign: 'center' }}>
             <Typography variant="body2" color="text.secondary">
               No nodes match "{searchQuery}"
             </Typography>
           </Box>
         )}
-      </Box>
 
-      {/* Hint */}
-      <Box
-        sx={{
-          p: 1.5,
-          borderTop: '1px solid',
-          borderColor: 'divider',
-          bgcolor: alpha('#6366f1', 0.05),
-        }}
-      >
-        <Typography variant="caption" color="text.secondary">
-          Drag nodes onto the canvas to add them to your workflow
-        </Typography>
+        {hiddenNodeCount > 0 && (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ display: 'block', mt: 0.75, px: 0.25 }}
+          >
+            {hiddenNodeCount} more hidden. Search to narrow the list.
+          </Typography>
+        )}
       </Box>
     </Box>
   );
@@ -225,6 +237,7 @@ interface NodeItemProps {
   node: NodeTypeDefinition;
   categoryColor: string;
   onDragStart: (event: React.DragEvent, nodeType: string) => void;
+  onNodeSelect?: (nodeType: string) => void;
   disabled?: boolean;
 }
 
@@ -232,6 +245,7 @@ const NodeItem: React.FC<NodeItemProps> = ({
   node,
   categoryColor,
   onDragStart,
+  onNodeSelect,
   disabled,
 }) => {
   return (
@@ -264,10 +278,16 @@ const NodeItem: React.FC<NodeItemProps> = ({
       <Paper
         draggable={!disabled}
         onDragStart={(e) => onDragStart(e, node.type)}
+        onClick={() => {
+          if (!disabled) {
+            onNodeSelect?.(node.type);
+          }
+        }}
         elevation={0}
         sx={{
-          px: 1.5,
-          py: 1,
+          px: 0.85,
+          py: 0.55,
+          minHeight: { xs: 34, sm: 36 },
           cursor: disabled ? 'not-allowed' : 'grab',
           opacity: disabled ? 0.5 : 1,
           bgcolor: 'background.default',
@@ -280,22 +300,19 @@ const NodeItem: React.FC<NodeItemProps> = ({
             : {
                 borderColor: categoryColor,
                 bgcolor: alpha(categoryColor, 0.05),
-                transform: 'translateX(4px)',
               },
           '&:active': disabled
             ? {}
             : {
                 cursor: 'grabbing',
-                transform: 'scale(0.98)',
               },
         }}
       >
-        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
           <Box
             sx={{
-              width: 6,
-              height: '100%',
-              minHeight: 32,
+              width: 4,
+              height: { xs: 22, sm: 24 },
               bgcolor: categoryColor,
               borderRadius: 0.5,
               flexShrink: 0,
@@ -304,27 +321,15 @@ const NodeItem: React.FC<NodeItemProps> = ({
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography
               variant="body2"
-              fontWeight={500}
+              fontWeight={700}
               sx={{
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
+                fontSize: { xs: '0.82rem', sm: '0.875rem' },
               }}
             >
               {node.displayName}
-            </Typography>
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-                lineHeight: 1.3,
-              }}
-            >
-              {node.description}
             </Typography>
           </Box>
         </Box>

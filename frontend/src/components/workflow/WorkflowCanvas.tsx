@@ -19,7 +19,6 @@ import ReactFlow, {
   OnNodesChange,
   OnEdgesChange,
   ReactFlowInstance,
-  XYPosition,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { Box, alpha } from '@mui/material';
@@ -29,9 +28,7 @@ import {
   WorkflowNode, 
   WorkflowConnection, 
   getNodeTypeDefinition,
-  BUILTIN_NODE_TYPES,
   WorkflowNodeData,
-  ExecutionStatus,
   NodeExecution,
 } from '@/types/workflow';
 
@@ -46,7 +43,7 @@ interface WorkflowCanvasProps {
 }
 
 // Convert our workflow types to React Flow types
-function toReactFlowNode(node: WorkflowNode, executionStatus?: NodeExecution): Node<WorkflowNodeData> {
+function toReactFlowNode(node: WorkflowNode, executionStatus?: NodeExecution, selectedNodeId?: string | null): Node<WorkflowNodeData> {
   return {
     id: node.id,
     type: 'workflow', // Use our custom node type
@@ -57,7 +54,7 @@ function toReactFlowNode(node: WorkflowNode, executionStatus?: NodeExecution): N
       error: executionStatus?.error,
       executionTime: executionStatus?.duration,
     },
-    selected: false,
+    selected: node.id === selectedNodeId,
   };
 }
 
@@ -106,14 +103,15 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
 
   // Convert to React Flow format
   const rfNodes = useMemo(() => 
-    nodes.map((n) => toReactFlowNode(n, nodeExecutions?.[n.id])),
-    [nodes, nodeExecutions]
+    nodes.map((n) => toReactFlowNode(n, nodeExecutions?.[n.id], selectedNodeId)),
+    [nodes, nodeExecutions, selectedNodeId]
   );
   
   const rfEdges = useMemo(() => 
     connections.map(toReactFlowEdge),
     [connections]
   );
+  const showMiniMap = rfNodes.length > 4;
 
   const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState(rfNodes);
   const [flowEdges, setFlowEdges, onFlowEdgesChange] = useEdgesState(rfEdges);
@@ -313,11 +311,14 @@ export const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({
         }}
       >
         <Controls />
-        <MiniMap 
-          nodeStrokeWidth={3}
-          zoomable
-          pannable
-        />
+        {showMiniMap && (
+          <MiniMap
+            nodeStrokeWidth={3}
+            zoomable
+            pannable
+            style={{ width: 140, height: 96 }}
+          />
+        )}
         <Background 
           variant={BackgroundVariant.Dots} 
           gap={16} 

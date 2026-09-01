@@ -2,12 +2,14 @@
 Central application state and shared instances.
 Extracted from main.py to prevent circular dependencies.
 """
+import copy
 import os
 import json
 from typing import Dict, Any, Optional
 from pathlib import Path
 
 from enhanced_logger import enhanced_logger as logger
+from local_paths import backend_data_path
 from modules.managers import (
     LlamaCPPManager,
     ModelDownloadManager,
@@ -30,13 +32,18 @@ tts_manager = TTSManager()
 # Wire up download manager reference
 manager.download_manager = download_manager
 
+# [TIME] | INFO | APP_STATE.CONFIG_PERSISTENCE | llamacpp runtime config lives on the
+# persisted backend_data volume (like vllm_deploy_config.json), NOT /tmp — /tmp dies
+# with the container, silently reverting deploys to defaults on every rebuild.
+LLAMACPP_CONFIG_PATH = Path(
+    os.getenv("LLAMACPP_CONFIG_PATH") or str(backend_data_path("llamacpp_config.json"))
+)
+
 def _merge_and_persist_config(new_config: Dict[str, Any]):
     """
     Deep merge the new configuration into the existing configuration
     and persist it to disk. 
     """
-    import copy
-    
     # Deep merge helper — explicit null clears a key (omit from llama-server command)
     def deep_merge(d1, d2):
         for k, v in d2.items():
@@ -51,20 +58,23 @@ def _merge_and_persist_config(new_config: Dict[str, Any]):
     # Merge new config into existing
     deep_merge(manager.config, new_config)
 
-    # Non-MTP GGUFs cannot use draft-mtp — clear stale enabled flags from family presets
+    # Non-MTP GGUFs cannot use draft-mtp — clear stale enabled flags from family presets.
+    # [TIME] | INFO | APP_STATE.MERGE_CONFIG | a speculative.model_draft sidecar head
+    # (e.g. dzannotti MTP GGUF) makes the deployment MTP-capable without embedded heads
     model_name = manager.config.get("model", {}).get("name")
     variant = manager.config.get("model", {}).get("variant")
-    if model_name and variant and download_manager:
+    has_draft_head = bool((manager.config.get("speculative") or {}).get("model_draft"))
+    if model_name and variant and download_manager and not has_draft_head:
         meta = download_manager._load_model_metadata(model_name, variant)
         if not (meta and meta.get("mtp_capable")):
             manager.config.setdefault("mtp", {})["enabled"] = False
 
     # Persist the merged configuration
     try:
-        config_file = Path("/tmp/llamacpp_config.json")
-        with open(config_file, "w") as f:
+        LLAMACPP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(LLAMACPP_CONFIG_PATH, "w") as f:
             json.dump(manager.config, f, indent=2)
-        logger.info(f"Persisted configuration to {config_file}")
+        logger.info(f"Persisted configuration to {LLAMACPP_CONFIG_PATH}")
     except Exception as e:
         logger.error(f"Failed to persist configuration: {e}")
 

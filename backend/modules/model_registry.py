@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Any
 from pathlib import Path
 import logging
 import hashlib
+from local_paths import backend_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class ModelRegistry:
     def __init__(self, db_path: str = None):
         """Initialize the model registry."""
         if db_path is None:
-            db_path = os.getenv('MODEL_REGISTRY_DB_PATH', '/data/model_registry.db')
+            db_path = os.getenv('MODEL_REGISTRY_DB_PATH') or str(backend_data_path('model_registry.db'))
         
         self.db_path = db_path
         self._ensure_db_directory()

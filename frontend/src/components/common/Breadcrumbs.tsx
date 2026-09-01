@@ -1,87 +1,43 @@
 import React from 'react'
-import { useLocation, useNavigate, Link as RouterLink } from 'react-router-dom'
-import { Breadcrumbs as MuiBreadcrumbs, Link, Typography, Box, alpha } from '@mui/material'
+import { useLocation, Link as RouterLink } from 'react-router-dom'
+import { Breadcrumbs as MuiBreadcrumbs, Link, Typography, Box } from '@mui/material'
+import type { SxProps, Theme } from '@mui/material/styles'
 import {
   Home as HomeIcon,
   ChevronRight as ChevronRightIcon,
 } from '@mui/icons-material'
-
-// Route to breadcrumb label mapping
-const routeLabels: Record<string, string> = {
-  '': 'Home',
-  'dashboard': 'Dashboard',
-  'chat': 'Chat',
-  'models': 'Models',
-  'registry': 'Registry',
-  'deploy': 'Deploy LLM',
-  'embedding-deploy': 'Deploy Embedding',
-  'stt-deploy': 'Deploy STT',
-  'tts-deploy': 'Deploy TTS',
-  'prompts': 'Prompt Library',
-  'templates': 'Chat Templates',
-  'workflows': 'Workflows',
-  'testing': 'Testing',
-  'benchmark': 'Benchmark',
-  'batch': 'Batch Processing',
-  'compare': 'Model Comparison',
-  'documents': 'Documents',
-  'knowledge-graph': 'Knowledge Graph',
-  'discovery': 'Discovery',
-  'knowledge': 'RAG Search',
-  'monitoring': 'Monitoring',
-  'api-docs': 'API Documentation',
-  'configuration': 'Settings',
-}
-
-// Route hierarchy for grouping
-const routeGroups: Record<string, string[]> = {
-  'deploy': ['deploy', 'embedding-deploy', 'stt-deploy', 'tts-deploy'],
-  'knowledge': ['documents', 'knowledge-graph', 'discovery', 'knowledge'],
-  'development': ['chat', 'prompts', 'templates', 'workflows', 'testing', 'benchmark', 'batch', 'compare'],
-}
+import { getNavigationTrail } from '@/config/navigation'
 
 interface BreadcrumbsProps {
   maxItems?: number
   showHome?: boolean
+  sx?: SxProps<Theme>
 }
 
 export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({ 
   maxItems = 3,
-  showHome = true 
+  showHome = true,
+  sx,
 }) => {
   const location = useLocation()
-  const navigate = useNavigate()
-  
-  // Parse the current path
-  const pathSegments = location.pathname.split('/').filter(Boolean)
-  
-  // Build breadcrumb items
-  const items: Array<{ label: string; path: string; isLast: boolean }> = []
-  
-  // Add home if enabled
-  if (showHome) {
-    items.push({ label: 'Home', path: '/dashboard', isLast: pathSegments.length === 0 })
-  }
-  
-  // Add path segments
-  let currentPath = ''
-  pathSegments.forEach((segment, index) => {
-    currentPath += `/${segment}`
-    const label = routeLabels[segment] || segment.charAt(0).toUpperCase() + segment.slice(1)
-    items.push({
-      label,
-      path: currentPath,
-      isLast: index === pathSegments.length - 1
-    })
-  })
+  const trail = getNavigationTrail(location.pathname)
+  const items = (showHome ? trail : trail.slice(1)).map((item, index, allItems) => ({
+    ...item,
+    label: item.path === '/dashboard' && showHome ? 'Home' : item.label,
+    isLast: index === allItems.length - 1,
+  }))
 
   // Don't render if we're at root or only have home
   if (items.length <= 1) {
     return null
   }
 
+  const containerSx: SxProps<Theme> = sx
+    ? (Array.isArray(sx) ? [{ mb: 2 }, ...sx] : [{ mb: 2 }, sx])
+    : { mb: 2 }
+
   return (
-    <Box sx={{ mb: 2 }}>
+    <Box sx={containerSx}>
       <MuiBreadcrumbs
         separator={<ChevronRightIcon sx={{ fontSize: 16, color: 'text.disabled' }} />}
         maxItems={maxItems}

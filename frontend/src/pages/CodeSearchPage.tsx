@@ -1,31 +1,15 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
-  Paper,
   Typography,
   TextField,
   Button,
   Grid,
-  Card,
-  CardContent,
-  CardActions,
-  Chip,
   Alert,
   CircularProgress,
   IconButton,
-  Tabs,
-  Tab,
   Divider,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemIcon,
-  ToggleButton,
-  ToggleButtonGroup,
   Tooltip,
-  Collapse,
-  FormControlLabel,
-  Checkbox,
   Select,
   MenuItem,
   FormControl,
@@ -33,33 +17,85 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
-  alpha,
-  useTheme,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import {
   Search as SearchIcon,
   Code as CodeIcon,
-  Description as FileIcon,
   Functions as FunctionIcon,
   Class as ClassIcon,
   Api as ApiIcon,
   Terminal as TerminalIcon,
-  DataObject as JsonIcon,
   Settings as ConfigIcon,
   ExpandMore as ExpandIcon,
   ContentCopy as CopyIcon,
-  OpenInNew as OpenIcon,
   Refresh as RefreshIcon,
   FilterList as FilterIcon,
-  TipsAndUpdates as SuggestionIcon,
   Analytics as AnalyticsIcon,
-  GitHub as GitHubIcon,
   Javascript as JavaScriptIcon,
   Storage as DatabaseIcon,
 } from '@mui/icons-material';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import * as api from '../services/api';
+import { useClipboard } from '@/hooks/useClipboard';
+import {
+  CodeHighlighter,
+  MetricTile,
+  PageShell,
+  SectionCard,
+  StatusChip,
+  type StatusChipConfigMap,
+} from '@/components/common';
+import { accentColors } from '@/utils/theme';
+
+type SearchType = 'semantic' | 'pattern' | 'ast';
+
+const SEARCH_TYPE_OPTIONS: Array<{ value: SearchType; label: string }> = [
+  { value: 'semantic', label: 'Semantic' },
+  { value: 'pattern', label: 'Pattern' },
+  { value: 'ast', label: 'AST' },
+];
+
+const AVAILABLE_LANGUAGES = [
+  'python', 'javascript', 'typescript', 'java', 'go', 'rust',
+  'cpp', 'c', 'csharp', 'php', 'ruby', 'swift'
+];
+
+const AVAILABLE_CODE_TYPES = [
+  'function', 'class', 'method', 'variable', 'import', 'config'
+];
+
+const CODE_SEARCH_STATUS_CONFIG: StatusChipConfigMap = {
+  ast: { color: accentColors.purple, label: 'AST' },
+  'code-type': { color: accentColors.purple, label: 'Code type' },
+  'code-type-selected': { color: accentColors.primary, label: 'Selected type' },
+  dependency: { color: accentColors.slate, label: 'Dependency' },
+  intelligence: { color: accentColors.primary, label: 'Code intelligence' },
+  language: { color: accentColors.info, label: 'Language' },
+  'language-selected': { color: accentColors.primary, label: 'Selected language' },
+  checking: { color: accentColors.info, label: 'Checking service' },
+  online: { color: accentColors.success, label: 'Service online' },
+  offline: { color: accentColors.rose, label: 'Service offline' },
+  pattern: { color: accentColors.warning, label: 'Pattern' },
+  semantic: { color: accentColors.primary, label: 'Semantic' },
+  search: { color: accentColors.warning, label: 'Search' },
+  detection: { color: accentColors.success, label: 'Detection' },
+  'score-high': { color: accentColors.success, label: 'High score' },
+  'score-medium': { color: accentColors.warning, label: 'Medium score' },
+  'score-low': { color: accentColors.slate, label: 'Low score' },
+  summary: { color: accentColors.info, label: 'Summary' },
+};
+
+const codePanelSx = {
+  borderRadius: '8px',
+  bgcolor: 'background.paper',
+  border: '1px solid',
+  borderColor: 'divider',
+} as const;
+
+const getScoreStatus = (score: number) => {
+  if (score > 0.8) return 'score-high';
+  if (score > 0.55) return 'score-medium';
+  return 'score-low';
+};
 
 interface CodeSearchResult {
   file_path: string;
@@ -92,12 +128,12 @@ interface CodeDetectionResult {
 }
 
 export const CodeSearchPage: React.FC = () => {
-  const theme = useTheme();
+  const copyToClipboard = useClipboard();
   const [activeTab, setActiveTab] = useState(0);
   
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchType, setSearchType] = useState<'semantic' | 'pattern' | 'ast'>('semantic');
+  const [searchType, setSearchType] = useState<SearchType>('semantic');
   const [selectedLanguages, setSelectedLanguages] = useState<string[]>([]);
   const [selectedCodeTypes, setSelectedCodeTypes] = useState<string[]>([]);
   const [searchResults, setSearchResults] = useState<CodeSearchResult[]>([]);
@@ -112,32 +148,26 @@ export const CodeSearchPage: React.FC = () => {
   const [expandedResults, setExpandedResults] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [codeServiceAvailable, setCodeServiceAvailable] = useState(false);
-  
-  // Available filters
-  const availableLanguages = [
-    'python', 'javascript', 'typescript', 'java', 'go', 'rust', 
-    'cpp', 'c', 'csharp', 'php', 'ruby', 'swift'
-  ];
-  
-  const availableCodeTypes = [
-    'function', 'class', 'method', 'variable', 'import', 'config'
-  ];
+  const [checkingService, setCheckingService] = useState(true);
 
   useEffect(() => {
     checkCodeServiceStatus();
   }, []);
 
   const checkCodeServiceStatus = async () => {
+    setCheckingService(true);
     try {
       const response = await fetch('/api/v1/graphrag/code/health');
       const data = await response.json();
       setCodeServiceAvailable(data.available === true);
-      if (!data.available) {
-        setError('Code search service is not available. Please ensure the code-rag service is running.');
+      if (data.available) {
+        setError(null);
       }
     } catch (err) {
       setCodeServiceAvailable(false);
       setError('Unable to connect to code search service');
+    } finally {
+      setCheckingService(false);
     }
   };
 
@@ -218,28 +248,55 @@ export const CodeSearchPage: React.FC = () => {
   };
 
   const copyCode = (content: string) => {
-    navigator.clipboard.writeText(content);
+    copyToClipboard(content, {
+      successMessage: 'Code snippet copied.',
+      successTitle: 'Code copied',
+    });
+  };
+
+  const clearFilters = () => {
+    setSelectedLanguages([]);
+    setSelectedCodeTypes([]);
   };
 
   const getLanguageIcon = (language: string) => {
     switch (language.toLowerCase()) {
       case 'python':
-        return <CodeIcon sx={{ color: '#3776AB' }} />;
+        return <CodeIcon sx={{ color: accentColors.primary }} />;
       case 'javascript':
       case 'typescript':
-        return <JavaScriptIcon sx={{ color: '#F7DF1E' }} />;
+        return <JavaScriptIcon sx={{ color: accentColors.warning }} />;
       case 'java':
-        return <CodeIcon sx={{ color: '#007396' }} />;
+        return <CodeIcon sx={{ color: accentColors.rose }} />;
       case 'go':
-        return <CodeIcon sx={{ color: '#00ADD8' }} />;
+        return <CodeIcon sx={{ color: accentColors.info }} />;
       case 'rust':
-        return <CodeIcon sx={{ color: '#CE4A1F' }} />;
+        return <CodeIcon sx={{ color: accentColors.warning }} />;
       case 'sql':
-        return <DatabaseIcon sx={{ color: '#4479A1' }} />;
+        return <DatabaseIcon sx={{ color: accentColors.purple }} />;
       default:
         return <CodeIcon />;
     }
   };
+
+  const selectedSearchType = SEARCH_TYPE_OPTIONS.find(option => option.value === searchType)?.label || searchType;
+  const activeFilterCount = selectedLanguages.length + selectedCodeTypes.length;
+  const resultLineCount = searchResults.reduce((total, result) => total + Math.max(result.line_end - result.line_start + 1, 0), 0);
+  const detectionBlockCount = detectionResults?.statistics.total_blocks || 0;
+  const detectionLanguageCount = detectionResults ? Object.keys(detectionResults.statistics.by_language).length : 0;
+  const detectionTypeCount = detectionResults ? Object.keys(detectionResults.statistics.by_type).length : 0;
+  const serviceStatus = checkingService ? 'checking' : codeServiceAvailable ? 'online' : 'offline';
+  const serviceStatusLabel = checkingService ? 'Checking service' : codeServiceAvailable ? 'Service online' : 'Service offline';
+  const codeServiceOffline = !checkingService && !codeServiceAvailable;
+  const serviceUnavailableMessage = !checkingService && !codeServiceAvailable
+    ? 'Code search service is unavailable; queries are disabled.'
+    : null;
+  const showSearchControls = codeServiceAvailable;
+  const searchCardSubtitle = checkingService
+    ? 'Checking code search service'
+    : codeServiceAvailable
+      ? `${selectedSearchType} search with ${activeFilterCount} active filters`
+      : 'Service offline';
 
   const getCodeTypeIcon = (type: string) => {
     switch (type) {
@@ -254,407 +311,655 @@ export const CodeSearchPage: React.FC = () => {
       case 'import':
         return <TerminalIcon />;
       default:
-        return <CodeIcon />;
+      return <CodeIcon />;
     }
   };
 
-  return (
-    <Box sx={{ p: 3 }}>
-      <Typography variant="h4" gutterBottom>
-        <CodeIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
-        Code Intelligence
-      </Typography>
-      
-      <Typography variant="body1" color="text.secondary" paragraph>
-        Search and analyze code across your knowledge base with semantic understanding
-      </Typography>
+  const refreshCodeServiceButton = (
+    <Tooltip title="Refresh code service">
+      <span>
+        <IconButton
+          aria-label="Refresh code service"
+          size="small"
+          onClick={checkCodeServiceStatus}
+          disabled={checkingService}
+          sx={{
+            width: 34,
+            height: 34,
+            borderRadius: '8px',
+            border: '1px solid',
+            borderColor: 'divider',
+            bgcolor: 'action.hover',
+            '&:hover': { bgcolor: alpha(accentColors.primary, 0.12) },
+          }}
+        >
+          {checkingService ? <CircularProgress size={16} /> : <RefreshIcon sx={{ fontSize: 18 }} />}
+        </IconButton>
+      </span>
+    </Tooltip>
+  );
 
-      {/* Service Status Alert */}
-      {!codeServiceAvailable && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          Code search service is currently unavailable. Some features may be limited.
-        </Alert>
+  const codeSearchHeaderActions = codeServiceOffline ? (
+    refreshCodeServiceButton
+  ) : (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      <Button
+        size="small"
+        variant={activeTab === 0 ? 'contained' : 'outlined'}
+        startIcon={<SearchIcon />}
+        onClick={() => setActiveTab(0)}
+        sx={{ height: 34, borderRadius: '8px', fontWeight: 800, px: 1.25 }}
+      >
+        Search
+      </Button>
+      <Button
+        size="small"
+        variant={activeTab === 1 ? 'contained' : 'outlined'}
+        startIcon={<AnalyticsIcon />}
+        onClick={() => setActiveTab(1)}
+        sx={{ height: 34, borderRadius: '8px', fontWeight: 800, px: 1.25 }}
+      >
+        Detect
+      </Button>
+      {refreshCodeServiceButton}
+    </Box>
+  );
+  const codeSearchSummaryRow = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+      <StatusChip status={serviceStatus} label={serviceStatusLabel} statusConfig={CODE_SEARCH_STATUS_CONFIG} height={22} />
+      {searchResults.length > 0 && (
+        <StatusChip status="summary" label={`${searchResults.length.toLocaleString()} results`} statusConfig={CODE_SEARCH_STATUS_CONFIG} height={22} />
       )}
+      {activeFilterCount > 0 && (
+        <StatusChip status="code-type" label={`${activeFilterCount} filters`} statusConfig={CODE_SEARCH_STATUS_CONFIG} height={22} />
+      )}
+      {(resultLineCount > 0 || detectionBlockCount > 0) && (
+        <Typography variant="caption" color="text.secondary">
+          {resultLineCount.toLocaleString()} matched lines / {detectionBlockCount.toLocaleString()} detected blocks
+        </Typography>
+      )}
+    </Box>
+  );
 
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+  return (
+    <PageShell
+      sx={{
+        py: 1.25,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1.25,
+        overflow: 'visible',
+      }}
+    >
+      {error && !serviceUnavailableMessage && (
+        <Alert severity="error" onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
 
-      <Tabs value={activeTab} onChange={(e, v) => setActiveTab(v)} sx={{ mb: 3 }}>
-        <Tab label="Code Search" icon={<SearchIcon />} iconPosition="start" />
-        <Tab label="Code Detection" icon={<AnalyticsIcon />} iconPosition="start" />
-        <Tab label="Repository Analysis" icon={<GitHubIcon />} iconPosition="start" disabled />
-      </Tabs>
-
-      {/* Code Search Tab */}
       {activeTab === 0 && (
-        <Grid container spacing={3}>
-          <Grid item xs={12} md={3}>
-            {/* Search Filters */}
-            <Paper sx={{ p: 2, mb: 2 }}>
-              <Typography variant="subtitle2" gutterBottom>
-                <FilterIcon sx={{ fontSize: 16, mr: 0.5, verticalAlign: 'middle' }} />
-                Search Filters
-              </Typography>
-              <Divider sx={{ my: 1 }} />
-              
-              <FormControl fullWidth size="small" sx={{ mb: 2 }}>
-                <InputLabel>Search Type</InputLabel>
-                <Select
-                  value={searchType}
-                  onChange={(e) => setSearchType(e.target.value as any)}
-                  label="Search Type"
-                >
-                  <MenuItem value="semantic">Semantic (AI-powered)</MenuItem>
-                  <MenuItem value="pattern">Pattern Matching</MenuItem>
-                  <MenuItem value="ast">AST-based</MenuItem>
-                </Select>
-              </FormControl>
-
-              <Typography variant="caption" gutterBottom display="block">
-                Languages
-              </Typography>
-              <Box sx={{ mb: 2 }}>
-                {availableLanguages.map(lang => (
-                  <Chip
-                    key={lang}
-                    label={lang}
-                    size="small"
-                    onClick={() => {
-                      setSelectedLanguages(prev => 
-                        prev.includes(lang) 
-                          ? prev.filter(l => l !== lang)
-                          : [...prev, lang]
-                      );
-                    }}
-                    color={selectedLanguages.includes(lang) ? 'primary' : 'default'}
-                    sx={{ m: 0.25 }}
-                  />
-                ))}
-              </Box>
-
-              <Typography variant="caption" gutterBottom display="block">
-                Code Types
-              </Typography>
-              <Box>
-                {availableCodeTypes.map(type => (
-                  <Chip
-                    key={type}
-                    label={type}
-                    size="small"
-                    icon={getCodeTypeIcon(type)}
-                    onClick={() => {
-                      setSelectedCodeTypes(prev => 
-                        prev.includes(type) 
-                          ? prev.filter(t => t !== type)
-                          : [...prev, type]
-                      );
-                    }}
-                    color={selectedCodeTypes.includes(type) ? 'primary' : 'default'}
-                    sx={{ m: 0.25 }}
-                  />
-                ))}
-              </Box>
-            </Paper>
-
-            {/* Search Tips */}
-            <Paper sx={{ p: 2, bgcolor: alpha(theme.palette.info.main, 0.05) }}>
-              <Typography variant="subtitle2" gutterBottom>
-                <SuggestionIcon sx={{ fontSize: 16, mr: 0.5, verticalAlign: 'middle' }} />
-                Search Tips
-              </Typography>
-              <Typography variant="caption" component="div" color="text.secondary">
-                • Use natural language for semantic search<br/>
-                • Include function names or signatures<br/>
-                • Specify programming patterns<br/>
-                • Describe the functionality you need
-              </Typography>
-            </Paper>
-          </Grid>
-
-          <Grid item xs={12} md={9}>
-            {/* Search Input */}
-            <Paper sx={{ p: 2, mb: 2 }}>
-              <Box sx={{ display: 'flex', gap: 1 }}>
-                <TextField
-                  fullWidth
-                  placeholder="Search for code... (e.g., 'authentication middleware', 'database connection pool', 'React hooks for data fetching')"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                  disabled={searching || !codeServiceAvailable}
-                  InputProps={{
-                    startAdornment: <SearchIcon sx={{ mr: 1, color: 'text.secondary' }} />
+        <Grid
+          container
+          spacing={1.5}
+          data-code-search-workspace
+          sx={{ alignItems: 'flex-start', overflow: 'visible' }}
+        >
+          <Grid item xs={12} lg={showSearchControls ? 8.5 : 12}>
+            <SectionCard
+              title="Search"
+              subtitle={searchCardSubtitle}
+              icon={<SearchIcon />}
+              accentColor={accentColors.primary}
+              action={codeSearchHeaderActions}
+            >
+              {!codeServiceOffline && codeSearchSummaryRow}
+              {codeServiceOffline ? (
+                <Box
+                  data-code-search-offline-state
+                  sx={{
+                    p: 1.25,
+                    px: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 1,
+                    flexWrap: 'wrap',
+                    borderRadius: '8px',
+                    border: '1px solid',
+                    borderColor: alpha(accentColors.warning, 0.35),
+                    bgcolor: alpha(accentColors.warning, 0.08),
                   }}
-                />
-                <Button
-                  variant="contained"
-                  onClick={handleSearch}
-                  disabled={searching || !searchQuery.trim() || !codeServiceAvailable}
-                  sx={{ minWidth: 120 }}
                 >
-                  {searching ? <CircularProgress size={20} /> : 'Search'}
-                </Button>
-              </Box>
-            </Paper>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                    <StatusChip status="offline" label="Offline" statusConfig={CODE_SEARCH_STATUS_CONFIG} />
+                    <Typography variant="body2" color="text.secondary">
+                      {serviceUnavailableMessage}
+                    </Typography>
+                  </Box>
+                </Box>
+              ) : (
+                <>
+                  <Box
+                    component="form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      handleSearch();
+                    }}
+                    sx={{
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 1fr) 38px',
+                      gap: 0.75,
+                      alignItems: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <TextField
+                      fullWidth
+                      size="small"
+                      placeholder="Search code by behavior, symbol, file path, or pattern"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      disabled={searching || !codeServiceAvailable}
+                      InputProps={{
+                        startAdornment: <SearchIcon sx={{ mr: 1, color: 'text.secondary' }} />
+                      }}
+                    />
+                    <Tooltip title={searching ? 'Searching code' : 'Run search'}>
+                      <span>
+                        <IconButton
+                          type="submit"
+                          aria-label="Run search"
+                          disabled={searching || !searchQuery.trim() || !codeServiceAvailable}
+                          sx={{
+                            width: 38,
+                            height: 38,
+                            borderRadius: '8px',
+                            border: '1px solid',
+                            borderColor: alpha(accentColors.primary, 0.35),
+                            color: 'primary.contrastText',
+                            bgcolor: alpha(accentColors.primary, 0.82),
+                            '&:hover': { bgcolor: accentColors.primary },
+                            '&.Mui-disabled': {
+                              color: alpha(accentColors.primary, 0.32),
+                              borderColor: alpha(accentColors.primary, 0.16),
+                              bgcolor: alpha(accentColors.primary, 0.08),
+                            },
+                          }}
+                        >
+                          {searching ? <CircularProgress size={16} /> : <SearchIcon sx={{ fontSize: 18 }} />}
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  </Box>
 
-            {/* Search Results */}
-            {searchResults.length > 0 && (
-              <Box>
-                <Typography variant="subtitle1" gutterBottom>
-                  Found {searchResults.length} code matches
-                </Typography>
-                {searchResults.map((result, index) => (
-                  <Card key={index} sx={{ mb: 2 }}>
-                    <CardContent>
-                      <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                        {getLanguageIcon(result.language)}
-                        <Typography variant="subtitle2" sx={{ ml: 1, flexGrow: 1 }}>
-                          {result.file_path}
-                        </Typography>
-                        <Chip 
-                          label={result.code_type} 
-                          size="small" 
-                          icon={getCodeTypeIcon(result.code_type)}
-                        />
-                        <Chip 
-                          label={`Score: ${result.score.toFixed(2)}`} 
-                          size="small" 
-                          sx={{ ml: 1 }}
-                          color={result.score > 0.8 ? 'success' : 'default'}
-                        />
-                      </Box>
+                  <Divider sx={{ my: 1.5, flexShrink: 0 }} />
 
-                      {result.name && (
-                        <Typography variant="h6" sx={{ mb: 1 }}>
-                          {result.name}
-                        </Typography>
-                      )}
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, alignItems: 'center', mb: 1, flexShrink: 0 }}>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                        Results
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {searchResults.length
+                          ? `${searchResults.length} matches across ${resultLineCount.toLocaleString()} lines`
+                          : 'No results yet'}
+                      </Typography>
+                    </Box>
+                  </Box>
 
-                      <Box sx={{ position: 'relative' }}>
-                        <SyntaxHighlighter
+                  {searching ? (
+                    <Box sx={{ minHeight: 120, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                      <CircularProgress />
+                    </Box>
+                  ) : searchResults.length === 0 ? (
+                    <Box
+                      data-code-search-empty-state
+                      sx={{
+                        p: 1.25,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 1,
+                        flexWrap: 'wrap',
+                        ...codePanelSx,
+                        borderStyle: 'dashed',
+                        bgcolor: alpha(accentColors.primary, 0.04),
+                      }}
+                    >
+                      <Typography variant="body2" color="text.secondary">
+                        No results yet.
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <Box sx={{ display: 'grid', gap: 1.25, alignContent: 'start' }}>
+                      {searchResults.map((result, index) => {
+                        const lineCount = result.content.split('\n').length;
+                        const isExpanded = expandedResults.has(index);
+
+                    return (
+                      <Box
+                        key={`${result.file_path}-${result.line_start}-${index}`}
+                        sx={{
+                          p: 1.5,
+                          ...codePanelSx,
+                          transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
+                          '&:hover': {
+                            borderColor: alpha(accentColors.primary, 0.4),
+                            boxShadow: `0 8px 28px ${alpha(accentColors.primary, 0.12)}`,
+                          },
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            display: 'flex',
+                            alignItems: { xs: 'flex-start', md: 'center' },
+                            justifyContent: 'space-between',
+                            flexDirection: { xs: 'column', md: 'row' },
+                            gap: 1,
+                            mb: 1,
+                          }}
+                        >
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                            {getLanguageIcon(result.language)}
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 800 }} noWrap title={result.file_path}>
+                                {result.file_path}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                Lines {result.line_start}-{result.line_end}
+                              </Typography>
+                            </Box>
+                          </Box>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                            <StatusChip
+                              status="language"
+                              label={result.language}
+                              variant="outlined"
+                              statusConfig={CODE_SEARCH_STATUS_CONFIG}
+                            />
+                            <StatusChip
+                              status="code-type"
+                              label={result.code_type}
+                              icon={getCodeTypeIcon(result.code_type)}
+                              variant="outlined"
+                              statusConfig={CODE_SEARCH_STATUS_CONFIG}
+                            />
+                            <StatusChip
+                              status={getScoreStatus(result.score)}
+                              label={`Score ${result.score.toFixed(2)}`}
+                              statusConfig={CODE_SEARCH_STATUS_CONFIG}
+                            />
+                            <Tooltip title="Copy code">
+                              <IconButton size="small" onClick={() => copyCode(result.content)}>
+                                <CopyIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          </Box>
+                        </Box>
+
+                        {result.name && (
+                          <Typography variant="h6" sx={{ mb: 1, fontSize: '1rem', fontWeight: 800 }}>
+                            {result.name}
+                          </Typography>
+                        )}
+
+                        <CodeHighlighter
                           language={result.language}
-                          style={vscDarkPlus}
+                          variant="vscDarkPlus"
+                          code={result.content}
                           customStyle={{
                             margin: 0,
-                            borderRadius: 4,
+                            borderRadius: '8px',
                             fontSize: 13,
-                            maxHeight: expandedResults.has(index) ? 'none' : '200px',
+                            maxHeight: isExpanded ? 'none' : '240px',
                             overflow: 'hidden'
                           }}
                           showLineNumbers
                           startingLineNumber={result.line_start}
-                        >
-                          {result.content}
-                        </SyntaxHighlighter>
-                        
-                        {result.content.split('\n').length > 8 && (
-                          <Button
-                            size="small"
-                            onClick={() => toggleResultExpansion(index)}
-                            sx={{ mt: 1 }}
-                            startIcon={<ExpandIcon sx={{ 
-                              transform: expandedResults.has(index) ? 'rotate(180deg)' : 'none',
-                              transition: 'transform 0.3s'
-                            }} />}
-                          >
-                            {expandedResults.has(index) ? 'Show Less' : 'Show More'}
-                          </Button>
-                        )}
-                      </Box>
+                        />
 
-                      {result.dependencies && result.dependencies.length > 0 && (
-                        <Box sx={{ mt: 2 }}>
-                          <Typography variant="caption" color="text.secondary">
-                            Dependencies:
-                          </Typography>
-                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>
-                            {result.dependencies.map((dep, i) => (
-                              <Chip key={i} label={dep} size="small" variant="outlined" />
+                        <Box
+                          sx={{
+                            display: 'flex',
+                            alignItems: { xs: 'flex-start', sm: 'center' },
+                            justifyContent: 'space-between',
+                            flexDirection: { xs: 'column', sm: 'row' },
+                            gap: 1,
+                            mt: 1,
+                          }}
+                        >
+                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                            {result.dependencies?.map((dep, i) => (
+                              <StatusChip
+                                key={`${dep}-${i}`}
+                                status="dependency"
+                                label={dep}
+                                variant="outlined"
+                                statusConfig={CODE_SEARCH_STATUS_CONFIG}
+                              />
                             ))}
                           </Box>
+                          {lineCount > 8 && (
+                            <Button
+                              size="small"
+                              onClick={() => toggleResultExpansion(index)}
+                              startIcon={<ExpandIcon sx={{
+                                transform: isExpanded ? 'rotate(180deg)' : 'none',
+                                transition: 'transform 0.2s'
+                              }} />}
+                            >
+                              {isExpanded ? 'Show Less' : 'Show More'}
+                            </Button>
+                          )}
                         </Box>
-                      )}
-                    </CardContent>
-                    <CardActions>
-                      <IconButton size="small" onClick={() => copyCode(result.content)}>
-                        <Tooltip title="Copy Code">
-                          <CopyIcon fontSize="small" />
-                        </Tooltip>
-                      </IconButton>
-                      <IconButton size="small">
-                        <Tooltip title="Open in Editor">
-                          <OpenIcon fontSize="small" />
-                        </Tooltip>
-                      </IconButton>
-                    </CardActions>
-                  </Card>
+                      </Box>
+                    );
+                  })}
+                    </Box>
+                  )}
+                </>
+              )}
+            </SectionCard>
+          </Grid>
+
+          {showSearchControls && (
+          <Grid item xs={12} lg={3.5} sx={{ minHeight: { md: 0 } }}>
+            <SectionCard
+              title="Search controls"
+              subtitle={activeFilterCount ? `${activeFilterCount} filters active` : 'No filters active'}
+              icon={<FilterIcon />}
+              accentColor={accentColors.warning}
+            >
+              <FormControl fullWidth size="small" sx={{ mb: 2 }}>
+                <InputLabel>Search Type</InputLabel>
+                <Select
+                  value={searchType}
+                  onChange={(e) => setSearchType(e.target.value as SearchType)}
+                  label="Search Type"
+                >
+                  {SEARCH_TYPE_OPTIONS.map(option => (
+                    <MenuItem key={option.value} value={option.value}>
+                      {option.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 1 }}>
+                Languages
+              </Typography>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2 }}>
+                {AVAILABLE_LANGUAGES.map(lang => (
+                  <StatusChip
+                    key={lang}
+                    status={selectedLanguages.includes(lang) ? 'language-selected' : 'language'}
+                    label={lang}
+                    onClick={() => {
+                      setSelectedLanguages(prev =>
+                        prev.includes(lang)
+                          ? prev.filter(l => l !== lang)
+                          : [...prev, lang]
+                      );
+                    }}
+                    variant={selectedLanguages.includes(lang) ? 'filled' : 'outlined'}
+                    statusConfig={CODE_SEARCH_STATUS_CONFIG}
+                    sx={{ cursor: 'pointer' }}
+                  />
                 ))}
               </Box>
-            )}
+
+              <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 1 }}>
+                Code types
+              </Typography>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                {AVAILABLE_CODE_TYPES.map(type => (
+                  <StatusChip
+                    key={type}
+                    status={selectedCodeTypes.includes(type) ? 'code-type-selected' : 'code-type'}
+                    label={type}
+                    icon={getCodeTypeIcon(type)}
+                    onClick={() => {
+                      setSelectedCodeTypes(prev =>
+                        prev.includes(type)
+                          ? prev.filter(t => t !== type)
+                          : [...prev, type]
+                      );
+                    }}
+                    variant={selectedCodeTypes.includes(type) ? 'filled' : 'outlined'}
+                    statusConfig={CODE_SEARCH_STATUS_CONFIG}
+                    sx={{
+                      cursor: 'pointer',
+                      '& .MuiChip-icon': { color: selectedCodeTypes.includes(type) ? accentColors.primary : accentColors.purple },
+                    }}
+                  />
+                ))}
+              </Box>
+
+              {activeFilterCount > 0 && (
+                <Button size="small" onClick={clearFilters} sx={{ mt: 2 }}>
+                  Clear filters
+                </Button>
+              )}
+            </SectionCard>
           </Grid>
+          )}
         </Grid>
       )}
 
-      {/* Code Detection Tab */}
       {activeTab === 1 && (
-        <Grid container spacing={3}>
-          <Grid item xs={12} md={8}>
-            <Paper sx={{ p: 2 }}>
-              <Typography variant="subtitle1" gutterBottom>
-                Paste text to detect and analyze code blocks
-              </Typography>
+        <Grid
+          container
+          spacing={1.5}
+          data-code-detection-workspace
+          sx={{ flex: 1, minHeight: { md: 0 }, alignItems: 'stretch', overflow: { xs: 'visible', md: 'hidden' } }}
+        >
+          <Grid item xs={12} lg={8.5} sx={{ minHeight: { md: 0 }, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            <SectionCard
+              title="Detection input"
+              subtitle={`${detectionText.length.toLocaleString()} characters queued`}
+              icon={<AnalyticsIcon />}
+              accentColor={accentColors.success}
+              action={codeSearchHeaderActions}
+              fullHeight={!detectionResults}
+              sx={{
+                flex: detectionResults ? '0 0 auto' : 1,
+                minHeight: { md: 0 },
+                display: 'flex',
+                flexDirection: 'column',
+                '& .MuiCardContent-root': {
+                  flex: 1,
+                  minHeight: 0,
+                  display: 'flex',
+                  flexDirection: 'column',
+                },
+                '& .MuiCardContent-root > .MuiBox-root:last-child': {
+                  flex: 1,
+                  minHeight: 0,
+                  display: 'flex',
+                  flexDirection: 'column',
+                },
+              }}
+            >
+              {codeSearchSummaryRow}
               <TextField
                 fullWidth
                 multiline
-                rows={10}
-                placeholder="Paste your text here... The system will automatically detect and classify any code blocks."
+                minRows={12}
+                placeholder="Paste mixed notes, markdown, logs, or source snippets"
                 value={detectionText}
                 onChange={(e) => setDetectionText(e.target.value)}
-                sx={{ mb: 2 }}
+                sx={{
+                  mb: 2,
+                  flex: detectionResults ? undefined : 1,
+                  '& .MuiInputBase-root': {
+                    height: detectionResults ? undefined : '100%',
+                    alignItems: 'flex-start',
+                  },
+                  '& textarea': {
+                    height: detectionResults ? undefined : '100% !important',
+                  },
+                }}
               />
               <Button
                 variant="contained"
                 onClick={handleDetection}
                 disabled={detecting || !detectionText.trim() || !codeServiceAvailable}
                 startIcon={detecting ? <CircularProgress size={20} /> : <AnalyticsIcon />}
+                sx={{ alignSelf: 'flex-start', flexShrink: 0 }}
               >
-                {detecting ? 'Analyzing...' : 'Detect Code'}
+                {detecting ? 'Analyzing' : 'Analyze text'}
               </Button>
-            </Paper>
+            </SectionCard>
 
-            {/* Detection Results */}
             {detectionResults && (
-              <Paper sx={{ p: 2, mt: 2 }}>
-                <Typography variant="h6" gutterBottom>
-                  Detection Results
-                </Typography>
-                
+              <SectionCard
+                title="Detection results"
+                subtitle={
+                  detectionResults.has_code
+                    ? `${detectionResults.statistics.total_blocks} code block${detectionResults.statistics.total_blocks === 1 ? '' : 's'} found`
+                    : 'No code blocks detected'
+                }
+                icon={<AnalyticsIcon />}
+                accentColor={detectionResults.has_code ? accentColors.success : accentColors.info}
+                sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}
+              >
                 <Alert severity={detectionResults.has_code ? 'success' : 'info'} sx={{ mb: 2 }}>
-                  {detectionResults.has_code 
+                  {detectionResults.has_code
                     ? `Found ${detectionResults.statistics.total_blocks} code block(s)`
-                    : 'No code blocks detected in the text'}
+                    : 'No code blocks detected'}
                 </Alert>
 
                 {detectionResults.has_code && (
                   <>
-                    {/* Statistics */}
-                    <Grid container spacing={2} sx={{ mb: 3 }}>
-                      <Grid item xs={6}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography variant="subtitle2" color="text.secondary">
-                              Languages Detected
-                            </Typography>
-                            <Box sx={{ mt: 1 }}>
-                              {Object.entries(detectionResults.statistics.by_language).map(([lang, count]) => (
-                                <Chip 
-                                  key={lang}
-                                  label={`${lang} (${count})`}
-                                  size="small"
-                                  icon={getLanguageIcon(lang)}
-                                  sx={{ mr: 0.5, mb: 0.5 }}
-                                />
-                              ))}
+                    <Grid container spacing={1.5} sx={{ mb: 2 }}>
+                        {[
+                          {
+                            label: 'Languages',
+                            value: detectionLanguageCount.toLocaleString(),
+                            chips: Object.entries(detectionResults.statistics.by_language).map(([lang, count]) => ({
+                              key: lang,
+                              label: `${lang} (${count})`,
+                              icon: getLanguageIcon(lang),
+                            })),
+                            color: accentColors.info,
+                            status: 'language',
+                          },
+                          {
+                            label: 'Code Types',
+                            value: detectionTypeCount.toLocaleString(),
+                            chips: Object.entries(detectionResults.statistics.by_type).map(([type, count]) => ({
+                              key: type,
+                              label: `${type} (${count})`,
+                              icon: getCodeTypeIcon(type),
+                            })),
+                            color: accentColors.purple,
+                            status: 'code-type',
+                          },
+                        ].map((group) => (
+                          <Grid item xs={12} md={6} key={group.label}>
+                            <Box
+                              sx={{
+                                height: '100%',
+                                p: 1.5,
+                                ...codePanelSx,
+                                borderColor: alpha(group.color, 0.22),
+                                bgcolor: alpha(group.color, 0.08),
+                              }}
+                            >
+                              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                                {group.label}
+                              </Typography>
+                              <Typography variant="h6" sx={{ fontWeight: 800, mb: 1 }}>
+                                {group.value}
+                              </Typography>
+                              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                {group.chips.map((chip) => (
+                                  <StatusChip
+                                    key={chip.key}
+                                    status={group.status}
+                                    label={chip.label}
+                                    icon={chip.icon}
+                                    variant="outlined"
+                                    statusConfig={CODE_SEARCH_STATUS_CONFIG}
+                                  />
+                                ))}
+                              </Box>
                             </Box>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                      <Grid item xs={6}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography variant="subtitle2" color="text.secondary">
-                              Code Types
-                            </Typography>
-                            <Box sx={{ mt: 1 }}>
-                              {Object.entries(detectionResults.statistics.by_type).map(([type, count]) => (
-                                <Chip 
-                                  key={type}
-                                  label={`${type} (${count})`}
-                                  size="small"
-                                  icon={getCodeTypeIcon(type)}
-                                  sx={{ mr: 0.5, mb: 0.5 }}
-                                />
-                              ))}
-                            </Box>
-                          </CardContent>
-                        </Card>
-                      </Grid>
+                          </Grid>
+                        ))}
                     </Grid>
 
-                    {/* Code Blocks */}
-                    <Typography variant="subtitle2" gutterBottom>
-                      Detected Code Blocks
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 1 }}>
+                      Detected blocks
                     </Typography>
                     {detectionResults.code_blocks.map((block, index) => (
-                      <Accordion key={index} defaultExpanded={index === 0}>
+                      <Accordion key={`${block.language}-${block.type}-${index}`} defaultExpanded={index === 0}>
                         <AccordionSummary expandIcon={<ExpandIcon />}>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
                             {getLanguageIcon(block.language)}
-                            <Typography>
-                              {block.language} - {block.type}
+                            <Typography sx={{ fontWeight: 700 }} noWrap>
+                              {block.language} / {block.type}
                             </Typography>
                           </Box>
                         </AccordionSummary>
                         <AccordionDetails>
-                          <SyntaxHighlighter
+                          <CodeHighlighter
                             language={block.language}
-                            style={vscDarkPlus}
+                            variant="vscDarkPlus"
+                            code={block.content}
                             customStyle={{
                               margin: 0,
-                              borderRadius: 4,
+                              borderRadius: '8px',
                               fontSize: 13
                             }}
-                          >
-                            {block.content}
-                          </SyntaxHighlighter>
-                          <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
-                            <IconButton size="small" onClick={() => copyCode(block.content)}>
-                              <CopyIcon fontSize="small" />
-                            </IconButton>
+                          />
+                          <Box sx={{ mt: 1, display: 'flex', justifyContent: 'flex-end' }}>
+                            <Tooltip title="Copy code">
+                              <IconButton size="small" onClick={() => copyCode(block.content)}>
+                                <CopyIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
                           </Box>
                         </AccordionDetails>
                       </Accordion>
                     ))}
                   </>
                 )}
-              </Paper>
+              </SectionCard>
             )}
           </Grid>
 
-          <Grid item xs={12} md={4}>
-            {/* Info Panel */}
-            <Paper sx={{ p: 2, bgcolor: alpha(theme.palette.info.main, 0.05) }}>
-              <Typography variant="subtitle2" gutterBottom>
-                About Code Detection
-              </Typography>
-              <Typography variant="body2" color="text.secondary" paragraph>
-                Our AI-powered code detection can:
-              </Typography>
-              <List dense>
-                <ListItem>
-                  <ListItemIcon><CodeIcon fontSize="small" /></ListItemIcon>
-                  <ListItemText primary="Identify code in natural text" />
-                </ListItem>
-                <ListItem>
-                  <ListItemIcon><ApiIcon fontSize="small" /></ListItemIcon>
-                  <ListItemText primary="Classify code by type and purpose" />
-                </ListItem>
-                <ListItem>
-                  <ListItemIcon><FunctionIcon fontSize="small" /></ListItemIcon>
-                  <ListItemText primary="Extract function signatures" />
-                </ListItem>
-                <ListItem>
-                  <ListItemIcon><DatabaseIcon fontSize="small" /></ListItemIcon>
-                  <ListItemText primary="Detect SQL queries and schemas" />
-                </ListItem>
-              </List>
-            </Paper>
+          <Grid item xs={12} lg={3.5} sx={{ minHeight: { md: 0 } }}>
+            <SectionCard
+              title="Detection profile"
+              subtitle="Input size and detected code composition."
+              icon={<ConfigIcon />}
+              accentColor={accentColors.purple}
+            >
+              <Box sx={{ display: 'grid', gap: 1 }}>
+                {[
+                  { label: 'Input', value: detectionText.length.toLocaleString(), detail: 'characters', color: accentColors.primary },
+                  { label: 'Blocks', value: detectionBlockCount.toLocaleString(), detail: 'detected code blocks', color: accentColors.success },
+                  { label: 'Languages', value: detectionLanguageCount.toLocaleString(), detail: 'detected languages', color: accentColors.info },
+                  { label: 'Types', value: detectionTypeCount.toLocaleString(), detail: 'detected code types', color: accentColors.warning },
+                ].map((stat) => (
+                  <MetricTile
+                    key={stat.label}
+                    label={stat.label}
+                    value={stat.value}
+                    detail={stat.detail}
+                    color={stat.color}
+                    variant="horizontal"
+                    valueSx={{ fontSize: '1rem' }}
+                  />
+                ))}
+              </Box>
+            </SectionCard>
           </Grid>
         </Grid>
       )}
-    </Box>
+    </PageShell>
   );
 };

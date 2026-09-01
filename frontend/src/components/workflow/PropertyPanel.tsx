@@ -27,14 +27,12 @@ import {
   Delete as DeleteIcon,
   ContentCopy as DuplicateIcon,
   PlayArrow as TestIcon,
-  Info as InfoIcon,
 } from '@mui/icons-material';
 import {
   WorkflowNode,
   WorkflowNodeData,
   getNodeTypeDefinition,
   NodeTypeDefinition,
-  PortDefinition,
 } from '@/types/workflow';
 import { ModelSelector } from './ModelSelector';
 import { OpenAIAPINodeConfig } from './OpenAIAPINodeConfig';

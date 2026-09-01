@@ -1,11 +1,9 @@
-FROM node:18-alpine as build
+FROM node:18-alpine AS build
 
 WORKDIR /app
 COPY package.json ./
 RUN npm install
 COPY . .
-# Skip TypeScript checking during build
-RUN sed -i 's/tsc -b && vite build/vite build/g' package.json
 RUN npm run build
 
 FROM nginx:alpine

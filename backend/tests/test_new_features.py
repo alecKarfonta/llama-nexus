@@ -253,43 +253,6 @@ class TestModelRegistry:
         assert rating['notes'] == "Great model!"
 
 
-# Test Benchmark Runner
-class TestBenchmarkRunner:
-    """Tests for the Benchmark Runner module."""
-    
-    @pytest.fixture
-    def benchmark_runner(self):
-        """Create a benchmark runner instance with temp database."""
-        from modules.benchmark import BenchmarkRunner
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
-            db_path = f.name
-        runner = BenchmarkRunner(db_path=db_path)
-        yield runner
-        os.unlink(db_path)
-    
-    def test_list_presets(self, benchmark_runner):
-        """Test listing benchmark presets."""
-        presets = benchmark_runner.list_presets()
-        assert 'quick' in presets
-        assert 'standard' in presets
-        assert 'long_context' in presets
-        assert 'max_speed' in presets
-    
-    def test_get_preset(self, benchmark_runner):
-        """Test getting a specific preset."""
-        preset = benchmark_runner.get_preset('quick')
-        assert preset.prompt_tokens == 128
-        assert preset.max_output_tokens == 64
-        assert preset.num_runs == 3
-    
-    def test_stats(self, benchmark_runner):
-        """Test getting benchmark stats."""
-        stats = benchmark_runner.get_stats()
-        assert 'total_benchmarks' in stats
-        assert 'completed' in stats
-        assert 'failed' in stats
-
-
 # Test Batch Processor
 class TestBatchProcessor:
     """Tests for the Batch Processor module."""

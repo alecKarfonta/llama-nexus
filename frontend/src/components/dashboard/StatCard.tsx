@@ -12,6 +12,7 @@ import {
   Category as FrameworksIcon,
   TrendingUp as PerformanceIcon,
 } from '@mui/icons-material'
+import { accentColors } from '@/utils/theme'
 
 export type StatCardVariant = 'models' | 'active' | 'frameworks' | 'performance'
 
@@ -27,44 +28,35 @@ export interface StatCardProps {
 
 // Variant configuration with colors and gradients
 const variantConfig: Record<StatCardVariant, {
-  gradient: string
   color: string
-  lightColor: string
+  endColor: string
   icon: React.ReactNode
-  glowColor: string
 }> = {
   models: {
-    gradient: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-    color: '#6366f1',
-    lightColor: '#818cf8',
+    color: accentColors.primary,
+    endColor: accentColors.purple,
     icon: <ModelsIcon />,
-    glowColor: 'rgba(99, 102, 241, 0.4)',
   },
   active: {
-    gradient: 'linear-gradient(135deg, #10b981 0%, #14b8a6 100%)',
-    color: '#10b981',
-    lightColor: '#34d399',
+    color: accentColors.success,
+    endColor: accentColors.info,
     icon: <ActiveIcon />,
-    glowColor: 'rgba(16, 185, 129, 0.4)',
   },
   frameworks: {
-    gradient: 'linear-gradient(135deg, #f59e0b 0%, #f97316 100%)',
-    color: '#f59e0b',
-    lightColor: '#fbbf24',
+    color: accentColors.warning,
+    endColor: accentColors.rose,
     icon: <FrameworksIcon />,
-    glowColor: 'rgba(245, 158, 11, 0.4)',
   },
   performance: {
-    gradient: 'linear-gradient(135deg, #06b6d4 0%, #0ea5e9 100%)',
-    color: '#06b6d4',
-    lightColor: '#22d3ee',
+    color: accentColors.info,
+    endColor: accentColors.primary,
     icon: <PerformanceIcon />,
-    glowColor: 'rgba(6, 182, 212, 0.4)',
   },
 }
 
 export const StatCard: React.FC<StatCardProps> = ({ variant, value, label, trend }) => {
   const config = variantConfig[variant]
+  const gradient = `linear-gradient(135deg, ${config.color} 0%, ${config.endColor} 100%)`
 
   return (
     <Card
@@ -74,12 +66,12 @@ export const StatCard: React.FC<StatCardProps> = ({ variant, value, label, trend
         background: 'linear-gradient(145deg, rgba(30, 30, 63, 0.8) 0%, rgba(26, 26, 46, 0.9) 100%)',
         backdropFilter: 'blur(12px)',
         border: '1px solid rgba(255, 255, 255, 0.06)',
-        borderRadius: 3,
+        borderRadius: '8px',
         transition: 'all 0.3s ease-in-out',
         cursor: 'pointer',
         '&:hover': {
           transform: 'translateY(-4px)',
-          boxShadow: `0 12px 40px ${config.glowColor}`,
+          boxShadow: `0 12px 40px ${alpha(config.color, 0.4)}`,
           borderColor: alpha(config.color, 0.3),
           '& .stat-icon-container': {
             transform: 'scale(1.1) rotate(5deg)',
@@ -100,7 +92,7 @@ export const StatCard: React.FC<StatCardProps> = ({ variant, value, label, trend
           width: 150,
           height: 150,
           borderRadius: '50%',
-          background: config.gradient,
+          background: gradient,
           filter: 'blur(60px)',
           opacity: 0.08,
           transition: 'opacity 0.3s ease-in-out',
@@ -122,7 +114,7 @@ export const StatCard: React.FC<StatCardProps> = ({ variant, value, label, trend
                 color: 'text.secondary',
                 fontSize: '0.6875rem',
                 fontWeight: 600,
-                letterSpacing: '0.08em',
+                letterSpacing: 0,
                 mb: 0.5,
                 display: 'block',
               }}
@@ -134,9 +126,9 @@ export const StatCard: React.FC<StatCardProps> = ({ variant, value, label, trend
               variant="h3"
               sx={{
                 fontWeight: 700,
-                fontSize: 'clamp(1.75rem, 4vw, 2.25rem)',
+                fontSize: '2rem',
                 lineHeight: 1.1,
-                background: `linear-gradient(135deg, #f1f5f9 0%, ${config.lightColor} 100%)`,
+                background: `linear-gradient(135deg, #f1f5f9 0%, ${config.endColor} 100%)`,
                 WebkitBackgroundClip: 'text',
                 WebkitTextFillColor: 'transparent',
                 mb: 1,
@@ -153,12 +145,12 @@ export const StatCard: React.FC<StatCardProps> = ({ variant, value, label, trend
                 px: 1,
                 py: 0.25,
                 borderRadius: 1,
-                bgcolor: trend.positive ? alpha('#10b981', 0.1) : alpha('#ef4444', 0.1),
+                bgcolor: trend.positive ? alpha(accentColors.success, 0.1) : alpha(accentColors.rose, 0.1),
               }}>
                 <Typography
                   variant="caption"
                   sx={{
-                    color: trend.positive ? '#34d399' : '#f87171',
+                    color: trend.positive ? accentColors.success : accentColors.rose,
                     fontWeight: 600,
                     fontSize: '0.6875rem',
                   }}
@@ -175,12 +167,12 @@ export const StatCard: React.FC<StatCardProps> = ({ variant, value, label, trend
             sx={{
               width: 48,
               height: 48,
-              borderRadius: 2,
+              borderRadius: '8px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              background: config.gradient,
-              boxShadow: `0 4px 14px ${config.glowColor}`,
+              background: gradient,
+              boxShadow: `0 4px 14px ${alpha(config.color, 0.4)}`,
               transition: 'transform 0.3s ease-in-out',
               '& .MuiSvgIcon-root': {
                 fontSize: 24,
@@ -200,7 +192,7 @@ export const StatCard: React.FC<StatCardProps> = ({ variant, value, label, trend
             left: 0,
             right: 0,
             height: 3,
-            background: config.gradient,
+            background: gradient,
             opacity: 0.6,
           }}
         />

@@ -1,13 +1,10 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Typography,
   Box,
   Grid,
   Button,
-  Card,
-  CardContent,
-  CardActions,
-  Chip,
   TextField,
   InputAdornment,
   LinearProgress,
@@ -26,8 +23,6 @@ import {
   Alert,
   Snackbar,
   CircularProgress,
-  Tooltip,
-  IconButton,
   Table,
   TableBody,
   TableCell,
@@ -36,6 +31,7 @@ import {
   TableRow,
   Paper,
   Autocomplete,
+  alpha,
 } from '@mui/material'
 import {
   Add as AddIcon,
@@ -44,10 +40,20 @@ import {
   Delete as DeleteIcon,
   Info as InfoIcon,
   Cancel as CancelIcon,
-  CloudDownload as DownloadIcon,
-  FolderOpen as FolderIcon,
+  Tune as TuneIcon,
+  RocketLaunch as DeployIcon,
 } from '@mui/icons-material'
-import { apiService } from '@/services/api'
+import type { QuantizationRouteState } from '@/types/quantizationHandoff'
+import {
+  deployableOutputForJob,
+  modelInfoFromQuantizedOutput,
+  quantizationJobNameFromModel,
+  quantizationJobHandoffKey,
+  quantizationModelHandoffKey,
+} from '@/types/quantizationHandoff'
+import { PageShell, SectionCard, StatusChip, type StatusChipConfigMap } from '@/components/common'
+import { getRoutePath } from '@/config/navigation'
+import { accentColors } from '@/utils/theme'
 
 // Type definitions
 interface QuantizationJob {
@@ -109,13 +115,39 @@ interface ModelOption {
   source?: string
 }
 
+const QUANTIZATION_STATUS_CONFIG: StatusChipConfigMap = {
+  active: { color: accentColors.warning, label: 'Active' },
+  artifact: { color: accentColors.success, label: 'Artifacts' },
+  cancelled: { color: accentColors.slate, label: 'Cancelled' },
+  completed: { color: accentColors.success, label: 'Completed' },
+  downloading: { color: accentColors.info, label: 'Downloading' },
+  failed: { color: accentColors.rose, label: 'Failed' },
+  lab: { color: accentColors.primary, label: 'Quantization lab' },
+  outputs: { color: accentColors.purple, label: 'Outputs' },
+  pipeline: { color: accentColors.info, label: 'Pipeline' },
+  preparing: { color: accentColors.info, label: 'Preparing' },
+  quantizing: { color: accentColors.warning, label: 'Quantizing' },
+  queued: { color: accentColors.purple, label: 'Queued' },
+  ready: { color: accentColors.success, label: 'Ready' },
+}
+
 export const QuantizationPage: React.FC = () => {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const deployPath = getRoutePath('deploy')
+  const routeState = location.state as QuantizationRouteState | null
+  const incomingJob = routeState?.job || routeState?.quantizationJob || null
+  const incomingModel = routeState?.model || null
+  const appliedHandoffRef = useRef('')
+  const appliedModelHandoffRef = useRef('')
   const [jobs, setJobs] = useState<QuantizationJob[]>([])
   const [loading, setLoading] = useState(true)
+  const [creatingJob, setCreatingJob] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [wizardOpen, setWizardOpen] = useState(false)
   const [infoDialogOpen, setInfoDialogOpen] = useState(false)
   const [selectedJob, setSelectedJob] = useState<QuantizationJob | null>(null)
+  const [handoffNotice, setHandoffNotice] = useState<string | null>(null)
   const [snackbar, setSnackbar] = useState<{
     open: boolean
     message: string
@@ -147,6 +179,72 @@ export const QuantizationPage: React.FC = () => {
     const interval = setInterval(fetchJobs, 5000) // Refresh every 5 seconds
     return () => clearInterval(interval)
   }, [])
+
+  useEffect(() => {
+    if (!incomingJob?.id || jobs.length === 0) return
+
+    const handoffKey = quantizationJobHandoffKey(incomingJob)
+    const matchedJob = jobs.find((job) => job.id === incomingJob.id)
+
+    if (!matchedJob) {
+      if (appliedHandoffRef.current !== `${handoffKey}:missing`) {
+        setSearchTerm(incomingJob.name || incomingJob.id)
+        setHandoffNotice(`${incomingJob.name || incomingJob.id} has been queued; refresh will surface it when the worker records the job.`)
+        appliedHandoffRef.current = `${handoffKey}:missing`
+      }
+      return
+    }
+
+    if (appliedHandoffRef.current === `${handoffKey}:matched`) return
+
+    setSelectedJob(matchedJob)
+    setInfoDialogOpen(true)
+    setSearchTerm('')
+    setHandoffNotice(
+      incomingJob.source === 'adapter-export'
+        ? `${incomingJob.adapterName || matchedJob.name} export is open in the quantization pipeline.`
+        : `${matchedJob.name} is open in the quantization pipeline.`
+    )
+    appliedHandoffRef.current = `${handoffKey}:matched`
+  }, [
+    incomingJob?.adapterName,
+    incomingJob?.id,
+    incomingJob?.name,
+    incomingJob?.quantType,
+    incomingJob?.source,
+    jobs,
+  ])
+
+  useEffect(() => {
+    if (!incomingModel?.sourceModel) return
+
+    const handoffKey = quantizationModelHandoffKey(incomingModel)
+    if (appliedModelHandoffRef.current === handoffKey) return
+    appliedModelHandoffRef.current = handoffKey
+
+    setWizardOpen(true)
+    setActiveStep(0)
+    setJobName(quantizationJobNameFromModel(incomingModel.name))
+    setSourceModel(incomingModel.sourceModel)
+    setModelInputValue(incomingModel.sourceModel)
+    setSelectedFormats(['gguf'])
+    setSelectedGGUFTypes(['Q4_K_M'])
+    setHandoffNotice(`${incomingModel.name} is ready for GGUF quantization. Review the defaults and create a job when ready.`)
+  }, [
+    incomingModel?.localPath,
+    incomingModel?.name,
+    incomingModel?.repositoryId,
+    incomingModel?.sourceModel,
+    incomingModel?.sourceType,
+  ])
+
+  useEffect(() => {
+    if (!selectedJob) return
+    const refreshedJob = jobs.find((job) => job.id === selectedJob.id)
+    if (refreshedJob) {
+      setSelectedJob(refreshedJob)
+    }
+  }, [jobs, selectedJob?.id])
 
   const fetchJobs = async () => {
     try {
@@ -193,15 +291,8 @@ export const QuantizationPage: React.FC = () => {
     parameters: m.parameters,
     source: m.source,
   }))
-
-  const handleCreateJob = () => {
-    setWizardOpen(true)
-    setActiveStep(0)
-    setJobName('')
-    setSourceModel('')
-    setSelectedFormats([])
-    setSelectedGGUFTypes([])
-  }
+  const selectedModelOption = modelOptions.find((option) => option.value === sourceModel)
+  const selectedSourceType = selectedModelOption?.type || (incomingModel?.sourceModel === sourceModel ? incomingModel.sourceType : undefined) || 'huggingface'
 
   const handleWizardNext = () => {
     if (activeStep === wizardSteps.length - 2) {
@@ -235,6 +326,7 @@ export const QuantizationPage: React.FC = () => {
   }
 
   const handleSubmitJob = async () => {
+    setCreatingJob(true)
     try {
       const response = await fetch('/api/v1/quantize/jobs', {
         method: 'POST',
@@ -242,7 +334,7 @@ export const QuantizationPage: React.FC = () => {
         body: JSON.stringify({
           name: jobName,
           source_model: sourceModel,
-          source_type: 'huggingface',
+          source_type: selectedSourceType,
           output_formats: selectedFormats,
           gguf_quant_types: selectedGGUFTypes,
         }),
@@ -265,7 +357,73 @@ export const QuantizationPage: React.FC = () => {
         message: 'Failed to create job: ' + (error as Error).message,
         severity: 'error',
       })
+    } finally {
+      setCreatingJob(false)
     }
+  }
+
+  const defaultGGUFType = ggufTypes.some((type) => type.value === 'Q4_K_M')
+    ? 'Q4_K_M'
+    : ggufTypes[0]?.value || 'Q4_K_M'
+  const quickCreateReady = Boolean(jobName.trim() && sourceModel.trim())
+
+  useEffect(() => {
+    if (incomingModel?.sourceModel || sourceModel || localModels.length === 0) return
+
+    const firstModel = localModels[0]
+    const modelValue = firstModel.localPath || firstModel.repositoryId || firstModel.name
+    if (!modelValue) return
+
+    setSourceModel(modelValue)
+    setModelInputValue(modelOptions[0]?.label || modelValue)
+    setJobName((current) => current || quantizationJobNameFromModel(firstModel.name || modelValue))
+    setSelectedFormats((current) => current.length > 0 ? current : ['gguf'])
+    setSelectedGGUFTypes((current) => current.length > 0 ? current : [defaultGGUFType])
+  }, [defaultGGUFType, incomingModel?.sourceModel, localModels, modelOptions, sourceModel])
+
+  const handleQuickCreateJob = async () => {
+    if (!jobName.trim() || !sourceModel.trim()) return
+
+    setCreatingJob(true)
+    try {
+      const response = await fetch('/api/v1/quantize/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: jobName.trim(),
+          source_model: sourceModel.trim(),
+          source_type: selectedSourceType,
+          output_formats: ['gguf'],
+          gguf_quant_types: [defaultGGUFType],
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to create job')
+      }
+
+      setSnackbar({
+        open: true,
+        message: 'Quantization job created successfully!',
+        severity: 'success',
+      })
+      fetchJobs()
+    } catch (error) {
+      setSnackbar({
+        open: true,
+        message: 'Failed to create job: ' + (error as Error).message,
+        severity: 'error',
+      })
+    } finally {
+      setCreatingJob(false)
+    }
+  }
+
+  const handleOpenDraftInWizard = () => {
+    setWizardOpen(true)
+    setActiveStep(0)
+    if (selectedFormats.length === 0) setSelectedFormats(['gguf'])
+    if (selectedGGUFTypes.length === 0) setSelectedGGUFTypes([defaultGGUFType])
   }
 
   const handleCancelJob = async (jobId: string) => {
@@ -309,6 +467,15 @@ export const QuantizationPage: React.FC = () => {
     setInfoDialogOpen(true)
   }
 
+  const handleDeployOutput = (job: QuantizationJob, output: QuantizedOutput) => {
+    navigate(deployPath, {
+      state: {
+        backend: 'llamacpp',
+        model: modelInfoFromQuantizedOutput(job, output),
+      },
+    })
+  }
+
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B'
     const k = 1024
@@ -317,65 +484,26 @@ export const QuantizationPage: React.FC = () => {
     return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i]
   }
 
-  const getStatusColor = (status: string) => {
-    const colors: Record<string, 'default' | 'info' | 'warning' | 'success' | 'error'> = {
-      queued: 'default',
-      downloading: 'info',
-      preparing: 'info',
-      quantizing: 'warning',
-      completed: 'success',
-      failed: 'error',
-      cancelled: 'default',
-    }
-    return colors[status] || 'default'
-  }
-
   const filteredJobs = jobs.filter((job) =>
     job.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     job.source_model.toLowerCase().includes(searchTerm.toLowerCase())
   )
-
-  return (
-    <Box sx={{ width: '100%', px: 3, py: 2 }}>
-      {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-        <Box>
-          <Typography variant="h1" sx={{ fontWeight: 700, fontSize: { xs: '1.25rem', sm: '1.5rem' }, mb: 0.5 }}>
-            Model Quantization
-          </Typography>
-          <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: '0.8125rem' }}>
-            Convert models to optimized formats (GGUF, GPTQ, AWQ)
-          </Typography>
-        </Box>
-
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Button
-            variant="outlined"
-            startIcon={<RefreshIcon />}
-            onClick={fetchJobs}
-            disabled={loading}
-            size="small"
-            sx={{ fontSize: '0.75rem' }}
-          >
-            Refresh
-          </Button>
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={handleCreateJob}
-            size="small"
-            sx={{ fontSize: '0.75rem' }}
-          >
-            New Job
-          </Button>
-        </Box>
-      </Box>
-
-      {/* Search */}
-      <Box sx={{ mb: 3 }}>
+  const activeJobs = jobs.filter((job) => !['completed', 'failed', 'cancelled'].includes(job.status)).length
+  const completedJobs = jobs.filter((job) => job.status === 'completed').length
+  const failedJobs = jobs.filter((job) => job.status === 'failed').length
+  const totalOutputs = jobs.reduce((total, job) => total + (job.total_outputs || 0), 0)
+  const completedOutputs = jobs.reduce((total, job) => total + (job.completed_outputs || 0), 0)
+  const latestJob = jobs[0]
+  const visibleJobCountLabel = `${filteredJobs.length} visible`
+  const hasJobSearch = searchTerm.trim().length > 0
+  const showJobsPanel = loading || jobs.length > 0 || hasJobSearch
+  const shouldShowJobSearch = jobs.length > 0 || hasJobSearch
+  const prioritizeCreatePanel = !showJobsPanel
+  const quantizationHeaderActions = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      {shouldShowJobSearch && (
         <TextField
-          fullWidth
-          placeholder="Search quantization jobs..."
+          placeholder="Search jobs"
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           InputProps={{
@@ -385,105 +513,380 @@ export const QuantizationPage: React.FC = () => {
               </InputAdornment>
             ),
           }}
-          sx={{ maxWidth: 500 }}
           size="small"
+          sx={{
+            minWidth: { xs: '100%', sm: 220 },
+            width: { xs: '100%', sm: 250 },
+            '& .MuiInputBase-root': { height: 34, borderRadius: '8px' },
+          }}
         />
-      </Box>
-
-      {/* Jobs Grid */}
-      {loading && jobs.length === 0 ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 300 }}>
-          <CircularProgress />
-        </Box>
-      ) : (
-        <Grid container spacing={2}>
-          {filteredJobs.map((job) => (
-            <Grid item key={job.id} xs={12} sm={6} md={4} lg={3}>
-              <Card variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                <CardContent sx={{ flexGrow: 1 }}>
-                  <Typography variant="h6" noWrap title={job.name} sx={{ fontSize: '0.95rem', fontWeight: 600, mb: 0.5 }}>
-                    {job.name}
-                  </Typography>
-                  <Typography color="textSecondary" gutterBottom sx={{ fontSize: '0.75rem' }} noWrap>
-                    {job.source_model}
-                  </Typography>
-
-                  <Box display="flex" alignItems="center" gap={0.5} mb={1} flexWrap="wrap">
-                    <Chip label={job.status} size="small" color={getStatusColor(job.status)} sx={{ fontSize: '0.7rem', height: 20 }} />
-                    <Chip
-                      label={`${job.completed_outputs}/${job.total_outputs}`}
-                      size="small"
-                      variant="outlined"
-                      sx={{ fontSize: '0.7rem', height: 20 }}
-                    />
-                  </Box>
-
-                  {job.status !== 'completed' && job.status !== 'failed' && job.status !== 'cancelled' && (
-                    <Box sx={{ mt: 1 }}>
-                      <Box display="flex" justifyContent="space-between" alignItems="center" mb={0.5}>
-                        <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                          {job.current_step}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                          {Math.round(job.progress)}%
-                        </Typography>
-                      </Box>
-                      <LinearProgress variant="determinate" value={job.progress} sx={{ height: 4, borderRadius: 2 }} />
-                    </Box>
-                  )}
-
-                  {job.error && (
-                    <Alert severity="error" sx={{ mt: 1, fontSize: '0.7rem' }}>
-                      {job.error}
-                    </Alert>
-                  )}
-                </CardContent>
-
-                <CardActions sx={{ pt: 0, pb: 1, px: 1, gap: 0.5 }}>
-                  <Button size="small" onClick={() => handleShowInfo(job)} startIcon={<InfoIcon />} sx={{ fontSize: '0.7rem' }}>
-                    Info
-                  </Button>
-                  {job.status !== 'completed' && job.status !== 'failed' && job.status !== 'cancelled' && (
-                    <Button
-                      size="small"
-                      onClick={() => handleCancelJob(job.id)}
-                      color="warning"
-                      startIcon={<CancelIcon />}
-                      sx={{ fontSize: '0.7rem' }}
-                    >
-                      Cancel
-                    </Button>
-                  )}
-                  {(job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') && (
-                    <Button
-                      size="small"
-                      onClick={() => handleDeleteJob(job.id)}
-                      color="error"
-                      startIcon={<DeleteIcon />}
-                      sx={{ fontSize: '0.7rem' }}
-                    >
-                      Delete
-                    </Button>
-                  )}
-                </CardActions>
-              </Card>
-            </Grid>
-          ))}
-
-          {filteredJobs.length === 0 && !loading && (
-            <Grid item xs={12}>
-              <Box sx={{ textAlign: 'center', py: 6, bgcolor: 'background.paper', borderRadius: 1, border: '1px dashed', borderColor: 'grey.300' }}>
-                <Typography variant="h6" color="text.secondary" sx={{ mb: 1, fontWeight: 600, fontSize: '1rem' }}>
-                  No quantization jobs found
-                </Typography>
-                <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreateJob} size="small" sx={{ fontSize: '0.75rem', mt: 2 }}>
-                  Create Your First Job
-                </Button>
-              </Box>
-            </Grid>
-          )}
-        </Grid>
       )}
+
+      <Button
+        size="small"
+        variant="outlined"
+        startIcon={<RefreshIcon />}
+        onClick={fetchJobs}
+        disabled={loading}
+        sx={{ height: 34, borderRadius: '8px', borderColor: 'divider', fontWeight: 800, px: 1.25 }}
+      >
+        Refresh
+      </Button>
+    </Box>
+  )
+  const quantizationSummaryRow = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+      <StatusChip
+        status={activeJobs > 0 ? 'active' : 'ready'}
+        label={activeJobs > 0 ? `${activeJobs} active` : 'Ready'}
+        statusConfig={QUANTIZATION_STATUS_CONFIG}
+        height={22}
+      />
+      {jobs.length > 0 && (
+        <StatusChip status="pipeline" label={`${jobs.length} jobs`} statusConfig={QUANTIZATION_STATUS_CONFIG} height={22} />
+      )}
+      {jobs.length > 0 && (
+        <StatusChip status="outputs" label={visibleJobCountLabel} statusConfig={QUANTIZATION_STATUS_CONFIG} height={22} />
+      )}
+      {completedJobs > 0 && (
+        <StatusChip status="completed" label={`${completedJobs} done`} statusConfig={QUANTIZATION_STATUS_CONFIG} height={22} />
+      )}
+      {totalOutputs > 0 && (
+        <StatusChip
+          status={failedJobs > 0 ? 'failed' : 'outputs'}
+          label={`${completedOutputs}/${totalOutputs} outputs`}
+          statusConfig={QUANTIZATION_STATUS_CONFIG}
+          height={22}
+        />
+      )}
+      {localModels.length > 0 && (
+        <StatusChip status="lab" label={`${localModels.length} models`} statusConfig={QUANTIZATION_STATUS_CONFIG} height={22} />
+      )}
+      <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
+        {latestJob ? `Latest: ${latestJob.name}` : `Default GGUF: ${defaultGGUFType}`}
+      </Typography>
+    </Box>
+  )
+
+  return (
+    <PageShell
+      sx={{
+        py: 1.25,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1.25,
+        overflow: 'visible',
+      }}
+    >
+      {handoffNotice && (
+        <Alert severity="info" onClose={() => setHandoffNotice(null)}>
+          {handoffNotice}
+        </Alert>
+      )}
+
+      <Grid
+        container
+        spacing={1.5}
+        data-quantization-workspace
+        sx={{ alignItems: 'flex-start', overflow: 'visible' }}
+      >
+        {showJobsPanel && (
+          <Grid item xs={12} lg={prioritizeCreatePanel ? 5 : 8} sx={{ order: { xs: 2, lg: prioritizeCreatePanel ? 2 : 1 } }}>
+            <SectionCard
+              title="Jobs"
+              icon={<TuneIcon />}
+              accentColor={accentColors.primary}
+              action={quantizationHeaderActions}
+            >
+              {quantizationSummaryRow}
+              {loading && jobs.length === 0 ? (
+                <Box sx={{ minHeight: 120, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                  <CircularProgress />
+                </Box>
+              ) : filteredJobs.length === 0 ? (
+                <Box
+                  data-quantization-empty-state
+                  sx={{
+                    p: 1.25,
+                    display: 'flex',
+                    alignItems: { xs: 'flex-start', sm: 'center' },
+                    justifyContent: 'space-between',
+                    gap: 1,
+                    flexWrap: 'wrap',
+                    bgcolor: alpha(accentColors.primary, 0.04),
+                    borderRadius: '8px',
+                    border: '1px dashed',
+                    borderColor: 'divider',
+                  }}
+                >
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                      {jobs.length === 0 ? 'No jobs' : 'No matching jobs'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {jobs.length === 0
+                        ? 'Create a GGUF job.'
+                        : 'Adjust the search term or refresh the job list.'}
+                    </Typography>
+                  </Box>
+                  {jobs.length > 0 && (
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      onClick={() => setSearchTerm('')}
+                      sx={{ height: 34, borderRadius: '8px', borderColor: 'divider', fontWeight: 800 }}
+                    >
+                      Clear search
+                    </Button>
+                  )}
+                </Box>
+              ) : (
+                <Grid
+                  container
+                  spacing={1.25}
+                  sx={{ alignContent: 'flex-start' }}
+                >
+                  {filteredJobs.map((job) => {
+                    const deployableOutput = deployableOutputForJob(job)
+                    const isHighlighted = incomingJob?.id === job.id || selectedJob?.id === job.id
+                    const isActive = !['completed', 'failed', 'cancelled'].includes(job.status)
+
+                    return (
+                      <Grid item key={job.id} xs={12} sm={6} md={4}>
+                        <Box
+                          sx={{
+                            height: '100%',
+                            minHeight: 210,
+                            p: 1.5,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 1.1,
+                            borderRadius: '8px',
+                            border: '1px solid',
+                            borderColor: isHighlighted ? alpha(accentColors.primary, 0.65) : 'divider',
+                            bgcolor: isHighlighted ? alpha(accentColors.primary, 0.08) : 'background.paper',
+                            boxShadow: isHighlighted ? `0 0 0 1px ${alpha(accentColors.primary, 0.25)}` : undefined,
+                            transition: 'border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease',
+                            '&:hover': {
+                              borderColor: alpha(accentColors.primary, 0.42),
+                              transform: 'translateY(-1px)',
+                            },
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography variant="h6" title={job.name} sx={{ fontSize: '0.95rem', fontWeight: 700, mb: 0.5, wordBreak: 'break-word' }}>
+                              {job.name}
+                            </Typography>
+                            <Typography color="text.secondary" sx={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>
+                              {job.source_model}
+                            </Typography>
+                          </Box>
+
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                            <StatusChip status={job.status} statusConfig={QUANTIZATION_STATUS_CONFIG} height={22} />
+                            <StatusChip
+                              status="outputs"
+                              label={`${job.completed_outputs}/${job.total_outputs}`}
+                              statusConfig={QUANTIZATION_STATUS_CONFIG}
+                              height={22}
+                            />
+                          </Box>
+
+                          {isActive && (
+                            <Box>
+                              <Box display="flex" justifyContent="space-between" alignItems="center" gap={1} mb={0.5}>
+                                <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.68rem', overflowWrap: 'anywhere' }}>
+                                  {job.current_step}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.68rem', flexShrink: 0 }}>
+                                  {Math.round(job.progress)}%
+                                </Typography>
+                              </Box>
+                              <LinearProgress
+                                variant="determinate"
+                                value={job.progress}
+                                sx={{
+                                  height: 5,
+                                  borderRadius: '3px',
+                                  bgcolor: alpha(accentColors.primary, 0.12),
+                                  '& .MuiLinearProgress-bar': {
+                                    borderRadius: '3px',
+                                    bgcolor: accentColors.primary,
+                                  },
+                                }}
+                              />
+                            </Box>
+                          )}
+
+                          {job.error && (
+                            <Alert severity="error" sx={{ fontSize: '0.7rem' }}>
+                              {job.error}
+                            </Alert>
+                          )}
+
+                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 'auto' }}>
+                            <Button size="small" onClick={() => handleShowInfo(job)} startIcon={<InfoIcon />} sx={{ borderRadius: '8px', fontSize: '0.72rem' }}>
+                              Info
+                            </Button>
+                            {deployableOutput && (
+                              <Button
+                                size="small"
+                                onClick={() => handleDeployOutput(job, deployableOutput)}
+                                startIcon={<DeployIcon />}
+                                sx={{ borderRadius: '8px', fontSize: '0.72rem' }}
+                              >
+                                Deploy
+                              </Button>
+                            )}
+                            {isActive && (
+                              <Button
+                                size="small"
+                                onClick={() => handleCancelJob(job.id)}
+                                color="warning"
+                                startIcon={<CancelIcon />}
+                                sx={{ borderRadius: '8px', fontSize: '0.72rem' }}
+                              >
+                                Cancel
+                              </Button>
+                            )}
+                            {!isActive && (
+                              <Button
+                                size="small"
+                                onClick={() => handleDeleteJob(job.id)}
+                                color="error"
+                                startIcon={<DeleteIcon />}
+                                sx={{ borderRadius: '8px', fontSize: '0.72rem' }}
+                              >
+                                Delete
+                              </Button>
+                            )}
+                          </Box>
+                        </Box>
+                      </Grid>
+                    )
+                  })}
+                </Grid>
+              )}
+            </SectionCard>
+          </Grid>
+        )}
+
+        <Grid
+          item
+          xs={12}
+          md={showJobsPanel ? 12 : 10}
+          lg={showJobsPanel ? 4 : 8}
+          sx={{ minHeight: 0, order: { xs: 1, lg: prioritizeCreatePanel ? 1 : 2 } }}
+        >
+          <SectionCard
+            title="Create"
+            icon={<AddIcon />}
+            accentColor={accentColors.info}
+            action={!showJobsPanel ? quantizationHeaderActions : undefined}
+          >
+            <Box
+              sx={{
+                display: 'grid',
+                gap: 1.25,
+                gridTemplateColumns: {
+                  xs: '1fr',
+                  sm: prioritizeCreatePanel || !showJobsPanel ? 'repeat(2, minmax(0, 1fr))' : '1fr',
+                },
+              }}
+            >
+              <TextField
+                fullWidth
+                size="small"
+                label="Job name"
+                value={jobName}
+                onChange={(event) => setJobName(event.target.value)}
+                placeholder="my-model-q4"
+              />
+              <Autocomplete
+                freeSolo
+                size="small"
+                options={modelOptions}
+                value={modelOptions.find((option) => option.value === sourceModel) || null}
+                inputValue={modelInputValue}
+                onInputChange={(_, newInputValue) => {
+                  setModelInputValue(newInputValue)
+                  setSourceModel(newInputValue)
+                }}
+                onChange={(_, newValue) => {
+                  if (typeof newValue === 'string') {
+                    setSourceModel(newValue)
+                    setModelInputValue(newValue)
+                  } else if (newValue) {
+                    setSourceModel(newValue.value)
+                    setModelInputValue(newValue.label)
+                    if (!jobName && newValue.label) {
+                      const baseName = newValue.label.split(' (')[0]
+                      setJobName(`${baseName}-q4`)
+                    }
+                  } else {
+                    setSourceModel('')
+                    setModelInputValue('')
+                  }
+                }}
+                getOptionLabel={(option) => (typeof option === 'string' ? option : option.label)}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label="Source model"
+                    placeholder="Local model or HuggingFace ID"
+                  />
+                )}
+              />
+              <Box
+                sx={{
+                  display: 'flex',
+                  gap: 0.75,
+                  flexWrap: 'wrap',
+                  gridColumn: { sm: prioritizeCreatePanel || !showJobsPanel ? '1 / -1' : 'auto' },
+                }}
+              >
+                <StatusChip status="outputs" label="GGUF" statusConfig={QUANTIZATION_STATUS_CONFIG} height={22} />
+                <StatusChip status="quantizing" label={defaultGGUFType} statusConfig={QUANTIZATION_STATUS_CONFIG} height={22} />
+                <StatusChip status="pipeline" label={selectedSourceType} statusConfig={QUANTIZATION_STATUS_CONFIG} height={22} />
+              </Box>
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: 1,
+                  flexWrap: 'wrap',
+                  gridColumn: { sm: prioritizeCreatePanel || !showJobsPanel ? '1 / -1' : 'auto' },
+                }}
+              >
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={handleOpenDraftInWizard}
+                  sx={{ height: 34, borderRadius: '8px', borderColor: 'divider', fontWeight: 800 }}
+                >
+                  Wizard
+                </Button>
+                {quickCreateReady ? (
+                  <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={creatingJob ? <CircularProgress size={14} color="inherit" /> : <AddIcon />}
+                    onClick={handleQuickCreateJob}
+                    disabled={creatingJob}
+                    sx={{ height: 34, borderRadius: '8px', fontWeight: 800 }}
+                  >
+                    Create
+                  </Button>
+                ) : (
+                  <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center', ml: 'auto' }}>
+                    Select a source model
+                  </Typography>
+                )}
+              </Box>
+            </Box>
+          </SectionCard>
+        </Grid>
+      </Grid>
 
       {/* Create Job Wizard Dialog */}
       <Dialog open={wizardOpen} onClose={() => setWizardOpen(false)} maxWidth="md" fullWidth>
@@ -515,12 +918,15 @@ export const QuantizationPage: React.FC = () => {
                 inputValue={modelInputValue}
                 onInputChange={(_, newInputValue) => {
                   setModelInputValue(newInputValue)
+                  setSourceModel(newInputValue)
                 }}
                 onChange={(_, newValue) => {
                   if (typeof newValue === 'string') {
                     setSourceModel(newValue)
+                    setModelInputValue(newValue)
                   } else if (newValue) {
                     setSourceModel(newValue.value)
+                    setModelInputValue(newValue.label)
                     // Auto-set job name if empty
                     if (!jobName && newValue.label) {
                       const baseName = newValue.label.split(' (')[0]
@@ -721,8 +1127,8 @@ export const QuantizationPage: React.FC = () => {
             </Button>
           )}
           {activeStep === wizardSteps.length - 1 && (
-            <Button onClick={handleSubmitJob} variant="contained" color="primary">
-              Create Job
+            <Button onClick={handleSubmitJob} variant="contained" color="primary" disabled={creatingJob}>
+              {creatingJob ? 'Creating...' : 'Create Job'}
             </Button>
           )}
         </DialogActions>
@@ -742,7 +1148,7 @@ export const QuantizationPage: React.FC = () => {
                   <Typography variant="subtitle2" color="text.secondary">
                     Status
                   </Typography>
-                  <Chip label={selectedJob.status} color={getStatusColor(selectedJob.status)} size="small" sx={{ mt: 0.5 }} />
+                  <StatusChip status={selectedJob.status} statusConfig={QUANTIZATION_STATUS_CONFIG} sx={{ mt: 0.5 }} />
                 </Grid>
                 <Grid item xs={6}>
                   <Typography variant="subtitle2" color="text.secondary">
@@ -768,6 +1174,7 @@ export const QuantizationPage: React.FC = () => {
                           <TableCell>Type</TableCell>
                           <TableCell>Size</TableCell>
                           <TableCell>Status</TableCell>
+                          <TableCell align="right">Action</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
@@ -777,7 +1184,22 @@ export const QuantizationPage: React.FC = () => {
                             <TableCell>{output.quant_type}</TableCell>
                             <TableCell>{output.file_size > 0 ? formatBytes(output.file_size) : '-'}</TableCell>
                             <TableCell>
-                              <Chip label={output.status} size="small" color={output.status === 'completed' ? 'success' : 'default'} />
+                              <StatusChip status={output.status} statusConfig={QUANTIZATION_STATUS_CONFIG} />
+                            </TableCell>
+                            <TableCell align="right">
+                              {output.format === 'gguf' && output.status === 'completed' && output.file_path ? (
+                                <Button
+                                  size="small"
+                                  startIcon={<DeployIcon />}
+                                  onClick={() => handleDeployOutput(selectedJob, output)}
+                                >
+                                  Deploy
+                                </Button>
+                              ) : (
+                                <Typography variant="caption" color="text.secondary">
+                                  -
+                                </Typography>
+                              )}
                             </TableCell>
                           </TableRow>
                         ))}
@@ -805,6 +1227,6 @@ export const QuantizationPage: React.FC = () => {
           {snackbar.message}
         </Alert>
       </Snackbar>
-    </Box>
+    </PageShell>
   )
 }

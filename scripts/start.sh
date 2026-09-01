@@ -20,10 +20,12 @@ patterns=(
     "${MODEL_NAME}_${MODEL_VARIANT}.gguf"
     "${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"  # Multi-part file pattern
     "${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00003.gguf"  # 3-part pattern
+    "${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00004.gguf"  # 4-part pattern (e.g. UD-Q4_K_XL Qwen3.8-Flash-Next)
     # Check in subdirectories (HuggingFace download style)
     "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}.gguf"  # In variant subdirectory
     "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"  # Multi-part in subdirectory
     "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00003.gguf"  # 3-part in subdirectory
+    "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00004.gguf"  # 4-part in subdirectory
     "gpt-oss-20b-GGUF/${MODEL_NAME}-${MODEL_VARIANT}.gguf" # Specific pattern for gpt-oss-20b
 )
 
@@ -72,6 +74,20 @@ for pattern in "${patterns[@]}"; do
         break
     fi
 done
+
+# [TIME] | INFO | START.SH.RESOLVE_MODEL | Glob fallback for split GGUFs of any shard count
+# (e.g. Qwen3.8-Flash-Next UD-Q4_K_XL ships as 4 shards inside UD-Q4_K_XL/)
+if [ -z "$MODEL_PATH" ]; then
+    for split_dir in "/home/llamacpp/models" "/home/llamacpp/models/${MODEL_VARIANT}"; do
+        split_match=$(ls "${split_dir}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-"*.gguf 2>/dev/null | head -1)
+        if [ -n "$split_match" ]; then
+            MODEL_PATH="$split_match"
+            MODEL_FILE="${split_match#/home/llamacpp/models/}"
+            echo "Found split model via glob: $MODEL_PATH"
+            break
+        fi
+    done
+fi
 
 # If no existing file found, determine the correct download filename
 if [ -z "$MODEL_PATH" ]; then
@@ -205,8 +221,13 @@ if [ $# -eq 0 ]; then
         echo "🖼️  Enabled vision support with multimodal projection"
     fi
 
-    # Add template only when a filename is set and the file exists (empty CHAT_TEMPLATE = GGUF default)
-    if [[ -n "$CHAT_TEMPLATE" && -f "$TEMPLATE_PATH" ]]; then
+    # Template modes:
+    #   empty CHAT_TEMPLATE          = GGUF embedded, no --jinja (legacy default)
+    #   CHAT_TEMPLATE=__embedded_jinja__ = GGUF embedded + --jinja only (multi-turn chat)
+    #   CHAT_TEMPLATE=file.jinja     = custom file + --jinja + --chat-template-file
+    if [[ "$CHAT_TEMPLATE" == "__embedded_jinja__" ]]; then
+        CMD_ARGS+=("--jinja")
+    elif [[ -n "$CHAT_TEMPLATE" && -f "$TEMPLATE_PATH" ]]; then
         CMD_ARGS+=("--jinja" "--chat-template-file" "$TEMPLATE_PATH")
     fi
 

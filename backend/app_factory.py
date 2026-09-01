@@ -65,6 +65,10 @@ try:
 except ImportError:
     tools = None
 try:
+    import routes.mcp as mcp
+except ImportError:
+    mcp = None
+try:
     import routes.profiles as profiles
 except ImportError:
     profiles = None
@@ -154,6 +158,8 @@ def create_app(lifespan_handler) -> FastAPI:
         app.include_router(reddit.router)
     if tools is not None:
         app.include_router(tools.router)
+    if mcp is not None:
+        app.include_router(mcp.router)
     if profiles is not None:
         app.include_router(profiles.router)
 
@@ -170,13 +176,5 @@ def create_app(lifespan_handler) -> FastAPI:
                 "backend": "docker" if manager.use_docker else "subprocess",
             }
         }
-
-    # Initialize MCP
-    try:
-        from mcp_server import create_mcp_endpoints
-        app = create_mcp_endpoints(app)
-        logger.info("MCP endpoints initialized")
-    except ImportError as e:
-        logger.warning(f"Failed to initialize MCP endpoints: {e}")
 
     return app

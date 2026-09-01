@@ -12,21 +12,7 @@ path = lm_eval.models.api_models.__file__
 with open(path) as f:
     content = f.read()
 
-# Patch 2: Return defaults on exception instead of crashing
-old = """        except BaseException as e:
-            eval_logger.error(f"Exception:{repr(e)}, retrying.")
-            raise e"""
-new = """        except BaseException as e:
-            eval_logger.error(f"Exception:{repr(e)}, returning default values.")
-            if generate:
-                return [""] * len(messages)
-            else:
-                return [(0.0, False)] * len(messages)"""
-if old in content:
-    content = content.replace(old, new)
-    print("Patched amodel_call to return defaults on exception")
-
-# Patch 3: Include ctxlens in API payload so proxy knows where context ends
+# Patch 2: Include ctxlens in API payload so proxy knows where context ends
 old_payload = """        payload = self._create_payload(
             self.create_message(messages),
             generate=generate,
@@ -52,6 +38,39 @@ with open(path, "w") as f:
 PYEOF
     echo "[entrypoint] Patched lm-eval api_models.py"
 fi
+
+python3 << 'PYEOF'
+try:
+    import lm_eval.models.openai_completions as openai_completions
+except Exception as exc:
+    print(f"[entrypoint] Skipping openai_completions.py patch: {exc}")
+    raise SystemExit(0)
+
+path = openai_completions.__file__
+with open(path) as f:
+    content = f.read()
+
+old = """                    if tok != max(top.values()):
+                        is_greedy = False
+                        break
+"""
+new = """                    if not top:
+                        is_greedy = False
+                        continue
+                    if tok != max(top.values()):
+                        is_greedy = False
+                        break
+"""
+if old in content:
+    content = content.replace(old, new)
+    with open(path, "w") as f:
+        f.write(content)
+    print("[entrypoint] Patched openai_completions.py to tolerate empty top_logprobs")
+elif "if not top:" in content:
+    print("[entrypoint] openai_completions.py already handles empty top_logprobs")
+else:
+    print("[entrypoint] WARNING: openai_completions.py greedy parser patch did not match")
+PYEOF
 
 # Start the logprobs proxy in the background
 python3 /app/logprobs_proxy.py &

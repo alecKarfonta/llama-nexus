@@ -4,6 +4,7 @@
  */
 
 import type { WebSocketMessage, MetricsUpdate, StatusUpdate, DownloadUpdate } from '@/types/api';
+import { debugLog } from '@/utils/debug';
 
 export type WebSocketEventHandler = (message: WebSocketMessage) => void;
 
@@ -32,7 +33,7 @@ class WebSocketService {
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        console.log('Attempting to connect to WebSocket:', this.url);
+        debugLog('websocket', 'Attempting to connect to WebSocket', this.url);
         this.ws = new WebSocket(this.url);
 
         // Set a timeout for connection
@@ -45,7 +46,7 @@ class WebSocketService {
 
         this.ws.onopen = () => {
           clearTimeout(connectionTimeout);
-          console.log('WebSocket connected successfully');
+          debugLog('websocket', 'WebSocket connected successfully');
           resolve();
         };
 
@@ -60,7 +61,7 @@ class WebSocketService {
 
         this.ws.onclose = (event) => {
           clearTimeout(connectionTimeout);
-          console.log('WebSocket disconnected:', event.code, event.reason);
+          debugLog('websocket', 'WebSocket disconnected', event.code, event.reason);
           // Don't call handleDisconnection since we're not auto-reconnecting
           // and we don't want to emit error events for expected behavior
         };

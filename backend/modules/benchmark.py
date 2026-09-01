@@ -16,6 +16,7 @@ from pathlib import Path
 from dataclasses import dataclass, asdict
 import logging
 import uuid
+from local_paths import backend_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,7 @@ class BenchmarkRunner:
     def __init__(self, db_path: str = None, api_base_url: str = None):
         """Initialize the benchmark runner."""
         if db_path is None:
-            db_path = os.getenv('BENCHMARK_DB_PATH', '/data/benchmarks.db')
+            db_path = os.getenv('BENCHMARK_DB_PATH') or str(backend_data_path('benchmarks.db'))
         
         self.db_path = db_path
         self.api_base_url = api_base_url or os.getenv('LLAMA_API_URL', 'http://llamacpp-api:8080')

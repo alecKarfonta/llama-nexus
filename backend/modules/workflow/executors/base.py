@@ -59,14 +59,16 @@ class NodeExecutor(ABC):
     category: str = "data"
     description: str = "Base node executor"
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, node_id: Optional[str] = None):
         """
         Initialize the executor with node configuration.
         
         Args:
             config: Node configuration from the workflow
+            node_id: Optional workflow node identifier for legacy/test call sites
         """
-        self.config = config
+        self.config = config or {}
+        self.node_id = node_id
         self.validate_config()
     
     def validate_config(self) -> List[str]:

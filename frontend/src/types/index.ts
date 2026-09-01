@@ -2,7 +2,12 @@
  * Main type exports for the application
  */
 
+import type React from 'react';
+
 export * from './api';
+export * from './quantizationHandoff';
+export * from './runtimeHandoff';
+export * from './trainingHandoff';
 
 // UI-specific types
 export interface Theme {
@@ -21,9 +26,12 @@ export interface NavigationItem {
   id: string;
   label: string;
   path: string;
-  icon?: string;
+  icon?: React.ElementType;
   badge?: string | number;
   color?: string;
+  description?: string;
+  keywords?: string[];
+  subItems?: NavigationItem[];
 }
 
 export interface NavigationSection {

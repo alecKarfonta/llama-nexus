@@ -2,14 +2,11 @@ import React, { useEffect, useState, useCallback } from "react";
 import {
     Box,
     Typography,
-    Card,
-    CardContent,
-    Button,
-    Chip,
     Grid,
     Alert,
     Tooltip,
     LinearProgress,
+    CircularProgress,
     Slider,
     TextField,
     FormControl,
@@ -26,18 +23,20 @@ import {
     Storage as DatasetIcon,
     PlayArrow as GenerateIcon,
     Visibility as PreviewIcon,
-    Refresh as RefreshIcon,
     ArrowBack as BackIcon,
     Settings as ConfigIcon,
     TextFields as TextIcon,
     Calculate as EstimateIcon,
-    CheckCircle as SuccessIcon,
     Psychology as AIIcon,
     QuestionAnswer as QAIcon,
     Summarize as SummaryIcon,
-    AttachMoney as CostIcon,
+    Stop as CancelIcon,
 } from "@mui/icons-material";
+import type { SxProps, Theme } from "@mui/material/styles";
 import { useNavigate } from "react-router-dom";
+import { getRoutePath } from "@/config/navigation";
+import { MetricTile, PageShell, SectionCard, StatusChip, type StatusChipConfigMap } from "@/components/common";
+import { accentColors } from "@/utils/theme";
 
 // Types
 type Domain = {
@@ -57,8 +56,12 @@ type Document = {
 };
 
 type GeneratedExample = {
-    prompt: string;
-    completion: string;
+    prompt?: string;
+    completion?: string;
+    instruction?: string;
+    input?: string;
+    output?: string;
+    response?: string;
     metadata?: Record<string, any>;
 };
 
@@ -107,130 +110,56 @@ const GENERATION_MODES = [
     { value: "mixed", label: "Mixed (All)", icon: <DatasetIcon /> },
 ];
 
-// Accent colors
-const accentColors = {
-    primary: "#6366f1",
-    success: "#10b981",
-    warning: "#f59e0b",
-    info: "#06b6d4",
-    purple: "#8b5cf6",
-    rose: "#f43f5e",
+const BOOK_DATASET_STATUS_CONFIG: StatusChipConfigMap = {
+    books: { color: accentColors.success, label: "Book datasets" },
+    continuation: { color: accentColors.purple, label: "Continuation" },
+    distillation: { color: accentColors.rose, label: "Teacher distillation" },
+    draft: { color: accentColors.warning, label: "Draft" },
+    generating: { color: accentColors.info, label: "Generating" },
+    previewed: { color: accentColors.success, label: "Previewed" },
+    run: { color: accentColors.info, label: "Run setup" },
 };
 
-// Section Card Component
-interface SectionCardProps {
-    title: string;
-    subtitle?: string;
-    icon?: React.ReactNode;
-    accentColor?: string;
-    children: React.ReactNode;
-    action?: React.ReactNode;
-}
+const bookDatasetPanelSx = {
+    borderRadius: "8px",
+    bgcolor: "background.paper",
+    border: "1px solid",
+    borderColor: "divider",
+} as const;
 
-const SectionCard: React.FC<SectionCardProps> = ({
-    title,
-    subtitle,
-    icon,
-    accentColor = accentColors.primary,
-    children,
-    action,
-}) => (
-    <Card
-        sx={{
-            position: "relative",
-            overflow: "hidden",
-            background: "linear-gradient(145deg, rgba(30, 30, 63, 0.6) 0%, rgba(26, 26, 46, 0.8) 100%)",
-            backdropFilter: "blur(12px)",
-            border: "1px solid rgba(255, 255, 255, 0.06)",
-            borderRadius: 3,
-            transition: "all 0.3s ease-in-out",
-            "&:hover": {
-                borderColor: alpha(accentColor, 0.2),
-                boxShadow: `0 8px 32px ${alpha(accentColor, 0.15)}`,
-            },
-        }}
-    >
-        <Box
-            sx={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                right: 0,
-                height: 3,
-                background: `linear-gradient(90deg, ${accentColor} 0%, ${alpha(accentColor, 0.3)} 100%)`,
-            }}
-        />
-        <CardContent sx={{ p: 2.5 }}>
-            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2.5 }}>
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-                    {icon && (
-                        <Box
-                            sx={{
-                                width: 40,
-                                height: 40,
-                                borderRadius: 2,
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                bgcolor: alpha(accentColor, 0.1),
-                                color: accentColor,
-                                "& .MuiSvgIcon-root": { fontSize: 22 },
-                            }}
-                        >
-                            {icon}
-                        </Box>
-                    )}
-                    <Box>
-                        <Typography variant="h6" sx={{ fontWeight: 600, fontSize: "1rem", lineHeight: 1.3 }}>
-                            {title}
-                        </Typography>
-                        {subtitle && (
-                            <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.75rem" }}>
-                                {subtitle}
-                            </Typography>
-                        )}
-                    </Box>
-                </Box>
-                {action}
-            </Box>
-            <Box sx={{ maxWidth: "100%", overflow: "auto" }}>{children}</Box>
-        </CardContent>
-    </Card>
-);
+const bookDatasetIconButtonSx = {
+    width: 32,
+    height: 32,
+    borderRadius: "8px",
+    border: "1px solid",
+    borderColor: "divider",
+    bgcolor: "action.hover",
+    "&:hover": {
+        bgcolor: "action.selected",
+    },
+} as const;
 
-// Stat Box Component
-interface StatBoxProps {
-    label: string;
-    value: string | number;
-    icon: React.ReactNode;
-    color: string;
-}
+const bookDatasetModeButtonSx = {
+    width: 28,
+    height: 28,
+    borderRadius: "7px",
+} as const;
 
-const StatBox: React.FC<StatBoxProps> = ({ label, value, icon, color }) => (
-    <Box
-        sx={{
-            p: 2,
-            borderRadius: 2,
-            bgcolor: alpha(color, 0.08),
-            border: `1px solid ${alpha(color, 0.15)}`,
-            textAlign: "center",
-            transition: "all 0.2s",
-            "&:hover": { bgcolor: alpha(color, 0.12), transform: "translateY(-2px)" },
-        }}
-    >
-        <Box sx={{ mb: 1, color, "& .MuiSvgIcon-root": { fontSize: 28 } }}>{icon}</Box>
-        <Typography sx={{ fontWeight: 700, fontSize: "1.5rem", color: "text.primary", lineHeight: 1 }}>
-            {value}
-        </Typography>
-        <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.7rem" }}>
-            {label}
-        </Typography>
-    </Box>
-);
-
+const compactSliderSx = (color: string) => ({
+    color,
+    py: 0.25,
+    "& .MuiSlider-rail, & .MuiSlider-track": {
+        height: 4,
+    },
+    "& .MuiSlider-thumb": {
+        width: 14,
+        height: 14,
+    },
+});
 
 export const BookDatasetPage: React.FC = () => {
     const navigate = useNavigate();
+    const datasetsPath = getRoutePath("finetuning-datasets");
 
     // Domain and document state
     const [domains, setDomains] = useState<Domain[]>([]);
@@ -250,7 +179,7 @@ export const BookDatasetPage: React.FC = () => {
 
     // UI state
     const [estimate, setEstimate] = useState<DatasetEstimate | null>(null);
-    const [preview, setPreview] = useState<GeneratedExample[]>(null);
+    const [preview, setPreview] = useState<GeneratedExample[]>([]);
     const [loading, setLoading] = useState(false);
     const [generating, setGenerating] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -262,6 +191,7 @@ export const BookDatasetPage: React.FC = () => {
     // Distillation-specific state
     const [teacherProvider, setTeacherProvider] = useState("openai");
     const [teacherModel, setTeacherModel] = useState("gpt-4o-mini");
+    const [teacherApiKey, setTeacherApiKey] = useState("");
     const [distillationMode, setDistillationMode] = useState("qa_generation");
     const [questionsPerChunk, setQuestionsPerChunk] = useState(3);
     const [maxChunks, setMaxChunks] = useState<number | null>(null);
@@ -324,9 +254,65 @@ export const BookDatasetPage: React.FC = () => {
         }
     }, [selectedDomainId, selectedDocIds, contextChunks, outputChunks, stride]);
 
+    const buildDistillationRequest = useCallback((datasetName: string) => ({
+        name: datasetName,
+        description,
+        domain_id: selectedDomainId,
+        document_ids: selectedDocIds.length > 0 ? selectedDocIds : null,
+        generation_mode: distillationMode,
+        teacher_provider: teacherProvider,
+        teacher_model: teacherModel,
+        teacher_api_key: teacherApiKey || undefined,
+        questions_per_chunk: questionsPerChunk,
+        include_source_context: true,
+        max_chunks: maxChunks,
+    }), [
+        description,
+        selectedDomainId,
+        selectedDocIds,
+        distillationMode,
+        teacherProvider,
+        teacherModel,
+        teacherApiKey,
+        questionsPerChunk,
+        maxChunks,
+    ]);
+
+    const fetchDistillEstimate = useCallback(async () => {
+        if (!selectedDomainId) return;
+
+        setLoading(true);
+        try {
+            const res = await fetch("/api/v1/finetune/datasets/book/distill/estimate", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    domain_id: selectedDomainId,
+                    document_ids: selectedDocIds.length > 0 ? selectedDocIds : null,
+                    generation_mode: distillationMode,
+                    teacher_model: teacherModel,
+                    questions_per_chunk: questionsPerChunk,
+                    max_chunks: maxChunks,
+                }),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setDistillEstimate(data);
+            }
+        } catch {
+            // Ignore estimate errors
+        } finally {
+            setLoading(false);
+        }
+    }, [selectedDomainId, selectedDocIds, distillationMode, teacherModel, questionsPerChunk, maxChunks]);
+
     useEffect(() => {
-        fetchEstimate();
-    }, [fetchEstimate]);
+        if (generationMode === "continuation") {
+            fetchEstimate();
+        } else {
+            fetchDistillEstimate();
+        }
+    }, [generationMode, fetchEstimate, fetchDistillEstimate]);
 
     // Fetch preview
     const fetchPreview = useCallback(async () => {
@@ -363,10 +349,71 @@ export const BookDatasetPage: React.FC = () => {
         }
     }, [selectedDomainId, selectedDocIds, contextChunks, outputChunks, stride, includeMetadata, systemPrompt, name]);
 
+    const fetchDistillationPreview = useCallback(async () => {
+        if (!selectedDomainId) return;
+
+        setLoading(true);
+        setError(null);
+        try {
+            const res = await fetch("/api/v1/finetune/datasets/book/distill/preview?num_chunks=1", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(buildDistillationRequest(name || "distillation-preview")),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setPreview(data.examples || []);
+            } else {
+                const errData = await res.json();
+                setError(errData.detail || "Failed to generate distillation preview");
+            }
+        } catch {
+            setError("Failed to generate distillation preview");
+        } finally {
+            setLoading(false);
+        }
+    }, [selectedDomainId, buildDistillationRequest, name]);
+
+    const handlePreview = () => {
+        if (generationMode === "distillation") {
+            fetchDistillationPreview();
+        } else {
+            fetchPreview();
+        }
+    };
+
     // Generate dataset
     const handleGenerate = async () => {
         if (!selectedDomainId || !name) {
             setError("Please select a domain and provide a dataset name");
+            return;
+        }
+
+        if (generationMode === "distillation") {
+            setGenerating(true);
+            setError(null);
+            setSuccess(null);
+
+            try {
+                const res = await fetch("/api/v1/finetune/datasets/book/distill", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(buildDistillationRequest(name)),
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    setDistillJob(data.job);
+                    setSuccess("Book distillation job started. Progress will update here.");
+                } else {
+                    const errData = await res.json();
+                    setError(errData.detail || "Failed to start distillation job");
+                }
+            } catch {
+                setError("Failed to start distillation job");
+            } finally {
+                setGenerating(false);
+            }
             return;
         }
 
@@ -410,91 +457,189 @@ export const BookDatasetPage: React.FC = () => {
         }
     };
 
+    const handleCancelDistillationJob = async () => {
+        if (!distillJob) return;
+
+        try {
+            await fetch(`/api/v1/finetune/datasets/book/distill/${distillJob.id}/cancel`, { method: "POST" });
+            setSuccess("Distillation cancellation requested");
+        } catch {
+            setError("Failed to cancel distillation job");
+        }
+    };
+
+    useEffect(() => {
+        const jobId = distillJob?.id;
+        if (!jobId || !["pending", "running"].includes(distillJob.status)) return;
+
+        const refreshJob = async () => {
+            try {
+                const res = await fetch(`/api/v1/finetune/datasets/book/distill/${jobId}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                setDistillJob(data.job);
+                if (data.job?.status === "completed") {
+                    setSuccess("Book distillation completed and saved as a dataset.");
+                }
+                if (data.job?.status === "failed") {
+                    setError(data.job.error || "Book distillation failed");
+                }
+            } catch {
+                // Keep the current job state if polling fails once.
+            }
+        };
+
+        const interval = setInterval(refreshJob, 3000);
+        refreshJob();
+        return () => clearInterval(interval);
+    }, [distillJob?.id, distillJob?.status]);
+
+    const selectedDomain = domains.find((domain) => domain.id === selectedDomainId);
+    const selectedDocumentCount = selectedDocIds.length > 0 ? selectedDocIds.length : documents.length;
+    const estimateExamples = generationMode === "continuation"
+        ? estimate?.estimated_examples
+        : distillEstimate?.estimated_examples;
+    const costLabel = generationMode === "distillation"
+        ? `$${(distillEstimate?.estimated_cost_usd ?? 0).toFixed(2)}`
+        : "Local";
+    const activeModeStatus = generationMode === "continuation" ? "continuation" : "distillation";
+    const runStatus = generating
+        ? "generating"
+        : distillJob?.status || (preview.length > 0 ? "previewed" : "draft");
+    const showRunStatusChip = generating || Boolean(distillJob) || preview.length > 0;
+    const hasEstimatedExamples = Boolean(estimateExamples && estimateExamples > 0);
+    const previewPromptFor = (example: GeneratedExample) =>
+        example.prompt || [example.instruction, example.input].filter(Boolean).join("\n\n") || "No prompt";
+    const previewCompletionFor = (example: GeneratedExample) =>
+        example.completion || example.output || example.response || "";
+    const showPreviewPanel = Boolean(selectedDomainId) || preview.length > 0 || loading || generating || Boolean(distillJob);
+    const setupPanelLayoutSx: SxProps<Theme> = showPreviewPanel
+        ? { display: "flex", flexDirection: "column", gap: 1.25 }
+        : {
+            display: "grid",
+            gridTemplateColumns: { xs: "1fr", md: "minmax(300px, 0.72fr) minmax(0, 1.28fr)" },
+            gap: 1.25,
+            alignItems: "start",
+        };
+
     return (
-        <Box
-            sx={{
-                width: "100%",
-                maxWidth: "100vw",
-                overflow: "hidden",
-                px: { xs: 2, sm: 3, md: 4 },
-                py: 3,
-                boxSizing: "border-box",
-                minHeight: "100%",
-            }}
-        >
-            {/* Header */}
-            <Box
-                sx={{
-                    display: "flex",
-                    flexDirection: { xs: "column", sm: "row" },
-                    justifyContent: "space-between",
-                    alignItems: { xs: "flex-start", sm: "center" },
-                    mb: 4,
-                    gap: 2,
-                }}
-            >
-                <Box>
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 1 }}>
-                        <Typography
-                            variant="h1"
-                            sx={{
-                                fontWeight: 700,
-                                fontSize: { xs: "1.5rem", sm: "1.75rem", md: "2rem" },
-                                lineHeight: 1,
-                                background: "linear-gradient(135deg, #f1f5f9 0%, #94a3b8 100%)",
-                                WebkitBackgroundClip: "text",
-                                WebkitTextFillColor: "transparent",
-                            }}
-                        >
-                            Book Dataset Generator
-                        </Typography>
-                    </Box>
-                    <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.875rem", maxWidth: 500 }}>
-                        Generate training datasets from document chunks with configurable context windows
-                    </Typography>
-                </Box>
-
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-                    <Button
-                        variant="outlined"
-                        size="small"
-                        startIcon={<BackIcon />}
-                        onClick={() => navigate("/finetuning/datasets")}
-                        sx={{
-                            borderColor: "rgba(255, 255, 255, 0.1)",
-                            color: "text.secondary",
-                            "&:hover": { borderColor: accentColors.primary, color: accentColors.primary },
-                        }}
-                    >
-                        Back to Datasets
-                    </Button>
-                </Box>
-            </Box>
-
+        <PageShell sx={{ py: 1.25 }}>
             {/* Alerts */}
             {error && (
-                <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
+                <Alert severity="error" sx={{ mb: 1.25 }} onClose={() => setError(null)}>
                     {error}
                 </Alert>
             )}
             {success && (
-                <Alert severity="success" sx={{ mb: 3 }} onClose={() => setSuccess(null)}>
+                <Alert severity="success" sx={{ mb: 1.25 }} onClose={() => setSuccess(null)}>
                     {success}
                 </Alert>
             )}
 
-            <Grid container spacing={3}>
+            <Grid container spacing={2}>
                 {/* Configuration Panel */}
-                <Grid item xs={12} md={5}>
-                    <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <Grid item xs={12} md={showPreviewPanel ? 5 : 12} lg={showPreviewPanel ? 5 : 12}>
+                    <Box sx={setupPanelLayoutSx}>
                         {/* Source Selection */}
                         <SectionCard
                             title="Source Selection"
-                            subtitle="Choose documents to include"
                             icon={<BookIcon />}
                             accentColor={accentColors.info}
+                            action={
+                                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                                    <Tooltip title="Back to datasets">
+                                        <IconButton
+                                            size="small"
+                                            aria-label="Back to datasets"
+                                            onClick={() => navigate(datasetsPath)}
+                                            sx={bookDatasetIconButtonSx}
+                                        >
+                                            <BackIcon sx={{ fontSize: 17 }} />
+                                        </IconButton>
+                                    </Tooltip>
+                                    <Box
+                                        sx={{
+                                            display: "flex",
+                                            gap: 0.25,
+                                            p: 0.25,
+                                            borderRadius: "8px",
+                                            border: "1px solid",
+                                            borderColor: "divider",
+                                            bgcolor: "action.hover",
+                                        }}
+                                    >
+                                        <Tooltip title="Continuation examples from book chunks">
+                                            <IconButton
+                                                size="small"
+                                                aria-label="Continuation mode"
+                                                onClick={() => setGenerationMode("continuation")}
+                                                sx={{
+                                                    ...bookDatasetModeButtonSx,
+                                                    bgcolor: generationMode === "continuation" ? accentColors.info : "transparent",
+                                                    color: generationMode === "continuation" ? "white" : accentColors.info,
+                                                    "&:hover": {
+                                                        bgcolor: generationMode === "continuation" ? accentColors.info : alpha(accentColors.info, 0.12),
+                                                    },
+                                                }}
+                                            >
+                                                <TextIcon sx={{ fontSize: 16 }} />
+                                            </IconButton>
+                                        </Tooltip>
+                                        <Tooltip title="Teacher-generated Q&A, summaries, or explanations">
+                                            <IconButton
+                                                size="small"
+                                                aria-label="Distillation mode"
+                                                onClick={() => setGenerationMode("distillation")}
+                                                sx={{
+                                                    ...bookDatasetModeButtonSx,
+                                                    bgcolor: generationMode === "distillation" ? accentColors.rose : "transparent",
+                                                    color: generationMode === "distillation" ? "white" : accentColors.rose,
+                                                    "&:hover": {
+                                                        bgcolor: generationMode === "distillation" ? accentColors.rose : alpha(accentColors.rose, 0.12),
+                                                    },
+                                                }}
+                                            >
+                                                <QAIcon sx={{ fontSize: 16 }} />
+                                            </IconButton>
+                                        </Tooltip>
+                                    </Box>
+                                </Box>
+                            }
                         >
-                            <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
+                                <Box sx={{ display: "flex", alignItems: "center", gap: 0.6, flexWrap: "wrap" }}>
+                                    <StatusChip status={activeModeStatus} statusConfig={BOOK_DATASET_STATUS_CONFIG} height={22} />
+                                    {showRunStatusChip && <StatusChip status={runStatus} statusConfig={BOOK_DATASET_STATUS_CONFIG} height={22} />}
+                                    {selectedDomain && (
+                                        <StatusChip
+                                            status="books"
+                                            label={selectedDomain.name}
+                                            statusConfig={BOOK_DATASET_STATUS_CONFIG}
+                                            height={22}
+                                        />
+                                    )}
+                                    {selectedDocumentCount > 0 && (
+                                        <StatusChip
+                                            status="books"
+                                            label={`${selectedDocumentCount} docs`}
+                                            statusConfig={BOOK_DATASET_STATUS_CONFIG}
+                                            height={22}
+                                        />
+                                    )}
+                                    {hasEstimatedExamples && (
+                                        <StatusChip
+                                            status="previewed"
+                                            label={`${estimateExamples?.toLocaleString()} examples`}
+                                            statusConfig={BOOK_DATASET_STATUS_CONFIG}
+                                            height={22}
+                                        />
+                                    )}
+                                    {selectedDomain && (
+                                        <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
+                                            {generationMode === "distillation" ? `${teacherModel} / ${costLabel}` : `${contextChunks} context / ${outputChunks} output / ${costLabel}`}
+                                        </Typography>
+                                    )}
+                                </Box>
                                 <FormControl fullWidth size="small">
                                     <InputLabel>Domain</InputLabel>
                                     <Select
@@ -545,64 +690,14 @@ export const BookDatasetPage: React.FC = () => {
                             </Box>
                         </SectionCard>
 
-                        {/* Generation Mode Toggle */}
-                        <SectionCard
-                            title="Generation Mode"
-                            subtitle="Choose how to create training examples"
-                            icon={<AIIcon />}
-                            accentColor={accentColors.info}
-                        >
-                            <Box sx={{ display: "flex", gap: 2 }}>
-                                <Button
-                                    variant={generationMode === "continuation" ? "contained" : "outlined"}
-                                    onClick={() => setGenerationMode("continuation")}
-                                    startIcon={<TextIcon />}
-                                    sx={{
-                                        flex: 1,
-                                        bgcolor: generationMode === "continuation" ? accentColors.info : "transparent",
-                                        borderColor: accentColors.info,
-                                        color: generationMode === "continuation" ? "white" : accentColors.info,
-                                        "&:hover": {
-                                            bgcolor: generationMode === "continuation" ? accentColors.info : alpha(accentColors.info, 0.1),
-                                        },
-                                    }}
-                                >
-                                    Continuation
-                                </Button>
-                                <Button
-                                    variant={generationMode === "distillation" ? "contained" : "outlined"}
-                                    onClick={() => setGenerationMode("distillation")}
-                                    startIcon={<QAIcon />}
-                                    sx={{
-                                        flex: 1,
-                                        bgcolor: generationMode === "distillation" ? accentColors.rose : "transparent",
-                                        borderColor: accentColors.rose,
-                                        color: generationMode === "distillation" ? "white" : accentColors.rose,
-                                        "&:hover": {
-                                            bgcolor: generationMode === "distillation" ? accentColors.rose : alpha(accentColors.rose, 0.1),
-                                        },
-                                    }}
-                                >
-                                    Distillation (Q&A)
-                                </Button>
-                            </Box>
-                            <Typography variant="caption" sx={{ color: "text.secondary", mt: 1, display: "block" }}>
-                                {generationMode === "continuation"
-                                    ? "Generates context → next chunk pairs for text continuation training"
-                                    : "Uses an LLM to generate Q&A pairs, summaries, or explanations from your documents"
-                                }
-                            </Typography>
-                        </SectionCard>
-
                         {/* Distillation Config - Only show when distillation mode is selected */}
                         {generationMode === "distillation" && (
                             <SectionCard
                                 title="Distillation Settings"
-                                subtitle="Configure the teacher model and generation type"
                                 icon={<QAIcon />}
                                 accentColor={accentColors.rose}
                             >
-                                <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                                <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
                                     <FormControl fullWidth size="small">
                                         <InputLabel>Teacher Provider</InputLabel>
                                         <Select
@@ -622,8 +717,20 @@ export const BookDatasetPage: React.FC = () => {
                                         onChange={(e) => setTeacherModel(e.target.value)}
                                         size="small"
                                         fullWidth
-                                        helperText="e.g. gpt-4o-mini, claude-3-5-sonnet, gemini-1.5-pro"
+                                        placeholder="gpt-4o-mini"
                                     />
+
+                                    {teacherProvider !== "local" && (
+                                        <TextField
+                                            label="API Key (optional)"
+                                            value={teacherApiKey}
+                                            onChange={(e) => setTeacherApiKey(e.target.value)}
+                                            size="small"
+                                            fullWidth
+                                            type="password"
+                                            placeholder="Use server key when empty"
+                                        />
+                                    )}
 
                                     <FormControl fullWidth size="small">
                                         <InputLabel>Generation Type</InputLabel>
@@ -653,8 +760,8 @@ export const BookDatasetPage: React.FC = () => {
                                             min={1}
                                             max={10}
                                             step={1}
-                                            marks
-                                            sx={{ color: accentColors.rose }}
+                                            size="small"
+                                            sx={compactSliderSx(accentColors.rose)}
                                         />
                                     </Box>
 
@@ -665,7 +772,7 @@ export const BookDatasetPage: React.FC = () => {
                                         size="small"
                                         fullWidth
                                         type="number"
-                                        helperText="Limit chunks to process (leave empty for all)"
+                                        placeholder="All chunks"
                                     />
 
                                     {/* Distillation Estimate */}
@@ -705,11 +812,16 @@ export const BookDatasetPage: React.FC = () => {
                         {generationMode === "continuation" && (
                             <SectionCard
                                 title="Configuration"
-                                subtitle="Adjust context window settings"
                                 icon={<ConfigIcon />}
                                 accentColor={accentColors.purple}
                             >
-                                <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                                <Box
+                                    sx={{
+                                        display: "grid",
+                                        gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                                        gap: 1,
+                                    }}
+                                >
                                     <TextField
                                         label="Dataset Name"
                                         value={name}
@@ -726,64 +838,65 @@ export const BookDatasetPage: React.FC = () => {
                                         size="small"
                                         fullWidth
                                         multiline
-                                        rows={2}
+                                        rows={1}
                                     />
 
-                                    <Box>
-                                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                                            Context Chunks: {contextChunks}
-                                        </Typography>
-                                        <Slider
-                                            value={contextChunks}
-                                            onChange={(_, v) => setContextChunks(v as number)}
-                                            min={1}
-                                            max={10}
-                                            step={1}
-                                            marks
-                                            sx={{ color: accentColors.purple }}
-                                        />
-                                        <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.65rem" }}>
-                                            Number of previous chunks to include in the prompt
-                                        </Typography>
-                                    </Box>
+                                    <Box
+                                        sx={{
+                                            gridColumn: "1 / -1",
+                                            display: "grid",
+                                            gridTemplateColumns: { xs: "1fr", sm: "repeat(3, minmax(0, 1fr))" },
+                                            gap: 1,
+                                        }}
+                                    >
+                                        <Box sx={{ px: 0.5 }}>
+                                            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                                                Context {contextChunks}
+                                            </Typography>
+                                            <Slider
+                                                value={contextChunks}
+                                                onChange={(_, v) => setContextChunks(v as number)}
+                                                min={1}
+                                                max={10}
+                                                step={1}
+                                                size="small"
+                                                sx={compactSliderSx(accentColors.purple)}
+                                            />
+                                        </Box>
 
-                                    <Box>
-                                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                                            Output Chunks: {outputChunks}
-                                        </Typography>
-                                        <Slider
-                                            value={outputChunks}
-                                            onChange={(_, v) => setOutputChunks(v as number)}
-                                            min={1}
-                                            max={5}
-                                            step={1}
-                                            marks
-                                            sx={{ color: accentColors.purple }}
-                                        />
-                                        <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.65rem" }}>
-                                            Number of chunks to predict (completion)
-                                        </Typography>
-                                    </Box>
+                                        <Box sx={{ px: 0.5 }}>
+                                            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                                                Output {outputChunks}
+                                            </Typography>
+                                            <Slider
+                                                value={outputChunks}
+                                                onChange={(_, v) => setOutputChunks(v as number)}
+                                                min={1}
+                                                max={5}
+                                                step={1}
+                                                size="small"
+                                                sx={compactSliderSx(accentColors.purple)}
+                                            />
+                                        </Box>
 
-                                    <Box>
-                                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                                            Stride: {stride}
-                                        </Typography>
-                                        <Slider
-                                            value={stride}
-                                            onChange={(_, v) => setStride(v as number)}
-                                            min={1}
-                                            max={5}
-                                            step={1}
-                                            marks
-                                            sx={{ color: accentColors.purple }}
-                                        />
-                                        <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.65rem" }}>
-                                            Step size for sliding window (1 = max overlap)
-                                        </Typography>
+                                        <Box sx={{ px: 0.5 }}>
+                                            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                                                Stride {stride}
+                                            </Typography>
+                                            <Slider
+                                                value={stride}
+                                                onChange={(_, v) => setStride(v as number)}
+                                                min={1}
+                                                max={5}
+                                                step={1}
+                                                size="small"
+                                                sx={compactSliderSx(accentColors.purple)}
+                                            />
+                                        </Box>
                                     </Box>
 
                                     <FormControlLabel
+                                        sx={{ minHeight: 40, m: 0 }}
                                         control={
                                             <Checkbox
                                                 size="small"
@@ -795,40 +908,43 @@ export const BookDatasetPage: React.FC = () => {
                                     />
 
                                     <TextField
-                                        label="System Prompt (optional)"
-                                        value={systemPrompt}
-                                        onChange={(e) => setSystemPrompt(e.target.value)}
-                                        size="small"
-                                        fullWidth
-                                        multiline
-                                        rows={2}
-                                        placeholder="Custom system prompt prefix..."
-                                    />
-
-                                    <TextField
                                         label="Max Examples (optional)"
                                         type="number"
                                         value={maxExamples || ""}
                                         onChange={(e) => setMaxExamples(e.target.value ? parseInt(e.target.value) : null)}
                                         size="small"
                                         fullWidth
-                                        placeholder="Leave empty for all"
+                                        placeholder="All examples"
+                                    />
+
+                                    <TextField
+                                        label="System Prompt (optional)"
+                                        value={systemPrompt}
+                                        onChange={(e) => setSystemPrompt(e.target.value)}
+                                        size="small"
+                                        fullWidth
+                                        multiline
+                                        rows={1}
+                                        placeholder="Custom system prompt prefix..."
+                                        sx={{ gridColumn: "1 / -1" }}
                                     />
                                 </Box>
                             </SectionCard>
                         )}
 
                         {/* Estimate */}
-                        {estimate && (
+                        {generationMode === "continuation" && estimate && (
                             <SectionCard
                                 title="Estimate"
                                 subtitle="Predicted dataset size"
                                 icon={<EstimateIcon />}
                                 accentColor={accentColors.success}
+                                sx={!showPreviewPanel ? { gridColumn: { md: "1 / -1" } } : undefined}
                             >
                                 <Grid container spacing={2}>
                                     <Grid item xs={6}>
-                                        <StatBox
+                                        <MetricTile
+                                            variant="centered"
                                             label="Documents"
                                             value={estimate.valid_documents}
                                             icon={<BookIcon />}
@@ -836,7 +952,8 @@ export const BookDatasetPage: React.FC = () => {
                                         />
                                     </Grid>
                                     <Grid item xs={6}>
-                                        <StatBox
+                                        <MetricTile
+                                            variant="centered"
                                             label="Total Chunks"
                                             value={estimate.total_chunks.toLocaleString()}
                                             icon={<TextIcon />}
@@ -844,7 +961,8 @@ export const BookDatasetPage: React.FC = () => {
                                         />
                                     </Grid>
                                     <Grid item xs={12}>
-                                        <StatBox
+                                        <MetricTile
+                                            variant="centered"
                                             label="Estimated Examples"
                                             value={estimate.estimated_examples.toLocaleString()}
                                             icon={<DatasetIcon />}
@@ -855,128 +973,179 @@ export const BookDatasetPage: React.FC = () => {
                             </SectionCard>
                         )}
 
-                        {/* Actions */}
-                        <Box sx={{ display: "flex", gap: 2 }}>
-                            <Button
-                                variant="outlined"
-                                startIcon={<PreviewIcon />}
-                                onClick={fetchPreview}
-                                disabled={!selectedDomainId || loading}
-                                sx={{ flex: 1 }}
-                            >
-                                Preview
-                            </Button>
-                            <Button
-                                variant="contained"
-                                startIcon={generating ? undefined : <GenerateIcon />}
-                                onClick={handleGenerate}
-                                disabled={!selectedDomainId || !name || generating}
-                                sx={{
-                                    flex: 2,
-                                    background: `linear-gradient(135deg, ${accentColors.success} 0%, ${accentColors.info} 100%)`,
-                                }}
-                            >
-                                {generating ? "Generating..." : "Generate Dataset"}
-                            </Button>
-                        </Box>
                     </Box>
                 </Grid>
 
                 {/* Preview Panel */}
+                {showPreviewPanel && (
                 <Grid item xs={12} md={7}>
                     <SectionCard
                         title="Preview"
-                        subtitle={preview.length > 0 ? `${preview.length} example(s)` : "Generate a preview to see examples"}
+                        subtitle={preview.length > 0 ? `${preview.length} example(s)` : undefined}
                         icon={<PreviewIcon />}
                         accentColor={accentColors.warning}
                         action={
-                            <Tooltip title="Refresh Preview">
-                                <IconButton size="small" onClick={fetchPreview} disabled={!selectedDomainId || loading}>
-                                    <RefreshIcon sx={{ fontSize: 18 }} />
-                                </IconButton>
-                            </Tooltip>
+                            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                                <Tooltip title="Preview examples">
+                                    <span>
+                                        <IconButton
+                                            size="small"
+                                            aria-label="Preview examples"
+                                            onClick={handlePreview}
+                                            disabled={!selectedDomainId || loading}
+                                            sx={bookDatasetIconButtonSx}
+                                        >
+                                            {loading ? <CircularProgress size={15} /> : <PreviewIcon sx={{ fontSize: 17 }} />}
+                                        </IconButton>
+                                    </span>
+                                </Tooltip>
+                                <Tooltip title="Generate dataset">
+                                    <span>
+                                        <IconButton
+                                            size="small"
+                                            aria-label="Generate dataset"
+                                            onClick={handleGenerate}
+                                            disabled={!selectedDomainId || !name || generating}
+                                            sx={{
+                                                ...bookDatasetIconButtonSx,
+                                                bgcolor: "primary.main",
+                                                color: "primary.contrastText",
+                                                borderColor: "primary.main",
+                                                "&:hover": { bgcolor: "primary.dark" },
+                                                "&.Mui-disabled": {
+                                                    bgcolor: "action.disabledBackground",
+                                                    color: "action.disabled",
+                                                    borderColor: "divider",
+                                                },
+                                            }}
+                                        >
+                                            {generating ? <CircularProgress size={15} color="inherit" /> : <GenerateIcon sx={{ fontSize: 17 }} />}
+                                        </IconButton>
+                                    </span>
+                                </Tooltip>
+                                {distillJob && ["pending", "running"].includes(distillJob.status) && (
+                                    <Tooltip title="Cancel distillation job">
+                                        <IconButton
+                                            size="small"
+                                            color="error"
+                                            aria-label="Cancel distillation job"
+                                            onClick={handleCancelDistillationJob}
+                                            sx={bookDatasetIconButtonSx}
+                                        >
+                                            <CancelIcon sx={{ fontSize: 17 }} />
+                                        </IconButton>
+                                    </Tooltip>
+                                )}
+                            </Box>
                         }
                     >
                         {loading && <LinearProgress sx={{ mb: 2 }} />}
 
                         {preview.length === 0 ? (
-                            <Box sx={{ py: 6, textAlign: "center" }}>
-                                <PreviewIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-                                <Typography color="text.secondary">
-                                    Select a domain and click "Preview" to see example training pairs
-                                </Typography>
+                            <Box
+                                sx={{
+                                    minHeight: 68,
+                                    px: 1.25,
+                                    py: 1,
+                                    borderRadius: "8px",
+                                    border: "1px solid",
+                                    borderColor: "divider",
+                                    bgcolor: alpha("#000", 0.12),
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    gap: 1,
+                                }}
+                            >
+                                <Box sx={{ minWidth: 0 }}>
+                                    <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                                        No preview yet
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                        {selectedDomainId ? "Preview examples before generating the dataset." : "Select a domain to preview examples."}
+                                    </Typography>
+                                </Box>
+                                <StatusChip
+                                    status={selectedDomainId ? "draft" : "books"}
+                                    label={selectedDomainId ? "Ready" : "No domain"}
+                                    statusConfig={BOOK_DATASET_STATUS_CONFIG}
+                                />
                             </Box>
                         ) : (
                             <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                                {preview.map((example, idx) => (
-                                    <Box
-                                        key={idx}
-                                        sx={{
-                                            p: 2,
-                                            borderRadius: 2,
-                                            bgcolor: "rgba(0, 0, 0, 0.2)",
-                                            border: "1px solid rgba(255, 255, 255, 0.06)",
-                                        }}
-                                    >
-                                        <Typography variant="caption" sx={{ color: accentColors.info, fontWeight: 600 }}>
-                                            Example {idx + 1}
-                                        </Typography>
+                                {preview.map((example, idx) => {
+                                    const promptText = previewPromptFor(example);
+                                    const completionText = previewCompletionFor(example);
 
-                                        <Box sx={{ mt: 1 }}>
-                                            <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                                                PROMPT
+                                    return (
+                                        <Box
+                                            key={idx}
+                                            sx={{
+                                                p: 2,
+                                                ...bookDatasetPanelSx,
+                                            }}
+                                        >
+                                            <Typography variant="caption" sx={{ color: accentColors.info, fontWeight: 600 }}>
+                                                Example {idx + 1}
                                             </Typography>
-                                            <Box
-                                                sx={{
-                                                    mt: 0.5,
-                                                    p: 1.5,
-                                                    borderRadius: 1,
-                                                    bgcolor: alpha(accentColors.info, 0.1),
-                                                    border: `1px solid ${alpha(accentColors.info, 0.2)}`,
-                                                    maxHeight: 150,
-                                                    overflow: "auto",
-                                                }}
-                                            >
-                                                <Typography
-                                                    variant="body2"
-                                                    sx={{ fontFamily: "monospace", fontSize: "0.75rem", whiteSpace: "pre-wrap" }}
-                                                >
-                                                    {example.prompt.length > 500 ? example.prompt.slice(0, 500) + "..." : example.prompt}
+
+                                            <Box sx={{ mt: 1 }}>
+                                                <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                                                    PROMPT
                                                 </Typography>
+                                                <Box
+                                                    sx={{
+                                                        mt: 0.5,
+                                                        p: 1.5,
+                                                        borderRadius: "8px",
+                                                        bgcolor: alpha(accentColors.info, 0.1),
+                                                        border: `1px solid ${alpha(accentColors.info, 0.2)}`,
+                                                        maxHeight: 150,
+                                                        overflow: "auto",
+                                                    }}
+                                                >
+                                                    <Typography
+                                                        variant="body2"
+                                                        sx={{ fontFamily: "monospace", fontSize: "0.75rem", whiteSpace: "pre-wrap" }}
+                                                    >
+                                                        {promptText.length > 500 ? `${promptText.slice(0, 500)}...` : promptText}
+                                                    </Typography>
+                                                </Box>
+                                            </Box>
+
+                                            <Box sx={{ mt: 2 }}>
+                                                <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                                                    COMPLETION
+                                                </Typography>
+                                                <Box
+                                                    sx={{
+                                                        mt: 0.5,
+                                                        p: 1.5,
+                                                        borderRadius: "8px",
+                                                        bgcolor: alpha(accentColors.success, 0.1),
+                                                        border: `1px solid ${alpha(accentColors.success, 0.2)}`,
+                                                        maxHeight: 100,
+                                                        overflow: "auto",
+                                                    }}
+                                                >
+                                                    <Typography
+                                                        variant="body2"
+                                                        sx={{ fontFamily: "monospace", fontSize: "0.75rem", whiteSpace: "pre-wrap" }}
+                                                    >
+                                                        {completionText.length > 300 ? `${completionText.slice(0, 300)}...` : completionText}
+                                                    </Typography>
+                                                </Box>
                                             </Box>
                                         </Box>
-
-                                        <Box sx={{ mt: 2 }}>
-                                            <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                                                COMPLETION
-                                            </Typography>
-                                            <Box
-                                                sx={{
-                                                    mt: 0.5,
-                                                    p: 1.5,
-                                                    borderRadius: 1,
-                                                    bgcolor: alpha(accentColors.success, 0.1),
-                                                    border: `1px solid ${alpha(accentColors.success, 0.2)}`,
-                                                    maxHeight: 100,
-                                                    overflow: "auto",
-                                                }}
-                                            >
-                                                <Typography
-                                                    variant="body2"
-                                                    sx={{ fontFamily: "monospace", fontSize: "0.75rem", whiteSpace: "pre-wrap" }}
-                                                >
-                                                    {example.completion.length > 300 ? example.completion.slice(0, 300) + "..." : example.completion}
-                                                </Typography>
-                                            </Box>
-                                        </Box>
-                                    </Box>
-                                ))}
+                                    );
+                                })}
                             </Box>
                         )}
                     </SectionCard>
                 </Grid>
+                )}
             </Grid>
-        </Box>
+        </PageShell>
     );
 };
 

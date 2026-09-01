@@ -51,8 +51,9 @@ class LMEvalJob:
     """A benchmark job using lm-evaluation-harness."""
     id: str
     tasks: List[LMEvalTask]
-    model_path: Optional[str] = None  # Path to the GGUF model being evaluated
-    gpu_device: Optional[int] = None  # GPU device used for evaluation
+    model_path: Optional[str] = None  # Display label for the deployed model being evaluated
+    gpu_device: Optional[int] = None  # Legacy field retained for older saved jobs
+    endpoint_url: Optional[str] = None
     status: LMEvalStatus = LMEvalStatus.PENDING
     progress: float = 0.0
     results: Dict[str, Any] = field(default_factory=dict)
@@ -131,8 +132,8 @@ class LMEvalRunner:
     """
     Wrapper for lm-evaluation-harness CLI.
     
-    Uses the local-chat-completions model type to connect to our
-    deployed llama.cpp server via the OpenAI-compatible API.
+    Dispatches jobs to a worker that connects through the app backend so
+    benchmarks run against the currently deployed model.
     """
     
     # Shared results directory with the lm-eval-worker
@@ -151,7 +152,7 @@ class LMEvalRunner:
                 # Ensure we have the base URL without /v1
                 endpoint_url = env_url.replace("/v1", "").rstrip("/")
             elif os.getenv("RUNNING_IN_DOCKER") == "true":
-                endpoint_url = "http://llamacpp-api:8080"
+                endpoint_url = "http://backend-api:8700"
             else:
                 endpoint_url = "http://localhost:8700"
         
@@ -275,11 +276,68 @@ class LMEvalRunner:
     
     def get_job(self, job_id: str) -> Optional[LMEvalJob]:
         """Get a job by ID."""
-        return self.jobs.get(job_id)
+        job = self.jobs.get(job_id)
+        if job:
+            self._sync_job_from_worker_status(job)
+        return job
     
     def list_jobs(self) -> List[LMEvalJob]:
         """List all jobs."""
+        for job in self.jobs.values():
+            self._sync_job_from_worker_status(job)
         return list(self.jobs.values())
+
+    def _sync_job_from_worker_status(self, job: LMEvalJob) -> None:
+        """Refresh final job state from the worker's persisted Redis status."""
+        if not REDIS_AVAILABLE:
+            return
+
+        try:
+            client = redis.from_url(REDIS_URL, decode_responses=True)
+            raw_status = client.get(f"lm_eval:job:{job.id}:status")
+        except Exception as e:
+            logger.debug(
+                "Could not refresh lm-eval job status from Redis",
+                extra={"job_id": job.id, "error": str(e)},
+            )
+            return
+
+        if not raw_status:
+            return
+
+        try:
+            data = json.loads(raw_status)
+        except json.JSONDecodeError:
+            return
+
+        status = data.get("status")
+        if not status:
+            return
+
+        try:
+            job.status = LMEvalStatus(status)
+        except ValueError:
+            return
+
+        job.progress = data.get("progress", job.progress)
+        if data.get("results"):
+            job.results = data["results"]
+        if data.get("error"):
+            job.error = data["error"]
+
+        if job.status in {
+            LMEvalStatus.COMPLETED,
+            LMEvalStatus.FAILED,
+            LMEvalStatus.CANCELLED,
+        } and job.completed_at is None:
+            timestamp = data.get("timestamp")
+            if timestamp:
+                try:
+                    job.completed_at = datetime.fromisoformat(timestamp)
+                except ValueError:
+                    job.completed_at = datetime.now()
+            else:
+                job.completed_at = datetime.now()
     
     def delete_job(self, job_id: str) -> bool:
         """Delete a job and cancel if running. Also removes persisted filesystem results."""
@@ -314,15 +372,15 @@ class LMEvalRunner:
         gpu_device: Optional[int] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
-        Run lm-eval benchmark via GPU worker and yield progress updates.
+        Run lm-eval benchmark via the deployed inference backend and yield progress updates.
         
         Dispatches the job to the lm-eval-worker via Redis queue and
         listens for status updates via pub/sub.
         
         Args:
             job: The benchmark job configuration
-            model_path: Optional path to GGUF model file (if not specified, worker uses first available)
-            gpu_device: Optional GPU device index to use for evaluation
+            model_path: Display label for the active deployed model
+            gpu_device: Legacy field retained for older callers
         
         Yields:
             Dict with progress updates and final results
@@ -342,6 +400,7 @@ class LMEvalRunner:
             "limit": limit,
             "model_path": model_path,
             "gpu_device": gpu_device,
+            "endpoint_url": job.endpoint_url,
         }
         
         # Try Redis-based GPU worker dispatch

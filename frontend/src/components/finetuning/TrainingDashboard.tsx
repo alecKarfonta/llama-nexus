@@ -2,7 +2,7 @@
  * Real-time Training Dashboard Component
  * Shows live training metrics, loss curves, GPU utilization, and logs
  */
-import React, { useMemo } from 'react';
+import React from 'react';
 import {
   Box,
   Typography,
@@ -14,7 +14,6 @@ import {
   IconButton,
   Tooltip,
   Alert,
-  Divider,
   alpha,
 } from '@mui/material';
 import {
@@ -22,7 +21,6 @@ import {
   Memory as MemoryIcon,
   Timer as TimerIcon,
   TrendingDown as LossIcon,
-  Thermostat as TempIcon,
   BoltOutlined as PowerIcon,
   FiberManualRecord as LiveIcon,
   Refresh as RefreshIcon,
@@ -33,17 +31,9 @@ import {
   HourglassEmpty as PendingIcon,
   PlayArrow as RunningIcon,
 } from '@mui/icons-material';
-import { useTrainingMetrics, LossHistoryPoint, GPUMetrics, TrainingMetrics } from '@/hooks/useTrainingMetrics';
-
-// Accent colors
-const accentColors = {
-  primary: '#6366f1',
-  success: '#10b981',
-  warning: '#f59e0b',
-  info: '#06b6d4',
-  purple: '#8b5cf6',
-  rose: '#f43f5e',
-};
+import { useTrainingMetrics, LossHistoryPoint } from '@/hooks/useTrainingMetrics';
+import { MetricTile, StatusChip } from '@/components/common';
+import { accentColors } from '@/utils/theme';
 
 // Animated Live Loss Chart
 const LiveLossChart: React.FC<{ data: LossHistoryPoint[]; height?: number }> = ({ data, height = 200 }) => {
@@ -247,107 +237,12 @@ const GPUGauge: React.FC<{ value: number; max: number; label: string; unit: stri
   );
 };
 
-// Stat Card Component
-interface StatCardProps {
-  label: string;
-  value: string | number;
-  icon: React.ReactNode;
-  color: string;
-  subtitle?: string;
-  pulse?: boolean;
-}
-
-const StatCard: React.FC<StatCardProps> = ({ label, value, icon, color, subtitle, pulse }) => (
-  <Box
-    sx={{
-      p: 2,
-      borderRadius: 2,
-      bgcolor: alpha(color, 0.08),
-      border: `1px solid ${alpha(color, 0.15)}`,
-      display: 'flex',
-      alignItems: 'center',
-      gap: 1.5,
-      position: 'relative',
-      overflow: 'hidden',
-    }}
-  >
-    {pulse && (
-      <Box
-        sx={{
-          position: 'absolute',
-          top: 8,
-          right: 8,
-          width: 8,
-          height: 8,
-          borderRadius: '50%',
-          bgcolor: color,
-          animation: 'pulse 1.5s infinite',
-          '@keyframes pulse': {
-            '0%, 100%': { opacity: 1 },
-            '50%': { opacity: 0.4 },
-          },
-        }}
-      />
-    )}
-    <Box
-      sx={{
-        width: 40,
-        height: 40,
-        borderRadius: 2,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: `linear-gradient(135deg, ${color} 0%, ${alpha(color, 0.7)} 100%)`,
-        boxShadow: `0 4px 12px ${alpha(color, 0.4)}`,
-        '& .MuiSvgIcon-root': { fontSize: 20, color: '#fff' },
-      }}
-    >
-      {icon}
-    </Box>
-    <Box>
-      <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.7rem', display: 'block' }}>
-        {label}
-      </Typography>
-      <Typography sx={{ fontWeight: 700, fontSize: '1.1rem', color: 'text.primary', lineHeight: 1.2 }}>
-        {value}
-      </Typography>
-      {subtitle && (
-        <Typography variant="caption" sx={{ color: alpha(color, 0.8), fontSize: '0.65rem' }}>
-          {subtitle}
-        </Typography>
-      )}
-    </Box>
-  </Box>
-);
-
-// Status indicator
-const StatusIndicator: React.FC<{ status: string }> = ({ status }) => {
-  const config: Record<string, { color: string; icon: React.ReactNode; label: string }> = {
-    training: { color: accentColors.info, icon: <RunningIcon />, label: 'Training' },
-    running: { color: accentColors.info, icon: <RunningIcon />, label: 'Running' },
-    completed: { color: accentColors.success, icon: <SuccessIcon />, label: 'Completed' },
-    failed: { color: accentColors.rose, icon: <ErrorIcon />, label: 'Failed' },
-    pending: { color: accentColors.warning, icon: <PendingIcon />, label: 'Pending' },
-    queued: { color: accentColors.purple, icon: <PendingIcon />, label: 'Queued' },
-  };
-
-  const { color, icon, label } = config[status.toLowerCase()] || config.pending;
-
-  return (
-    <Chip
-      icon={icon as React.ReactElement}
-      label={label}
-      size="small"
-      sx={{
-        bgcolor: alpha(color, 0.1),
-        color: color,
-        border: `1px solid ${alpha(color, 0.3)}`,
-        fontWeight: 600,
-        fontSize: '0.75rem',
-        '& .MuiChip-icon': { color: color },
-      }}
-    />
-  );
+const getTrainingStatusIcon = (status: string) => {
+  const normalizedStatus = status.toLowerCase();
+  if (normalizedStatus === 'training' || normalizedStatus === 'running') return <RunningIcon />;
+  if (normalizedStatus === 'completed') return <SuccessIcon />;
+  if (normalizedStatus === 'failed') return <ErrorIcon />;
+  return <PendingIcon />;
 };
 
 // Main Dashboard Component
@@ -357,10 +252,9 @@ interface TrainingDashboardProps {
   onClose?: () => void;
 }
 
-export const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ jobId, jobName, onClose }) => {
+export const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ jobId, jobName }) => {
   const {
     isConnected,
-    connectionStatus,
     error,
     currentMetrics,
     gpuMetrics,
@@ -370,7 +264,6 @@ export const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ jobId, job
     estimatedTimeRemaining,
     connect,
     disconnect,
-    clearHistory,
   } = useTrainingMetrics({ jobId, autoConnect: true });
 
   const progress = currentMetrics?.progress ?? 0;
@@ -445,7 +338,17 @@ export const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ jobId, job
         </Box>
 
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          {currentMetrics && <StatusIndicator status={currentMetrics.status} />}
+          {currentMetrics && (
+            <StatusChip
+              status={currentMetrics.status}
+              icon={getTrainingStatusIcon(currentMetrics.status)}
+              height={26}
+              sx={{
+                fontSize: '0.75rem',
+                '& .MuiChip-icon': { color: 'inherit' },
+              }}
+            />
+          )}
           <Tooltip title={isConnected ? 'Disconnect' : 'Reconnect'}>
             <IconButton
               size="small"
@@ -566,37 +469,45 @@ export const TrainingDashboard: React.FC<TrainingDashboardProps> = ({ jobId, job
 
           {/* Stats Row */}
           <Grid item xs={6} sm={3}>
-            <StatCard
+            <MetricTile
+              variant="horizontal"
               label="Tokens/sec"
               value={tokensPerSecond ? `${tokensPerSecond.toFixed(0)}` : '--'}
               icon={<SpeedIcon />}
               color={accentColors.info}
               pulse={isConnected}
+              valueSx={{ fontSize: '1.1rem' }}
             />
           </Grid>
           <Grid item xs={6} sm={3}>
-            <StatCard
+            <MetricTile
+              variant="horizontal"
               label="Time Remaining"
               value={estimatedTimeRemaining || '--'}
               icon={<TimerIcon />}
               color={accentColors.warning}
+              valueSx={{ fontSize: '1.1rem' }}
             />
           </Grid>
           <Grid item xs={6} sm={3}>
-            <StatCard
+            <MetricTile
+              variant="horizontal"
               label="Current Loss"
               value={currentMetrics?.loss?.toFixed(4) || '--'}
               icon={<LossIcon />}
               color={accentColors.success}
               pulse={isConnected && currentMetrics?.status === 'training'}
+              valueSx={{ fontSize: '1.1rem' }}
             />
           </Grid>
           <Grid item xs={6} sm={3}>
-            <StatCard
+            <MetricTile
+              variant="horizontal"
               label="GPU Power"
               value={gpuMetrics?.powerW ? `${gpuMetrics.powerW.toFixed(0)}W` : '--'}
               icon={<PowerIcon />}
               color={accentColors.purple}
+              valueSx={{ fontSize: '1.1rem' }}
             />
           </Grid>
 

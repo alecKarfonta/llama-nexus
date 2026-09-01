@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 """
-LLM Completions Proxy for lm-eval.
+OpenAI-compatible completions proxy for lm-eval.
 
-Fixes the loglikelihood evaluation pipeline between lm-eval and llama.cpp.
+lm-eval's local-completions model sends prompt=[context+continuation token IDs],
+echo=True, max_tokens=1, and expects logprobs for the echoed prompt so it can
+slice [ctxlen:-1] to score the continuation. vLLM already returns those prompt
+logprobs from /v1/completions, while llama.cpp deployments need the older
+incremental /completion scorer below.
 
-Problem: lm-eval's local-completions sends prompt=[context+continuation token IDs],
-echo=True, max_tokens=1, and expects logprobs for ALL tokens so it can slice
-[ctxlen:-1] to get continuation logprobs. But llama.cpp only returns logprobs
-for generated tokens, never for prompt tokens.
-
-Solution: The proxy intercepts loglikelihood requests and computes per-token
-logprobs using llama.cpp's prompt caching. It evaluates incrementally to get
-the logprob of each continuation token given its prefix.
-
-Also provides /tokenizer_info, /tokenize, /detokenize endpoints so lm-eval can
-use tokenizer_backend=remote, ensuring token IDs match llama.cpp's tokenizer.
+The proxy also exposes /tokenizer_info, /tokenize, and /detokenize so lm-eval can
+use tokenizer_backend=remote, keeping token IDs aligned with the deployed model.
 """
 
 import json
@@ -24,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-UPSTREAM_URL = os.environ.get("LLAMACPP_API_URL", "http://llamacpp-api:8080")
+UPSTREAM_URL = os.environ.get("LLAMACPP_API_URL", "http://backend-api:8700")
 API_KEY = os.environ.get("LM_EVAL_API_KEY", "placeholder-api-key")
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "8888"))
 N_PROBS = int(os.environ.get("PROXY_N_PROBS", "100"))
@@ -50,22 +45,27 @@ BOS_TOKEN_ID = None  # Qwen doesn't use BOS
 
 
 def _upstream_tokenize(text):
-    """Tokenize text via llama.cpp. Returns list of token IDs."""
-    try:
-        r = _session.post(
-            f"{UPSTREAM_URL}/tokenize",
-            json={"content": text},
-            timeout=30,
-        )
-        if r.status_code == 200:
-            return r.json().get("tokens", [])
-    except Exception:
-        pass
+    """Tokenize text via the deployed backend. Returns list of token IDs."""
+    payloads = (
+        {"prompt": text, "add_special_tokens": False},  # vLLM
+        {"content": text},  # llama.cpp
+    )
+    for payload in payloads:
+        try:
+            r = _session.post(
+                f"{UPSTREAM_URL}/tokenize",
+                json=payload,
+                timeout=30,
+            )
+            if r.status_code == 200:
+                return r.json().get("tokens", [])
+        except Exception:
+            pass
     return None
 
 
 def _upstream_detokenize(token_ids):
-    """Detokenize token IDs via llama.cpp. Returns string."""
+    """Detokenize token IDs via the deployed backend. Returns string."""
     try:
         r = _session.post(
             f"{UPSTREAM_URL}/detokenize",
@@ -73,10 +73,45 @@ def _upstream_detokenize(token_ids):
             timeout=30,
         )
         if r.status_code == 200:
-            return r.json().get("content", "")
+            data = r.json()
+            return data.get("content", data.get("prompt", ""))
     except Exception:
         pass
     return None
+
+
+def _looks_like_model_not_found(resp):
+    if resp.status_code != 404:
+        return False
+    try:
+        data = resp.json()
+    except Exception:
+        return False
+    message = ""
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message", ""))
+        else:
+            message = str(data.get("detail", ""))
+    return "model" in message.lower() and "does not exist" in message.lower()
+
+
+def _active_backend():
+    """Return the app's active backend name when routed through backend-api."""
+    try:
+        r = _session.get(
+            f"{UPSTREAM_URL.rstrip('/')}/api/v1/service/backends",
+            timeout=5,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            active = str(data.get("active") or data.get("active_backend") or "").lower()
+            if active:
+                return active
+    except Exception as e:
+        print(f"[proxy] Could not determine active backend: {e}", flush=True)
+    return os.environ.get("LM_EVAL_BACKEND", "").lower()
 
 
 def _get_token_logprob_at_position(prefix_tokens, target_token_id):
@@ -121,85 +156,6 @@ def _get_token_logprob_at_position(prefix_tokens, target_token_id):
 
     except Exception:
         return None, {}
-
-
-def compute_logprobs_for_sequence(token_ids):
-    """
-    Compute logprobs for each token position in the sequence.
-
-    lm-eval uses token_logprobs[ctxlen:-1] where ctxlen separates context
-    from continuation. We don't know ctxlen, but continuation is always at
-    the END of the sequence. So we only compute real logprobs for the last
-    MAX_CONTINUATION positions. Earlier positions get dummy values since
-    lm-eval ignores them.
-
-    Returns a list of dicts, one per token position, containing:
-    - token: the token text
-    - logprob: log P(token[i] | tokens[0..i-1]), or None for position 0
-    - top_logprobs: dict of {token_text: logprob} for top-N tokens
-    """
-    n = len(token_ids)
-    if n == 0:
-        return []
-
-    results = []
-
-    # Determine which positions need real logprobs
-    # Only the last MAX_CONTINUATION positions matter (the continuation part)
-    compute_start = max(1, n - MAX_CONTINUATION)
-
-    # Fill dummy values for positions 0..compute_start-1
-    for i in range(compute_start):
-        token_text = _upstream_detokenize([token_ids[i]]) or ""
-        results.append({
-            "token": token_text,
-            "logprob": None if i == 0 else 0.0,
-            "top_logprobs": {},
-        })
-
-    if n == 1:
-        return results
-
-    # Prime the cache by evaluating the full sequence
-    try:
-        _session.post(
-            f"{UPSTREAM_URL}/completion",
-            json={
-                "prompt": token_ids,
-                "n_predict": 1,
-                "logprobs": True,
-                "n_probs": N_PROBS,
-                "temperature": 0,
-                "seed": 1234,
-                "cache_prompt": True,
-            },
-            timeout=600,
-        )
-    except Exception:
-        for i in range(compute_start, n):
-            token_text = _upstream_detokenize([token_ids[i]]) or ""
-            results.append({
-                "token": token_text,
-                "logprob": -100.0,
-                "top_logprobs": {},
-            })
-        return results
-
-    # Compute real logprobs for positions compute_start..n-1
-    for i in range(compute_start, n):
-        prefix = token_ids[:i]
-        target_id = token_ids[i]
-        token_text = _upstream_detokenize([target_id]) or ""
-
-        logprob, top_logprobs = _get_token_logprob_at_position(prefix, target_id)
-
-        results.append({
-            "token": token_text,
-            "logprob": logprob if logprob is not None else -100.0,
-            "top_logprobs": top_logprobs,
-        })
-
-    return results
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -339,11 +295,93 @@ class ProxyHandler(BaseHTTPRequestHandler):
         )
 
         if is_loglikelihood:
-            self._handle_loglikelihood(prompt, logprobs_flag, ctxlens)
+            self._handle_loglikelihood(prompt, logprobs_flag, ctxlens, payload.get("model"))
         else:
             self._handle_normal_completions(payload)
 
-    def _handle_loglikelihood(self, token_ids, logprobs_flag, ctxlens=None):
+    def _handle_loglikelihood_openai(self, token_ids, logprobs_flag, ctxlens=None, model=None):
+        """Handle loglikelihood through vLLM/OpenAI prompt logprobs."""
+        self._last_openai_error = None
+        try:
+            n_logprobs = int(logprobs_flag) if logprobs_flag is not None else 1
+        except (TypeError, ValueError):
+            n_logprobs = 1
+        n_logprobs = max(n_logprobs, 1)
+
+        payload = {
+            "model": model or os.environ.get("LM_EVAL_MODEL_NAME", "default"),
+            "prompt": token_ids,
+            "temperature": 0,
+            "max_tokens": 1,
+            "logprobs": n_logprobs,
+            "seed": 1234,
+            "echo": True,
+        }
+        try:
+            resp = _session.post(
+                f"{UPSTREAM_URL}/v1/completions",
+                json=payload,
+                timeout=600,
+            )
+        except requests.RequestException as e:
+            self._last_openai_error = f"OpenAI completions request failed: {e}"
+            print(f"[proxy] {self._last_openai_error}", flush=True)
+            return False
+
+        if resp.status_code != 200:
+            if _looks_like_model_not_found(resp):
+                try:
+                    self._send_json(resp.status_code, resp.json())
+                except Exception:
+                    self.send_error(resp.status_code, "Upstream model not found")
+                return True
+            self._last_openai_error = (
+                f"OpenAI completions returned {resp.status_code}: {resp.text[:500]}"
+            )
+            print(f"[proxy] {self._last_openai_error}", flush=True)
+            return False
+
+        try:
+            data = resp.json()
+        except json.JSONDecodeError as e:
+            self._last_openai_error = f"OpenAI completions returned invalid JSON: {e}"
+            print(f"[proxy] {self._last_openai_error}", flush=True)
+            return False
+
+        choices = data.get("choices")
+        if not choices:
+            self._last_openai_error = "OpenAI completions response had no choices"
+            print(f"[proxy] {self._last_openai_error}", flush=True)
+            return False
+
+        for choice in choices:
+            logprobs = choice.get("logprobs")
+            if not isinstance(logprobs, dict):
+                self._last_openai_error = "OpenAI completions response had no logprobs object"
+                print(f"[proxy] {self._last_openai_error}", flush=True)
+                return False
+            token_logprobs = logprobs.get("token_logprobs")
+            top_logprobs = logprobs.get("top_logprobs")
+            if not isinstance(token_logprobs, list) or not isinstance(top_logprobs, list):
+                self._last_openai_error = (
+                    "OpenAI completions response had malformed prompt logprobs"
+                )
+                print(f"[proxy] {self._last_openai_error}", flush=True)
+                return False
+            choice["logprobs"]["top_logprobs"] = [
+                top if isinstance(top, dict) else {}
+                for top in top_logprobs
+            ]
+
+        print(
+            f"[proxy] loglikelihood via /v1/completions: {len(token_ids)} tokens, "
+            f"ctxlens={ctxlens or []}",
+            flush=True,
+        )
+        self._send_json(200, data)
+        return True
+
+    def _handle_loglikelihood(self, token_ids, logprobs_flag, ctxlens=None, model=None):
         """
         Handle loglikelihood evaluation.
         
@@ -351,8 +389,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
         We need to return logprobs for all positions so parse_logprobs can slice [ctxlen:-1].
         
         If ctxlens is provided, we only compute real logprobs for continuation positions
-        (ctxlen to N-1), using dummy values for context positions.
+        (ctxlen to N-1), using ignored placeholders for context positions.
         """
+        if self._handle_loglikelihood_openai(token_ids, logprobs_flag, ctxlens, model):
+            return
+
+        active_backend = _active_backend()
+        if active_backend == "vllm":
+            message = self._last_openai_error or "OpenAI prompt logprobs failed"
+            self._send_json(502, {
+                "error": {
+                    "message": (
+                        "Real deployed vLLM scoring failed; refusing to fall back "
+                        f"to the llama.cpp scorer. {message}"
+                    ),
+                    "type": "upstream_error",
+                }
+            })
+            return
+
         t0 = time.time()
         n = len(token_ids)
         
@@ -368,7 +423,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             compute_positions = list(range(compute_start, n))
             ctxlen = n  # Unknown, assume all are continuation
 
-        # Build results: dummy values for all positions, then fill in computed ones
+        # Build context placeholders, then fill real continuation logprobs.
         results = []
         for i in range(n):
             token_text = _upstream_detokenize([token_ids[i]]) or ""
@@ -466,7 +521,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 },
                 "finish_reason": "length",
             }],
-            "model": "Qwen3.6-27B-Q6_K",
+            "model": model or os.environ.get("LM_EVAL_MODEL_NAME", "deployed-model"),
             "object": "text_completion",
         }
 

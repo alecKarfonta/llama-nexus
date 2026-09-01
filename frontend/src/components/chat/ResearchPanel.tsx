@@ -15,8 +15,6 @@ import {
   IconButton,
   Chip,
   Collapse,
-  Divider,
-  Button,
   Tooltip,
   LinearProgress,
   alpha,
@@ -30,15 +28,12 @@ import {
   Note as NoteIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
-  ContentCopy as CopyIcon,
   Download as DownloadIcon,
   Delete as DeleteIcon,
-  Refresh as RefreshIcon,
   CheckCircle as SuccessIcon,
   Error as ErrorIcon,
   HourglassEmpty as PendingIcon,
   Link as LinkIcon,
-  LocalOffer as TagIcon,
 } from '@mui/icons-material'
 import { ToolsService } from '@/services/tools'
 

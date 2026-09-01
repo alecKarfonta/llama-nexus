@@ -965,197 +965,1269 @@ WORKFLOW_TEMPLATES = [
         ],
     },
     {
-        "id": "graphrag-batch-processing",
-        "name": "GraphRAG Batch Document Processing",
-        "description": "Complete pipeline for batch processing documents through GraphRAG with entity extraction, knowledge graph building, and intelligent indexing",
-        "category": "graphrag",
+        "id": "graphrag-capability-aware-query",
+        "name": "Capability-Aware GraphRAG Query",
+        "description": "Inspect GraphRAG service coverage and classify a query before choosing a reasoning path",
+        "category": "rag",
         "nodes": [
             {
                 "id": "trigger-1",
                 "type": "manual_trigger",
-                "position": {"x": 100, "y": 200},
+                "position": {"x": 100, "y": 220},
                 "data": {
-                    "label": "Start Batch Processing",
+                    "label": "Question",
                     "nodeType": "manual_trigger",
-                    "config": {"name": "batch_start", "description": "Trigger batch document processing"},
+                    "config": {},
                     "inputs": [],
-                    "outputs": [{"id": "trigger", "name": "Trigger", "type": "trigger"}],
+                    "outputs": [{"id": "trigger", "name": "Trigger", "type": "any"}],
                 }
             },
             {
-                "id": "file-reader-1",
-                "type": "file_reader",
-                "position": {"x": 300, "y": 100},
+                "id": "capabilities-1",
+                "type": "graphrag_capabilities",
+                "position": {"x": 350, "y": 100},
                 "data": {
-                    "label": "Load Documents",
-                    "nodeType": "file_reader",
-                    "config": {
-                        "path": "/documents/*.pdf",
-                        "format": "auto",
-                        "batch_mode": True
-                    },
-                    "inputs": [{"id": "trigger", "name": "Trigger", "type": "trigger"}],
-                    "outputs": [{"id": "documents", "name": "Documents", "type": "array"}],
-                }
-            },
-            {
-                "id": "entity-extract-1",
-                "type": "entity_extraction",
-                "position": {"x": 500, "y": 100},
-                "data": {
-                    "label": "Extract Entities (GLiNER)",
-                    "nodeType": "entity_extraction",
-                    "config": {
-                        "labels": ["person", "organization", "location", "product", "technology", "concept"],
-                        "threshold": 0.5,
-                        "extract_relationships": True
-                    },
-                    "inputs": [{"id": "text", "name": "Text", "type": "string", "required": True}],
+                    "label": "GraphRAG Capabilities",
+                    "nodeType": "graphrag_capabilities",
+                    "config": {},
+                    "inputs": [],
                     "outputs": [
-                        {"id": "entities", "name": "Entities", "type": "array"},
-                        {"id": "relationships", "name": "Relationships", "type": "array"}
+                        {"id": "enabled", "name": "Enabled", "type": "boolean"},
+                        {"id": "services", "name": "Services", "type": "object"},
+                        {"id": "capabilities", "name": "Capabilities", "type": "array"},
+                        {"id": "capability_ids", "name": "Capability IDs", "type": "array"},
+                        {"id": "capability_count", "name": "Capability Count", "type": "number"},
+                        {"id": "bridge_available", "name": "Bridge Available", "type": "boolean"},
+                        {"id": "allowed_prefixes", "name": "Allowed Prefixes", "type": "array"},
                     ],
                 }
             },
             {
-                "id": "code-detect-1",
-                "type": "code_detection",
-                "position": {"x": 500, "y": 250},
+                "id": "complexity-1",
+                "type": "graphrag_query_complexity",
+                "position": {"x": 350, "y": 300},
                 "data": {
-                    "label": "Detect Code Blocks",
-                    "nodeType": "code_detection",
-                    "config": {
-                        "extract_metadata": True,
-                        "classify_language": True
-                    },
-                    "inputs": [{"id": "text", "name": "Text", "type": "string", "required": True}],
+                    "label": "Analyze Query",
+                    "nodeType": "graphrag_query_complexity",
+                    "config": {},
+                    "inputs": [{"id": "query", "name": "Query", "type": "string", "required": True}],
                     "outputs": [
-                        {"id": "has_code", "name": "Has Code", "type": "boolean"},
-                        {"id": "code_blocks", "name": "Code Blocks", "type": "array"}
+                        {"id": "query", "name": "Query", "type": "string"},
+                        {"id": "primary_reasoning", "name": "Primary Reasoning", "type": "string"},
+                        {"id": "detected_patterns", "name": "Detected Patterns", "type": "array"},
+                        {"id": "complexity_level", "name": "Complexity Level", "type": "string"},
+                        {"id": "requires_multi_hop", "name": "Requires Multi-Hop", "type": "boolean"},
+                        {"id": "analysis", "name": "Analysis", "type": "object"},
                     ],
                 }
             },
             {
-                "id": "graphrag-search-1",
-                "type": "graphrag_search",
-                "position": {"x": 700, "y": 175},
+                "id": "context-1",
+                "type": "graphrag_chat_context",
+                "position": {"x": 350, "y": 500},
                 "data": {
-                    "label": "Index in Knowledge Graph",
-                    "nodeType": "graphrag_search",
-                    "config": {
-                        "searchType": "hybrid",
-                        "buildGraph": True,
-                        "updateVectors": True
-                    },
+                    "label": "Build Chat Context",
+                    "nodeType": "graphrag_chat_context",
+                    "config": {"mode": "v2", "topK": 5},
                     "inputs": [
+                        {"id": "query", "name": "Query", "type": "string", "required": True},
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "top_k", "name": "Top K", "type": "number"},
+                        {"id": "domain", "name": "Domain", "type": "string"},
+                        {"id": "rag_enabled", "name": "RAG Enabled", "type": "boolean"},
+                        {"id": "rag_domains", "name": "RAG Domains", "type": "array"},
+                        {"id": "rag_search_mode", "name": "RAG Search Mode", "type": "string"},
+                        {"id": "pipeline_run_ids", "name": "Pipeline Run IDs", "type": "array"},
+                    ],
+                    "outputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "context_text", "name": "Context Text", "type": "string"},
+                        {"id": "chunks", "name": "Chunks", "type": "array"},
                         {"id": "entities", "name": "Entities", "type": "array"},
                         {"id": "relationships", "name": "Relationships", "type": "array"},
-                        {"id": "documents", "name": "Documents", "type": "array"}
-                    ],
-                    "outputs": [
-                        {"id": "graph_stats", "name": "Graph Statistics", "type": "object"},
-                        {"id": "indexed_count", "name": "Indexed Count", "type": "number"}
-                    ],
-                }
-            },
-            {
-                "id": "condition-1",
-                "type": "conditional",
-                "position": {"x": 900, "y": 250},
-                "data": {
-                    "label": "Check for Code",
-                    "nodeType": "conditional",
-                    "config": {
-                        "condition": "has_code === true",
-                        "outputTrue": "process_code",
-                        "outputFalse": "skip_code"
-                    },
-                    "inputs": [{"id": "has_code", "name": "Has Code", "type": "boolean"}],
-                    "outputs": [
-                        {"id": "process_code", "name": "Process Code", "type": "trigger"},
-                        {"id": "skip_code", "name": "Skip Code", "type": "trigger"}
+                        {"id": "graph_connections", "name": "Graph Connections", "type": "array"},
+                        {"id": "cross_references", "name": "Cross References", "type": "array"},
+                        {"id": "quality_signals", "name": "Quality Signals", "type": "object"},
+                        {"id": "response", "name": "Response", "type": "object"},
                     ],
                 }
             },
             {
-                "id": "code-search-1",
-                "type": "code_search",
-                "position": {"x": 1100, "y": 200},
+                "id": "merge-1",
+                "type": "merge",
+                "position": {"x": 650, "y": 300},
                 "data": {
-                    "label": "Index Code for Search",
-                    "nodeType": "code_search",
-                    "config": {
-                        "index_functions": True,
-                        "index_classes": True,
-                        "extract_dependencies": True
-                    },
+                    "label": "Combine Context",
+                    "nodeType": "merge",
+                    "config": {},
                     "inputs": [
-                        {"id": "trigger", "name": "Trigger", "type": "trigger"},
-                        {"id": "code_blocks", "name": "Code Blocks", "type": "array"}
+                        {"id": "input1", "name": "Input 1", "type": "any"},
+                        {"id": "input2", "name": "Input 2", "type": "any"},
+                        {"id": "input3", "name": "Input 3", "type": "any"},
                     ],
-                    "outputs": [{"id": "indexed_code", "name": "Indexed Code", "type": "object"}],
-                }
-            },
-            {
-                "id": "aggregator-1",
-                "type": "data_aggregator",
-                "position": {"x": 1300, "y": 175},
-                "data": {
-                    "label": "Aggregate Results",
-                    "nodeType": "data_aggregator",
-                    "config": {"merge_strategy": "combine"},
-                    "inputs": [
-                        {"id": "graph_stats", "name": "Graph Stats", "type": "object"},
-                        {"id": "indexed_code", "name": "Indexed Code", "type": "object"},
-                        {"id": "indexed_count", "name": "Document Count", "type": "number"}
-                    ],
-                    "outputs": [{"id": "summary", "name": "Processing Summary", "type": "object"}],
-                }
-            },
-            {
-                "id": "notification-1",
-                "type": "webhook",
-                "position": {"x": 1500, "y": 175},
-                "data": {
-                    "label": "Send Completion Notification",
-                    "nodeType": "webhook",
-                    "config": {
-                        "url": "${WEBHOOK_URL}",
-                        "method": "POST",
-                        "headers": {"Content-Type": "application/json"}
-                    },
-                    "inputs": [{"id": "data", "name": "Data", "type": "object"}],
-                    "outputs": [{"id": "response", "name": "Response", "type": "object"}],
+                    "outputs": [{"id": "output", "name": "Output", "type": "array"}],
                 }
             },
             {
                 "id": "output-1",
                 "type": "output",
-                "position": {"x": 1700, "y": 175},
+                "position": {"x": 920, "y": 220},
                 "data": {
-                    "label": "Batch Processing Complete",
+                    "label": "Routing Context",
                     "nodeType": "output",
-                    "config": {"name": "batch_results"},
+                    "config": {"name": "graphrag_routing_context"},
                     "inputs": [{"id": "value", "name": "Value", "type": "any", "required": True}],
                     "outputs": [],
                 }
             },
         ],
         "connections": [
-            {"id": "c1", "source": "trigger-1", "sourceHandle": "trigger", "target": "file-reader-1", "targetHandle": "trigger"},
-            {"id": "c2", "source": "file-reader-1", "sourceHandle": "documents", "target": "entity-extract-1", "targetHandle": "text"},
-            {"id": "c3", "source": "file-reader-1", "sourceHandle": "documents", "target": "code-detect-1", "targetHandle": "text"},
-            {"id": "c4", "source": "entity-extract-1", "sourceHandle": "entities", "target": "graphrag-search-1", "targetHandle": "entities"},
-            {"id": "c5", "source": "entity-extract-1", "sourceHandle": "relationships", "target": "graphrag-search-1", "targetHandle": "relationships"},
-            {"id": "c6", "source": "file-reader-1", "sourceHandle": "documents", "target": "graphrag-search-1", "targetHandle": "documents"},
-            {"id": "c7", "source": "code-detect-1", "sourceHandle": "has_code", "target": "condition-1", "targetHandle": "has_code"},
-            {"id": "c8", "source": "condition-1", "sourceHandle": "process_code", "target": "code-search-1", "targetHandle": "trigger"},
-            {"id": "c9", "source": "code-detect-1", "sourceHandle": "code_blocks", "target": "code-search-1", "targetHandle": "code_blocks"},
-            {"id": "c10", "source": "graphrag-search-1", "sourceHandle": "graph_stats", "target": "aggregator-1", "targetHandle": "graph_stats"},
-            {"id": "c11", "source": "graphrag-search-1", "sourceHandle": "indexed_count", "target": "aggregator-1", "targetHandle": "indexed_count"},
-            {"id": "c12", "source": "code-search-1", "sourceHandle": "indexed_code", "target": "aggregator-1", "targetHandle": "indexed_code"},
-            {"id": "c13", "source": "aggregator-1", "sourceHandle": "summary", "target": "notification-1", "targetHandle": "data"},
-            {"id": "c14", "source": "notification-1", "sourceHandle": "response", "target": "output-1", "targetHandle": "value"},
+            {"id": "c1", "source": "trigger-1", "sourceHandle": "trigger", "target": "complexity-1", "targetHandle": "query"},
+            {"id": "c2", "source": "trigger-1", "sourceHandle": "trigger", "target": "context-1", "targetHandle": "query"},
+            {"id": "c3", "source": "capabilities-1", "sourceHandle": "capability_ids", "target": "merge-1", "targetHandle": "input1"},
+            {"id": "c4", "source": "complexity-1", "sourceHandle": "analysis", "target": "merge-1", "targetHandle": "input2"},
+            {"id": "c5", "source": "context-1", "sourceHandle": "context_text", "target": "merge-1", "targetHandle": "input3"},
+            {"id": "c6", "source": "merge-1", "sourceHandle": "output", "target": "output-1", "targetHandle": "value"},
+        ],
+    },
+    {
+        "id": "graphrag-observability-quality",
+        "name": "GraphRAG Observability & Quality",
+        "description": "Collect capability, domain, graph, feedback, evaluation, and quality-test signals from GraphRAG",
+        "category": "rag",
+        "nodes": [
+            {
+                "id": "trigger-1",
+                "type": "manual_trigger",
+                "position": {"x": 100, "y": 220},
+                "data": {
+                    "label": "Start Quality Check",
+                    "nodeType": "manual_trigger",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [{"id": "trigger", "name": "Trigger", "type": "any"}],
+                }
+            },
+            {
+                "id": "capabilities-1",
+                "type": "graphrag_capabilities",
+                "position": {"x": 340, "y": 60},
+                "data": {
+                    "label": "Capabilities",
+                    "nodeType": "graphrag_capabilities",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [
+                        {"id": "enabled", "name": "Enabled", "type": "boolean"},
+                        {"id": "services", "name": "Services", "type": "object"},
+                        {"id": "capabilities", "name": "Capabilities", "type": "array"},
+                        {"id": "capability_ids", "name": "Capability IDs", "type": "array"},
+                        {"id": "capability_count", "name": "Capability Count", "type": "number"},
+                        {"id": "bridge_available", "name": "Bridge Available", "type": "boolean"},
+                        {"id": "allowed_prefixes", "name": "Allowed Prefixes", "type": "array"},
+                    ],
+                }
+            },
+            {
+                "id": "domain-stats-1",
+                "type": "graphrag_domain_stats",
+                "position": {"x": 340, "y": 190},
+                "data": {
+                    "label": "Domain Stats",
+                    "nodeType": "graphrag_domain_stats",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [
+                        {"id": "domain_stats", "name": "Domain Stats", "type": "object"},
+                        {"id": "domains", "name": "Domains", "type": "array"},
+                        {"id": "domain_count", "name": "Domain Count", "type": "number"},
+                    ],
+                }
+            },
+            {
+                "id": "instrumentation-1",
+                "type": "graphrag_instrumentation",
+                "position": {"x": 340, "y": 320},
+                "data": {
+                    "label": "Instrumentation",
+                    "nodeType": "graphrag_instrumentation",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [
+                        {"id": "query_statistics", "name": "Query Statistics", "type": "object"},
+                        {"id": "graph_statistics", "name": "Graph Statistics", "type": "object"},
+                        {"id": "entity_centrality", "name": "Entity Centrality", "type": "object"},
+                        {"id": "entity_clusters", "name": "Entity Clusters", "type": "array"},
+                        {"id": "cluster_count", "name": "Cluster Count", "type": "number"},
+                        {"id": "query_response", "name": "Query Response", "type": "object"},
+                        {"id": "graph_response", "name": "Graph Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "evaluation-status-1",
+                "type": "graphrag_evaluation_status",
+                "position": {"x": 640, "y": 130},
+                "data": {
+                    "label": "Evaluation Readiness",
+                    "nodeType": "graphrag_evaluation_status",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [
+                        {"id": "retrieval", "name": "Retrieval", "type": "object"},
+                        {"id": "chunking", "name": "Chunking", "type": "object"},
+                        {"id": "available", "name": "Available", "type": "boolean"},
+                    ],
+                }
+            },
+            {
+                "id": "quality-suite-1",
+                "type": "graphrag_test_suite",
+                "position": {"x": 640, "y": 300},
+                "data": {
+                    "label": "Quality Suite",
+                    "nodeType": "graphrag_test_suite",
+                    "config": {"suite": "quality"},
+                    "inputs": [{"id": "suite", "name": "Suite", "type": "string"}],
+                    "outputs": [
+                        {"id": "suite", "name": "Suite", "type": "string"},
+                        {"id": "result", "name": "Result", "type": "object"},
+                        {"id": "success", "name": "Success", "type": "boolean"},
+                    ],
+                }
+            },
+            {
+                "id": "feedback-analytics-1",
+                "type": "graphrag_feedback_analytics",
+                "position": {"x": 640, "y": 470},
+                "data": {
+                    "label": "Feedback Analytics",
+                    "nodeType": "graphrag_feedback_analytics",
+                    "config": {"days": 30},
+                    "inputs": [
+                        {"id": "days", "name": "Days", "type": "number"},
+                        {"id": "domain", "name": "Domain", "type": "string"},
+                    ],
+                    "outputs": [
+                        {"id": "period_days", "name": "Period Days", "type": "number"},
+                        {"id": "domain_filter", "name": "Domain Filter", "type": "string"},
+                        {"id": "overall", "name": "Overall", "type": "object"},
+                        {"id": "daily_trends", "name": "Daily Trends", "type": "array"},
+                        {"id": "domain_stats", "name": "Domain Stats", "type": "array"},
+                        {"id": "problem_queries", "name": "Problem Queries", "type": "array"},
+                        {"id": "total_feedback", "name": "Total Feedback", "type": "number"},
+                        {"id": "satisfaction_rate", "name": "Satisfaction Rate", "type": "number"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "merge-1",
+                "type": "merge",
+                "position": {"x": 930, "y": 220},
+                "data": {
+                    "label": "Merge Signals",
+                    "nodeType": "merge",
+                    "config": {},
+                    "inputs": [
+                        {"id": "input1", "name": "Input 1", "type": "any"},
+                        {"id": "input2", "name": "Input 2", "type": "any"},
+                        {"id": "input3", "name": "Input 3", "type": "any"},
+                        {"id": "input4", "name": "Input 4", "type": "any"},
+                    ],
+                    "outputs": [{"id": "output", "name": "Output", "type": "array"}],
+                }
+            },
+            {
+                "id": "merge-2",
+                "type": "merge",
+                "position": {"x": 1180, "y": 220},
+                "data": {
+                    "label": "Quality Summary",
+                    "nodeType": "merge",
+                    "config": {},
+                    "inputs": [
+                        {"id": "input1", "name": "Input 1", "type": "any"},
+                        {"id": "input2", "name": "Input 2", "type": "any"},
+                        {"id": "input3", "name": "Input 3", "type": "any"},
+                    ],
+                    "outputs": [{"id": "output", "name": "Output", "type": "array"}],
+                }
+            },
+            {
+                "id": "output-1",
+                "type": "output",
+                "position": {"x": 1450, "y": 220},
+                "data": {
+                    "label": "GraphRAG Quality Context",
+                    "nodeType": "output",
+                    "config": {"name": "graphrag_quality_context"},
+                    "inputs": [{"id": "value", "name": "Value", "type": "any", "required": True}],
+                    "outputs": [],
+                }
+            },
+        ],
+        "connections": [
+            {"id": "c1", "source": "domain-stats-1", "sourceHandle": "domain_stats", "target": "merge-1", "targetHandle": "input1"},
+            {"id": "c2", "source": "instrumentation-1", "sourceHandle": "graph_response", "target": "merge-1", "targetHandle": "input2"},
+            {"id": "c3", "source": "evaluation-status-1", "sourceHandle": "available", "target": "merge-1", "targetHandle": "input3"},
+            {"id": "c4", "source": "feedback-analytics-1", "sourceHandle": "overall", "target": "merge-1", "targetHandle": "input4"},
+            {"id": "c5", "source": "capabilities-1", "sourceHandle": "capabilities", "target": "merge-2", "targetHandle": "input1"},
+            {"id": "c6", "source": "quality-suite-1", "sourceHandle": "result", "target": "merge-2", "targetHandle": "input2"},
+            {"id": "c7", "source": "merge-1", "sourceHandle": "output", "target": "merge-2", "targetHandle": "input3"},
+            {"id": "c8", "source": "merge-2", "sourceHandle": "output", "target": "output-1", "targetHandle": "value"},
+        ],
+    },
+    {
+        "id": "graphrag-extraction-diagnostics",
+        "name": "GraphRAG Extraction Diagnostics",
+        "description": "Compare NER, relationship extraction, enhanced extraction, and diagnostic extraction on sample text",
+        "category": "rag",
+        "nodes": [
+            {
+                "id": "trigger-1",
+                "type": "manual_trigger",
+                "position": {"x": 100, "y": 220},
+                "data": {
+                    "label": "Sample Text",
+                    "nodeType": "manual_trigger",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [{"id": "trigger", "name": "Trigger", "type": "any"}],
+                }
+            },
+            {
+                "id": "ner-1",
+                "type": "graphrag_ner_extraction",
+                "position": {"x": 360, "y": 70},
+                "data": {
+                    "label": "NER Extraction",
+                    "nodeType": "graphrag_ner_extraction",
+                    "config": {},
+                    "inputs": [
+                        {"id": "text", "name": "Text", "type": "string"},
+                        {"id": "texts", "name": "Texts", "type": "array"},
+                    ],
+                    "outputs": [
+                        {"id": "entities", "name": "Entities", "type": "array"},
+                        {"id": "entity_count", "name": "Entity Count", "type": "number"},
+                        {"id": "results", "name": "Results", "type": "array"},
+                        {"id": "total_texts", "name": "Total Texts", "type": "number"},
+                        {"id": "extraction_method", "name": "Extraction Method", "type": "string"},
+                    ],
+                }
+            },
+            {
+                "id": "rel-1",
+                "type": "graphrag_relation_extraction",
+                "position": {"x": 360, "y": 220},
+                "data": {
+                    "label": "Relationship Extraction",
+                    "nodeType": "graphrag_relation_extraction",
+                    "config": {"threshold": 0.5},
+                    "inputs": [
+                        {"id": "text", "name": "Text", "type": "string", "required": True},
+                        {"id": "relations", "name": "Relations", "type": "array"},
+                        {"id": "entity_labels", "name": "Entity Labels", "type": "array"},
+                        {"id": "threshold", "name": "Threshold", "type": "number"},
+                    ],
+                    "outputs": [
+                        {"id": "relations", "name": "Relations", "type": "array"},
+                        {"id": "relation_count", "name": "Relation Count", "type": "number"},
+                        {"id": "processing_time", "name": "Processing Time", "type": "number"},
+                        {"id": "model_info", "name": "Model Info", "type": "object"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "enhanced-1",
+                "type": "enhanced_entity_extraction",
+                "position": {"x": 360, "y": 380},
+                "data": {
+                    "label": "Enhanced Extraction",
+                    "nodeType": "enhanced_entity_extraction",
+                    "config": {"useSpanbert": True, "useDependency": True, "useEntityLinking": True},
+                    "inputs": [
+                        {"id": "text", "name": "Text", "type": "string", "required": True},
+                        {"id": "domain", "name": "Domain", "type": "string"},
+                    ],
+                    "outputs": [
+                        {"id": "entities", "name": "Entities", "type": "array"},
+                        {"id": "relationships", "name": "Relationships", "type": "array"},
+                        {"id": "entity_count", "name": "Entity Count", "type": "number"},
+                        {"id": "relationship_count", "name": "Relationship Count", "type": "number"},
+                        {"id": "claims", "name": "Claims", "type": "array"},
+                        {"id": "extraction_metadata", "name": "Extraction Metadata", "type": "object"},
+                        {"id": "linked_entities", "name": "Linked Entities", "type": "array"},
+                    ],
+                }
+            },
+            {
+                "id": "diagnostic-1",
+                "type": "graphrag_enhanced_extraction_test",
+                "position": {"x": 690, "y": 220},
+                "data": {
+                    "label": "Extraction Diagnostic",
+                    "nodeType": "graphrag_enhanced_extraction_test",
+                    "config": {},
+                    "inputs": [
+                        {"id": "text", "name": "Text", "type": "string", "required": True},
+                        {"id": "domain", "name": "Domain", "type": "string"},
+                    ],
+                    "outputs": [
+                        {"id": "success", "name": "Success", "type": "boolean"},
+                        {"id": "message", "name": "Message", "type": "string"},
+                        {"id": "entities_found", "name": "Entities Found", "type": "number"},
+                        {"id": "relationships_found", "name": "Relationships Found", "type": "number"},
+                        {"id": "extraction_methods_used", "name": "Methods Used", "type": "array"},
+                        {"id": "sample_entities", "name": "Sample Entities", "type": "array"},
+                        {"id": "sample_relationships", "name": "Sample Relationships", "type": "array"},
+                        {"id": "result", "name": "Result", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "merge-1",
+                "type": "merge",
+                "position": {"x": 990, "y": 220},
+                "data": {
+                    "label": "Compare Extraction Outputs",
+                    "nodeType": "merge",
+                    "config": {},
+                    "inputs": [
+                        {"id": "input1", "name": "Input 1", "type": "any"},
+                        {"id": "input2", "name": "Input 2", "type": "any"},
+                        {"id": "input3", "name": "Input 3", "type": "any"},
+                    ],
+                    "outputs": [{"id": "output", "name": "Output", "type": "array"}],
+                }
+            },
+            {
+                "id": "merge-2",
+                "type": "merge",
+                "position": {"x": 1240, "y": 220},
+                "data": {
+                    "label": "Diagnostic Summary",
+                    "nodeType": "merge",
+                    "config": {},
+                    "inputs": [
+                        {"id": "input1", "name": "Input 1", "type": "any"},
+                        {"id": "input2", "name": "Input 2", "type": "any"},
+                        {"id": "input3", "name": "Input 3", "type": "any"},
+                    ],
+                    "outputs": [{"id": "output", "name": "Output", "type": "array"}],
+                }
+            },
+            {
+                "id": "output-1",
+                "type": "output",
+                "position": {"x": 1510, "y": 220},
+                "data": {
+                    "label": "Extraction Diagnostics",
+                    "nodeType": "output",
+                    "config": {"name": "graphrag_extraction_diagnostics"},
+                    "inputs": [{"id": "value", "name": "Value", "type": "any", "required": True}],
+                    "outputs": [],
+                }
+            },
+        ],
+        "connections": [
+            {"id": "c1", "source": "trigger-1", "sourceHandle": "trigger", "target": "ner-1", "targetHandle": "text"},
+            {"id": "c2", "source": "trigger-1", "sourceHandle": "trigger", "target": "rel-1", "targetHandle": "text"},
+            {"id": "c3", "source": "trigger-1", "sourceHandle": "trigger", "target": "enhanced-1", "targetHandle": "text"},
+            {"id": "c4", "source": "trigger-1", "sourceHandle": "trigger", "target": "diagnostic-1", "targetHandle": "text"},
+            {"id": "c5", "source": "ner-1", "sourceHandle": "entities", "target": "merge-1", "targetHandle": "input1"},
+            {"id": "c6", "source": "rel-1", "sourceHandle": "relations", "target": "merge-1", "targetHandle": "input2"},
+            {"id": "c7", "source": "enhanced-1", "sourceHandle": "extraction_metadata", "target": "merge-1", "targetHandle": "input3"},
+            {"id": "c8", "source": "diagnostic-1", "sourceHandle": "result", "target": "merge-2", "targetHandle": "input1"},
+            {"id": "c9", "source": "merge-1", "sourceHandle": "output", "target": "merge-2", "targetHandle": "input2"},
+            {"id": "c10", "source": "merge-2", "sourceHandle": "output", "target": "output-1", "targetHandle": "value"},
+        ],
+    },
+    {
+        "id": "graphrag-social-memory-context",
+        "name": "GraphRAG Social Memory Context",
+        "description": "Ingest a conversation turn and retrieve personalized social-memory context for downstream answers",
+        "category": "rag",
+        "nodes": [
+            {
+                "id": "trigger-1",
+                "type": "manual_trigger",
+                "position": {"x": 100, "y": 220},
+                "data": {
+                    "label": "Conversation Turn",
+                    "nodeType": "manual_trigger",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [{"id": "trigger", "name": "Trigger", "type": "any"}],
+                }
+            },
+            {
+                "id": "memory-ingest-1",
+                "type": "graphrag_social_memory_ingest",
+                "position": {"x": 380, "y": 120},
+                "data": {
+                    "label": "Store Message",
+                    "nodeType": "graphrag_social_memory_ingest",
+                    "config": {"platform": "twitch", "sync": True, "priority": 3},
+                    "inputs": [
+                        {"id": "platform", "name": "Platform", "type": "string"},
+                        {"id": "platform_user_id", "name": "Platform User ID", "type": "string", "required": True},
+                        {"id": "display_name", "name": "Display Name", "type": "string"},
+                        {"id": "text", "name": "Text", "type": "string", "required": True},
+                        {"id": "timestamp", "name": "Timestamp", "type": "string"},
+                        {"id": "message_id", "name": "Message ID", "type": "string"},
+                        {"id": "stream_id", "name": "Stream ID", "type": "string"},
+                        {"id": "session_id", "name": "Session ID", "type": "string"},
+                        {"id": "previous_messages", "name": "Previous Messages", "type": "array"},
+                        {"id": "priority", "name": "Priority", "type": "number"},
+                        {"id": "sync", "name": "Sync", "type": "boolean"},
+                    ],
+                    "outputs": [
+                        {"id": "person_id", "name": "Person ID", "type": "string"},
+                        {"id": "episode_id", "name": "Episode ID", "type": "string"},
+                        {"id": "facts_written", "name": "Facts Written", "type": "number"},
+                        {"id": "queued", "name": "Queued", "type": "boolean"},
+                        {"id": "skipped_duplicate", "name": "Skipped Duplicate", "type": "boolean"},
+                        {"id": "queue_message_id", "name": "Queue Message ID", "type": "string"},
+                        {"id": "message", "name": "Message", "type": "object"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "memory-context-1",
+                "type": "graphrag_social_memory_context",
+                "position": {"x": 380, "y": 360},
+                "data": {
+                    "label": "Retrieve Context",
+                    "nodeType": "graphrag_social_memory_context",
+                    "config": {"platform": "twitch", "mode": "context", "maxFacts": 25, "includeRecentEpisodes": 3},
+                    "inputs": [
+                        {"id": "platform", "name": "Platform", "type": "string"},
+                        {"id": "platform_user_id", "name": "Platform User ID", "type": "string", "required": True},
+                        {"id": "query", "name": "Query", "type": "string"},
+                        {"id": "max_facts", "name": "Max Facts", "type": "number"},
+                        {"id": "include_recent_episodes", "name": "Recent Episodes", "type": "number"},
+                        {"id": "as_of", "name": "As Of", "type": "string"},
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                    ],
+                    "outputs": [
+                        {"id": "person_id", "name": "Person ID", "type": "string"},
+                        {"id": "formatted", "name": "Formatted", "type": "string"},
+                        {"id": "facts", "name": "Facts", "type": "array"},
+                        {"id": "recent_episodes", "name": "Recent Episodes", "type": "array"},
+                        {"id": "retrieval_path", "name": "Retrieval Path", "type": "string"},
+                        {"id": "cache_hit", "name": "Cache Hit", "type": "boolean"},
+                        {"id": "fact_ids", "name": "Fact IDs", "type": "array"},
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "trace", "name": "Trace", "type": "object"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "memory-facts-1",
+                "type": "graphrag_social_memory_facts",
+                "position": {"x": 720, "y": 120},
+                "data": {
+                    "label": "Person Facts",
+                    "nodeType": "graphrag_social_memory_facts",
+                    "config": {},
+                    "inputs": [
+                        {"id": "person_id", "name": "Person ID", "type": "string", "required": True},
+                        {"id": "as_of", "name": "As Of", "type": "string"},
+                    ],
+                    "outputs": [
+                        {"id": "person_id", "name": "Person ID", "type": "string"},
+                        {"id": "facts", "name": "Facts", "type": "array"},
+                        {"id": "fact_count", "name": "Fact Count", "type": "number"},
+                        {"id": "as_of", "name": "As Of", "type": "string"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "merge-1",
+                "type": "merge",
+                "position": {"x": 980, "y": 240},
+                "data": {
+                    "label": "Memory Bundle",
+                    "nodeType": "merge",
+                    "config": {},
+                    "inputs": [
+                        {"id": "input1", "name": "Input 1", "type": "any"},
+                        {"id": "input2", "name": "Input 2", "type": "any"},
+                        {"id": "input3", "name": "Input 3", "type": "any"},
+                    ],
+                    "outputs": [{"id": "output", "name": "Output", "type": "array"}],
+                }
+            },
+            {
+                "id": "output-1",
+                "type": "output",
+                "position": {"x": 1270, "y": 240},
+                "data": {
+                    "label": "Personal Context",
+                    "nodeType": "output",
+                    "config": {"name": "graphrag_social_memory_context"},
+                    "inputs": [{"id": "value", "name": "Value", "type": "any", "required": True}],
+                    "outputs": [],
+                }
+            },
+        ],
+        "connections": [
+            {"id": "c1", "source": "trigger-1", "sourceHandle": "trigger", "target": "memory-ingest-1", "targetHandle": "text"},
+            {"id": "c2", "source": "trigger-1", "sourceHandle": "trigger", "target": "memory-context-1", "targetHandle": "query"},
+            {"id": "c3", "source": "memory-ingest-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input1"},
+            {"id": "c4", "source": "memory-context-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input2"},
+            {"id": "c5", "source": "memory-ingest-1", "sourceHandle": "person_id", "target": "memory-facts-1", "targetHandle": "person_id"},
+            {"id": "c6", "source": "memory-facts-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input3"},
+            {"id": "c7", "source": "merge-1", "sourceHandle": "output", "target": "output-1", "targetHandle": "value"},
+        ],
+    },
+    {
+        "id": "graphrag-knowledge-graph-explorer",
+        "name": "GraphRAG Knowledge Graph Explorer",
+        "description": "Collect filtered graph data, entity neighborhoods, communities, top entities, and top relationships with upstream graph filters",
+        "category": "rag",
+        "nodes": [
+            {
+                "id": "trigger-1",
+                "type": "manual_trigger",
+                "position": {"x": 100, "y": 240},
+                "data": {
+                    "label": "Graph Filters",
+                    "nodeType": "manual_trigger",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [{"id": "trigger", "name": "Trigger", "type": "any"}],
+                }
+            },
+            {
+                "id": "filtered-graph-1",
+                "type": "graphrag_graph_explorer",
+                "position": {"x": 380, "y": 80},
+                "data": {
+                    "label": "Filtered Graph",
+                    "nodeType": "graphrag_graph_explorer",
+                    "config": {"mode": "filtered_graph"},
+                    "inputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "filters", "name": "Filters", "type": "object"},
+                        {"id": "domain", "name": "Domain", "type": "string"},
+                        {"id": "entity_name", "name": "Entity Name", "type": "string"},
+                        {"id": "entity", "name": "Entity", "type": "string"},
+                        {"id": "max_entities", "name": "Max Entities", "type": "number"},
+                        {"id": "max_relationships", "name": "Max Relationships", "type": "number"},
+                        {"id": "min_occurrence", "name": "Min Occurrence", "type": "number"},
+                        {"id": "min_confidence", "name": "Min Confidence", "type": "number"},
+                        {"id": "entity_types", "name": "Entity Types", "type": "array"},
+                        {"id": "relationship_types", "name": "Relationship Types", "type": "array"},
+                        {"id": "entity_type", "name": "Entity Type", "type": "string"},
+                        {"id": "relationship_type", "name": "Relationship Type", "type": "string"},
+                        {"id": "limit", "name": "Limit", "type": "number"},
+                        {"id": "min_weight", "name": "Min Weight", "type": "number"},
+                    ],
+                    "outputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "filters", "name": "Filters", "type": "object"},
+                        {"id": "nodes", "name": "Nodes", "type": "array"},
+                        {"id": "edges", "name": "Edges", "type": "array"},
+                        {"id": "entities", "name": "Entities", "type": "array"},
+                        {"id": "relationships", "name": "Relationships", "type": "array"},
+                        {"id": "communities", "name": "Communities", "type": "array"},
+                        {"id": "community_count", "name": "Community Count", "type": "number"},
+                        {"id": "neighborhood", "name": "Neighborhood", "type": "object"},
+                        {"id": "stats", "name": "Stats", "type": "object"},
+                        {"id": "result", "name": "Result", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "top-entities-1",
+                "type": "graphrag_graph_explorer",
+                "position": {"x": 380, "y": 260},
+                "data": {
+                    "label": "Top Entities",
+                    "nodeType": "graphrag_graph_explorer",
+                    "config": {"mode": "top_entities"},
+                    "inputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "filters", "name": "Filters", "type": "object"},
+                        {"id": "domain", "name": "Domain", "type": "string"},
+                        {"id": "entity_name", "name": "Entity Name", "type": "string"},
+                        {"id": "entity", "name": "Entity", "type": "string"},
+                        {"id": "max_entities", "name": "Max Entities", "type": "number"},
+                        {"id": "max_relationships", "name": "Max Relationships", "type": "number"},
+                        {"id": "min_occurrence", "name": "Min Occurrence", "type": "number"},
+                        {"id": "min_confidence", "name": "Min Confidence", "type": "number"},
+                        {"id": "entity_types", "name": "Entity Types", "type": "array"},
+                        {"id": "relationship_types", "name": "Relationship Types", "type": "array"},
+                        {"id": "entity_type", "name": "Entity Type", "type": "string"},
+                        {"id": "relationship_type", "name": "Relationship Type", "type": "string"},
+                        {"id": "limit", "name": "Limit", "type": "number"},
+                        {"id": "min_weight", "name": "Min Weight", "type": "number"},
+                    ],
+                    "outputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "filters", "name": "Filters", "type": "object"},
+                        {"id": "nodes", "name": "Nodes", "type": "array"},
+                        {"id": "edges", "name": "Edges", "type": "array"},
+                        {"id": "entities", "name": "Entities", "type": "array"},
+                        {"id": "relationships", "name": "Relationships", "type": "array"},
+                        {"id": "communities", "name": "Communities", "type": "array"},
+                        {"id": "community_count", "name": "Community Count", "type": "number"},
+                        {"id": "neighborhood", "name": "Neighborhood", "type": "object"},
+                        {"id": "stats", "name": "Stats", "type": "object"},
+                        {"id": "result", "name": "Result", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "top-relationships-1",
+                "type": "graphrag_graph_explorer",
+                "position": {"x": 380, "y": 440},
+                "data": {
+                    "label": "Top Relationships",
+                    "nodeType": "graphrag_graph_explorer",
+                    "config": {"mode": "top_relationships"},
+                    "inputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "filters", "name": "Filters", "type": "object"},
+                        {"id": "domain", "name": "Domain", "type": "string"},
+                        {"id": "entity_name", "name": "Entity Name", "type": "string"},
+                        {"id": "entity", "name": "Entity", "type": "string"},
+                        {"id": "max_entities", "name": "Max Entities", "type": "number"},
+                        {"id": "max_relationships", "name": "Max Relationships", "type": "number"},
+                        {"id": "min_occurrence", "name": "Min Occurrence", "type": "number"},
+                        {"id": "min_confidence", "name": "Min Confidence", "type": "number"},
+                        {"id": "entity_types", "name": "Entity Types", "type": "array"},
+                        {"id": "relationship_types", "name": "Relationship Types", "type": "array"},
+                        {"id": "entity_type", "name": "Entity Type", "type": "string"},
+                        {"id": "relationship_type", "name": "Relationship Type", "type": "string"},
+                        {"id": "limit", "name": "Limit", "type": "number"},
+                        {"id": "min_weight", "name": "Min Weight", "type": "number"},
+                    ],
+                    "outputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "filters", "name": "Filters", "type": "object"},
+                        {"id": "nodes", "name": "Nodes", "type": "array"},
+                        {"id": "edges", "name": "Edges", "type": "array"},
+                        {"id": "entities", "name": "Entities", "type": "array"},
+                        {"id": "relationships", "name": "Relationships", "type": "array"},
+                        {"id": "communities", "name": "Communities", "type": "array"},
+                        {"id": "community_count", "name": "Community Count", "type": "number"},
+                        {"id": "neighborhood", "name": "Neighborhood", "type": "object"},
+                        {"id": "stats", "name": "Stats", "type": "object"},
+                        {"id": "result", "name": "Result", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "entity-neighborhood-1",
+                "type": "graphrag_graph_explorer",
+                "position": {"x": 380, "y": 620},
+                "data": {
+                    "label": "Entity Neighborhood",
+                    "nodeType": "graphrag_graph_explorer",
+                    "config": {"mode": "entity_neighborhood", "entityName": "GraphRAG", "limit": 20},
+                    "inputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "filters", "name": "Filters", "type": "object"},
+                        {"id": "domain", "name": "Domain", "type": "string"},
+                        {"id": "entity_name", "name": "Entity Name", "type": "string"},
+                        {"id": "entity", "name": "Entity", "type": "string"},
+                        {"id": "max_entities", "name": "Max Entities", "type": "number"},
+                        {"id": "max_relationships", "name": "Max Relationships", "type": "number"},
+                        {"id": "min_occurrence", "name": "Min Occurrence", "type": "number"},
+                        {"id": "min_confidence", "name": "Min Confidence", "type": "number"},
+                        {"id": "entity_types", "name": "Entity Types", "type": "array"},
+                        {"id": "relationship_types", "name": "Relationship Types", "type": "array"},
+                        {"id": "entity_type", "name": "Entity Type", "type": "string"},
+                        {"id": "relationship_type", "name": "Relationship Type", "type": "string"},
+                        {"id": "limit", "name": "Limit", "type": "number"},
+                        {"id": "min_weight", "name": "Min Weight", "type": "number"},
+                    ],
+                    "outputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "filters", "name": "Filters", "type": "object"},
+                        {"id": "nodes", "name": "Nodes", "type": "array"},
+                        {"id": "edges", "name": "Edges", "type": "array"},
+                        {"id": "entities", "name": "Entities", "type": "array"},
+                        {"id": "relationships", "name": "Relationships", "type": "array"},
+                        {"id": "communities", "name": "Communities", "type": "array"},
+                        {"id": "community_count", "name": "Community Count", "type": "number"},
+                        {"id": "neighborhood", "name": "Neighborhood", "type": "object"},
+                        {"id": "stats", "name": "Stats", "type": "object"},
+                        {"id": "result", "name": "Result", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "communities-1",
+                "type": "graphrag_graph_explorer",
+                "position": {"x": 380, "y": 800},
+                "data": {
+                    "label": "Communities",
+                    "nodeType": "graphrag_graph_explorer",
+                    "config": {"mode": "communities"},
+                    "inputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "filters", "name": "Filters", "type": "object"},
+                        {"id": "domain", "name": "Domain", "type": "string"},
+                        {"id": "entity_name", "name": "Entity Name", "type": "string"},
+                        {"id": "entity", "name": "Entity", "type": "string"},
+                        {"id": "max_entities", "name": "Max Entities", "type": "number"},
+                        {"id": "max_relationships", "name": "Max Relationships", "type": "number"},
+                        {"id": "min_occurrence", "name": "Min Occurrence", "type": "number"},
+                        {"id": "min_confidence", "name": "Min Confidence", "type": "number"},
+                        {"id": "entity_types", "name": "Entity Types", "type": "array"},
+                        {"id": "relationship_types", "name": "Relationship Types", "type": "array"},
+                        {"id": "entity_type", "name": "Entity Type", "type": "string"},
+                        {"id": "relationship_type", "name": "Relationship Type", "type": "string"},
+                        {"id": "limit", "name": "Limit", "type": "number"},
+                        {"id": "min_weight", "name": "Min Weight", "type": "number"},
+                    ],
+                    "outputs": [
+                        {"id": "mode", "name": "Mode", "type": "string"},
+                        {"id": "filters", "name": "Filters", "type": "object"},
+                        {"id": "nodes", "name": "Nodes", "type": "array"},
+                        {"id": "edges", "name": "Edges", "type": "array"},
+                        {"id": "entities", "name": "Entities", "type": "array"},
+                        {"id": "relationships", "name": "Relationships", "type": "array"},
+                        {"id": "communities", "name": "Communities", "type": "array"},
+                        {"id": "community_count", "name": "Community Count", "type": "number"},
+                        {"id": "neighborhood", "name": "Neighborhood", "type": "object"},
+                        {"id": "stats", "name": "Stats", "type": "object"},
+                        {"id": "result", "name": "Result", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "merge-1",
+                "type": "merge",
+                "position": {"x": 760, "y": 440},
+                "data": {
+                    "label": "Graph Signals",
+                    "nodeType": "merge",
+                    "config": {},
+                    "inputs": [
+                        {"id": "input1", "name": "Input 1", "type": "any"},
+                        {"id": "input2", "name": "Input 2", "type": "any"},
+                        {"id": "input3", "name": "Input 3", "type": "any"},
+                        {"id": "input4", "name": "Input 4", "type": "any"},
+                        {"id": "input5", "name": "Input 5", "type": "any"},
+                    ],
+                    "outputs": [{"id": "output", "name": "Output", "type": "array"}],
+                }
+            },
+            {
+                "id": "output-1",
+                "type": "output",
+                "position": {"x": 1040, "y": 440},
+                "data": {
+                    "label": "Graph Explorer",
+                    "nodeType": "output",
+                    "config": {"name": "graphrag_knowledge_graph_explorer"},
+                    "inputs": [{"id": "value", "name": "Value", "type": "any", "required": True}],
+                    "outputs": [],
+                }
+            },
+        ],
+        "connections": [
+            {"id": "c1", "source": "trigger-1", "sourceHandle": "trigger", "target": "filtered-graph-1", "targetHandle": "filters"},
+            {"id": "c2", "source": "trigger-1", "sourceHandle": "trigger", "target": "top-entities-1", "targetHandle": "filters"},
+            {"id": "c3", "source": "trigger-1", "sourceHandle": "trigger", "target": "top-relationships-1", "targetHandle": "filters"},
+            {"id": "c4", "source": "trigger-1", "sourceHandle": "trigger", "target": "entity-neighborhood-1", "targetHandle": "filters"},
+            {"id": "c5", "source": "trigger-1", "sourceHandle": "trigger", "target": "communities-1", "targetHandle": "filters"},
+            {"id": "c6", "source": "filtered-graph-1", "sourceHandle": "result", "target": "merge-1", "targetHandle": "input1"},
+            {"id": "c7", "source": "top-entities-1", "sourceHandle": "entities", "target": "merge-1", "targetHandle": "input2"},
+            {"id": "c8", "source": "top-relationships-1", "sourceHandle": "relationships", "target": "merge-1", "targetHandle": "input3"},
+            {"id": "c9", "source": "entity-neighborhood-1", "sourceHandle": "neighborhood", "target": "merge-1", "targetHandle": "input4"},
+            {"id": "c10", "source": "communities-1", "sourceHandle": "communities", "target": "merge-1", "targetHandle": "input5"},
+            {"id": "c11", "source": "merge-1", "sourceHandle": "output", "target": "output-1", "targetHandle": "value"},
+        ],
+    },
+    {
+        "id": "graphrag-code-rag-indexing",
+        "name": "GraphRAG Code-RAG Indexing",
+        "description": "Index code paths, inspect ingestion progress, analyze a file, and collect Code-RAG statistics",
+        "category": "tools",
+        "nodes": [
+            {
+                "id": "trigger-1",
+                "type": "manual_trigger",
+                "position": {"x": 100, "y": 240},
+                "data": {
+                    "label": "Code Paths",
+                    "nodeType": "manual_trigger",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [{"id": "trigger", "name": "Trigger", "type": "any"}],
+                }
+            },
+            {
+                "id": "code-ingest-1",
+                "type": "graphrag_code_ingest",
+                "position": {"x": 360, "y": 90},
+                "data": {
+                    "label": "Index Code Paths",
+                    "nodeType": "graphrag_code_ingest",
+                    "config": {"projectName": "default_project"},
+                    "inputs": [
+                        {"id": "file_paths", "name": "File Paths", "type": "array", "required": True},
+                        {"id": "project_name", "name": "Project Name", "type": "string"},
+                        {"id": "language", "name": "Language", "type": "string"},
+                    ],
+                    "outputs": [
+                        {"id": "task_id", "name": "Task ID", "type": "string"},
+                        {"id": "status", "name": "Status", "type": "string"},
+                        {"id": "message", "name": "Message", "type": "string"},
+                        {"id": "project_name", "name": "Project Name", "type": "string"},
+                        {"id": "file_count", "name": "File Count", "type": "number"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "ingest-status-1",
+                "type": "graphrag_code_ingestion_status",
+                "position": {"x": 660, "y": 90},
+                "data": {
+                    "label": "Ingestion Status",
+                    "nodeType": "graphrag_code_ingestion_status",
+                    "config": {},
+                    "inputs": [{"id": "task_id", "name": "Task ID", "type": "string", "required": True}],
+                    "outputs": [
+                        {"id": "task_id", "name": "Task ID", "type": "string"},
+                        {"id": "status", "name": "Status", "type": "string"},
+                        {"id": "progress", "name": "Progress", "type": "number"},
+                        {"id": "processed_files", "name": "Processed Files", "type": "number"},
+                        {"id": "total_files", "name": "Total Files", "type": "number"},
+                        {"id": "entities_found", "name": "Entities Found", "type": "number"},
+                        {"id": "error", "name": "Error", "type": "string"},
+                        {"id": "elapsed_time", "name": "Elapsed Time", "type": "number"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "code-analysis-1",
+                "type": "graphrag_code_analysis",
+                "position": {"x": 360, "y": 300},
+                "data": {
+                    "label": "Analyze File",
+                    "nodeType": "graphrag_code_analysis",
+                    "config": {},
+                    "inputs": [{"id": "file_path", "name": "File Path", "type": "string", "required": True}],
+                    "outputs": [
+                        {"id": "file_path", "name": "File Path", "type": "string"},
+                        {"id": "language", "name": "Language", "type": "string"},
+                        {"id": "success", "name": "Success", "type": "boolean"},
+                        {"id": "entities", "name": "Entities", "type": "array"},
+                        {"id": "relationships", "name": "Relationships", "type": "array"},
+                        {"id": "entity_count", "name": "Entity Count", "type": "number"},
+                        {"id": "relationship_count", "name": "Relationship Count", "type": "number"},
+                        {"id": "parse_time_ms", "name": "Parse Time", "type": "number"},
+                        {"id": "error", "name": "Error", "type": "string"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "code-stats-1",
+                "type": "graphrag_code_stats",
+                "position": {"x": 660, "y": 300},
+                "data": {
+                    "label": "Code-RAG Stats",
+                    "nodeType": "graphrag_code_stats",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [
+                        {"id": "search_engine", "name": "Search Engine", "type": "object"},
+                        {"id": "active_tasks", "name": "Active Tasks", "type": "number"},
+                        {"id": "completed_tasks", "name": "Completed Tasks", "type": "number"},
+                        {"id": "failed_tasks", "name": "Failed Tasks", "type": "number"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "merge-1",
+                "type": "merge",
+                "position": {"x": 980, "y": 210},
+                "data": {
+                    "label": "Code-RAG Bundle",
+                    "nodeType": "merge",
+                    "config": {},
+                    "inputs": [
+                        {"id": "input1", "name": "Input 1", "type": "any"},
+                        {"id": "input2", "name": "Input 2", "type": "any"},
+                        {"id": "input3", "name": "Input 3", "type": "any"},
+                    ],
+                    "outputs": [{"id": "output", "name": "Output", "type": "array"}],
+                }
+            },
+            {
+                "id": "output-1",
+                "type": "output",
+                "position": {"x": 1250, "y": 210},
+                "data": {
+                    "label": "Code-RAG Indexing",
+                    "nodeType": "output",
+                    "config": {"name": "graphrag_code_rag_indexing"},
+                    "inputs": [{"id": "value", "name": "Value", "type": "any", "required": True}],
+                    "outputs": [],
+                }
+            },
+        ],
+        "connections": [
+            {"id": "c1", "source": "trigger-1", "sourceHandle": "trigger", "target": "code-ingest-1", "targetHandle": "file_paths"},
+            {"id": "c2", "source": "code-ingest-1", "sourceHandle": "task_id", "target": "ingest-status-1", "targetHandle": "task_id"},
+            {"id": "c3", "source": "trigger-1", "sourceHandle": "trigger", "target": "code-analysis-1", "targetHandle": "file_path"},
+            {"id": "c4", "source": "ingest-status-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input1"},
+            {"id": "c5", "source": "code-analysis-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input2"},
+            {"id": "c6", "source": "code-stats-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input3"},
+            {"id": "c7", "source": "merge-1", "sourceHandle": "output", "target": "output-1", "targetHandle": "value"},
+        ],
+    },
+    {
+        "id": "graphrag-reddit-research-ingestion",
+        "name": "GraphRAG Reddit Research Ingestion",
+        "description": "Crawl Reddit discussions, auto-ingest them into GraphRAG, and collect crawl status and results",
+        "category": "rag",
+        "nodes": [
+            {
+                "id": "trigger-1",
+                "type": "manual_trigger",
+                "position": {"x": 100, "y": 220},
+                "data": {
+                    "label": "Research Query",
+                    "nodeType": "manual_trigger",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [{"id": "trigger", "name": "Trigger", "type": "any"}],
+                }
+            },
+            {
+                "id": "reddit-crawl-1",
+                "type": "graphrag_reddit_crawl",
+                "position": {"x": 360, "y": 120},
+                "data": {
+                    "label": "Start Reddit Crawl",
+                    "nodeType": "graphrag_reddit_crawl",
+                    "config": {
+                        "subreddits": ["LocalLLaMA", "MachineLearning"],
+                        "sortBy": "relevance",
+                        "timeFilter": "month",
+                        "maxPosts": 50,
+                        "maxCommentsPerPost": 20,
+                        "commentDepth": 2,
+                        "includeReplies": True,
+                        "autoIngest": True,
+                        "filterNsfw": True,
+                    },
+                    "inputs": [
+                        {"id": "query", "name": "Query", "type": "string", "required": True},
+                        {"id": "subreddits", "name": "Subreddits", "type": "array"},
+                        {"id": "sort_by", "name": "Sort By", "type": "string"},
+                        {"id": "time_filter", "name": "Time Filter", "type": "string"},
+                        {"id": "max_posts", "name": "Max Posts", "type": "number"},
+                        {"id": "max_comments_per_post", "name": "Max Comments", "type": "number"},
+                        {"id": "comment_depth", "name": "Comment Depth", "type": "number"},
+                        {"id": "include_replies", "name": "Include Replies", "type": "boolean"},
+                        {"id": "auto_ingest", "name": "Auto Ingest", "type": "boolean"},
+                        {"id": "filter_nsfw", "name": "Filter NSFW", "type": "boolean"},
+                    ],
+                    "outputs": [
+                        {"id": "crawl_id", "name": "Crawl ID", "type": "string"},
+                        {"id": "status", "name": "Status", "type": "string"},
+                        {"id": "posts_found", "name": "Posts Found", "type": "number"},
+                        {"id": "comments_found", "name": "Comments Found", "type": "number"},
+                        {"id": "total_content_length", "name": "Content Length", "type": "number"},
+                        {"id": "estimated_processing_time", "name": "Estimated Time", "type": "string"},
+                        {"id": "ingestion_status", "name": "Ingestion Status", "type": "string"},
+                        {"id": "query", "name": "Query", "type": "string"},
+                        {"id": "subreddits", "name": "Subreddits", "type": "array"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "crawl-status-1",
+                "type": "graphrag_reddit_crawl_status",
+                "position": {"x": 660, "y": 70},
+                "data": {
+                    "label": "Crawl Status",
+                    "nodeType": "graphrag_reddit_crawl_status",
+                    "config": {},
+                    "inputs": [{"id": "crawl_id", "name": "Crawl ID", "type": "string", "required": True}],
+                    "outputs": [
+                        {"id": "crawl_id", "name": "Crawl ID", "type": "string"},
+                        {"id": "status", "name": "Status", "type": "string"},
+                        {"id": "progress", "name": "Progress", "type": "number"},
+                        {"id": "posts_processed", "name": "Posts Processed", "type": "number"},
+                        {"id": "comments_processed", "name": "Comments Processed", "type": "number"},
+                        {"id": "current_post", "name": "Current Post", "type": "string"},
+                        {"id": "error", "name": "Error", "type": "string"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "crawl-results-1",
+                "type": "graphrag_reddit_crawl_results",
+                "position": {"x": 660, "y": 300},
+                "data": {
+                    "label": "Crawl Results",
+                    "nodeType": "graphrag_reddit_crawl_results",
+                    "config": {},
+                    "inputs": [{"id": "crawl_id", "name": "Crawl ID", "type": "string", "required": True}],
+                    "outputs": [
+                        {"id": "crawl_id", "name": "Crawl ID", "type": "string"},
+                        {"id": "status", "name": "Status", "type": "string"},
+                        {"id": "results", "name": "Results", "type": "array"},
+                        {"id": "result_count", "name": "Result Count", "type": "number"},
+                        {"id": "statistics", "name": "Statistics", "type": "object"},
+                        {"id": "ingestion_status", "name": "Ingestion Status", "type": "string"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "merge-1",
+                "type": "merge",
+                "position": {"x": 980, "y": 200},
+                "data": {
+                    "label": "Reddit Crawl Bundle",
+                    "nodeType": "merge",
+                    "config": {},
+                    "inputs": [
+                        {"id": "input1", "name": "Input 1", "type": "any"},
+                        {"id": "input2", "name": "Input 2", "type": "any"},
+                        {"id": "input3", "name": "Input 3", "type": "any"},
+                    ],
+                    "outputs": [{"id": "output", "name": "Output", "type": "array"}],
+                }
+            },
+            {
+                "id": "output-1",
+                "type": "output",
+                "position": {"x": 1250, "y": 200},
+                "data": {
+                    "label": "Reddit GraphRAG Crawl",
+                    "nodeType": "output",
+                    "config": {"name": "graphrag_reddit_research_ingestion"},
+                    "inputs": [{"id": "value", "name": "Value", "type": "any", "required": True}],
+                    "outputs": [],
+                }
+            },
+        ],
+        "connections": [
+            {"id": "c1", "source": "trigger-1", "sourceHandle": "trigger", "target": "reddit-crawl-1", "targetHandle": "query"},
+            {"id": "c2", "source": "reddit-crawl-1", "sourceHandle": "crawl_id", "target": "crawl-status-1", "targetHandle": "crawl_id"},
+            {"id": "c3", "source": "reddit-crawl-1", "sourceHandle": "crawl_id", "target": "crawl-results-1", "targetHandle": "crawl_id"},
+            {"id": "c4", "source": "reddit-crawl-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input1"},
+            {"id": "c5", "source": "crawl-status-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input2"},
+            {"id": "c6", "source": "crawl-results-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input3"},
+            {"id": "c7", "source": "merge-1", "sourceHandle": "output", "target": "output-1", "targetHandle": "value"},
+        ],
+    },
+    {
+        "id": "graphrag-corpus-maintenance",
+        "name": "GraphRAG Corpus Maintenance",
+        "description": "List indexed GraphRAG documents and rebuild the knowledge graph for a corpus",
+        "category": "rag",
+        "nodes": [
+            {
+                "id": "list-documents-1",
+                "type": "graphrag_document_list",
+                "position": {"x": 180, "y": 100},
+                "data": {
+                    "label": "List Documents",
+                    "nodeType": "graphrag_document_list",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [
+                        {"id": "documents", "name": "Documents", "type": "array"},
+                        {"id": "total_documents", "name": "Total Documents", "type": "number"},
+                        {"id": "vector_store_documents", "name": "Vector Documents", "type": "number"},
+                        {"id": "knowledge_graph_documents", "name": "Graph Documents", "type": "number"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "rebuild-kg-1",
+                "type": "graphrag_kg_rebuild",
+                "position": {"x": 180, "y": 330},
+                "data": {
+                    "label": "Rebuild Knowledge Graph",
+                    "nodeType": "graphrag_kg_rebuild",
+                    "config": {"domain": "general"},
+                    "inputs": [{"id": "domain", "name": "Domain", "type": "string"}],
+                    "outputs": [
+                        {"id": "domain", "name": "Domain", "type": "string"},
+                        {"id": "message", "name": "Message", "type": "string"},
+                        {"id": "documents_processed", "name": "Documents Processed", "type": "number"},
+                        {"id": "entities_extracted", "name": "Entities Extracted", "type": "number"},
+                        {"id": "relationships_extracted", "name": "Relationships Extracted", "type": "number"},
+                        {"id": "response", "name": "Response", "type": "object"},
+                    ],
+                }
+            },
+            {
+                "id": "domain-stats-1",
+                "type": "graphrag_domain_stats",
+                "position": {"x": 500, "y": 220},
+                "data": {
+                    "label": "Domain Stats",
+                    "nodeType": "graphrag_domain_stats",
+                    "config": {},
+                    "inputs": [],
+                    "outputs": [
+                        {"id": "domain_stats", "name": "Domain Stats", "type": "object"},
+                        {"id": "domains", "name": "Domains", "type": "array"},
+                        {"id": "domain_count", "name": "Domain Count", "type": "number"},
+                    ],
+                }
+            },
+            {
+                "id": "merge-1",
+                "type": "merge",
+                "position": {"x": 820, "y": 220},
+                "data": {
+                    "label": "Corpus Maintenance Bundle",
+                    "nodeType": "merge",
+                    "config": {},
+                    "inputs": [
+                        {"id": "input1", "name": "Input 1", "type": "any"},
+                        {"id": "input2", "name": "Input 2", "type": "any"},
+                        {"id": "input3", "name": "Input 3", "type": "any"},
+                    ],
+                    "outputs": [{"id": "output", "name": "Output", "type": "array"}],
+                }
+            },
+            {
+                "id": "output-1",
+                "type": "output",
+                "position": {"x": 1110, "y": 220},
+                "data": {
+                    "label": "Corpus Maintenance",
+                    "nodeType": "output",
+                    "config": {"name": "graphrag_corpus_maintenance"},
+                    "inputs": [{"id": "value", "name": "Value", "type": "any", "required": True}],
+                    "outputs": [],
+                }
+            },
+        ],
+        "connections": [
+            {"id": "c1", "source": "list-documents-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input1"},
+            {"id": "c2", "source": "rebuild-kg-1", "sourceHandle": "response", "target": "merge-1", "targetHandle": "input2"},
+            {"id": "c3", "source": "domain-stats-1", "sourceHandle": "domain_stats", "target": "merge-1", "targetHandle": "input3"},
+            {"id": "c4", "source": "merge-1", "sourceHandle": "output", "target": "output-1", "targetHandle": "value"},
         ],
     },
 ]
@@ -1181,13 +2253,3 @@ def get_workflow_template(template_id: str) -> Dict[str, Any]:
         if t["id"] == template_id:
             return t
     return None
-
-
-
-
-
-
-
-
-
-

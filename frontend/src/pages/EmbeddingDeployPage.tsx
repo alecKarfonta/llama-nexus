@@ -1,10 +1,8 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useMemo } from 'react'
 import {
   Box,
   Grid,
   Typography,
-  Card,
-  CardContent,
   TextField,
   Select,
   MenuItem,
@@ -29,8 +27,9 @@ import {
   Tooltip,
   Tabs,
   Tab,
-  Divider,
+  useMediaQuery,
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import {
   PlayArrow as StartIcon,
   Stop as StopIcon,
@@ -39,13 +38,14 @@ import {
   Science as TestIcon,
   CloudDownload as DownloadIcon,
   Delete as DeleteIcon,
-  Info as InfoIcon,
   CheckCircle as CheckIcon,
   Cancel as CancelIcon,
   Speed as SpeedIcon,
   Refresh as RefreshIcon,
   Assessment as AssessmentIcon,
   History as HistoryIcon,
+  Hub as EmbeddingIcon,
+  Inventory2 as InventoryIcon,
 } from '@mui/icons-material'
 import {
   BarChart,
@@ -56,9 +56,18 @@ import {
   Tooltip as RechartsTooltip,
   ResponsiveContainer,
   Legend,
-  LineChart,
-  Line,
 } from 'recharts'
+import {
+  ConfirmationDialog,
+  compactCollapsibleCardSx,
+  MetricTile,
+  optionalSectionGridSx,
+  PageShell,
+  SectionCard,
+} from '@/components/common'
+import { useConfirmableAction } from '@/hooks/useConfirmableAction'
+import { debugLog } from '@/utils/debug'
+import { accentColors } from '@/utils/theme'
 
 // Embedding model repository mappings
 const EMBEDDING_MODEL_REPOS = {
@@ -80,7 +89,42 @@ const EMBEDDING_MODEL_REPOS = {
   }
 }
 
+const formatBytes = (bytes?: number) => {
+  if (!bytes || bytes <= 0) return 'Unknown size'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  return `${(bytes / Math.pow(1024, index)).toFixed(index === 0 ? 0 : 1)} ${units[index]}`
+}
+
+const localModelPath = (model: any) => model.localPath || model.path || model.filename || model.name || ''
+const localModelName = (model: any) => model.filename || model.name || 'Unknown model'
+const localModelSource = (model: any) => model.repositoryId || model.repository_id || localModelPath(model)
+const localModelModifiedLabel = (model: any) => {
+  const modified = model.lastModified || model.modified
+  return modified ? new Date(modified).toLocaleDateString() : 'Unknown'
+}
+const embeddingModelNeedles = [
+  ...Object.keys(EMBEDDING_MODEL_REPOS),
+  ...Object.values(EMBEDDING_MODEL_REPOS).flatMap((model) => model.files),
+].map((value) => value.toLowerCase())
+
+const isEmbeddingLocalModel = (model: any) => {
+  const searchable = [
+    model.filename,
+    model.name,
+    model.path,
+    model.localPath,
+    model.repositoryId,
+    model.repository_id,
+  ].filter(Boolean).join(' ').toLowerCase()
+
+  return embeddingModelNeedles.some((needle) => searchable.includes(needle))
+}
+
 export const EmbeddingDeployPage: React.FC = () => {
+  const isNarrow = useMediaQuery('(max-width:599.95px)')
+  const isShortViewport = useMediaQuery('(max-height:799.95px)')
+
   // Embedding service state
   const [embeddingStatus, setEmbeddingStatus] = useState<any>(null)
   const [embeddingConfig, setEmbeddingConfig] = useState<any>(null)
@@ -106,6 +150,13 @@ export const EmbeddingDeployPage: React.FC = () => {
   const [downloadLoading, setDownloadLoading] = useState(false)
   const [activeDownloads, setActiveDownloads] = useState<any[]>([])
   const [localModels, setLocalModels] = useState<any[]>([])
+  const {
+    confirmationAction: confirmAction,
+    confirmationLoading: confirmingAction,
+    requestConfirmation,
+    closeConfirmation: closeConfirmDialog,
+    confirmAction: handleConfirmAction,
+  } = useConfirmableAction()
   
   const [loading, setLoading] = useState(true)
 
@@ -167,7 +218,7 @@ export const EmbeddingDeployPage: React.FC = () => {
           loadActiveDownloads()
         ])
       } catch (e) {
-        console.error('Failed to fetch embedding service info:', e)
+        debugLog('embedding', 'Failed to fetch embedding service info', e)
       } finally {
         setLoading(false)
       }
@@ -280,7 +331,6 @@ export const EmbeddingDeployPage: React.FC = () => {
         throw new Error('Failed to save RAG embedding config')
       }
       
-      const result = await res.json()
       setEmbeddingSuccess('RAG embedding configuration saved successfully')
       setTimeout(() => setEmbeddingSuccess(null), 3000)
     } catch (e) {
@@ -343,7 +393,7 @@ export const EmbeddingDeployPage: React.FC = () => {
         setLocalModels(data.data || [])
       }
     } catch (e) {
-      console.error('Failed to load local models:', e)
+      debugLog('embedding', 'Failed to load local models', e)
     }
   }
   
@@ -355,7 +405,7 @@ export const EmbeddingDeployPage: React.FC = () => {
         setActiveDownloads(data.data || [])
       }
     } catch (e) {
-      console.error('Failed to load downloads:', e)
+      debugLog('embedding', 'Failed to load downloads', e)
     }
   }
   
@@ -428,22 +478,29 @@ export const EmbeddingDeployPage: React.FC = () => {
     }
   }
   
-  const deleteLocalModel = async (filePath: string) => {
-    try {
-      const res = await fetch('/v1/models/local-files', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_path: filePath })
-      })
-      
-      if (res.ok) {
-        setEmbeddingSuccess('Model deleted successfully')
-        await loadLocalModels()
-        setTimeout(() => setEmbeddingSuccess(null), 3000)
-      }
-    } catch (e) {
-      setEmbeddingError('Failed to delete model')
-    }
+  const deleteLocalModel = (filePath: string) => {
+    if (!filePath) return
+    requestConfirmation({
+      title: 'Delete local model file?',
+      message: `Delete local model file "${filePath}"?`,
+      confirmLabel: 'Delete file',
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/v1/models/local-files?file_path=${encodeURIComponent(filePath)}`, {
+            method: 'DELETE'
+          })
+
+          if (res.ok) {
+            setEmbeddingSuccess('Model deleted successfully')
+            await loadLocalModels()
+            setTimeout(() => setEmbeddingSuccess(null), 3000)
+          }
+        } catch (e) {
+          setEmbeddingError('Failed to delete model')
+        }
+      },
+    })
   }
   
   const getModelStatus = (modelName: string, variant: string) => {
@@ -479,7 +536,7 @@ export const EmbeddingDeployPage: React.FC = () => {
         setBenchHistory(data.results || [])
       }
     } catch (e) {
-      console.error('Failed to load benchmark history:', e)
+      debugLog('embedding', 'Failed to load benchmark history', e)
     } finally {
       setBenchHistoryLoading(false)
     }
@@ -541,9 +598,224 @@ export const EmbeddingDeployPage: React.FC = () => {
       await fetch(`/api/v1/embedding-benchmark/results/${id}`, { method: 'DELETE' })
       await loadBenchHistory()
     } catch (e) {
-      console.error('Failed to delete benchmark result:', e)
+      debugLog('embedding', 'Failed to delete benchmark result', e)
     }
   }
+
+  const serviceRunning = Boolean(embeddingStatus?.running)
+  const serviceStatusColor = serviceRunning ? accentColors.success : accentColors.warning
+  const serviceStatusLabel = serviceRunning ? 'Service running' : 'Service stopped'
+  const showStartAction = !serviceRunning || embeddingLoading === 'start'
+  const showRestartAction = serviceRunning || embeddingLoading === 'restart'
+  const showStopAction = serviceRunning || embeddingLoading === 'stop'
+  const selectedModel = embeddingConfig?.model?.name || 'No model selected'
+  const selectedVariantLabel = embeddingConfig?.model?.variant || 'Q8_0'
+  const embeddingLocalModels = useMemo(() => localModels.filter(isEmbeddingLocalModel), [localModels])
+  const totalLocalModelSize = embeddingLocalModels.reduce((total, model) => total + (model.size || model.size_bytes || 0), 0)
+  const ragModeLabel = ragEmbeddingConfig?.use_deployed_service ? 'Deployed service' : 'Local fallback'
+  const endpointLabel = embeddingStatus?.endpoint || ragEmbeddingConfig?.service_url || 'Endpoint pending'
+  const commandIconButtonSx = {
+    width: 32,
+    height: 32,
+    borderRadius: '8px',
+    border: '1px solid',
+    borderColor: 'divider',
+    bgcolor: 'action.hover',
+    '&:hover': { bgcolor: 'action.selected' },
+    '&.Mui-disabled': {
+      bgcolor: 'action.disabledBackground',
+      color: 'action.disabled',
+    },
+  }
+  const embeddingHeaderActions = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      <Tooltip title="Refresh service status">
+        <IconButton
+          size="small"
+          aria-label="Refresh embedding service status"
+          onClick={async () => {
+            const res = await fetch('/api/v1/embedding/status')
+            if (res.ok) {
+              setEmbeddingStatus(await res.json())
+            }
+            await Promise.all([loadLocalModels(), loadActiveDownloads()])
+          }}
+          sx={commandIconButtonSx}
+        >
+          <RefreshIcon sx={{ fontSize: 17 }} />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title="Save settings">
+        <span>
+          <IconButton
+            size="small"
+            aria-label="Save embedding settings"
+            onClick={saveEmbeddingConfig}
+            disabled={!embeddingConfig}
+            sx={commandIconButtonSx}
+          >
+            <SaveIcon sx={{ fontSize: 17 }} />
+          </IconButton>
+        </span>
+      </Tooltip>
+      {showStartAction && (
+        <Tooltip title="Start service">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Start embedding service"
+              onClick={() => runEmbeddingAction('start')}
+              disabled={embeddingLoading !== null || serviceRunning}
+              sx={{
+                width: 32,
+                height: 32,
+                borderRadius: '8px',
+                bgcolor: 'primary.main',
+                color: 'primary.contrastText',
+                '&:hover': { bgcolor: 'primary.dark' },
+                '&.Mui-disabled': {
+                  bgcolor: 'action.disabledBackground',
+                  color: 'action.disabled',
+                },
+              }}
+            >
+              {embeddingLoading === 'start' ? <CircularProgress size={15} color="inherit" /> : <StartIcon sx={{ fontSize: 17 }} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
+      {showRestartAction && (
+        <Tooltip title="Restart service">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Restart embedding service"
+              onClick={() => runEmbeddingAction('restart')}
+              disabled={embeddingLoading !== null}
+              sx={commandIconButtonSx}
+            >
+              {embeddingLoading === 'restart' ? <CircularProgress size={15} /> : <RestartIcon sx={{ fontSize: 17 }} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
+      {showStopAction && (
+        <Tooltip title="Stop service">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Stop embedding service"
+              color="error"
+              onClick={() => runEmbeddingAction('stop')}
+              disabled={embeddingLoading !== null || !serviceRunning}
+              sx={commandIconButtonSx}
+            >
+              {embeddingLoading === 'stop' ? <CircularProgress size={15} /> : <StopIcon sx={{ fontSize: 17 }} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
+    </Box>
+  )
+  const embeddingSummaryRow = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+      <Chip
+        size="small"
+        label={serviceStatusLabel}
+        sx={{
+          height: 22,
+          fontSize: '0.68rem',
+          fontWeight: 800,
+          color: serviceStatusColor,
+          bgcolor: alpha(serviceStatusColor, 0.1),
+          border: `1px solid ${alpha(serviceStatusColor, 0.28)}`,
+        }}
+      />
+      <Chip
+        size="small"
+        label={`${selectedVariantLabel}`}
+        sx={{ height: 22, fontSize: '0.68rem', fontWeight: 800, display: { xs: 'none', sm: 'inline-flex' } }}
+      />
+      <Chip
+        size="small"
+        label={ragModeLabel}
+        sx={{ height: 22, fontSize: '0.68rem', fontWeight: 800, display: { xs: 'none', sm: 'inline-flex' } }}
+      />
+      <Chip
+        size="small"
+        label={`${embeddingLocalModels.length} local / ${activeDownloads.length} active`}
+        sx={{ height: 22, fontSize: '0.68rem', fontWeight: 800, display: { xs: activeDownloads.length > 0 ? 'inline-flex' : 'none', sm: 'inline-flex' } }}
+      />
+      <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0, display: { xs: 'none', sm: 'block' } }}>
+        {selectedModel} / {endpointLabel}
+      </Typography>
+    </Box>
+  )
+  const embeddingRuntimeSettingItems = (
+    <>
+      <Grid item xs={6} sm={6} lg={4}>
+        <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
+          Context Size
+        </Typography>
+        <TextField
+          fullWidth
+          size="small"
+          type="number"
+          value={embeddingConfig?.model?.context_size || 8192}
+          onChange={(e) => updateEmbeddingConfig('model.context_size', parseInt(e.target.value))}
+          inputProps={{ min: 512, max: 32768 }}
+        />
+      </Grid>
+
+      <Grid item xs={6} sm={6} lg={4}>
+        <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
+          GPU Layers
+        </Typography>
+        <TextField
+          fullWidth
+          size="small"
+          type="number"
+          value={embeddingConfig?.model?.gpu_layers || 999}
+          onChange={(e) => updateEmbeddingConfig('model.gpu_layers', parseInt(e.target.value))}
+          inputProps={{ min: 0, max: 999 }}
+        />
+      </Grid>
+
+      <Grid item xs={6} sm={6} lg={4}>
+        <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
+          Execution Mode
+        </Typography>
+        <Select
+          fullWidth
+          size="small"
+          value={embeddingConfig?.execution?.mode || 'gpu'}
+          onChange={(e) => updateEmbeddingConfig('execution.mode', e.target.value)}
+          sx={{ fontSize: '0.875rem' }}
+        >
+          <MenuItem value="gpu">GPU Acceleration</MenuItem>
+          <MenuItem value="cpu">CPU Only</MenuItem>
+        </Select>
+      </Grid>
+
+      <Grid item xs={6} sm={6} lg={4}>
+        <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
+          CUDA Devices
+        </Typography>
+        <TextField
+          fullWidth
+          size="small"
+          value={embeddingConfig?.execution?.cuda_devices || 'all'}
+          onChange={(e) => updateEmbeddingConfig('execution.cuda_devices', e.target.value)}
+          disabled={embeddingConfig?.execution?.mode === 'cpu'}
+        />
+      </Grid>
+    </>
+  )
+  const embeddingRuntimeSettings = (
+    <Grid container spacing={1.25}>
+      {embeddingRuntimeSettingItems}
+    </Grid>
+  )
 
   if (loading) {
     return (
@@ -554,126 +826,47 @@ export const EmbeddingDeployPage: React.FC = () => {
   }
 
   return (
-    <Box sx={{ p: { xs: 2, sm: 3, md: 4 }, maxWidth: '100%', mx: 'auto' }}>
-      {/* Header */}
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h4" sx={{ fontWeight: 700, mb: 1 }}>
-          Embedding Model Deployment
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Deploy and manage dedicated embedding models for RAG operations
-        </Typography>
-      </Box>
-
+    <PageShell sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       {embeddingError && (
-        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setEmbeddingError(null)}>
+        <Alert severity="error" onClose={() => setEmbeddingError(null)}>
           {embeddingError}
         </Alert>
       )}
       
       {embeddingSuccess && (
-        <Alert severity="success" sx={{ mb: 3 }} onClose={() => setEmbeddingSuccess(null)}>
+        <Alert severity="success" onClose={() => setEmbeddingSuccess(null)}>
           {embeddingSuccess}
         </Alert>
       )}
 
       {embeddingConfig && (
-        <Box>
-          {/* Status and Control */}
-          <Card sx={{
-            mb: 3,
-            borderRadius: 2,
-            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-            border: '1px solid',
-            borderColor: 'divider',
-          }}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom sx={{ fontSize: '1.125rem', fontWeight: 600 }}>
-                Service Status
-              </Typography>
-              
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
-                <Chip
-                  label={embeddingStatus?.running ? 'Running' : 'Stopped'}
-                  color={embeddingStatus?.running ? 'success' : 'default'}
-                  size="small"
-                />
-                {embeddingStatus?.running && (
-                  <>
-                    <Typography variant="body2" color="text.secondary">
-                      Uptime: {Math.floor(embeddingStatus.uptime / 60)}m {Math.floor(embeddingStatus.uptime % 60)}s
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Model: {embeddingStatus.model?.name}
-                    </Typography>
-                  </>
-                )}
-              </Box>
-              
-              {embeddingStatus?.endpoint && (
-                <Alert severity="info" sx={{ mb: 3 }}>
-                  <strong>Service Endpoint:</strong> {embeddingStatus.endpoint}
-                </Alert>
-              )}
-              
-              <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                <Button
-                  variant="contained"
-                  color="primary"
-                  size="large"
-                  startIcon={embeddingLoading === 'start' ? <CircularProgress size={20} /> : <StartIcon />}
-                  onClick={() => runEmbeddingAction('start')}
-                  disabled={embeddingLoading !== null || embeddingStatus?.running}
-                  sx={{ borderRadius: 1.5, fontWeight: 600, px: 3 }}
-                >
-                  Start Service
-                </Button>
-                <Button
-                  variant="contained"
-                  color="warning"
-                  size="large"
-                  startIcon={embeddingLoading === 'restart' ? <CircularProgress size={20} /> : <RestartIcon />}
-                  onClick={() => runEmbeddingAction('restart')}
-                  disabled={embeddingLoading !== null}
-                  sx={{ borderRadius: 1.5, fontWeight: 600, px: 3 }}
-                >
-                  Restart
-                </Button>
-                <Button
-                  variant="outlined"
-                  color="error"
-                  size="large"
-                  startIcon={embeddingLoading === 'stop' ? <CircularProgress size={20} /> : <StopIcon />}
-                  onClick={() => runEmbeddingAction('stop')}
-                  disabled={embeddingLoading !== null || !embeddingStatus?.running}
-                  sx={{ borderRadius: 1.5, fontWeight: 600, px: 3 }}
-                >
-                  Stop
-                </Button>
-              </Box>
-            </CardContent>
-          </Card>
-
-          {/* Model Configuration */}
-          <Card sx={{
-            mb: 3,
-            borderRadius: 2,
-            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-            border: '1px solid',
-            borderColor: 'divider',
-          }}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom sx={{ fontSize: '1.125rem', fontWeight: 600 }}>
-                Model Configuration
-              </Typography>
-              
-              <Grid container spacing={3}>
-                <Grid item xs={12} md={6}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: {
+                xs: '1fr',
+                lg: 'minmax(0, 0.95fr) minmax(0, 1.05fr)',
+              },
+              gap: 1.25,
+              alignItems: 'start',
+            }}
+          >
+            <SectionCard
+              title="Model settings"
+              icon={<EmbeddingIcon />}
+              accentColor={accentColors.info}
+              action={embeddingHeaderActions}
+            >
+              {embeddingSummaryRow}
+              <Grid container spacing={1.25}>
+                <Grid item xs={12} sm={6} lg={4}>
                   <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
                     Embedding Model
                   </Typography>
                   <Select
                     fullWidth
+                    size="small"
                     value={embeddingConfig?.model?.name || ''}
                     onChange={(e) => updateEmbeddingConfig('model.name', e.target.value)}
                     sx={{ fontSize: '0.875rem' }}
@@ -684,17 +877,15 @@ export const EmbeddingDeployPage: React.FC = () => {
                       </MenuItem>
                     ))}
                   </Select>
-                  <FormHelperText sx={{ mt: 1, fontSize: '0.75rem' }}>
-                    {availableEmbeddingModels.find(m => m.name === embeddingConfig?.model?.name)?.description}
-                  </FormHelperText>
                 </Grid>
                 
-                <Grid item xs={12} md={6}>
+                <Grid item xs={12} sm={6} lg={4}>
                   <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                    Model Variant (Quantization)
+                    Variant
                   </Typography>
                   <Select
                     fullWidth
+                    size="small"
                     value={embeddingConfig?.model?.variant || 'Q8_0'}
                     onChange={(e) => updateEmbeddingConfig('model.variant', e.target.value)}
                     sx={{ fontSize: '0.875rem' }}
@@ -703,136 +894,88 @@ export const EmbeddingDeployPage: React.FC = () => {
                     <MenuItem value="Q4_K_M">Q4_K_M (Balanced)</MenuItem>
                     <MenuItem value="Q4_0">Q4_0 (Smaller, Faster)</MenuItem>
                   </Select>
-                  <FormHelperText sx={{ mt: 1, fontSize: '0.75rem' }}>
-                    Higher quantization = better quality but larger size
-                  </FormHelperText>
                 </Grid>
                 
-                <Grid item xs={12} md={6}>
-                  <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                    Context Size
-                  </Typography>
-                  <TextField
-                    fullWidth
-                    type="number"
-                    value={embeddingConfig?.model?.context_size || 8192}
-                    onChange={(e) => updateEmbeddingConfig('model.context_size', parseInt(e.target.value))}
-                    inputProps={{ min: 512, max: 32768 }}
-                  />
-                  <FormHelperText sx={{ mt: 1, fontSize: '0.75rem' }}>
-                    Maximum context length for embeddings
-                  </FormHelperText>
-                </Grid>
-                
-                <Grid item xs={12} md={6}>
-                  <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                    GPU Layers
-                  </Typography>
-                  <TextField
-                    fullWidth
-                    type="number"
-                    value={embeddingConfig?.model?.gpu_layers || 999}
-                    onChange={(e) => updateEmbeddingConfig('model.gpu_layers', parseInt(e.target.value))}
-                    inputProps={{ min: 0, max: 999 }}
-                  />
-                  <FormHelperText sx={{ mt: 1, fontSize: '0.75rem' }}>
-                    Number of layers to offload to GPU (999 = all)
-                  </FormHelperText>
-                </Grid>
-
-                <Grid item xs={12} md={6}>
-                  <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                    Execution Mode
-                  </Typography>
-                  <Select
-                    fullWidth
-                    value={embeddingConfig?.execution?.mode || 'gpu'}
-                    onChange={(e) => updateEmbeddingConfig('execution.mode', e.target.value)}
-                    sx={{ fontSize: '0.875rem' }}
-                  >
-                    <MenuItem value="gpu">GPU Acceleration</MenuItem>
-                    <MenuItem value="cpu">CPU Only</MenuItem>
-                  </Select>
-                  <FormHelperText sx={{ mt: 1, fontSize: '0.75rem' }}>
-                    Choose GPU or CPU execution
-                  </FormHelperText>
-                </Grid>
-
-                <Grid item xs={12} md={6}>
-                  <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                    CUDA Devices
-                  </Typography>
-                  <TextField
-                    fullWidth
-                    value={embeddingConfig?.execution?.cuda_devices || 'all'}
-                    onChange={(e) => updateEmbeddingConfig('execution.cuda_devices', e.target.value)}
-                    disabled={embeddingConfig?.execution?.mode === 'cpu'}
-                  />
-                  <FormHelperText sx={{ mt: 1, fontSize: '0.75rem' }}>
-                    GPU devices to use (all, 0, 0,1, etc.)
-                  </FormHelperText>
-                </Grid>
+                {!isNarrow && embeddingRuntimeSettingItems}
               </Grid>
-              
-              <Box sx={{ mt: 3, display: 'flex', gap: 2 }}>
-                <Button
-                  variant="contained"
-                  startIcon={<SaveIcon />}
-                  onClick={saveEmbeddingConfig}
-                  sx={{ borderRadius: 1.5, fontWeight: 600, px: 3 }}
-                >
-                  Save Configuration
-                </Button>
-              </Box>
-            </CardContent>
-          </Card>
 
-          {/* Model Downloads */}
-          <Card sx={{
-            mb: 3,
-            borderRadius: 2,
-            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-            border: '1px solid',
-            borderColor: 'divider',
-          }}>
-            <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
-                <Box>
-                  <Typography variant="h6" gutterBottom sx={{ fontSize: '1.125rem', fontWeight: 600 }}>
-                    Embedding Models
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Download and manage embedding models for the service
-                  </Typography>
-                </Box>
-                <Button
-                  variant="contained"
-                  startIcon={<DownloadIcon />}
-                  onClick={() => setDownloadDialogOpen(true)}
-                  sx={{ borderRadius: 1.5, fontWeight: 600, px: 3 }}
+              {isNarrow && (
+                <Box
+                  component="details"
+                  sx={{
+                    mt: 1,
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: '8px',
+                    bgcolor: 'action.hover',
+                    '& summary': { listStyle: 'none' },
+                    '& summary::-webkit-details-marker': { display: 'none' },
+                  }}
                 >
-                  Download Model
-                </Button>
-              </Box>
+                  <Box
+                    component="summary"
+                    sx={{
+                      cursor: 'pointer',
+                      px: 1,
+                      py: 0.875,
+                      fontSize: '0.8125rem',
+                      fontWeight: 700,
+                      color: 'text.secondary',
+                    }}
+                  >
+                    Runtime settings
+                  </Box>
+                  <Box sx={{ px: 1, pb: 1 }}>
+                    {embeddingRuntimeSettings}
+                  </Box>
+                </Box>
+              )}
               
-              {/* Available Models Status */}
-              <Grid container spacing={2}>
+            </SectionCard>
+
+            <SectionCard
+              title="Model files"
+              icon={<InventoryIcon />}
+              accentColor={accentColors.primary}
+              collapsible
+              defaultExpanded={!isNarrow}
+              sx={compactCollapsibleCardSx}
+              action={
+                <Tooltip title="Download model">
+                  <IconButton
+                    aria-label="Download embedding model"
+                    onClick={() => setDownloadDialogOpen(true)}
+                    sx={commandIconButtonSx}
+                  >
+                    <DownloadIcon sx={{ fontSize: 17 }} />
+                  </IconButton>
+                </Tooltip>
+              }
+            >
+              <Grid container spacing={1}>
                 {availableEmbeddingModels.map((model) => {
                   const modelStatus = getModelStatus(model.name, embeddingConfig?.model?.variant || 'Q8_0')
                   const isCurrentModel = embeddingConfig?.model?.name === model.name
                   
                   return (
                     <Grid item xs={12} md={6} key={model.name}>
-                      <Card variant="outlined" sx={{ 
-                        p: 2,
-                        bgcolor: isCurrentModel ? 'primary.50' : 'background.paper',
-                        borderColor: isCurrentModel ? 'primary.main' : 'divider'
+                      <Box sx={{
+                        p: 1.25,
+                        borderRadius: '8px',
+                        border: '1px solid',
+                        bgcolor: isCurrentModel ? alpha(accentColors.info, 0.08) : 'action.hover',
+                        borderColor: isCurrentModel ? alpha(accentColors.info, 0.38) : 'divider'
                       }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-                          <Typography variant="h6" sx={{ fontSize: '0.9rem', fontWeight: 600 }}>
-                            {model.name}
-                          </Typography>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap title={model.name}>
+                              {model.name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" noWrap title={model.description}>
+                              {model.dimensions}D / {model.max_tokens} tokens
+                            </Typography>
+                          </Box>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
                             {isCurrentModel && (
                               <Chip label="Current" size="small" color="primary" />
                             )}
@@ -840,7 +983,7 @@ export const EmbeddingDeployPage: React.FC = () => {
                               label={
                                 modelStatus === 'downloaded' ? 'Downloaded' :
                                 modelStatus === 'downloading' ? 'Downloading' :
-                                'Not Downloaded'
+                                'Missing'
                               }
                               size="small"
                               color={
@@ -856,33 +999,24 @@ export const EmbeddingDeployPage: React.FC = () => {
                             />
                           </Box>
                         </Box>
-                        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                          {model.description}
-                        </Typography>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <Typography variant="caption" color="text.secondary">
-                            {model.dimensions}D • {model.max_tokens} tokens
-                          </Typography>
-                          {modelStatus === 'downloading' && (
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <LinearProgress sx={{ width: 60, height: 4 }} />
-                              <Typography variant="caption">
-                                {activeDownloads.find(d => d.filename?.includes(model.name))?.progress || 0}%
-                              </Typography>
-                            </Box>
-                          )}
-                        </Box>
-                      </Card>
+                        {modelStatus === 'downloading' && (
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+                            <LinearProgress sx={{ flex: 1, height: 4 }} />
+                            <Typography variant="caption">
+                              {activeDownloads.find(d => d.filename?.includes(model.name))?.progress || 0}%
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
                     </Grid>
                   )
                 })}
               </Grid>
-              
-              {/* Active Downloads */}
+
               {activeDownloads.length > 0 && (
-                <Box sx={{ mt: 3 }}>
-                  <Typography variant="h6" gutterBottom sx={{ fontSize: '1rem', fontWeight: 600 }}>
-                    Active Downloads
+                <Box sx={{ mt: 1.5 }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Active downloads
                   </Typography>
                   <TableContainer component={Paper} variant="outlined">
                     <Table size="small">
@@ -929,7 +1063,7 @@ export const EmbeddingDeployPage: React.FC = () => {
                               </Typography>
                             </TableCell>
                             <TableCell align="right">
-                              <Tooltip title="Cancel Download">
+                              <Tooltip title="Cancel download">
                                 <IconButton 
                                   size="small" 
                                   onClick={() => cancelDownload(download.id)}
@@ -946,29 +1080,154 @@ export const EmbeddingDeployPage: React.FC = () => {
                   </TableContainer>
                 </Box>
               )}
-            </CardContent>
-          </Card>
 
-          {/* RAG Integration */}
-          {ragEmbeddingConfig && (
-            <Card sx={{
-              mb: 3,
-              borderRadius: 2,
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-              border: '1px solid',
-              borderColor: 'divider',
-            }}>
-              <CardContent>
-                <Typography variant="h6" gutterBottom sx={{ fontSize: '1.125rem', fontWeight: 600 }}>
-                  RAG System Integration
-                </Typography>
-                <Typography variant="body2" color="text.secondary" paragraph>
-                  Configure how the RAG system uses embeddings for document processing and retrieval.
-                </Typography>
-                
-                <Grid container spacing={3}>
+              {embeddingLocalModels.length > 0 && (!isShortViewport || isNarrow) && (
+                <Box sx={{ mt: 1.5 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                    <Box>
+                      <Typography variant="subtitle2">
+                        Local inventory
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {embeddingLocalModels.length} files / {formatBytes(totalLocalModelSize)}
+                      </Typography>
+                    </Box>
+                    <Tooltip title="Refresh local models">
+                      <IconButton size="small" aria-label="Refresh local embedding models" onClick={loadLocalModels} sx={commandIconButtonSx}>
+                        <RefreshIcon sx={{ fontSize: 17 }} />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                  <TableContainer
+                    component={Paper}
+                    variant="outlined"
+                    sx={{ display: { xs: 'none', sm: 'block' } }}
+                  >
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Model</TableCell>
+                          <TableCell>Variant</TableCell>
+                          <TableCell align="right">Size</TableCell>
+                          <TableCell>Modified</TableCell>
+                          <TableCell align="right">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {embeddingLocalModels.map((model) => {
+                          const filePath = localModelPath(model)
+                          const modelSize = model.size || model.size_bytes
+                          return (
+                            <TableRow key={filePath || model.name || model.filename}>
+                              <TableCell>
+                                <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap title={localModelName(model)}>
+                                  {localModelName(model)}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" noWrap title={localModelSource(model)}>
+                                  {localModelSource(model)}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Chip label={model.variant || model.extension || 'unknown'} size="small" variant="outlined" />
+                              </TableCell>
+                              <TableCell align="right">{formatBytes(modelSize)}</TableCell>
+                              <TableCell>
+                                <Typography variant="caption" color="text.secondary">
+                                  {localModelModifiedLabel(model)}
+                                </Typography>
+                              </TableCell>
+                              <TableCell align="right">
+                                <Tooltip title="Delete local file">
+                                  <span>
+                                    <IconButton
+                                      size="small"
+                                      color="error"
+                                      disabled={!filePath}
+                                      onClick={() => deleteLocalModel(filePath)}
+                                    >
+                                      <DeleteIcon fontSize="small" />
+                                    </IconButton>
+                                  </span>
+                                </Tooltip>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                  <Box sx={{ display: { xs: 'grid', sm: 'none' }, gap: 0.75 }}>
+                    {embeddingLocalModels.map((model) => {
+                      const filePath = localModelPath(model)
+                      const modelSize = model.size || model.size_bytes
+
+                      return (
+                        <Box
+                          key={filePath || model.name || model.filename}
+                          sx={{
+                            p: 1,
+                            borderRadius: '8px',
+                            border: '1px solid',
+                            borderColor: 'divider',
+                            bgcolor: 'background.paper',
+                            display: 'grid',
+                            gridTemplateColumns: 'minmax(0, 1fr) auto',
+                            gap: 1,
+                            alignItems: 'center',
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap title={localModelName(model)}>
+                              {localModelName(model)}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" noWrap title={localModelSource(model)}>
+                              {localModelSource(model)}
+                            </Typography>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap', mt: 0.75 }}>
+                              <Chip label={model.variant || model.extension || 'unknown'} size="small" variant="outlined" />
+                              <Typography variant="caption" color="text.secondary">
+                                {formatBytes(modelSize)}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {localModelModifiedLabel(model)}
+                              </Typography>
+                            </Box>
+                          </Box>
+                          <Tooltip title="Delete local file">
+                            <span>
+                              <IconButton
+                                size="small"
+                                color="error"
+                                disabled={!filePath}
+                                onClick={() => deleteLocalModel(filePath)}
+                                sx={commandIconButtonSx}
+                              >
+                                <DeleteIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </Box>
+                      )
+                    })}
+                  </Box>
+                </Box>
+              )}
+            </SectionCard>
+          </Box>
+
+          <Box sx={optionalSectionGridSx}>
+            {ragEmbeddingConfig && (
+              <SectionCard
+                title="RAG integration"
+                icon={<AssessmentIcon />}
+                accentColor={accentColors.rose}
+                collapsible
+                defaultExpanded={false}
+                sx={compactCollapsibleCardSx}
+              >
+                <Grid container spacing={1.5}>
                   <Grid item xs={12}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
                       <Box sx={{ flex: 1 }}>
                         <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
                           Embedding Source
@@ -979,6 +1238,7 @@ export const EmbeddingDeployPage: React.FC = () => {
                         </FormHelperText>
                       </Box>
                       <Select
+                        size="small"
                         value={ragEmbeddingConfig?.use_deployed_service ? 'deployed' : 'local'}
                         onChange={(e) => updateRagEmbeddingConfig('use_deployed_service', e.target.value === 'deployed')}
                         sx={{ minWidth: 220, fontSize: '0.875rem' }}
@@ -1018,6 +1278,7 @@ export const EmbeddingDeployPage: React.FC = () => {
                     </Typography>
                     <TextField
                       fullWidth
+                      size="small"
                       value={ragEmbeddingConfig?.default_model || ''}
                       onChange={(e) => updateRagEmbeddingConfig('default_model', e.target.value)}
                     />
@@ -1032,6 +1293,7 @@ export const EmbeddingDeployPage: React.FC = () => {
                     </Typography>
                     <TextField
                       fullWidth
+                      size="small"
                       value={ragEmbeddingConfig?.service_url || ''}
                       onChange={(e) => updateRagEmbeddingConfig('service_url', e.target.value)}
                     />
@@ -1041,38 +1303,30 @@ export const EmbeddingDeployPage: React.FC = () => {
                   </Grid>
                 </Grid>
                 
-                <Box sx={{ mt: 3, display: 'flex', gap: 2 }}>
+                <Box sx={{ mt: 1.5, display: 'flex', gap: 1 }}>
                   <Button
                     variant="contained"
+                    size="small"
                     startIcon={ragEmbeddingLoading ? <CircularProgress size={20} /> : <SaveIcon />}
                     onClick={saveRagEmbeddingConfig}
                     disabled={ragEmbeddingLoading}
-                    sx={{ borderRadius: 1.5, fontWeight: 600, px: 3 }}
+                    sx={{ fontWeight: 600 }}
                   >
-                    Save RAG Configuration
+                    Save
                   </Button>
                 </Box>
-              </CardContent>
-            </Card>
-          )}
+              </SectionCard>
+            )}
 
-          {/* Test Embedding */}
-          {embeddingStatus?.running && (
-            <Card sx={{
-              mb: 3,
-              borderRadius: 2,
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-              border: '1px solid',
-              borderColor: 'divider',
-            }}>
-              <CardContent>
-                <Typography variant="h6" gutterBottom sx={{ fontSize: '1.125rem', fontWeight: 600 }}>
-                  Test Embedding
-                </Typography>
-                <Typography variant="body2" color="text.secondary" paragraph>
-                  Test the embedding service with sample text to verify it's working correctly.
-                </Typography>
-                
+            {embeddingStatus?.running && (
+              <SectionCard
+                title="Embedding test"
+                icon={<TestIcon />}
+                accentColor={accentColors.success}
+                collapsible
+                defaultExpanded={false}
+                sx={compactCollapsibleCardSx}
+              >
                 {testError && (
                   <Alert severity="error" sx={{ mb: 2 }} onClose={() => setTestError(null)}>
                     {testError}
@@ -1101,11 +1355,11 @@ export const EmbeddingDeployPage: React.FC = () => {
                     <Button
                       variant="contained"
                       color="primary"
-                      size="large"
+                      size="small"
                       startIcon={testLoading ? <CircularProgress size={20} /> : <TestIcon />}
                       onClick={testEmbedding}
                       disabled={testLoading || !testText.trim()}
-                      sx={{ borderRadius: 1.5, fontWeight: 600, px: 3 }}
+                      sx={{ fontWeight: 600 }}
                     >
                       Generate Embedding
                     </Button>
@@ -1119,60 +1373,58 @@ export const EmbeddingDeployPage: React.FC = () => {
                       
                       <Grid container spacing={2}>
                         <Grid item xs={12} sm={6} md={3}>
-                          <Card variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                            <Typography variant="body2" color="text.secondary" gutterBottom>
-                              Vector Dimensions
-                            </Typography>
-                            <Typography variant="h5" sx={{ fontWeight: 600, color: 'primary.main' }}>
-                              {testResult.vectorLength}
-                            </Typography>
-                          </Card>
+                          <MetricTile
+                            label="Vector Dimensions"
+                            value={testResult.vectorLength}
+                            detail="embedding width"
+                            icon={<EmbeddingIcon />}
+                            color={accentColors.primary}
+                          />
                         </Grid>
-                        
+
                         <Grid item xs={12} sm={6} md={3}>
-                          <Card variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                            <Typography variant="body2" color="text.secondary" gutterBottom>
-                              Processing Time
-                            </Typography>
-                            <Typography variant="h5" sx={{ fontWeight: 600, color: 'success.main' }}>
-                              {testResult.timeTaken}ms
-                            </Typography>
-                          </Card>
+                          <MetricTile
+                            label="Processing Time"
+                            value={`${testResult.timeTaken}ms`}
+                            detail="round trip"
+                            icon={<SpeedIcon />}
+                            color={accentColors.success}
+                          />
                         </Grid>
-                        
+
                         <Grid item xs={12} sm={6} md={3}>
-                          <Card variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                            <Typography variant="body2" color="text.secondary" gutterBottom>
-                              Model Used
-                            </Typography>
-                            <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '0.9rem' }}>
-                              {testResult.model || 'N/A'}
-                            </Typography>
-                          </Card>
+                          <MetricTile
+                            label="Model Used"
+                            value={testResult.model || 'N/A'}
+                            detail="service response"
+                            icon={<EmbeddingIcon />}
+                            color={accentColors.info}
+                            valueSx={{ fontSize: '0.9rem' }}
+                          />
                         </Grid>
-                        
+
                         <Grid item xs={12} sm={6} md={3}>
-                          <Card variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                            <Typography variant="body2" color="text.secondary" gutterBottom>
-                              Usage
-                            </Typography>
-                            <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '0.9rem' }}>
-                              {testResult.usage?.total_tokens || 'N/A'} tokens
-                            </Typography>
-                          </Card>
+                          <MetricTile
+                            label="Usage"
+                            value={`${testResult.usage?.total_tokens || 'N/A'} tokens`}
+                            detail="reported total"
+                            icon={<AssessmentIcon />}
+                            color={accentColors.purple}
+                            valueSx={{ fontSize: '0.9rem' }}
+                          />
                         </Grid>
-                        
+
                         <Grid item xs={12}>
                           <Typography variant="body2" gutterBottom sx={{ fontWeight: 500 }}>
                             Embedding Vector (first 10 dimensions):
                           </Typography>
-                          <Box sx={{ 
-                            p: 2, 
-                            bgcolor: 'grey.100', 
-                            borderRadius: 1, 
-                            fontFamily: 'monospace',
-                            fontSize: '0.75rem',
-                            overflowX: 'auto',
+	                          <Box sx={{
+	                            p: 2,
+	                            bgcolor: 'grey.900',
+	                            borderRadius: '8px',
+	                            fontFamily: 'monospace',
+	                            fontSize: '0.75rem',
+	                            overflowX: 'auto',
                             maxHeight: 200,
                             overflowY: 'auto'
                           }}>
@@ -1191,26 +1443,17 @@ export const EmbeddingDeployPage: React.FC = () => {
                     </Grid>
                   )}
                 </Grid>
-              </CardContent>
-            </Card>
-          )}
+              </SectionCard>
+            )}
 
-          {/* Performance Benchmark */}
-          <Card sx={{
-            mb: 3,
-            borderRadius: 2,
-            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-            border: '1px solid',
-            borderColor: 'divider',
-          }}>
-            <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-                <SpeedIcon color="primary" />
-                <Typography variant="h6" sx={{ fontSize: '1.125rem', fontWeight: 600 }}>
-                  Performance Benchmark
-                </Typography>
-              </Box>
-
+            <SectionCard
+              title="Benchmarks"
+              icon={<SpeedIcon />}
+              accentColor={accentColors.purple}
+              collapsible
+              defaultExpanded={false}
+              sx={compactCollapsibleCardSx}
+            >
               {/* Config Row */}
               <Grid container spacing={2} sx={{ mb: 3 }}>
                 <Grid item xs={12} md={4}>
@@ -1295,6 +1538,7 @@ export const EmbeddingDeployPage: React.FC = () => {
                 <Grid item xs={12} md={2} sx={{ display: 'flex', alignItems: 'flex-end', pb: 1.5 }}>
                   <Button
                     variant="contained"
+                    size="small"
                     fullWidth
                     onClick={runBenchmark}
                     disabled={benchRunning || !embeddingStatus?.running}
@@ -1357,14 +1601,14 @@ export const EmbeddingDeployPage: React.FC = () => {
                         </Typography>
                         <ResponsiveContainer width="100%" height={300}>
                           <BarChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                            <CartesianGrid strokeDasharray="3 3" stroke={alpha(accentColors.slate, 0.24)} />
                             <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                             <YAxis yAxisId="left" label={{ value: 'texts/sec', angle: -90, position: 'insideLeft' }} />
                             <YAxis yAxisId="right" orientation="right" label={{ value: 'ms/text', angle: 90, position: 'insideRight' }} />
                             <RechartsTooltip />
                             <Legend />
-                            <Bar yAxisId="left" dataKey="textsPerSec" name="Texts/sec" fill="#4fc3f7" radius={[4, 4, 0, 0]} />
-                            <Bar yAxisId="right" dataKey="perTextMs" name="ms/text" fill="#ffb74d" radius={[4, 4, 0, 0]} />
+                            <Bar yAxisId="left" dataKey="textsPerSec" name="Texts/sec" fill={accentColors.info} radius={[4, 4, 0, 0]} />
+                            <Bar yAxisId="right" dataKey="perTextMs" name="ms/text" fill={accentColors.warning} radius={[4, 4, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
                         <TableContainer component={Paper} sx={{ mt: 2 }} variant="outlined">
@@ -1413,15 +1657,15 @@ export const EmbeddingDeployPage: React.FC = () => {
                         <Typography variant="subtitle2" sx={{ mb: 1 }}>Insertion Performance by Collection Size</Typography>
                         <ResponsiveContainer width="100%" height={300}>
                           <BarChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                            <CartesianGrid strokeDasharray="3 3" stroke={alpha(accentColors.slate, 0.24)} />
                             <XAxis dataKey="name" label={{ value: 'Collection Size', position: 'insideBottom', offset: -5 }} />
                             <YAxis yAxisId="left" label={{ value: 'docs/sec', angle: -90, position: 'insideLeft' }} />
                             <YAxis yAxisId="right" orientation="right" label={{ value: 'ms', angle: 90, position: 'insideRight' }} />
                             <RechartsTooltip />
                             <Legend />
-                            <Bar yAxisId="left" dataKey="docsPerSec" name="Docs/sec" fill="#81c784" radius={[4, 4, 0, 0]} />
-                            <Bar yAxisId="right" dataKey="embedMs" name="Embed (ms)" fill="#4fc3f7" radius={[4, 4, 0, 0]} />
-                            <Bar yAxisId="right" dataKey="upsertMs" name="Upsert (ms)" fill="#ffb74d" radius={[4, 4, 0, 0]} />
+                            <Bar yAxisId="left" dataKey="docsPerSec" name="Docs/sec" fill={accentColors.success} radius={[4, 4, 0, 0]} />
+                            <Bar yAxisId="right" dataKey="embedMs" name="Embed (ms)" fill={accentColors.info} radius={[4, 4, 0, 0]} />
+                            <Bar yAxisId="right" dataKey="upsertMs" name="Upsert (ms)" fill={accentColors.warning} radius={[4, 4, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
                         <TableContainer component={Paper} sx={{ mt: 2 }} variant="outlined">
@@ -1457,8 +1701,8 @@ export const EmbeddingDeployPage: React.FC = () => {
                   {benchResult.type === 'search' && (() => {
                     const sr = benchResult.metrics?.search_results || {}
                     const chartData: any[] = []
-                    Object.entries(sr).forEach(([size, data]: [string, any]) => {
-                      Object.entries(data.search_results || {}).forEach(([tk, sd]: [string, any]) => {
+	                  Object.entries(sr).forEach(([size, data]: [string, any]) => {
+	                      Object.values(data.search_results || {}).forEach((sd: any) => {
                         chartData.push({
                           name: `${parseInt(size).toLocaleString()} / k=${sd.top_k}`,
                           p50: sd.search_only_ms?.p50,
@@ -1475,14 +1719,14 @@ export const EmbeddingDeployPage: React.FC = () => {
                         <Typography variant="subtitle2" sx={{ mb: 1 }}>Search Latency (ms) by Collection Size / top_k</Typography>
                         <ResponsiveContainer width="100%" height={350}>
                           <BarChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                            <CartesianGrid strokeDasharray="3 3" stroke={alpha(accentColors.slate, 0.24)} />
                             <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-25} textAnchor="end" height={60} />
                             <YAxis label={{ value: 'ms', angle: -90, position: 'insideLeft' }} />
                             <RechartsTooltip />
                             <Legend />
-                            <Bar dataKey="p50" name="p50" fill="#4fc3f7" radius={[2, 2, 0, 0]} />
-                            <Bar dataKey="p95" name="p95" fill="#ffb74d" radius={[2, 2, 0, 0]} />
-                            <Bar dataKey="p99" name="p99" fill="#ef5350" radius={[2, 2, 0, 0]} />
+                            <Bar dataKey="p50" name="p50" fill={accentColors.info} radius={[2, 2, 0, 0]} />
+                            <Bar dataKey="p95" name="p95" fill={accentColors.warning} radius={[2, 2, 0, 0]} />
+                            <Bar dataKey="p99" name="p99" fill={accentColors.rose} radius={[2, 2, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
                         <TableContainer component={Paper} sx={{ mt: 2 }} variant="outlined">
@@ -1533,15 +1777,15 @@ export const EmbeddingDeployPage: React.FC = () => {
                         <Typography variant="subtitle2" sx={{ mb: 1 }}>Pipeline Phase Breakdown (ms)</Typography>
                         <ResponsiveContainer width="100%" height={300}>
                           <BarChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                            <CartesianGrid strokeDasharray="3 3" stroke={alpha(accentColors.slate, 0.24)} />
                             <XAxis dataKey="name" label={{ value: 'Collection Size', position: 'insideBottom', offset: -5 }} />
                             <YAxis label={{ value: 'ms', angle: -90, position: 'insideLeft' }} />
                             <RechartsTooltip />
                             <Legend />
-                            <Bar dataKey="Insert" stackId="a" fill="#4fc3f7" />
-                            <Bar dataKey="Search" stackId="a" fill="#81c784" />
-                            <Bar dataKey="Update" stackId="a" fill="#ffb74d" />
-                            <Bar dataKey="Delete" stackId="a" fill="#ef5350" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="Insert" stackId="a" fill={accentColors.info} />
+                            <Bar dataKey="Search" stackId="a" fill={accentColors.success} />
+                            <Bar dataKey="Update" stackId="a" fill={accentColors.warning} />
+                            <Bar dataKey="Delete" stackId="a" fill={accentColors.rose} radius={[4, 4, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
                         <TableContainer component={Paper} sx={{ mt: 2 }} variant="outlined">
@@ -1713,7 +1957,7 @@ export const EmbeddingDeployPage: React.FC = () => {
                                           setBenchTab(0)
                                         }
                                       }
-                                    } catch (e) { console.error(e) }
+                                    } catch (e) { debugLog('embedding', 'Failed to load benchmark result', e) }
                                   }}>
                                     <AssessmentIcon fontSize="small" />
                                   </IconButton>
@@ -1732,34 +1976,9 @@ export const EmbeddingDeployPage: React.FC = () => {
                   )}
                 </Box>
               )}
-            </CardContent>
-          </Card>
+            </SectionCard>
+          </Box>
 
-          {/* Info */}
-          <Card sx={{
-            borderRadius: 2,
-            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-            border: '1px solid',
-            borderColor: 'divider',
-          }}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom sx={{ fontSize: '1.125rem', fontWeight: 600 }}>
-                About Embedding Service
-              </Typography>
-              <Typography variant="body2" color="text.secondary" paragraph>
-                The embedding service provides text embeddings for the RAG (Retrieval Augmented Generation) system.
-                It runs as a separate llama.cpp server optimized for embedding generation.
-              </Typography>
-              <Typography variant="body2" color="text.secondary" paragraph>
-                After starting the service, it will be available at the endpoint shown above.
-                The service uses the same Docker infrastructure as the main LLM service.
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Configure the RAG Integration section above to connect your RAG system to this deployed embedding service
-                for faster and more efficient embedding generation during document processing and retrieval.
-              </Typography>
-            </CardContent>
-          </Card>
         </Box>
       )}
 
@@ -1841,7 +2060,14 @@ export const EmbeddingDeployPage: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
-    </Box>
+
+      <ConfirmationDialog
+        action={confirmAction}
+        loading={confirmingAction}
+        onClose={closeConfirmDialog}
+        onConfirm={handleConfirmAction}
+      />
+    </PageShell>
   )
 }
 

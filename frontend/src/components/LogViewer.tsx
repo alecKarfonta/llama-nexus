@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import {
   Box,
   Paper,
@@ -17,6 +17,7 @@ import {
   Download as DownloadIcon,
   Refresh as RefreshIcon
 } from '@mui/icons-material'
+import { debugLog } from '@/utils/debug'
 
 interface LogEntry {
   message: string
@@ -29,6 +30,8 @@ interface LogViewerProps {
   maxLines?: number
   height?: number | string
   backend?: 'llamacpp' | 'vllm'
+  compact?: boolean
+  collapseEmpty?: boolean
 }
 
 export interface LogViewerRef {
@@ -40,21 +43,21 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
   containerName = 'llamacpp-api',
   maxLines = 500,
   height = 400,
-  backend = 'llamacpp'
+  backend = 'llamacpp',
+  compact = false,
+  collapseEmpty = false
 }, ref) => {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [autoScroll, setAutoScroll] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const logsEndRef = useRef<HTMLDivElement>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
   const logsContainerRef = useRef<HTMLDivElement>(null)
 
-  // Auto-scroll to bottom when new logs arrive
   useEffect(() => {
-    if (autoScroll && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    if (autoScroll && logsContainerRef.current) {
+      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight
     }
   }, [logs, autoScroll])
 
@@ -62,7 +65,7 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
     if (!rawLogs) return []
     if (Array.isArray(rawLogs)) {
       return rawLogs
-        .map((entry) => {
+        .map((entry): LogEntry | null => {
           if (typeof entry === 'string') {
             return { message: entry, timestamp: new Date().toISOString(), level: 'INFO' }
           }
@@ -78,7 +81,7 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
           }
           return null
         })
-        .filter((v): v is LogEntry => Boolean(v))
+        .filter((entry): entry is LogEntry => entry !== null)
     }
     if (typeof rawLogs === 'string') {
       return rawLogs
@@ -106,7 +109,7 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
       setLogs(normalizeLogs(data.logs))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch logs')
-      console.error('Error fetching logs:', err)
+      debugLog('logs', 'Container logs unavailable', err)
     } finally {
       setIsLoading(false)
     }
@@ -127,6 +130,13 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
+        if (data.type === 'status' && data.available === false) {
+          setError(null)
+          setIsStreaming(false)
+          eventSource.close()
+          return
+        }
+
         if (data.error) {
           setError(data.error)
           return
@@ -149,12 +159,12 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
           return updated.slice(-maxLines)
         })
       } catch (err) {
-        console.error('Error parsing log event:', err)
+        debugLog('logs', 'Ignoring malformed log event', err)
       }
     }
 
     eventSource.onerror = (err) => {
-      console.error('EventSource error:', err)
+      debugLog('logs', 'Log stream disconnected', err)
       setError('Log stream disconnected')
       setIsStreaming(false)
       eventSource.close()
@@ -218,32 +228,43 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
     }
   }, [])
 
+  const compactEmpty = compact && !isLoading && logs.length === 0 && !error && !isStreaming
+  const shouldCollapseEmpty = compactEmpty && collapseEmpty
+  const hasLogs = logs.length > 0
+  const showAutoScrollControl = hasLogs || isStreaming || !compact
+  const showClearLogsControl = hasLogs || Boolean(error)
+  const showDownloadLogsControl = hasLogs
+
   return (
     <Paper 
       elevation={0} 
       sx={{ 
         border: '1px solid',
-        borderColor: 'grey.300',
-        borderRadius: 1,
+        borderColor: 'divider',
+        borderRadius: '8px',
+        bgcolor: 'background.paper',
         overflow: 'hidden'
       }}
     >
-      {/* Header */}
       <Box
         sx={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          p: 1.5,
+          gap: 1,
+          px: compact ? 0.75 : 1,
+          py: compact ? 0.25 : 0.5,
           borderBottom: '1px solid',
-          borderColor: 'grey.200',
-          bgcolor: 'grey.50'
+          borderColor: 'divider',
+          bgcolor: 'action.hover'
         }}
       >
-        <Box display="flex" alignItems="center" gap={1}>
-          <Typography variant="subtitle2" fontWeight={600}>
-            Container Logs
-          </Typography>
+        <Box display="flex" alignItems="center" gap={1} minWidth={0}>
+          {!compact && (
+            <Typography variant="caption" sx={{ fontWeight: 800, color: 'text.secondary' }}>
+              Logs
+            </Typography>
+          )}
           {isStreaming && (
             <Chip 
               label="LIVE" 
@@ -252,74 +273,92 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
               sx={{ height: 20, fontSize: '0.7rem' }}
             />
           )}
-          {logs.length > 0 && (
+          {hasLogs && (
             <Typography variant="caption" color="text.secondary">
               ({logs.length} lines)
             </Typography>
           )}
         </Box>
         
-        <Box display="flex" alignItems="center" gap={0.5}>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={autoScroll}
-                onChange={(e) => setAutoScroll(e.target.checked)}
-                size="small"
+        <Box display="flex" alignItems="center" gap={0.5} flexShrink={0}>
+          {showAutoScrollControl && (
+            compact ? (
+              <Tooltip title={autoScroll ? 'Auto-scroll on' : 'Auto-scroll off'}>
+                <Switch
+                  checked={autoScroll}
+                  onChange={(e) => setAutoScroll(e.target.checked)}
+                  size="small"
+                  inputProps={{ 'aria-label': 'Auto-scroll logs' }}
+                />
+              </Tooltip>
+            ) : (
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={autoScroll}
+                    onChange={(e) => setAutoScroll(e.target.checked)}
+                    size="small"
+                  />
+                }
+                label={<Typography variant="caption">Auto-scroll</Typography>}
+                sx={{ mr: 0.5, color: 'text.secondary' }}
               />
-            }
-            label={<Typography variant="caption">Auto-scroll</Typography>}
-            sx={{ mr: 1 }}
-          />
+            )
+          )}
           
           <Tooltip title={isStreaming ? "Pause streaming" : "Start streaming"}>
-            <IconButton size="small" onClick={toggleStreaming} color={isStreaming ? "error" : "primary"}>
+            <IconButton size="small" onClick={toggleStreaming} color={isStreaming ? "error" : "primary"} sx={{ width: compact ? 24 : 28, height: compact ? 24 : 28, borderRadius: '8px' }}>
               {isStreaming ? <PauseIcon fontSize="small" /> : <PlayIcon fontSize="small" />}
             </IconButton>
           </Tooltip>
           
           <Tooltip title="Refresh logs">
-            <IconButton size="small" onClick={fetchInitialLogs} disabled={isLoading || isStreaming}>
+            <IconButton size="small" onClick={fetchInitialLogs} disabled={isLoading || isStreaming} sx={{ width: compact ? 24 : 28, height: compact ? 24 : 28, borderRadius: '8px' }}>
               <RefreshIcon fontSize="small" />
             </IconButton>
           </Tooltip>
           
-          <Tooltip title="Clear logs">
-            <IconButton size="small" onClick={clearLogs}>
-              <ClearIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
+          {showClearLogsControl && (
+            <Tooltip title="Clear logs">
+              <IconButton size="small" onClick={clearLogs} sx={{ width: compact ? 24 : 28, height: compact ? 24 : 28, borderRadius: '8px' }}>
+                <ClearIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
           
-          <Tooltip title="Download logs">
-            <IconButton size="small" onClick={downloadLogs} disabled={logs.length === 0}>
-              <DownloadIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
+          {showDownloadLogsControl && (
+            <Tooltip title="Download logs">
+              <IconButton size="small" onClick={downloadLogs} sx={{ width: compact ? 24 : 28, height: compact ? 24 : 28, borderRadius: '8px' }}>
+                <DownloadIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
         </Box>
       </Box>
 
-      {/* Log content */}
+      {!shouldCollapseEmpty && (
       <Box
         ref={logsContainerRef}
         sx={{
-          height,
-          overflow: 'auto',
-          bgcolor: '#1e1e1e',
-          color: '#d4d4d4',
+          height: compactEmpty ? 42 : height,
+          overflow: compactEmpty ? 'hidden' : 'auto',
+          bgcolor: 'rgba(0, 0, 0, 0.24)',
+          color: 'text.secondary',
           fontFamily: 'monospace',
-          fontSize: '0.75rem',
-          p: 1.5,
+          fontSize: compact ? '0.7rem' : '0.75rem',
+          lineHeight: compact ? 1.35 : 1.5,
+          p: compact ? 0.75 : 1,
           '&::-webkit-scrollbar': {
-            width: '8px',
+            width: 6,
           },
           '&::-webkit-scrollbar-track': {
-            bgcolor: '#2d2d2d',
+            bgcolor: 'transparent',
           },
           '&::-webkit-scrollbar-thumb': {
-            bgcolor: '#555',
+            bgcolor: 'rgba(255, 255, 255, 0.14)',
             borderRadius: '4px',
             '&:hover': {
-              bgcolor: '#666',
+              bgcolor: 'rgba(255, 255, 255, 0.22)',
             },
           },
         }}
@@ -331,20 +370,17 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
         )}
         
         {error && (
-          <Box p={2} bgcolor="error.dark" borderRadius={1}>
-            <Typography variant="body2" color="error.light">
+          <Box px={1} py={0.75} bgcolor="error.dark" borderRadius="8px">
+            <Typography variant="caption" color="error.light" sx={{ fontFamily: 'monospace' }}>
               {error}
             </Typography>
           </Box>
         )}
         
         {!isLoading && logs.length === 0 && !error && (
-          <Box display="flex" alignItems="center" justifyContent="center" height="100%" flexDirection="column" gap={1}>
-            <Typography variant="body2" color="text.secondary">
-              No logs available
-            </Typography>
+          <Box display="flex" alignItems="center" justifyContent="center" height="100%">
             <Typography variant="caption" color="text.secondary">
-              Click the play button to start streaming
+              {isStreaming ? 'Waiting for logs' : 'No logs'}
             </Typography>
           </Box>
         )}
@@ -355,7 +391,7 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
             sx={{
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
-              lineHeight: 1.5,
+              lineHeight: compact ? 1.35 : 1.5,
               mb: 0.25,
               '&:hover': {
                 bgcolor: 'rgba(255, 255, 255, 0.05)',
@@ -368,8 +404,8 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
             <span>{log.message}</span>
           </Box>
         ))}
-        <div ref={logsEndRef} />
       </Box>
+      )}
     </Paper>
   )
 })
@@ -377,4 +413,3 @@ export const LogViewer = forwardRef<LogViewerRef, LogViewerProps>(({
 LogViewer.displayName = 'LogViewer'
 
 export default LogViewer
-

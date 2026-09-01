@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Any
 from pathlib import Path
 import logging
 import uuid
+from local_paths import backend_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class PromptLibrary:
     def __init__(self, db_path: str = None):
         """Initialize the prompt library."""
         if db_path is None:
-            db_path = os.getenv('PROMPT_LIBRARY_DB_PATH', '/data/prompt_library.db')
+            db_path = os.getenv('PROMPT_LIBRARY_DB_PATH') or str(backend_data_path('prompt_library.db'))
         
         self.db_path = db_path
         self._ensure_db_directory()

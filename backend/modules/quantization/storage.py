@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from enhanced_logger import enhanced_logger as logger
+from local_paths import backend_data_path
 
 from .config import QuantizationJob, QuantizedOutput
 
@@ -19,7 +20,7 @@ class QuantizationStore:
     def __init__(self, db_path: str = None):
         """Initialize the quantization store."""
         if db_path is None:
-            db_path = os.getenv("QUANTIZATION_DB_PATH", "/data/quantization.db")
+            db_path = os.getenv("QUANTIZATION_DB_PATH") or str(backend_data_path("quantization.db"))
 
         self.db_path = db_path
         self._ensure_db_directory()

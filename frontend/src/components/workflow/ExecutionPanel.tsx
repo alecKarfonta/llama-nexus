@@ -16,8 +16,6 @@ import {
   IconButton,
   Collapse,
   LinearProgress,
-  Divider,
-  Button,
   alpha,
   Tooltip,
 } from '@mui/material';
@@ -44,7 +42,7 @@ interface ExecutionPanelProps {
 }
 
 // Status colors and icons
-const statusConfig: Record<ExecutionStatus, { color: string; icon: React.ReactNode; label: string }> = {
+const statusConfig: Record<ExecutionStatus, { color: string; icon: React.ReactElement; label: string }> = {
   idle: { color: '#64748b', icon: <PendingIcon fontSize="small" />, label: 'Idle' },
   pending: { color: '#f59e0b', icon: <PendingIcon fontSize="small" />, label: 'Pending' },
   running: { color: '#6366f1', icon: <RunningIcon fontSize="small" />, label: 'Running' },
@@ -430,7 +428,6 @@ export const ExecutionPanel: React.FC<ExecutionPanelProps> = ({
 };
 
 export default ExecutionPanel;
-
 
 
 

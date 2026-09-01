@@ -3,7 +3,7 @@
  */
 import React, { memo } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
-import { Box, Typography, Paper, alpha, Chip, keyframes } from '@mui/material';
+import { Box, Typography, Paper, alpha, keyframes } from '@mui/material';
 import {
   PlayArrow as TriggerIcon,
   Psychology as LlmIcon,
@@ -241,7 +241,7 @@ export const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = memo(({ data, sel
       {/* Input Handles */}
       {data.inputs.length > 0 && (
         <Box sx={{ py: 0.5 }}>
-          {data.inputs.map((input, index) => (
+          {data.inputs.map((input) => (
             <Box
               key={input.id}
               sx={{
@@ -288,7 +288,7 @@ export const BaseNode: React.FC<NodeProps<WorkflowNodeData>> = memo(({ data, sel
       {/* Output Handles */}
       {data.outputs.length > 0 && (
         <Box sx={{ py: 0.5 }}>
-          {data.outputs.map((output, index) => (
+          {data.outputs.map((output) => (
             <Box
               key={output.id}
               sx={{

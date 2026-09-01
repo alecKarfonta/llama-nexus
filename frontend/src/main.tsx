@@ -5,6 +5,9 @@ import { CssBaseline, ThemeProvider } from '@mui/material'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { theme } from './utils/theme'
+import { getLocalPreference } from './utils/preferences'
+
+document.documentElement.dataset.density = getLocalPreference('compactControlSurfaces') ? 'compact' : 'comfortable'
 
 // Create React Query client
 const queryClient = new QueryClient({

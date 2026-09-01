@@ -4,6 +4,8 @@ from typing import Dict, Any
 from pathlib import Path
 import logging
 
+from modules.chat_template import TEMPLATE_EMBEDDED_JINJA, is_embedded_jinja
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/templates", tags=["templates"])
@@ -94,8 +96,24 @@ async def select_template(request: Request, payload: Dict[str, Any]):
         templates_dir = Path(manager.config["template"]["directory"]) 
         
         if filename == "":
-            updated = merge_config({"template": {"directory": str(templates_dir), "selected": ""}})
+            updated = merge_config({
+                "template": {"directory": str(templates_dir), "selected": ""},
+                "server": {"jinja": None},
+            })
             return {"success": True, "data": {"selected": updated["template"].get("selected", "")}}
+
+        if is_embedded_jinja(filename):
+            updated = merge_config({
+                "template": {
+                    "directory": str(templates_dir),
+                    "selected": TEMPLATE_EMBEDDED_JINJA,
+                },
+                "server": {"jinja": True},
+            })
+            return {
+                "success": True,
+                "data": {"selected": updated["template"].get("selected", TEMPLATE_EMBEDDED_JINJA)},
+            }
         
         path = templates_dir / filename
         if not path.exists():

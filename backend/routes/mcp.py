@@ -61,10 +61,15 @@ class ExecuteToolRequest(BaseModel):
 
 def get_mcp_components(request: Request):
     """Get MCP components from app state."""
-    mcp_client = getattr(request.app.state, 'mcp_client_manager', None)
+    mcp_client = get_optional_mcp_components(request)
     if not mcp_client:
         raise HTTPException(status_code=503, detail="MCP module not initialized")
     return mcp_client
+
+
+def get_optional_mcp_components(request: Request):
+    """Get MCP components from app state without failing passive reads."""
+    return getattr(request.app.state, 'mcp_client_manager', None)
 
 
 def get_mcp_config_store(request: Request):
@@ -85,7 +90,7 @@ async def get_mcp_status(request: Request):
             "connected_servers": len([c for c in mcp_client.connections.values() if c.connected]),
             "total_tools": len(mcp_client.get_all_tools_openai_format()),
         }
-    except HTTPException:
+    except Exception:
         return {
             "available": False,
             "connected_servers": 0,
@@ -96,7 +101,10 @@ async def get_mcp_status(request: Request):
 @router.get("/servers")
 async def list_servers(request: Request):
     """List all configured MCP servers with their status."""
-    mcp_client = get_mcp_components(request)
+    mcp_client = get_optional_mcp_components(request)
+    if not mcp_client:
+        return {"servers": []}
+
     config_store = mcp_client.config_store
     
     servers = []
@@ -446,7 +454,9 @@ async def execute_tool(request: Request, name: str, tool_name: str, body: Execut
 @router.get("/tools")
 async def list_all_tools(request: Request):
     """List all tools from all connected MCP servers (OpenAI format)."""
-    mcp_client = get_mcp_components(request)
+    mcp_client = get_optional_mcp_components(request)
+    if not mcp_client:
+        return {"tools": [], "count": 0}
     
     tools = mcp_client.get_all_tools_openai_format()
     
@@ -459,7 +469,9 @@ async def list_all_tools(request: Request):
 @router.get("/tools/summary")
 async def get_tools_summary(request: Request):
     """Get a human-readable summary of all MCP tools."""
-    mcp_client = get_mcp_components(request)
+    mcp_client = get_optional_mcp_components(request)
+    if not mcp_client:
+        return {"summary": "No MCP servers connected"}
     
     return {
         "summary": mcp_client.get_tools_summary(),

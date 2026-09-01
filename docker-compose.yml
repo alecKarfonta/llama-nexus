@@ -6,8 +6,9 @@ services:
     image: qdrant/qdrant:latest
     container_name: llama-nexus-qdrant
     ports:
-      - "6333:6333" # REST API
-      - "6334:6334" # gRPC API
+      # Override host ports when another local GraphRAG/Qdrant stack already owns 6333/6334.
+      - "${QDRANT_HTTP_PORT:-6333}:6333" # REST API
+      - "${QDRANT_GRPC_PORT:-6334}:6334" # gRPC API
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
@@ -109,16 +110,22 @@ services:
       - HF_HOME=/root/.cache/huggingface
       - FINETUNE_DATASET_DIR=/data/finetune_datasets
       - FINETUNE_JOB_DIR=/data/finetune_jobs
-      # GraphRAG integrated module (use with --profile graphrag)
+      # GraphRAG integrated module.
+      # Enable with: GRAPHRAG_ENABLED=true docker compose --profile graphrag up -d
+      # Set GRAPHRAG_URL to an external GraphRAG API for graph/search/ingest/reasoning.
       - GRAPHRAG_ENABLED=${GRAPHRAG_ENABLED:-false}
       - GRAPHRAG_URL=${GRAPHRAG_URL:-}
+      - GRAPHRAG_PIPELINE_RUNS_FILE=${GRAPHRAG_PIPELINE_RUNS_FILE:-/data/graphrag/pipeline_runs.json}
       - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
-      # GraphRAG GPU services (opt-in, use respective profiles)
+      # GraphRAG helper services. When GRAPHRAG_ENABLED=true inside Docker,
+      # the backend falls back to graphrag-ner:8001, graphrag-rel:8002,
+      # and graphrag-code:8000 if these are left blank.
       - NER_API_URL=${NER_API_URL:-}
       - REL_API_URL=${REL_API_URL:-}
       - CODE_RAG_URL=${CODE_RAG_URL:-}
+      - REDDIT_CRAWLER_URL=${REDDIT_CRAWLER_URL:-}
       # Database paths for persistent storage
       - TOKEN_DB_PATH=/data/token_usage.db
       - CONVERSATION_DB_PATH=/data/conversations.db
@@ -175,9 +182,12 @@ services:
       target: builder
       args:
         SKIP_BUILD_FROM_SOURCE: "false"
-        LLAMACPP_VERSION: "b9193"
-        LLAMACPP_BUILD_TAG: "b9193"
-        LLAMA_CPP_REF: "b9193"
+        # qwen4exp (Qwen3.8-Flash-Next) — llama.cpp PR #27742, not yet in any release
+        LLAMACPP_VERSION: "b10631-qwen4exp-mtp"
+        LLAMACPP_BUILD_TAG: "b10631-qwen4exp-mtp"
+        LLAMA_CPP_REMOTE: "https://github.com/unslothai/llama.cpp.git"
+        LLAMA_CPP_REF: "bea3b12daee45876b0129a3602dc8f534ce30bf0"
+        MTP_PATCH: "patches/qwen4exp-mtp-draft-head.patch"
         ENABLE_TURBOQUANT: "false"
         CMAKE_BUILD_JOBS: ${CMAKE_BUILD_JOBS:-2}
         CUDA_ARCH: ${CUDA_ARCH:-86}
@@ -205,9 +215,12 @@ services:
         ENABLE_LLGUIDANCE: ${ENABLE_LLGUIDANCE:-false}
         CMAKE_BUILD_JOBS: ${CMAKE_BUILD_JOBS:-2}
         CUDA_ARCH: ${CUDA_ARCH:-86}
-        LLAMA_CPP_REF: "b9193"
-        LLAMACPP_BUILD_TAG: "b9193"
-        LLAMACPP_VERSION: "b9193"
+        # qwen4exp (Qwen3.8-Flash-Next) — llama.cpp PR #27742, not yet in any release
+        LLAMA_CPP_REMOTE: "https://github.com/unslothai/llama.cpp.git"
+        LLAMA_CPP_REF: "bea3b12daee45876b0129a3602dc8f534ce30bf0"
+        MTP_PATCH: "patches/qwen4exp-mtp-draft-head.patch"
+        LLAMACPP_BUILD_TAG: "b10631-qwen4exp-mtp"
+        LLAMACPP_VERSION: "b10631-qwen4exp-mtp"
     container_name: llamacpp-api
     hostname: llamacpp
     ports:
@@ -219,8 +232,9 @@ services:
       - ./chat-templates:/home/llamacpp/templates:ro
     environment:
       - TEMPLATE_DIR=/home/llamacpp/templates
-      # Empty = use chat template embedded in the GGUF
-      - CHAT_TEMPLATE=
+      # __embedded_jinja__ = GGUF embedded template + --jinja only (correct multi-turn framing).
+      # Empty = embedded template without --jinja (legacy). Custom files via CHAT_TEMPLATE=name.jinja.
+      - CHAT_TEMPLATE=__embedded_jinja__
       # CUDA optimizations - Qwen3.6-27B Q6_K is split across two GPUs
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,2}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0,2}
@@ -267,6 +281,37 @@ services:
       timeout: 10s
       retries: 3
       start_period: 300s
+
+  # [TIME] | INFO | COMPOSE.CAPTURE_TEE | streaming reverse proxy in front of
+  # llama-server that tees Cursor traffic to the MTP draft-head dataset
+  # (dedicated /cursor/ route; the /qwen/ public path stays capture-free)
+  capture-tee:
+    image: python:3.11-slim
+    container_name: llamacpp-capture-tee
+    hostname: capture-tee
+    profiles:
+      - extra
+    ports:
+      - "8601:8601"
+    volumes:
+      - datasets:/data/captures
+      - ./backend/capture_tee.py:/capture_tee.py:ro
+    environment:
+      # [TIME] | INFO | COMPOSE.CAPTURE_TEE | llamacpp-api has no DNS alias on
+      # the bridge network; use the host-published port via the gateway instead
+      - TEE_UPSTREAM=http://172.18.0.1:8600
+      - TEE_PORT=8601
+      - TEE_CAPTURE_DIR=/data/captures
+      # llama-server --api-key; client keys are swapped for this upstream
+      - TEE_UPSTREAM_API_KEY=${TEE_UPSTREAM_API_KEY:-}
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8601/tee/stats', timeout=3)" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    command: [ "python3", "/capture_tee.py" ]
 
   # Management Frontend - React Web Interface
   llamacpp-frontend:
@@ -325,9 +370,9 @@ services:
       - PIPELINE_PARALLEL_SIZE=${PIPELINE_PARALLEL_SIZE:-1}
       - DATA_PARALLEL_SIZE=${DATA_PARALLEL_SIZE:-1}
       - KV_CACHE_DTYPE=${KV_CACHE_DTYPE:-fp8}
-      - REASONING_PARSER=${REASONING_PARSER:-nemotron_v3}
-      - REASONING_PARSER_PLUGIN=${REASONING_PARSER_PLUGIN:-}
-      - TOOL_CALL_PARSER=${TOOL_CALL_PARSER:-qwen3_coder}
+      - REASONING_PARSER=${REASONING_PARSER-nemotron_v3}
+      - REASONING_PARSER_PLUGIN=${REASONING_PARSER_PLUGIN-}
+      - TOOL_CALL_PARSER=${TOOL_CALL_PARSER-qwen3_coder}
       - VIDEO_PRUNING_RATE=${VIDEO_PRUNING_RATE:-0.5}
       - VIDEO_FPS=${VIDEO_FPS:-2}
       - VIDEO_NUM_FRAMES=${VIDEO_NUM_FRAMES:-256}
@@ -349,6 +394,8 @@ services:
       - VLLM_USE_FLASHINFER_MOE_FP4=${VLLM_USE_FLASHINFER_MOE_FP4:-0}
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
       - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=${HF_HOME:-/home/vllm/.cache/huggingface}
+      - HF_HUB_CACHE=${HF_HUB_CACHE:-/home/vllm/.cache/huggingface/hub}
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
     volumes:
@@ -497,21 +544,14 @@ services:
     hostname: lm-eval-worker
     volumes:
       - backend_data:/data
-      - gpt_oss_models:/home/llamacpp/models:ro
     environment:
       - REDIS_URL=redis://redis:6379/0
       - LM_EVAL_OUTPUT_DIR=/data/lm_eval_results
-      - LLAMACPP_API_URL=http://llamacpp-api:8080
+      # Route lm-eval through the app backend so it benchmarks the user's active deployment.
+      - LLAMACPP_API_URL=http://backend-api:8700
+      - LM_EVAL_DEPLOYED_API_URL=http://backend-api:8700
       - LM_EVAL_API_KEY=placeholder-api-key
-      - MODEL_PATH=/home/llamacpp/models/Qwen3.6-27B-Q6_K.gguf
-      - CUDA_VISIBLE_DEVICES=1,3
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      - LM_EVAL_NUM_CONCURRENT=1
     depends_on:
       redis:
         condition: service_healthy
@@ -545,18 +585,9 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - TERMINAL_BENCH_OUTPUT_DIR=/data/terminal_bench_results
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-      - LLAMACPP_API_URL=http://llamacpp-api:8080
+      - LLAMACPP_API_URL=http://backend-api:8700
       - OPENAI_API_KEY=placeholder-api-key
-      - OPENAI_BASE_URL=http://llamacpp-api:8080/v1
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      - OPENAI_BASE_URL=http://backend-api:8700/v1
     depends_on:
       redis:
         condition: service_healthy
@@ -678,6 +709,7 @@ services:
   graphrag-ner:
     profiles:
       - graphrag
+      - graphrag-ner
     build:
       context: ./services/ner_api
       dockerfile: Dockerfile
@@ -705,6 +737,7 @@ services:
   # ========================================
   graphrag-rel:
     profiles:
+      - graphrag
       - graphrag-rel
     build:
       context: ./services/rel_api
@@ -734,6 +767,7 @@ services:
   graphrag-code:
     profiles:
       - graphrag
+      - graphrag-code
     build:
       context: ./services/code_rag
       dockerfile: Dockerfile
@@ -763,6 +797,8 @@ services:
 
 volumes:
   gpt_oss_models:
+    driver: local
+  datasets:
     driver: local
   llamacpp_bin:
     driver: local

@@ -20,6 +20,7 @@ import {
   Search as SearchIcon,
 } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
+import { debugLog } from '@/utils/debug';
 
 interface LogEntry {
   message: string;
@@ -28,10 +29,16 @@ interface LogEntry {
 
 interface LogViewerProps {
   maxLines?: number;
+  height?: number | string;
+  compact?: boolean;
+  collapseEmpty?: boolean;
 }
 
 export const LogViewer: React.FC<LogViewerProps> = ({
   maxLines = 1000,
+  height = 500,
+  compact = false,
+  collapseEmpty = false,
 }) => {
   const theme = useTheme();
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -97,7 +104,7 @@ export const LogViewer: React.FC<LogViewerProps> = ({
     }
 
     // WebSocket endpoint for logs is not implemented yet, so we'll rely on polling
-    console.log('WebSocket log streaming not implemented yet, using polling mode');
+    debugLog('logs', 'WebSocket log streaming not implemented yet, using polling mode');
     setConnected(false);
   };
 
@@ -167,139 +174,181 @@ export const LogViewer: React.FC<LogViewerProps> = ({
     const ms = date.getMilliseconds().toString().padStart(3, '0');
     return `${time}.${ms}`;
   };
+  const compactEmpty = compact && filteredLogs.length === 0 && !searchTerm;
+  const shouldCollapseEmpty = compactEmpty && collapseEmpty;
+  const effectiveHeight = compactEmpty ? 42 : height;
 
   return (
-    <Card>
-      <CardContent>
-        <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
-          <Box display="flex" alignItems="center" gap={2}>
-            <Typography variant="h6">LlamaCPP Logs</Typography>
+    <Card
+      elevation={compact ? 0 : undefined}
+      sx={compact ? {
+        bgcolor: 'transparent',
+        border: '1px solid',
+        borderColor: 'divider',
+        borderRadius: '8px',
+        boxShadow: 'none',
+      } : undefined}
+    >
+      <CardContent sx={{ p: compact ? 0.75 : 2, '&:last-child': { pb: compact ? 0.75 : 2 } }}>
+        <Box display="flex" justifyContent="space-between" alignItems="center" mb={compact ? 0.5 : 2} gap={1}>
+          <Box display="flex" alignItems="center" gap={compact ? 1 : 2} minWidth={0}>
+            {!compact && (
+              <Typography variant="h6">
+                LlamaCPP Logs
+              </Typography>
+            )}
             <Chip
               label={connected ? 'Connected' : 'Disconnected'}
               size="small"
               color={connected ? 'success' : 'default'}
+              sx={compact ? { height: 20, fontSize: '0.68rem' } : undefined}
             />
             {paused && (
               <Chip
                 label="Paused"
                 size="small"
                 color="warning"
+                sx={compact ? { height: 20, fontSize: '0.68rem' } : undefined}
               />
             )}
           </Box>
           
           <Box display="flex" alignItems="center" gap={1}>
-            <TextField
-              size="small"
-              placeholder="Search logs..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              InputProps={{
-                startAdornment: <SearchIcon fontSize="small" sx={{ mr: 1, color: 'text.secondary' }} />,
-              }}
-              sx={{ minWidth: 200 }}
-            />
+            {!compact && (
+              <TextField
+                size="small"
+                placeholder="Search logs..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                InputProps={{
+                  startAdornment: <SearchIcon fontSize="small" sx={{ mr: 1, color: 'text.secondary' }} />,
+                }}
+                sx={{ minWidth: 200 }}
+              />
+            )}
             
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={autoScroll}
-                  onChange={(e) => setAutoScroll(e.target.checked)}
-                  size="small"
-                />
-              }
-              label="Auto-scroll"
-              sx={{ ml: 2 }}
-            />
+            {!compact && (
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={autoScroll}
+                    onChange={(e) => setAutoScroll(e.target.checked)}
+                    size="small"
+                  />
+                }
+                label="Auto-scroll"
+                sx={{ ml: 2 }}
+              />
+            )}
             
             <Tooltip title={paused ? 'Resume' : 'Pause'}>
-              <IconButton onClick={handleTogglePause} size="small">
-                {paused ? <PlayIcon /> : <PauseIcon />}
+              <IconButton onClick={handleTogglePause} size="small" sx={compact ? { width: 28, height: 28, borderRadius: '8px' } : undefined}>
+                {paused ? <PlayIcon fontSize="small" /> : <PauseIcon fontSize="small" />}
               </IconButton>
             </Tooltip>
             
             <Tooltip title="Clear logs">
-              <IconButton onClick={handleClearLogs} size="small">
-                <ClearIcon />
+              <IconButton onClick={handleClearLogs} size="small" disabled={logs.length === 0} sx={compact ? { width: 28, height: 28, borderRadius: '8px' } : undefined}>
+                <ClearIcon fontSize="small" />
               </IconButton>
             </Tooltip>
             
             <Tooltip title="Download logs">
-              <IconButton onClick={handleDownloadLogs} size="small">
-                <DownloadIcon />
+              <IconButton onClick={handleDownloadLogs} size="small" disabled={logs.length === 0} sx={compact ? { width: 28, height: 28, borderRadius: '8px' } : undefined}>
+                <DownloadIcon fontSize="small" />
               </IconButton>
             </Tooltip>
           </Box>
         </Box>
 
-        <Paper
-          ref={logContainerRef}
-          sx={{
-            p: 2,
-            backgroundColor: '#1e1e1e',
-            color: '#d4d4d4',
-            fontFamily: '"Consolas", "Monaco", "Courier New", monospace',
-            fontSize: '0.875rem',
-            lineHeight: 1.5,
-            height: 500,
-            overflowY: 'auto',
-            overflowX: 'auto',
-            borderRadius: 1,
-            '&::-webkit-scrollbar': {
-              width: 8,
-              height: 8,
-            },
-            '&::-webkit-scrollbar-track': {
-              backgroundColor: 'rgba(255, 255, 255, 0.1)',
-            },
-            '&::-webkit-scrollbar-thumb': {
-              backgroundColor: 'rgba(255, 255, 255, 0.3)',
-              borderRadius: 4,
-            },
-          }}
-        >
-          {filteredLogs.length === 0 ? (
-            <Box
-              display="flex"
-              justifyContent="center"
-              alignItems="center"
-              height="100%"
-              color="text.secondary"
-            >
-              <Typography variant="body2">
-                {searchTerm ? 'No logs match your search' : 'No logs available'}
-              </Typography>
-            </Box>
-          ) : (
-            filteredLogs.map((log, index) => (
+        {shouldCollapseEmpty ? (
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              minHeight: 28,
+              px: 1,
+              borderRadius: '8px',
+              bgcolor: 'action.hover',
+              color: 'text.secondary',
+            }}
+          >
+            <Typography variant="caption" sx={{ fontWeight: 700 }}>
+              Idle
+            </Typography>
+          </Box>
+        ) : (
+          <Paper
+            ref={logContainerRef}
+            sx={{
+              p: compact ? 0.75 : 2,
+              backgroundColor: compactEmpty ? 'action.hover' : '#1e1e1e',
+              color: compactEmpty ? 'text.secondary' : '#d4d4d4',
+              fontFamily: '"Consolas", "Monaco", "Courier New", monospace',
+              fontSize: compact ? '0.75rem' : '0.875rem',
+              lineHeight: compact ? 1.35 : 1.5,
+              height: effectiveHeight,
+              overflowY: compactEmpty ? 'hidden' : 'auto',
+              overflowX: compactEmpty ? 'hidden' : 'auto',
+              borderRadius: '8px',
+              '&::-webkit-scrollbar': {
+                width: 8,
+                height: 8,
+              },
+              '&::-webkit-scrollbar-track': {
+                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+              },
+              '&::-webkit-scrollbar-thumb': {
+                backgroundColor: 'rgba(255, 255, 255, 0.3)',
+                borderRadius: 4,
+              },
+            }}
+          >
+            {filteredLogs.length === 0 ? (
               <Box
-                key={index}
-                sx={{
-                  mb: 0.5,
-                  '&:hover': {
-                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                  },
-                }}
+                display="flex"
+                justifyContent="center"
+                alignItems="center"
+                height="100%"
+                color="text.secondary"
               >
-                <span style={{ color: '#858585', marginRight: 8 }}>
-                  [{formatTimestamp(log.timestamp)}]
-                </span>
-                <span style={{ color: getLogLevelColor(log.message) }}>
-                  {log.message}
-                </span>
+                <Typography variant="body2">
+                  {searchTerm ? 'No logs match your search' : 'No logs'}
+                </Typography>
               </Box>
-            ))
-          )}
-        </Paper>
+            ) : (
+              filteredLogs.map((log, index) => (
+                <Box
+                  key={index}
+                  sx={{
+                    mb: 0.5,
+                    '&:hover': {
+                      backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                    },
+                  }}
+                >
+                  <span style={{ color: '#858585', marginRight: 8 }}>
+                    [{formatTimestamp(log.timestamp)}]
+                  </span>
+                  <span style={{ color: getLogLevelColor(log.message) }}>
+                    {log.message}
+                  </span>
+                </Box>
+              ))
+            )}
+          </Paper>
+        )}
 
-        <Box display="flex" justifyContent="space-between" alignItems="center" mt={1}>
-          <Typography variant="caption" color="text.secondary">
-            Showing {filteredLogs.length} of {logs.length} logs
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            Max {maxLines} lines retained
-          </Typography>
-        </Box>
+        {!compactEmpty && (
+          <Box display="flex" justifyContent="space-between" alignItems="center" mt={compact ? 0.5 : 1}>
+            <Typography variant="caption" color="text.secondary">
+              Showing {filteredLogs.length} of {logs.length} logs
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Max {maxLines} lines retained
+            </Typography>
+          </Box>
+        )}
       </CardContent>
     </Card>
   );

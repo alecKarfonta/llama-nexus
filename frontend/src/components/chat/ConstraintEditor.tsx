@@ -1,9 +1,7 @@
-import React, { useState, useCallback, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   Box,
   Typography,
-  Card,
-  CardContent,
   Button,
   IconButton,
   TextField,
@@ -37,6 +35,7 @@ import {
   DataObject as ObjectIcon,
   Check as CheckIcon,
 } from '@mui/icons-material'
+import { useClipboard } from '@/hooks/useClipboard'
 
 // JSON Schema types
 type SchemaType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'null'
@@ -381,7 +380,13 @@ const PropertyEditor: React.FC<PropertyEditorProps> = ({ property, onChange, onD
 }
 
 // Convert internal schema to JSON Schema
-const toJsonSchema = (properties: SchemaProperty[]): object => {
+interface JsonSchemaFragment {
+  type: 'object'
+  properties: Record<string, any>
+  required?: string[]
+}
+
+const toJsonSchema = (properties: SchemaProperty[]): JsonSchemaFragment => {
   const required: string[] = []
   const props: Record<string, any> = {}
 
@@ -417,16 +422,16 @@ const toJsonSchema = (properties: SchemaProperty[]): object => {
       if (prop.minItems !== undefined) schemaProp.minItems = prop.minItems
       if (prop.maxItems !== undefined) schemaProp.maxItems = prop.maxItems
       if (prop.items) {
-        schemaProp.items = toJsonSchema([prop.items]).properties?.[prop.items.name] || { type: 'string' }
+        schemaProp.items = toJsonSchema([prop.items]).properties[prop.items.name] || { type: 'string' }
       }
     }
 
     // Object constraints
     if (prop.type === 'object' && prop.properties && prop.properties.length > 0) {
       const nested = toJsonSchema(prop.properties)
-      schemaProp.properties = (nested as any).properties
-      if ((nested as any).required?.length > 0) {
-        schemaProp.required = (nested as any).required
+      schemaProp.properties = nested.properties
+      if (nested.required?.length) {
+        schemaProp.required = nested.required
       }
     }
 
@@ -445,8 +450,8 @@ export const ConstraintEditor: React.FC<ConstraintEditorProps> = ({
   open,
   onClose,
   onApply,
-  initialSchema,
 }) => {
+  const copyToClipboard = useClipboard()
   const [properties, setProperties] = useState<SchemaProperty[]>([])
   const [activeTab, setActiveTab] = useState(0)
   const [schemaName, setSchemaName] = useState('response')
@@ -480,10 +485,15 @@ export const ConstraintEditor: React.FC<ConstraintEditorProps> = ({
     setProperties(properties.filter((_, i) => i !== index))
   }
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(JSON.stringify(jsonSchema, null, 2))
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  const handleCopy = async () => {
+    const ok = await copyToClipboard(JSON.stringify(jsonSchema, null, 2), {
+      successMessage: 'JSON schema copied.',
+      successTitle: 'Schema copied',
+    })
+    if (ok) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
   }
 
   useEffect(() => {
@@ -724,8 +734,7 @@ export function generateGbnfGrammar(properties: SchemaProperty[]): string {
   const propRules: string[] = []
   const typeRules = new Set<string>()
   
-  properties.forEach((prop, i) => {
-    const ruleName = `prop_${prop.name}`
+  properties.forEach((prop) => {
     propRules.push(`"\\"${prop.name}\\"" ws ":" ws ${getTypeRule(prop.type)}`)
     typeRules.add(prop.type)
   })

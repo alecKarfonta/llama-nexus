@@ -32,6 +32,7 @@ import {
   HourglassEmpty as PendingIcon,
   ContentCopy as CopyIcon,
 } from '@mui/icons-material'
+import { useClipboard } from '@/hooks/useClipboard'
 
 interface ToolCall {
   id: string
@@ -106,6 +107,7 @@ export const ExternalQueryDisplay: React.FC<ExternalQueryDisplayProps> = memo(({
 }) => {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [copied, setCopied] = useState(false)
+  const copyToClipboard = useClipboard()
   
   const toolMeta = getToolMeta(toolCall.function.name)
   const statusMeta = getStatusMeta(status)
@@ -120,9 +122,14 @@ export const ExternalQueryDisplay: React.FC<ExternalQueryDisplayProps> = memo(({
 
   const handleCopy = async () => {
     const content = JSON.stringify({ toolCall, result }, null, 2)
-    await navigator.clipboard.writeText(content)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    const ok = await copyToClipboard(content, {
+      successMessage: 'Tool call payload copied.',
+      successTitle: 'Tool output copied',
+    })
+    if (ok) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
   }
 
   return (

@@ -1,26 +1,19 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   Box,
   Typography,
-  Card,
-  CardContent,
-  Tabs,
-  Tab,
   Chip,
   IconButton,
   Tooltip,
   TextField,
   Button,
   Alert,
-  Collapse,
+  ButtonBase,
   alpha,
-  Divider,
   CircularProgress,
 } from '@mui/material'
 import {
   ContentCopy as CopyIcon,
-  ExpandMore as ExpandIcon,
-  ExpandLess as CollapseIcon,
   PlayArrow as RunIcon,
   Code as CodeIcon,
   Api as ApiIcon,
@@ -28,7 +21,9 @@ import {
   Chat as ChatIcon,
   Speed as SpeedIcon,
   Settings as SettingsIcon,
+  Search as SearchIcon,
 } from '@mui/icons-material'
+import { useClipboard } from '@/hooks/useClipboard'
 
 // API endpoint definitions
 interface ApiEndpoint {
@@ -223,7 +218,7 @@ const methodColors: Record<string, string> = {
   PATCH: '#8b5cf6',
 }
 
-const categoryIcons: Record<string, React.ReactNode> = {
+const categoryIcons: Record<string, React.ReactElement> = {
   System: <SettingsIcon />,
   Chat: <ChatIcon />,
   Conversations: <ChatIcon />,
@@ -237,32 +232,131 @@ const categoryIcons: Record<string, React.ReactNode> = {
 
 const categories = ['System', 'Chat', 'Conversations', 'Prompts', 'Registry', 'Benchmark', 'Batch', 'Tools', 'Models']
 
-interface EndpointCardProps {
-  endpoint: ApiEndpoint
+const endpointKey = (endpoint: ApiEndpoint) => `${endpoint.method}-${endpoint.path}`
+
+const formatJson = (value?: object | string | null) => {
+  if (!value) return ''
+  return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
 }
 
-const EndpointCard: React.FC<EndpointCardProps> = ({ endpoint }) => {
-  const [expanded, setExpanded] = useState(false)
+const truncatePreview = (text: string, max = 1200) =>
+  text.length > max ? `${text.slice(0, max).trimEnd()}\n...` : text
+
+const buildCurl = (endpoint: ApiEndpoint) => {
+  const parts = [`curl -X ${endpoint.method} "${endpoint.path}"`]
+  if (endpoint.requestBody && endpoint.method !== 'GET') {
+    parts.push('-H "Content-Type: application/json"')
+    parts.push(`-d '${JSON.stringify(endpoint.requestBody)}'`)
+  }
+  return parts.join(' \\\n  ')
+}
+
+const CodePreview: React.FC<{
+  title: string
+  value?: object | string | null
+  onCopy: (text: string) => void
+  emptyText?: string
+}> = ({ title, value, onCopy, emptyText = 'Not required' }) => {
+  const text = truncatePreview(formatJson(value))
+
+  return (
+    <Box
+      sx={{
+        border: '1px solid rgba(255, 255, 255, 0.08)',
+        borderRadius: '8px',
+        bgcolor: 'rgba(2, 6, 23, 0.52)',
+        minWidth: 0,
+      }}
+    >
+      <Box sx={{ px: 1.25, py: 0.75, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800, textTransform: 'uppercase' }}>
+          {title}
+        </Typography>
+        {text && (
+          <Tooltip title={`Copy ${title.toLowerCase()}`}>
+            <IconButton size="small" onClick={() => onCopy(formatJson(value))} sx={{ width: 26, height: 26 }}>
+              <CopyIcon sx={{ fontSize: 15 }} />
+            </IconButton>
+          </Tooltip>
+        )}
+      </Box>
+      <Box
+        component="pre"
+        sx={{
+          m: 0,
+          px: 1.25,
+          pb: 1.25,
+          color: text ? 'text.primary' : 'text.disabled',
+          fontFamily: 'monospace',
+          fontSize: '0.72rem',
+          lineHeight: 1.45,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}
+      >
+        {text || emptyText}
+      </Box>
+    </Box>
+  )
+}
+
+const ApiDocsPage: React.FC = () => {
+  const [selectedCategory, setSelectedCategory] = useState(0)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [selectedEndpointKey, setSelectedEndpointKey] = useState(endpointKey(apiEndpoints[0]))
   const [response, setResponse] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const copyToClipboard = useClipboard()
 
-  const handleCopy = (text: string) => {
-    navigator.clipboard.writeText(text)
+  const activeCategory = categories[selectedCategory]
+  const categoryEndpoints = apiEndpoints.filter(
+    (endpoint) => endpoint.category === activeCategory
+  )
+  const filteredEndpoints = categoryEndpoints.filter(
+    (endpoint) => {
+      const query = searchTerm.trim().toLowerCase()
+      if (!query) return true
+      return [
+        endpoint.method,
+        endpoint.path,
+        endpoint.description,
+        endpoint.category,
+      ].some(value => value.toLowerCase().includes(query))
+    }
+  )
+  const selectedEndpoint = filteredEndpoints.find(endpoint => endpointKey(endpoint) === selectedEndpointKey) || filteredEndpoints[0]
+
+  useEffect(() => {
+    if (filteredEndpoints.length > 0 && !filteredEndpoints.some(endpoint => endpointKey(endpoint) === selectedEndpointKey)) {
+      setSelectedEndpointKey(endpointKey(filteredEndpoints[0]))
+      setResponse(null)
+      setError(null)
+    }
+  }, [filteredEndpoints, selectedEndpointKey])
+
+  const copyExample = (text: string) => {
+    copyToClipboard(text, {
+      successMessage: 'API example copied.',
+      successTitle: 'Example copied',
+    })
   }
 
   const handleTryIt = async () => {
+    if (!selectedEndpoint) return
     setLoading(true)
     setError(null)
+    setResponse(null)
+
     try {
       const options: RequestInit = {
-        method: endpoint.method,
+        method: selectedEndpoint.method,
         headers: { 'Content-Type': 'application/json' },
       }
-      if (endpoint.requestBody && endpoint.method !== 'GET') {
-        options.body = JSON.stringify(endpoint.requestBody)
+      if (selectedEndpoint.requestBody && selectedEndpoint.method !== 'GET') {
+        options.body = JSON.stringify(selectedEndpoint.requestBody)
       }
-      const res = await fetch(endpoint.path, options)
+      const res = await fetch(selectedEndpoint.path, options)
       const data = await res.json()
       setResponse(JSON.stringify(data, null, 2))
     } catch (err) {
@@ -273,320 +367,450 @@ const EndpointCard: React.FC<EndpointCardProps> = ({ endpoint }) => {
   }
 
   return (
-    <Card
-      sx={{
-        mb: 2,
-        background: 'linear-gradient(145deg, rgba(30, 30, 63, 0.6) 0%, rgba(26, 26, 46, 0.8) 100%)',
-        backdropFilter: 'blur(12px)',
-        border: '1px solid rgba(255, 255, 255, 0.06)',
-        borderRadius: 2,
-        transition: 'all 0.2s ease-in-out',
-        '&:hover': {
-          borderColor: alpha(methodColors[endpoint.method], 0.3),
-        },
-      }}
-    >
-      <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-        {/* Header */}
-        <Box
-          sx={{ display: 'flex', alignItems: 'center', gap: 2, cursor: 'pointer' }}
-          onClick={() => setExpanded(!expanded)}
-        >
-          <Chip
-            label={endpoint.method}
-            size="small"
-            sx={{
-              bgcolor: alpha(methodColors[endpoint.method], 0.15),
-              color: methodColors[endpoint.method],
-              fontWeight: 700,
-              fontSize: '0.6875rem',
-              minWidth: 60,
-            }}
-          />
-          <Typography
-            variant="body2"
-            sx={{
-              fontFamily: 'monospace',
-              color: 'text.primary',
-              fontWeight: 500,
-              flex: 1,
-            }}
-          >
-            {endpoint.path}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ flex: 2, display: { xs: 'none', md: 'block' } }}>
-            {endpoint.description}
-          </Typography>
-          <IconButton size="small" sx={{ color: 'text.secondary' }}>
-            {expanded ? <CollapseIcon /> : <ExpandIcon />}
-          </IconButton>
-        </Box>
-
-        {/* Expanded Content */}
-        <Collapse in={expanded}>
-          <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid rgba(255, 255, 255, 0.06)' }}>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              {endpoint.description}
-            </Typography>
-
-            {/* Parameters */}
-            {endpoint.parameters && endpoint.parameters.length > 0 && (
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" sx={{ mb: 1, color: 'text.secondary' }}>
-                  Parameters
-                </Typography>
-                <Box sx={{ pl: 2 }}>
-                  {endpoint.parameters.map((param) => (
-                    <Box key={param.name} sx={{ mb: 0.5 }}>
-                      <Typography variant="body2" component="span" sx={{ fontFamily: 'monospace', color: '#06b6d4' }}>
-                        {param.name}
-                      </Typography>
-                      <Typography variant="body2" component="span" color="text.secondary">
-                        {' '}({param.type}){param.required ? ' *' : ''} - {param.description}
-                      </Typography>
-                    </Box>
-                  ))}
-                </Box>
-              </Box>
-            )}
-
-            {/* Request Body */}
-            {endpoint.requestBody && (
-              <Box sx={{ mb: 2 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-                  <Typography variant="subtitle2" sx={{ color: 'text.secondary' }}>
-                    Request Body
-                  </Typography>
-                  <Tooltip title="Copy">
-                    <IconButton size="small" onClick={() => handleCopy(JSON.stringify(endpoint.requestBody, null, 2))}>
-                      <CopyIcon sx={{ fontSize: 16 }} />
-                    </IconButton>
-                  </Tooltip>
-                </Box>
-                <Box
-                  sx={{
-                    bgcolor: 'rgba(0, 0, 0, 0.3)',
-                    borderRadius: 1,
-                    p: 1.5,
-                    fontFamily: 'monospace',
-                    fontSize: '0.75rem',
-                    overflow: 'auto',
-                    maxHeight: 200,
-                  }}
-                >
-                  <pre style={{ margin: 0 }}>{JSON.stringify(endpoint.requestBody, null, 2)}</pre>
-                </Box>
-              </Box>
-            )}
-
-            {/* Response Example */}
-            {endpoint.responseExample && (
-              <Box sx={{ mb: 2 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-                  <Typography variant="subtitle2" sx={{ color: 'text.secondary' }}>
-                    Response Example
-                  </Typography>
-                  <Tooltip title="Copy">
-                    <IconButton size="small" onClick={() => handleCopy(JSON.stringify(endpoint.responseExample, null, 2))}>
-                      <CopyIcon sx={{ fontSize: 16 }} />
-                    </IconButton>
-                  </Tooltip>
-                </Box>
-                <Box
-                  sx={{
-                    bgcolor: 'rgba(0, 0, 0, 0.3)',
-                    borderRadius: 1,
-                    p: 1.5,
-                    fontFamily: 'monospace',
-                    fontSize: '0.75rem',
-                    overflow: 'auto',
-                    maxHeight: 200,
-                  }}
-                >
-                  <pre style={{ margin: 0 }}>{JSON.stringify(endpoint.responseExample, null, 2)}</pre>
-                </Box>
-              </Box>
-            )}
-
-            {/* Try It Button */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              <Button
-                variant="contained"
-                size="small"
-                startIcon={loading ? <CircularProgress size={16} /> : <RunIcon />}
-                onClick={handleTryIt}
-                disabled={loading}
-                sx={{
-                  bgcolor: methodColors[endpoint.method],
-                  '&:hover': { bgcolor: alpha(methodColors[endpoint.method], 0.8) },
-                }}
-              >
-                Try It
-              </Button>
-            </Box>
-
-            {/* Response */}
-            {response && (
-              <Box sx={{ mt: 2 }}>
-                <Typography variant="subtitle2" sx={{ color: 'text.secondary', mb: 1 }}>
-                  Response
-                </Typography>
-                <Box
-                  sx={{
-                    bgcolor: alpha('#10b981', 0.1),
-                    border: `1px solid ${alpha('#10b981', 0.2)}`,
-                    borderRadius: 1,
-                    p: 1.5,
-                    fontFamily: 'monospace',
-                    fontSize: '0.75rem',
-                    overflow: 'auto',
-                    maxHeight: 300,
-                  }}
-                >
-                  <pre style={{ margin: 0 }}>{response}</pre>
-                </Box>
-              </Box>
-            )}
-
-            {/* Error */}
-            {error && (
-              <Alert severity="error" sx={{ mt: 2 }}>
-                {error}
-              </Alert>
-            )}
-          </Box>
-        </Collapse>
-      </CardContent>
-    </Card>
-  )
-}
-
-const ApiDocsPage: React.FC = () => {
-  const [selectedCategory, setSelectedCategory] = useState(0)
-
-  const filteredEndpoints = apiEndpoints.filter(
-    (endpoint) => endpoint.category === categories[selectedCategory]
-  )
-
-  return (
     <Box
       sx={{
         width: '100%',
         maxWidth: '100vw',
-        overflow: 'hidden',
+        overflow: 'visible',
         px: { xs: 2, sm: 3, md: 4 },
-        py: 3,
+        py: 1.25,
         boxSizing: 'border-box',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1,
       }}
     >
-      {/* Header */}
-      <Box sx={{ mb: 4 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 1 }}>
-          <Typography
-            variant="h1"
-            sx={{
-              fontWeight: 700,
-              fontSize: { xs: '1.5rem', sm: '1.75rem', md: '2rem' },
-              background: 'linear-gradient(135deg, #f1f5f9 0%, #94a3b8 100%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-            }}
-          >
-            API Documentation
-          </Typography>
-          <Chip
-            label="v1"
-            size="small"
-            sx={{
-              height: 22,
-              bgcolor: alpha('#6366f1', 0.1),
-              border: `1px solid ${alpha('#6366f1', 0.2)}`,
-              color: '#818cf8',
-              fontWeight: 600,
-              fontSize: '0.6875rem',
-            }}
-          />
-        </Box>
-        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 600 }}>
-          Interactive API documentation for Llama Nexus. Explore endpoints, view examples, and test requests directly.
-        </Typography>
-      </Box>
-
-      {/* Base URL */}
-      <Card
+      <Box
         sx={{
-          mb: 3,
-          background: 'linear-gradient(145deg, rgba(30, 30, 63, 0.6) 0%, rgba(26, 26, 46, 0.8) 100%)',
-          backdropFilter: 'blur(12px)',
-          border: '1px solid rgba(255, 255, 255, 0.06)',
-          borderRadius: 2,
+          p: 1.25,
+          borderRadius: '8px',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          bgcolor: 'rgba(15, 23, 42, 0.58)',
         }}
       >
-        <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Typography variant="subtitle2" color="text.secondary">
-              Base URL:
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: { xs: 'flex-start', md: 'center' },
+            flexDirection: { xs: 'column', md: 'row' },
+            gap: 1.5,
+          }}
+        >
+          <Box sx={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+            <Typography variant="body2" sx={{ fontWeight: 800, mr: 0.5 }}>
+              API Docs
             </Typography>
-            <Typography
-              variant="body2"
+            <Chip
+              size="small"
+              icon={<ApiIcon sx={{ fontSize: 15 }} />}
+              label="API console"
               sx={{
-                fontFamily: 'monospace',
-                bgcolor: 'rgba(0, 0, 0, 0.3)',
-                px: 1.5,
-                py: 0.5,
-                borderRadius: 1,
+                height: 24,
+                bgcolor: alpha('#14B8A6', 0.14),
+                border: `1px solid ${alpha('#14B8A6', 0.24)}`,
+                color: '#5EEAD4',
+                fontWeight: 700,
+                '& .MuiChip-icon': { color: '#5EEAD4' },
               }}
-            >
-              {window.location.origin}
-            </Typography>
-            <Tooltip title="Copy">
-              <IconButton size="small" onClick={() => navigator.clipboard.writeText(window.location.origin)}>
-                <CopyIcon sx={{ fontSize: 16 }} />
+            />
+            <Chip
+              size="small"
+              label={`${apiEndpoints.length} endpoints`}
+              sx={{
+                height: 24,
+                bgcolor: alpha('#6366F1', 0.12),
+                border: `1px solid ${alpha('#6366F1', 0.24)}`,
+                color: '#A5B4FC',
+                fontWeight: 600,
+              }}
+            />
+            <Chip
+              size="small"
+              label={`${filteredEndpoints.length} visible`}
+              sx={{
+                height: 24,
+                bgcolor: alpha('#10B981', 0.1),
+                border: `1px solid ${alpha('#10B981', 0.22)}`,
+                color: '#86EFAC',
+                fontWeight: 600,
+              }}
+            />
+          </Box>
+
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, alignSelf: { xs: 'stretch', md: 'center' } }}>
+            <TextField
+              size="small"
+              placeholder="Search endpoints"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              sx={{ minWidth: { xs: 0, sm: 260 }, flex: { xs: 1, md: 'initial' } }}
+              InputProps={{
+                startAdornment: <SearchIcon sx={{ mr: 1, color: 'text.secondary', fontSize: 18 }} />,
+              }}
+            />
+            <Tooltip title="Copy base URL">
+              <IconButton
+                size="small"
+                onClick={() => copyToClipboard(window.location.origin, {
+                  successMessage: 'Base URL copied.',
+                  successTitle: 'URL copied',
+                })}
+                sx={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  bgcolor: 'rgba(255, 255, 255, 0.04)',
+                  '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.08)' },
+                }}
+              >
+                <CopyIcon sx={{ fontSize: 18 }} />
               </IconButton>
             </Tooltip>
           </Box>
-        </CardContent>
-      </Card>
-
-      {/* Category Tabs */}
-      <Box sx={{ borderBottom: 1, borderColor: 'rgba(255, 255, 255, 0.06)', mb: 3 }}>
-        <Tabs
-          value={selectedCategory}
-          onChange={(_, value) => setSelectedCategory(value)}
-          variant="scrollable"
-          scrollButtons="auto"
-          sx={{
-            '& .MuiTabs-indicator': {
-              background: 'linear-gradient(90deg, #6366f1 0%, #8b5cf6 100%)',
-            },
-          }}
-        >
-          {categories.map((category, index) => (
-            <Tab
-              key={category}
-              label={category}
-              icon={categoryIcons[category]}
-              iconPosition="start"
-              sx={{
-                textTransform: 'none',
-                minHeight: 48,
-                fontWeight: 500,
-                '& .MuiSvgIcon-root': { fontSize: 18, mr: 0.5 },
-              }}
-            />
-          ))}
-        </Tabs>
+        </Box>
       </Box>
 
-      {/* Endpoints */}
-      <Box>
-        {filteredEndpoints.length > 0 ? (
-          filteredEndpoints.map((endpoint, index) => (
-            <EndpointCard key={`${endpoint.method}-${endpoint.path}-${index}`} endpoint={endpoint} />
-          ))
-        ) : (
-          <Typography color="text.secondary">No endpoints in this category.</Typography>
-        )}
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', lg: '360px minmax(0, 1fr)' },
+          gap: 1.25,
+          alignItems: 'start',
+        }}
+      >
+        <Box
+          sx={{
+            borderRadius: '8px',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            bgcolor: 'rgba(15, 23, 42, 0.58)',
+            p: 1,
+            overflow: 'visible',
+          }}
+        >
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+              gap: 0.5,
+              mb: 1,
+            }}
+          >
+            {categories.map((category, index) => {
+              const selected = selectedCategory === index
+              const color = selected ? '#8B5CF6' : 'text.secondary'
+              return (
+                <ButtonBase
+                  key={category}
+                  onClick={() => {
+                    setSelectedCategory(index)
+                    setResponse(null)
+                    setError(null)
+                  }}
+                  sx={{
+                    minHeight: 36,
+                    borderRadius: '8px',
+                    border: '1px solid',
+                    borderColor: selected ? alpha('#8B5CF6', 0.55) : 'rgba(255, 255, 255, 0.08)',
+                    bgcolor: selected ? alpha('#8B5CF6', 0.12) : 'rgba(255, 255, 255, 0.03)',
+                    color,
+                    px: 0.75,
+                    gap: 0.5,
+                    justifyContent: 'flex-start',
+                    '& svg': { fontSize: 15 },
+                  }}
+                >
+                  {categoryIcons[category]}
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      fontWeight: 800,
+                    }}
+                  >
+                    {category}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                    {apiEndpoints.filter(endpoint => endpoint.category === category).length}
+                  </Typography>
+                </ButtonBase>
+              )
+            })}
+          </Box>
+
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 0.25, mb: 0.75 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800, textTransform: 'uppercase' }}>
+              Endpoints
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {filteredEndpoints.length}
+            </Typography>
+          </Box>
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+            {filteredEndpoints.length > 0 ? (
+              filteredEndpoints.map((endpoint) => {
+                const selected = selectedEndpoint && endpointKey(endpoint) === endpointKey(selectedEndpoint)
+                return (
+                  <Box
+                    key={endpointKey(endpoint)}
+                    sx={{
+                      minHeight: 36,
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 188px) minmax(0, 1fr)',
+                      alignItems: 'center',
+                      gap: 0.65,
+                      px: 0.25,
+                      py: 0.25,
+                      borderRadius: '8px',
+                      border: '1px solid',
+                      borderColor: selected ? alpha(methodColors[endpoint.method], 0.48) : 'transparent',
+                      bgcolor: selected ? alpha(methodColors[endpoint.method], 0.1) : 'transparent',
+                      '&:hover': {
+                        bgcolor: alpha(methodColors[endpoint.method], 0.08),
+                      },
+                    }}
+                  >
+                    <ButtonBase
+                      onClick={() => {
+                        setSelectedEndpointKey(endpointKey(endpoint))
+                        setResponse(null)
+                        setError(null)
+                      }}
+                      title={`${endpoint.method} ${endpoint.path}`}
+                      sx={{
+                        minWidth: 0,
+                        width: '100%',
+                        height: 28,
+                        alignItems: 'center',
+                        justifyContent: 'flex-start',
+                        gap: 0.5,
+                        borderRadius: '7px',
+                        px: 0.5,
+                        textAlign: 'left',
+                        '&:focus-visible': {
+                          outline: `2px solid ${alpha(methodColors[endpoint.method], 0.45)}`,
+                          outlineOffset: 2,
+                        },
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          width: 38,
+                          height: 18,
+                          borderRadius: '6px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                          bgcolor: alpha(methodColors[endpoint.method], 0.15),
+                          color: methodColors[endpoint.method],
+                          fontSize: '0.58rem',
+                          fontWeight: 900,
+                        }}
+                      >
+                        {endpoint.method}
+                      </Box>
+                      <Typography
+                        variant="caption"
+                        title={endpoint.path}
+                        sx={{
+                          minWidth: 0,
+                          fontFamily: 'monospace',
+                          fontWeight: 900,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {endpoint.path}
+                      </Typography>
+                    </ButtonBase>
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{
+                        minWidth: 0,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title={endpoint.description}
+                    >
+                      {endpoint.description}
+                    </Typography>
+                  </Box>
+                )
+              })
+            ) : (
+              <Box
+                sx={{
+                  minHeight: 120,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '8px',
+                  border: '1px dashed rgba(255, 255, 255, 0.14)',
+                  color: 'text.secondary',
+                  textAlign: 'center',
+                  px: 2,
+                }}
+              >
+                <Typography variant="body2">No endpoints match this search.</Typography>
+              </Box>
+            )}
+          </Box>
+        </Box>
+
+        <Box
+          sx={{
+            borderRadius: '8px',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            bgcolor: 'rgba(15, 23, 42, 0.58)',
+            p: 1.25,
+            overflow: 'visible',
+          }}
+        >
+          {selectedEndpoint ? (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1.25 }}>
+                <Box sx={{ minWidth: 0 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.75, minWidth: 0 }}>
+                    <Chip
+                      label={selectedEndpoint.method}
+                      size="small"
+                      sx={{
+                        height: 24,
+                        bgcolor: alpha(methodColors[selectedEndpoint.method], 0.15),
+                        color: methodColors[selectedEndpoint.method],
+                        fontWeight: 900,
+                        minWidth: 58,
+                      }}
+                    />
+                    <Typography
+                      variant="h6"
+                      title={selectedEndpoint.path}
+                      sx={{ fontFamily: 'monospace', fontWeight: 900, fontSize: '1rem' }}
+                      noWrap
+                    >
+                      {selectedEndpoint.path}
+                    </Typography>
+                  </Box>
+                  <Typography variant="body2" color="text.secondary">
+                    {selectedEndpoint.description}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+                  <Tooltip title="Copy endpoint path">
+                    <IconButton
+                      size="small"
+                      onClick={() => copyExample(selectedEndpoint.path)}
+                      sx={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: '8px',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                      }}
+                    >
+                      <CopyIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </Tooltip>
+                  <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <RunIcon />}
+                    onClick={handleTryIt}
+                    disabled={loading}
+                    sx={{
+                      height: 32,
+                      borderRadius: '8px',
+                      textTransform: 'none',
+                      fontWeight: 900,
+                      boxShadow: 'none',
+                      bgcolor: methodColors[selectedEndpoint.method],
+                      '&:hover': { bgcolor: alpha(methodColors[selectedEndpoint.method], 0.82), boxShadow: 'none' },
+                    }}
+                  >
+                    Try
+                  </Button>
+                </Box>
+              </Box>
+
+              {selectedEndpoint.parameters && selectedEndpoint.parameters.length > 0 && (
+                <Box
+                  sx={{
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    borderRadius: '8px',
+                    p: 1,
+                    bgcolor: 'rgba(255, 255, 255, 0.03)',
+                  }}
+                >
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.75, fontWeight: 800, textTransform: 'uppercase' }}>
+                    Parameters
+                  </Typography>
+                  <Box sx={{ display: 'grid', gap: 0.5 }}>
+                    {selectedEndpoint.parameters.map((param) => (
+                      <Box key={param.name} sx={{ display: 'grid', gridTemplateColumns: '120px 90px minmax(0, 1fr)', gap: 1 }}>
+                        <Typography variant="caption" sx={{ fontFamily: 'monospace', color: '#67E8F9', fontWeight: 800 }}>{param.name}</Typography>
+                        <Typography variant="caption" color="text.secondary">{param.type}{param.required ? ' *' : ''}</Typography>
+                        <Typography variant="caption" color="text.secondary" noWrap title={param.description}>{param.description}</Typography>
+                      </Box>
+                    ))}
+                  </Box>
+                </Box>
+              )}
+
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
+                  gap: 1,
+                }}
+              >
+                {selectedEndpoint.requestBody && (
+                  <CodePreview title="Request" value={selectedEndpoint.requestBody} onCopy={copyExample} />
+                )}
+                <CodePreview title="Example response" value={selectedEndpoint.responseExample} onCopy={copyExample} />
+              </Box>
+
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
+                  gap: 1,
+                }}
+              >
+                <CodePreview title="cURL" value={buildCurl(selectedEndpoint)} onCopy={copyExample} />
+                {response && (
+                  <CodePreview title="Live response" value={response} onCopy={copyExample} />
+                )}
+              </Box>
+
+              {error && (
+                <Alert severity="error" sx={{ mt: 'auto' }}>
+                  {error}
+                </Alert>
+              )}
+            </Box>
+          ) : (
+            <Box
+              sx={{
+                minHeight: 120,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: '8px',
+                border: '1px dashed rgba(255, 255, 255, 0.14)',
+              }}
+            >
+              <Typography color="text.secondary">No endpoint selected.</Typography>
+            </Box>
+          )}
+        </Box>
       </Box>
     </Box>
   )

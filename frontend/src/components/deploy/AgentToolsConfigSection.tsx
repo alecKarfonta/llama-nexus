@@ -17,7 +17,7 @@ import type { MtpWorkloadProfile } from '@/utils/mtpWorkloadProfiles';
 export interface AgentToolsServerShape {
   chat_template_kwargs?: Record<string, unknown> | null;
   reasoning_budget?: number;
-  cache_reuse?: number;
+  cache_reuse?: number | null;
   jinja?: boolean;
 }
 

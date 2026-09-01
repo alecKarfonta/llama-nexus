@@ -53,9 +53,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       setLoading(true);
       setError(null);
       const allModels = await apiService.getModels();
-      // Filter to only show deployed/ready models
+      // Filter to only show ready models
       const availableModels = allModels.filter(
-        (m) => m.status === 'available' || m.status === 'deployed'
+        (m) => m.status === 'available' || m.status === 'running'
       );
       setModels(availableModels);
       
@@ -74,7 +74,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   const getModelStatus = (model: ModelInfo) => {
     switch (model.status) {
       case 'available':
-      case 'deployed':
+      case 'running':
         return { icon: <ReadyIcon fontSize="small" />, color: '#10b981', label: 'Ready' };
       case 'downloading':
         return { icon: <DownloadingIcon fontSize="small" />, color: '#f59e0b', label: 'Downloading' };

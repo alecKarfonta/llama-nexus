@@ -2,23 +2,26 @@ import React, { useEffect, useState } from 'react';
 import {
   Typography,
   Box,
-  Chip,
-  Button,
   CircularProgress,
   Alert,
-  Grid,
+  Collapse,
   LinearProgress,
+  IconButton,
+  Tooltip,
   alpha,
 } from '@mui/material';
 import {
   PlayArrow as StartIcon,
   Stop as StopIcon,
   Refresh as RestartIcon,
+  ExpandLess as ExpandLessIcon,
+  ExpandMore as ExpandMoreIcon,
   Thermostat as TempIcon,
   Memory as MemoryIcon,
   Speed as SpeedIcon,
-  Storage as StorageIcon,
 } from '@mui/icons-material';
+import { StatusChip, type StatusChipConfigMap } from '@/components/common';
+import { accentColors } from '@/utils/theme';
 
 interface ServiceStatus {
   running: boolean;
@@ -59,11 +62,38 @@ interface ServiceStatus {
   mtp_supported?: boolean;
 }
 
+const serviceStatusConfig: StatusChipConfigMap = {
+  running: { color: accentColors.success, label: 'Running' },
+  stopped: { color: accentColors.slate, label: 'Stopped' },
+  unhealthy: { color: accentColors.warning, label: 'Unhealthy' },
+  critical: { color: accentColors.rose, label: 'Critical' },
+  warning: { color: accentColors.warning, label: 'Warning' },
+};
+
+const serviceActionButtonSx = {
+  width: 32,
+  height: 32,
+  borderRadius: '8px',
+  border: '1px solid',
+  borderColor: 'divider',
+  bgcolor: 'action.hover',
+  '& .MuiSvgIcon-root': { fontSize: 18 },
+  '&:hover': { bgcolor: 'action.selected' },
+} as const;
+
+const servicePanelSx = {
+  p: 1.5,
+  borderRadius: '8px',
+  bgcolor: 'rgba(255, 255, 255, 0.02)',
+  border: '1px solid rgba(255, 255, 255, 0.04)',
+} as const;
+
 export const ServiceStatusDisplay: React.FC = () => {
   const [status, setStatus] = useState<ServiceStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const fetchStatus = async () => {
     try {
@@ -124,21 +154,21 @@ export const ServiceStatusDisplay: React.FC = () => {
   };
 
   const getStatusColor = (running: boolean, health?: boolean) => {
-    if (!running) return '#64748b';
-    if (health === false) return '#f59e0b';
-    return '#10b981';
+    if (!running) return accentColors.slate;
+    if (health === false) return accentColors.warning;
+    return accentColors.success;
   };
 
-  const getStatusText = (running: boolean, health?: boolean) => {
-    if (!running) return 'Stopped';
-    if (health === false) return 'Unhealthy';
-    return 'Running';
+  const getStatusKey = (running: boolean, health?: boolean) => {
+    if (!running) return 'stopped';
+    if (health === false) return 'unhealthy';
+    return 'running';
   };
 
   if (loading) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight={200}>
-        <CircularProgress size={32} sx={{ color: '#6366f1' }} />
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight={120}>
+        <CircularProgress size={32} sx={{ color: accentColors.primary }} />
       </Box>
     );
   }
@@ -149,9 +179,9 @@ export const ServiceStatusDisplay: React.FC = () => {
         severity="error"
         onClose={() => setError(null)}
         sx={{
-          bgcolor: alpha('#ef4444', 0.1),
-          border: `1px solid ${alpha('#ef4444', 0.2)}`,
-          color: '#f87171',
+          bgcolor: alpha(accentColors.rose, 0.1),
+          border: `1px solid ${alpha(accentColors.rose, 0.2)}`,
+          color: accentColors.rose,
         }}
       >
         {error}
@@ -159,71 +189,96 @@ export const ServiceStatusDisplay: React.FC = () => {
     );
   }
 
-  const statusColor = getStatusColor(status?.running || false, status?.llamacpp_health?.healthy);
+  const serviceRunning = Boolean(status?.running);
+  const statusKey = getStatusKey(serviceRunning, status?.llamacpp_health?.healthy);
+  const statusColor = getStatusColor(serviceRunning, status?.llamacpp_health?.healthy);
+  const buildLabel = status?.llamacpp_build?.tag || status?.llamacpp_build?.cli_version || 'unknown';
+  const summaryItems = [
+    { label: 'Model', value: status?.model?.name || 'None', color: accentColors.purple },
+    { label: 'Variant', value: status?.model?.variant || 'N/A', color: accentColors.info },
+    { label: 'Context', value: status?.model?.context_size?.toLocaleString() || 'N/A', color: accentColors.primary },
+    { label: 'GPU Layers', value: status?.model?.gpu_layers?.toString() || 'N/A', color: accentColors.success },
+    { label: 'Build', value: buildLabel, color: accentColors.warning },
+    {
+      label: 'MTP',
+      value: status?.mtp_supported == null ? 'unknown' : status.mtp_supported ? 'yes' : 'no - upgrade b9193+',
+      color: status?.mtp_supported ? accentColors.success : accentColors.warning,
+    },
+  ];
 
   return (
     <Box>
-      {/* Header with Status and Actions */}
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={3} flexWrap="wrap" gap={2}>
-        <Box display="flex" alignItems="center" gap={2}>
-          <Typography variant="h6" sx={{ fontWeight: 600 }}>LlamaCPP Service</Typography>
-          <Chip
-            label={getStatusText(status?.running || false, status?.llamacpp_health?.healthy)}
-            size="small"
+      <Box display="flex" justifyContent="space-between" alignItems="center" mb={1} flexWrap="wrap" gap={1}>
+        <Box display="flex" alignItems="center" gap={1}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>LlamaCPP Service</Typography>
+          <StatusChip
+            status={statusKey}
+            statusConfig={serviceStatusConfig}
             sx={{
-              bgcolor: alpha(statusColor, 0.1),
-              border: `1px solid ${alpha(statusColor, 0.3)}`,
-              color: statusColor,
-              fontWeight: 600,
-              fontSize: '0.75rem',
-              '& .MuiChip-label': { px: 1.5 },
+              fontSize: '0.7rem',
+              '& .MuiChip-label': { px: 1 },
             }}
           />
         </Box>
 
-        <Box display="flex" gap={1}>
-          <Button
-            variant="contained"
-            startIcon={actionLoading === 'start' ? <CircularProgress size={16} sx={{ color: 'white' }} /> : <StartIcon />}
-            onClick={() => handleServiceAction('start')}
-            disabled={status?.running || actionLoading !== null}
-            size="small"
-            sx={{
-              bgcolor: '#10b981',
-              '&:hover': { bgcolor: '#059669' },
-              '&.Mui-disabled': { bgcolor: alpha('#10b981', 0.3) },
-            }}
-          >
-            Start
-          </Button>
-          <Button
-            variant="contained"
-            startIcon={actionLoading === 'stop' ? <CircularProgress size={16} sx={{ color: 'white' }} /> : <StopIcon />}
-            onClick={() => handleServiceAction('stop')}
-            disabled={!status?.running || actionLoading !== null}
-            size="small"
-            sx={{
-              bgcolor: '#ef4444',
-              '&:hover': { bgcolor: '#dc2626' },
-              '&.Mui-disabled': { bgcolor: alpha('#ef4444', 0.3) },
-            }}
-          >
-            Stop
-          </Button>
-          <Button
-            variant="contained"
-            startIcon={actionLoading === 'restart' ? <CircularProgress size={16} sx={{ color: 'white' }} /> : <RestartIcon />}
-            onClick={() => handleServiceAction('restart')}
-            disabled={actionLoading !== null}
-            size="small"
-            sx={{
-              bgcolor: '#f59e0b',
-              '&:hover': { bgcolor: '#d97706' },
-              '&.Mui-disabled': { bgcolor: alpha('#f59e0b', 0.3) },
-            }}
-          >
-            Restart
-          </Button>
+        <Box display="flex" gap={0.5}>
+          {!serviceRunning && (
+            <Tooltip title="Start service">
+              <span>
+                <IconButton
+                  aria-label="Start service"
+                  onClick={() => handleServiceAction('start')}
+                  disabled={actionLoading !== null}
+                  size="small"
+                  sx={{
+                    ...serviceActionButtonSx,
+                    color: accentColors.success,
+                    borderColor: alpha(accentColors.success, 0.34),
+                  }}
+                >
+                  {actionLoading === 'start' ? <CircularProgress size={15} color="inherit" /> : <StartIcon />}
+                </IconButton>
+              </span>
+            </Tooltip>
+          )}
+          {serviceRunning && (
+            <>
+              <Tooltip title="Stop service">
+                <span>
+                  <IconButton
+                    aria-label="Stop service"
+                    onClick={() => handleServiceAction('stop')}
+                    disabled={actionLoading !== null}
+                    size="small"
+                    sx={{
+                      ...serviceActionButtonSx,
+                      color: accentColors.rose,
+                      borderColor: alpha(accentColors.rose, 0.32),
+                    }}
+                  >
+                    {actionLoading === 'stop' ? <CircularProgress size={15} color="inherit" /> : <StopIcon />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title="Restart service">
+                <span>
+                  <IconButton
+                    aria-label="Restart service"
+                    onClick={() => handleServiceAction('restart')}
+                    disabled={actionLoading !== null}
+                    size="small"
+                    sx={{
+                      ...serviceActionButtonSx,
+                      color: accentColors.warning,
+                      borderColor: alpha(accentColors.warning, 0.34),
+                    }}
+                  >
+                    {actionLoading === 'restart' ? <CircularProgress size={15} color="inherit" /> : <RestartIcon />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </>
+          )}
         </Box>
       </Box>
 
@@ -233,205 +288,150 @@ export const ServiceStatusDisplay: React.FC = () => {
           onClose={() => setError(null)}
           sx={{
             mb: 2,
-            bgcolor: alpha('#ef4444', 0.1),
-            border: `1px solid ${alpha('#ef4444', 0.2)}`,
-            color: '#f87171',
+            bgcolor: alpha(accentColors.rose, 0.1),
+            border: `1px solid ${alpha(accentColors.rose, 0.2)}`,
+            color: accentColors.rose,
           }}
         >
           {error}
         </Alert>
       )}
 
-      <Grid container spacing={3}>
-        {/* Service Info */}
-        <Grid item xs={12} md={6}>
-          <Box
-            sx={{
-              p: 2,
-              borderRadius: 2,
-              bgcolor: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid rgba(255, 255, 255, 0.04)',
-            }}
-          >
-            <Box display="flex" alignItems="center" gap={1} mb={1.5}>
-              <StorageIcon sx={{ fontSize: 18, color: '#6366f1' }} />
-              <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'text.secondary' }}>
-                Service Information
-              </Typography>
-            </Box>
-            <Box display="flex" flexDirection="column" gap={1}>
-              <InfoRow label="Status" value={status?.running ? 'Running' : 'Stopped'} color={statusColor} />
-              {status?.running && (
-                <>
-                  <InfoRow label="PID" value={status.pid?.toString() || 'N/A'} />
-                  <InfoRow label="Uptime" value={status.uptime ? formatUptime(status.uptime) : 'N/A'} />
-                  <InfoRow label="Mode" value={status.mode || 'subprocess'} />
-                </>
-              )}
-              <InfoRow
-                label="llama.cpp build"
-                value={
-                  status?.llamacpp_build?.tag ||
-                  status?.llamacpp_build?.cli_version ||
-                  'unknown'
-                }
-              />
-              {status?.mtp_supported != null && (
-                <InfoRow
-                  label="MTP capable build"
-                  value={status.mtp_supported ? 'yes' : 'no — upgrade to b9193+'}
-                  color={status.mtp_supported ? 'success.main' : 'warning.main'}
-                />
-              )}
-            </Box>
+      <Box
+        sx={{
+          ...servicePanelSx,
+          display: 'grid',
+          gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' },
+          gap: 0.75,
+          p: 1,
+        }}
+      >
+        {summaryItems.map((item) => (
+          <Box key={item.label} sx={{ minWidth: 0, borderLeft: `2px solid ${alpha(item.color, 0.7)}`, pl: 0.75 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.2 }}>
+              {item.label}
+            </Typography>
+            <Typography
+              variant="body2"
+              title={item.value}
+              noWrap
+              sx={{ fontWeight: 800, color: item.color === accentColors.warning && item.label === 'MTP' ? item.color : 'text.primary' }}
+            >
+              {item.value}
+            </Typography>
           </Box>
-        </Grid>
+        ))}
+      </Box>
 
-        {/* Model Info */}
-        <Grid item xs={12} md={6}>
-          <Box
-            sx={{
-              p: 2,
-              borderRadius: 2,
-              bgcolor: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid rgba(255, 255, 255, 0.04)',
-            }}
-          >
-            <Box display="flex" alignItems="center" gap={1} mb={1.5}>
-              <MemoryIcon sx={{ fontSize: 18, color: '#8b5cf6' }} />
-              <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'text.secondary' }}>
-                Model Configuration
-              </Typography>
-            </Box>
-            <Box display="flex" flexDirection="column" gap={1}>
-              <InfoRow label="Model" value={status?.model?.name || 'None'} />
-              <InfoRow label="Variant" value={status?.model?.variant || 'N/A'} />
-              <InfoRow label="Context Size" value={status?.model?.context_size?.toLocaleString() || 'N/A'} />
-              <InfoRow label="GPU Layers" value={status?.model?.gpu_layers?.toString() || 'N/A'} />
-            </Box>
-          </Box>
-        </Grid>
-
-        {/* Resource Usage */}
-        {status?.running && (
-          <>
-            <Grid item xs={12} md={6}>
-              <Box
-                sx={{
-                  p: 2,
-                  borderRadius: 2,
-                  bgcolor: 'rgba(255, 255, 255, 0.02)',
-                  border: '1px solid rgba(255, 255, 255, 0.04)',
-                }}
+      {(status?.running || status?.resources || status?.gpu) && (
+        <>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 0.5 }}>
+            <Tooltip title={detailsOpen ? 'Hide runtime details' : 'Show runtime details'}>
+              <IconButton
+                size="small"
+                aria-label={detailsOpen ? 'Hide runtime details' : 'Show runtime details'}
+                onClick={() => setDetailsOpen((value) => !value)}
+                sx={{ ...serviceActionButtonSx, width: 28, height: 28 }}
               >
-                <Box display="flex" alignItems="center" gap={1} mb={1.5}>
-                  <SpeedIcon sx={{ fontSize: 18, color: '#06b6d4' }} />
+                {detailsOpen ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+              </IconButton>
+            </Tooltip>
+          </Box>
+
+          <Collapse in={detailsOpen} unmountOnExit>
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
+                gap: 1,
+                mt: 1,
+              }}
+            >
+              <Box sx={servicePanelSx}>
+                <Box display="flex" alignItems="center" gap={1} mb={1}>
+                  <SpeedIcon sx={{ fontSize: 18, color: accentColors.info }} />
                   <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'text.secondary' }}>
-                    System Resources
+                    Runtime
                   </Typography>
                 </Box>
-                {status.resources && (
-                  <Box display="flex" flexDirection="column" gap={2}>
+                <Box display="flex" flexDirection="column" gap={1}>
+                  <InfoRow label="Status" value={status?.running ? 'Running' : 'Stopped'} color={statusColor} />
+                  <InfoRow label="PID" value={status?.pid?.toString() || 'N/A'} />
+                  <InfoRow label="Uptime" value={status?.uptime ? formatUptime(status.uptime) : 'N/A'} />
+                  <InfoRow label="Mode" value={status?.mode || 'subprocess'} />
+                </Box>
+              </Box>
+
+              {status?.resources && (
+                <Box sx={servicePanelSx}>
+                  <Box display="flex" alignItems="center" gap={1} mb={1}>
+                    <MemoryIcon sx={{ fontSize: 18, color: accentColors.purple }} />
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'text.secondary' }}>
+                      Resources
+                    </Typography>
+                  </Box>
+                  <Box display="flex" flexDirection="column" gap={1.25}>
                     <ResourceBar
                       label="CPU Usage"
                       value={status.resources.cpu_percent}
                       max={100}
                       unit="%"
-                      color="#6366f1"
+                      color={accentColors.primary}
                     />
                     <ResourceBar
                       label="Memory"
                       value={status.resources.memory_mb / 1024}
                       max={100}
                       displayValue={`${(status.resources.memory_mb / 1024).toFixed(1)} GB (${status.resources.memory_percent?.toFixed(1)}%)`}
-                      color="#8b5cf6"
+                      color={accentColors.purple}
                       progress={status.resources.memory_percent}
                     />
                   </Box>
-                )}
-              </Box>
-            </Grid>
-
-            <Grid item xs={12} md={6}>
-              <Box
-                sx={{
-                  p: 2,
-                  borderRadius: 2,
-                  bgcolor: 'rgba(255, 255, 255, 0.02)',
-                  border: '1px solid rgba(255, 255, 255, 0.04)',
-                }}
-              >
-                <Box display="flex" alignItems="center" gap={1} mb={1.5}>
-                  <MemoryIcon sx={{ fontSize: 18, color: '#10b981' }} />
-                  <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'text.secondary' }}>
-                    GPU Resources
-                  </Typography>
                 </Box>
-                {status.gpu ? (
-                  <Box display="flex" flexDirection="column" gap={2}>
+              )}
+
+              {status?.gpu && (
+                <Box sx={servicePanelSx}>
+                  <Box display="flex" alignItems="center" gap={1} mb={1}>
+                    <MemoryIcon sx={{ fontSize: 18, color: accentColors.success }} />
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'text.secondary' }}>
+                      GPU
+                    </Typography>
+                  </Box>
+                  <Box display="flex" flexDirection="column" gap={1.25}>
                     <ResourceBar
                       label="GPU Usage"
                       value={status.gpu.gpu_usage_percent}
                       max={100}
                       unit="%"
-                      color="#10b981"
+                      color={accentColors.success}
                     />
                     <ResourceBar
                       label="VRAM"
                       value={(status.gpu.vram_used_mb / status.gpu.vram_total_mb) * 100}
                       max={100}
                       displayValue={`${(status.gpu.vram_used_mb / 1024).toFixed(1)} / ${(status.gpu.vram_total_mb / 1024).toFixed(1)} GB`}
-                      color="#14b8a6"
+                      color={accentColors.info}
                     />
-                    <Box display="flex" alignItems="center" gap={1.5}>
+                    <Box display="flex" alignItems="center" gap={1}>
                       <TempIcon
                         sx={{
                           fontSize: 18,
-                          color: status.gpu.temperature_c > 85 ? '#ef4444' :
-                            status.gpu.temperature_c > 75 ? '#f59e0b' : '#10b981'
+                          color: status.gpu.temperature_c > 85 ? accentColors.rose :
+                            status.gpu.temperature_c > 75 ? accentColors.warning : accentColors.success,
                         }}
                       />
                       <Typography variant="body2" sx={{ color: 'text.secondary' }}>
                         Temperature: <strong>{status.gpu.temperature_c?.toFixed(0)}°C</strong>
                       </Typography>
-                      {status.gpu.temperature_c > 85 && (
-                        <Chip
-                          label="Critical"
-                          size="small"
-                          sx={{
-                            height: 20,
-                            bgcolor: alpha('#ef4444', 0.1),
-                            border: `1px solid ${alpha('#ef4444', 0.3)}`,
-                            color: '#f87171',
-                            fontSize: '0.625rem',
-                          }}
-                        />
-                      )}
-                      {status.gpu.temperature_c > 75 && status.gpu.temperature_c <= 85 && (
-                        <Chip
-                          label="Warning"
-                          size="small"
-                          sx={{
-                            height: 20,
-                            bgcolor: alpha('#f59e0b', 0.1),
-                            border: `1px solid ${alpha('#f59e0b', 0.3)}`,
-                            color: '#fbbf24',
-                            fontSize: '0.625rem',
-                          }}
-                        />
-                      )}
                     </Box>
                   </Box>
-                ) : (
-                  <Typography variant="body2" color="text.secondary">
-                    GPU information not available
-                  </Typography>
-                )}
-              </Box>
-            </Grid>
-          </>
-        )}
-      </Grid>
+                </Box>
+              )}
+            </Box>
+          </Collapse>
+        </>
+      )}
     </Box>
   );
 };
@@ -467,7 +467,7 @@ const ResourceBar: React.FC<{
 }> = ({ label, value, max, unit = '', displayValue, color, progress }) => {
   const percentage = progress ?? Math.min((value / max) * 100, 100);
   const isHigh = percentage > 80;
-  const barColor = isHigh ? '#ef4444' : color;
+  const barColor = isHigh ? accentColors.rose : color;
 
   return (
     <Box>
@@ -484,10 +484,10 @@ const ResourceBar: React.FC<{
         value={percentage}
         sx={{
           height: 6,
-          borderRadius: 3,
+          borderRadius: '3px',
           bgcolor: alpha(barColor, 0.15),
           '& .MuiLinearProgress-bar': {
-            borderRadius: 3,
+            borderRadius: '3px',
             background: `linear-gradient(90deg, ${barColor} 0%, ${alpha(barColor, 0.7)} 100%)`,
           },
         }}

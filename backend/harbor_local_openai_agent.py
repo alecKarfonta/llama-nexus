@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
@@ -48,7 +49,7 @@ class LocalOpenAIAgent(BaseAgent):
         max_obs_chars = int(os.getenv("TB_AGENT_MAX_OBS_CHARS", "6000"))
         model_timeout_sec = float(os.getenv("TB_AGENT_MODEL_TIMEOUT_SEC", "75"))
         command_timeout_sec = int(os.getenv("TB_AGENT_COMMAND_TIMEOUT_SEC", "120"))
-        max_model_tokens = int(os.getenv("TB_AGENT_MAX_MODEL_TOKENS", "256"))
+        max_model_tokens = int(os.getenv("TB_AGENT_MAX_MODEL_TOKENS", "512"))
         max_same_command_repeats = int(os.getenv("TB_AGENT_MAX_SAME_COMMAND_REPEATS", "2"))
 
         system_prompt = (
@@ -57,7 +58,8 @@ class LocalOpenAIAgent(BaseAgent):
             "Rules: avoid long-running or interactive commands (tail -f, watch, top, less, vim, nano). "
             "Use one command per step and only inspect files/dirs relevant to the task. "
             "If the task is done or cannot proceed due to a concrete blocker, return FINISH immediately. "
-            "At each step, reply in exactly one of these formats:\n"
+            "Do not write a thinking process, analysis, markdown, or prose. "
+            "At each step, reply with exactly one line in one of these formats:\n"
             "CMD: <single shell command>\n"
             "FINISH: <brief completion summary>\n"
             "Never include explanations outside CMD/FINISH."
@@ -68,6 +70,7 @@ class LocalOpenAIAgent(BaseAgent):
         usage_output = 0
         last_commands: List[str] = []
         model_call_latencies_ms: List[int] = []
+        format_errors = 0
 
         async with httpx.AsyncClient(timeout=model_timeout_sec) as client:
             for step in range(1, max_steps + 1):
@@ -75,6 +78,7 @@ class LocalOpenAIAgent(BaseAgent):
                     "instruction": instruction,
                     "step": step,
                     "history": transcript[-10:],
+                    "response_format": "Reply only as CMD: <single shell command> or FINISH: <summary>.",
                 }
                 request_body = {
                     "model": model,
@@ -85,6 +89,9 @@ class LocalOpenAIAgent(BaseAgent):
                     "temperature": 0.1,
                     "max_tokens": max_model_tokens,
                 }
+                if self._should_disable_thinking(model):
+                    request_body["chat_template_kwargs"] = {"enable_thinking": False}
+
                 model_call_started = datetime.utcnow()
                 response = await client.post(
                     f"{base_url}/chat/completions",
@@ -94,6 +101,16 @@ class LocalOpenAIAgent(BaseAgent):
                     },
                     json=request_body,
                 )
+                if response.status_code >= 400 and request_body["max_tokens"] > 256:
+                    request_body["max_tokens"] = 256
+                    response = await client.post(
+                        f"{base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=request_body,
+                    )
                 model_call_ms = int((datetime.utcnow() - model_call_started).total_seconds() * 1000)
                 model_call_latencies_ms.append(model_call_ms)
                 response.raise_for_status()
@@ -107,7 +124,23 @@ class LocalOpenAIAgent(BaseAgent):
                 if not content:
                     raise RuntimeError("Model returned empty action payload")
 
-                action, value = self._parse_action(content)
+                try:
+                    action, value = self._parse_action(content)
+                    format_errors = 0
+                except RuntimeError as exc:
+                    format_errors += 1
+                    transcript.append(
+                        {
+                            "step": step,
+                            "format_error": str(exc),
+                            "model_output": content[:max_obs_chars],
+                            "correction": "Reply with exactly one line starting CMD: or FINISH:.",
+                        }
+                    )
+                    if format_errors >= 3:
+                        raise RuntimeError(f"Model failed to produce a valid action: {exc}") from exc
+                    continue
+
                 if action == "finish":
                     transcript.append({"step": step, "action": {"action": "finish", "summary": value}})
                     break
@@ -122,9 +155,14 @@ class LocalOpenAIAgent(BaseAgent):
                     len(last_commands) == max_same_command_repeats + 1
                     and len(set(last_commands)) == 1
                 ):
-                    raise RuntimeError(
-                        f"Model repeated the same command {len(last_commands)} times: {command!r}"
+                    transcript.append(
+                        {
+                            "step": step,
+                            "repeat_skipped": command,
+                            "correction": "Choose a different next command or reply FINISH.",
+                        }
                     )
+                    continue
 
                 result = await environment.exec(command, timeout_sec=command_timeout_sec)
                 observation = {
@@ -166,33 +204,65 @@ class LocalOpenAIAgent(BaseAgent):
     def _parse_action(content: str) -> Tuple[str, str]:
         """Parse model output into ('exec'|'finish', value)."""
         content = content.strip()
-        if content.upper().startswith("CMD:"):
-            command = content[4:].strip()
-            if not command:
+        lines = content.splitlines()
+        action_index: int | None = None
+        action = ""
+        value = ""
+        for idx, line in enumerate(lines):
+            match = re.match(r"^\s*(CMD|FINISH):\s*(.*?)\s*$", line, flags=re.IGNORECASE)
+            if match:
+                action_index = idx
+                action = match.group(1).upper()
+                value = match.group(2).strip()
+        if action_index is None:
+            raise RuntimeError("Model output did not contain a CMD: or FINISH: line")
+
+        if action == "CMD":
+            value = LocalOpenAIAgent._collect_command(lines, action_index, value)
+            if not value:
                 raise RuntimeError("CMD action returned without a command")
-            return ("exec", command)
-        if content.upper().startswith("FINISH:"):
-            summary = content[7:].strip() or "task finished"
-            return ("finish", summary)
+            return ("exec", value)
+        return ("finish", value.strip().strip("`") or "task finished")
 
-        # Accept fenced shell snippets by treating first non-empty line as command.
-        fenced = re.search(r"```(?:bash|sh)?\s*(.*?)```", content, flags=re.DOTALL | re.IGNORECASE)
-        if fenced:
-            for line in fenced.group(1).splitlines():
-                candidate = line.strip()
-                if candidate and not candidate.startswith("#"):
-                    return ("exec", candidate)
+    @staticmethod
+    def _collect_command(lines: List[str], action_index: int, first_line: str) -> str:
+        command = first_line.strip().strip("`")
+        heredoc = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_-]*)['\"]?", command)
+        collected = [first_line.rstrip()]
+        if heredoc:
+            terminator = heredoc.group(1)
+            for line in lines[action_index + 1 :]:
+                collected.append(line.rstrip())
+                if line.strip() == terminator:
+                    break
+            return "\n".join(collected).strip().strip("`")
 
-        # Accept plain one-liner command as a last strict parse route.
-        if "\n" not in content and len(content.split()) >= 1:
-            return ("exec", content)
+        if not LocalOpenAIAgent._has_unclosed_shell_quote(command):
+            return command
 
-        for line in content.splitlines():
-            candidate = line.strip()
-            if candidate:
-                return ("exec", candidate)
+        for line in lines[action_index + 1 :]:
+            collected.append(line.rstrip())
+            candidate = "\n".join(collected)
+            if not LocalOpenAIAgent._has_unclosed_shell_quote(candidate):
+                break
+        return "\n".join(collected).strip().strip("`")
 
-        raise RuntimeError("Model returned no actionable content")
+    @staticmethod
+    def _has_unclosed_shell_quote(command: str) -> bool:
+        try:
+            shlex.split(command)
+        except ValueError as exc:
+            return "No closing quotation" in str(exc)
+        return False
+
+    @staticmethod
+    def _should_disable_thinking(model: str) -> bool:
+        setting = os.getenv("TB_AGENT_DISABLE_THINKING", "auto").strip().lower()
+        if setting in {"1", "true", "yes", "on"}:
+            return True
+        if setting in {"0", "false", "no", "off"}:
+            return False
+        return "qwen" in model.lower()
 
     @staticmethod
     def _sanitize_command(command: str) -> str:

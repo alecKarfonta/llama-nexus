@@ -17,6 +17,7 @@ from app_state import (
     tts_manager,
     create_embedder,
     _merge_and_persist_config,
+    LLAMACPP_CONFIG_PATH,
 )
 
 # Optional Imports (Same as original main.py)
@@ -96,7 +97,19 @@ async def lifespan(app: FastAPI):
     logger.info("Starting LlamaCPP Management API")
 
     # Load saved config if exists and merge with defaults
-    config_file = Path("/tmp/llamacpp_config.json")
+    config_file = LLAMACPP_CONFIG_PATH
+    # [TIME] | INFO | LIFESPAN.STARTUP | migrate legacy /tmp config onto the persisted
+    # backend_data volume so container rebuilds stop reverting deploys to defaults
+    legacy_config_file = Path("/tmp/llamacpp_config.json")
+    if not config_file.exists() and legacy_config_file.exists():
+        try:
+            config_file = legacy_config_file
+            logger.warning(
+                f"Found legacy config at {legacy_config_file}; it will be re-persisted "
+                f"to {LLAMACPP_CONFIG_PATH} on next config update"
+            )
+        except Exception as e:
+            logger.error(f"Failed to read legacy config: {e}")
     if config_file.exists():
         with open(config_file) as f:
             saved_config = json.load(f)
@@ -132,7 +145,6 @@ async def lifespan(app: FastAPI):
                     else:
                         # For categories without required fields, add empty dict
                         saved_config[category] = {}
-
             execution = saved_config.get("execution", {})
             mode = execution.get("mode")
             if mode not in (None, "gpu", "cpu"):
@@ -143,6 +155,18 @@ async def lifespan(app: FastAPI):
             if not str(execution.get("cuda_devices") or "").strip():
                 execution["cuda_devices"] = default_config["execution"]["cuda_devices"]
             saved_config["execution"] = execution
+
+            # Legacy: jinja enabled with no template file → embedded-jinja mode
+            from modules.chat_template import TEMPLATE_EMBEDDED_JINJA
+
+            if (
+                saved_config.get("server", {}).get("jinja") is True
+                and not saved_config.get("template", {}).get("selected")
+            ):
+                saved_config.setdefault("template", {})[
+                    "selected"
+                ] = TEMPLATE_EMBEDDED_JINJA
+
             manager.config = saved_config
 
     # Initialize RAG system
@@ -285,6 +309,18 @@ async def lifespan(app: FastAPI):
     app.state.merge_and_persist_config = _merge_and_persist_config
     app.state.token_tracker = token_tracker
 
+    # Initialize MCP manager. Read-only MCP endpoints remain useful even when
+    # no external servers are configured, so mount a manager with an empty store.
+    try:
+        from modules.mcp.client_manager import MCPClientManager
+
+        app.state.mcp_client_manager = MCPClientManager()
+        await app.state.mcp_client_manager.connect_auto_connect_servers()
+        logger.info("MCP client manager initialized")
+    except Exception as e:
+        logger.warning(f"MCP client manager not available: {e}")
+        app.state.mcp_client_manager = None
+
     # Initialize deploy profiles
     try:
         from modules.deploy_profiles import DeployProfileStore
@@ -327,10 +363,16 @@ async def lifespan(app: FastAPI):
     if RAG_AVAILABLE and hasattr(app.state, 'vector_store') and app.state.vector_store:
         await app.state.vector_store.disconnect()
 
+    mcp_client_manager = getattr(app.state, "mcp_client_manager", None)
+    if mcp_client_manager:
+        try:
+            await mcp_client_manager.disconnect_all()
+        except Exception as e:
+            logger.warning(f"Failed to clean up MCP connections: {e}")
+
     # Cleanup GraphRAG shared HTTP client
     try:
         from routes.graphrag.helpers import close_http_client
         await close_http_client()
     except Exception:
         pass
-

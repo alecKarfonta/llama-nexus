@@ -22,11 +22,17 @@ RUN pip3 install huggingface_hub hf_transfer
 
 # Clone and build llama.cpp with CUDA support
 # Pin a revision so Docker cache does not keep an old llama.cpp without newer arch support.
-# b9193+ includes merged MTP (Multi-Token Prediction) via ggml-org/llama.cpp PR #22673.
-# Qwen3.6 35B MoE GGUFs use architecture qwen35moe — requires current llama.cpp (see src/models/qwen35moe.cpp).
+# 2026-08-28: pinned to unslothai/llama.cpp@bea3b12da (the exact PR #27742 snapshot the
+# qwen4exp MTP draft-head patch was verified against — dzannotti/Qwen3.8-Flash-Next-MTP-GGUF).
+# The commit is orphaned on the fork (force-pushed past), so it is fetched by full SHA from
+# a URL ref, which works even when no branch points at it.
+# MTP_PATCH: optional git-apply patch layered on top (qwen4exp draft-head graph + converter
+# --mtp export). Kept optional so a plain PR build needs no patch file present.
 # Override at build time: docker compose build --build-arg LLAMA_CPP_REF=b9496 llamacpp-api
-ARG LLAMA_CPP_REF=b9193
-ARG LLAMACPP_BUILD_TAG=b9193
+ARG LLAMA_CPP_REF=bea3b12daee45876b0129a3602dc8f534ce30bf0
+ARG LLAMA_CPP_REMOTE=https://github.com/unslothai/llama.cpp.git
+ARG MTP_PATCH=patches/qwen4exp-mtp-draft-head.patch
+ARG LLAMACPP_BUILD_TAG=b10631-qwen4exp-mtp
 WORKDIR /build
 ARG SKIP_BUILD_FROM_SOURCE=false
 ARG LLAMACPP_VERSION=b9193
@@ -44,6 +50,10 @@ RUN if [ "$ENABLE_LLGUIDANCE" = "true" ]; then \
 # IMPORTANT: Do not use "native" here when building Docker images — the builder usually has no GPU, so CMake
 # cannot detect SM and nvcc fails with: Unsupported gpu architecture 'compute_' .
 ARG CUDA_ARCH=86
+
+# [TIME] | INFO | DOCKERFILE.PATCH_CONTEXT | the MTP patch lives in the build context
+# (./patches/); COPY it into the builder so the build RUN can git-apply it.
+COPY ${MTP_PATCH} /build-context/${MTP_PATCH}
 
 RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         echo "Skipping build, downloading pre-built binaries version: ${LLAMACPP_VERSION}" && \
@@ -68,7 +78,16 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
             echo "Building standard llama.cpp..." && \
             git clone https://github.com/ggml-org/llama.cpp.git llama.cpp && \
             cd llama.cpp && \
-            git checkout ${LLAMA_CPP_REF}; \
+            case "${LLAMA_CPP_REF}" in \
+                pull/*) git fetch origin "${LLAMA_CPP_REF}" && git checkout FETCH_HEAD ;; \
+                *) git fetch "${LLAMA_CPP_REMOTE}" "${LLAMA_CPP_REF}" && git checkout FETCH_HEAD ;; \
+            esac && \
+            if [ -n "${MTP_PATCH}" ] && [ -f "/build-context/${MTP_PATCH}" ]; then \
+                echo "Applying MTP patch: ${MTP_PATCH}" && \
+                git apply --check "/build-context/${MTP_PATCH}" && \
+                git apply "/build-context/${MTP_PATCH}"; \
+            fi && \
+            echo "llama.cpp tree: $(git rev-parse --short HEAD) + ${MTP_PATCH:-no-patch}"; \
         fi && \
         echo "Building llama.cpp version: $(git describe --tags --always)" && \
         LLGUIDANCE_CMAKE="" && \

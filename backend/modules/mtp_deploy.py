@@ -94,6 +94,9 @@ def normalize_mtp_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "draft_n_max": int(raw.get("draft_n_max", 3)),
         "draft_n_min": int(raw.get("draft_n_min", 0)),
         "draft_p_min": float(raw.get("draft_p_min", 0.75)),
+        # busy-poll tuning (llama-server --poll / --spec-draft-poll); None = engine default (50)
+        "poll": int(raw["poll"]) if raw.get("poll") is not None else None,
+        "draft_poll": int(raw["draft_poll"]) if raw.get("draft_poll") is not None else None,
     }
 
 

@@ -28,12 +28,16 @@ import logging
 import sqlite3
 import statistics
 from pathlib import Path
+from local_paths import backend_data_path
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/embedding-benchmark", tags=["embedding-benchmark"])
 
-DB_PATH = Path("/data/embedding_benchmarks.db") if os.path.exists("/data") else Path("./data/embedding_benchmarks.db")
+DB_PATH = Path(
+    os.getenv("EMBEDDING_BENCHMARK_DB_PATH")
+    or backend_data_path("embedding_benchmarks.db")
+)
 
 # Serialize writes to avoid "database is locked" under concurrent access
 _db_lock = asyncio.Lock()

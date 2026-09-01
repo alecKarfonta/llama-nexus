@@ -1,45 +1,28 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Box,
   Grid,
   Typography,
-  Card,
-  CardContent,
   TextField,
   Button,
   IconButton,
   Chip,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemSecondaryAction,
   Tooltip,
   Alert,
   CircularProgress,
   Divider,
   Paper,
-  Tab,
-  Tabs,
   LinearProgress,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
   TableRow,
-  Slider,
-  Switch,
-  FormControlLabel,
-  Collapse,
-  Stack,
 } from '@mui/material'
 import {
   PlayArrow as StartIcon,
-  Stop as StopIcon,
   Refresh as RefreshIcon,
   Delete as DeleteIcon,
   Speed as SpeedIcon,
@@ -53,9 +36,23 @@ import {
   Compare as CompareIcon,
   Timeline as TimelineIcon,
   Storage as StorageIcon,
-  ExpandMore as ExpandIcon,
-  ExpandLess as CollapseIcon,
+  Chat as ChatIcon,
+  MonitorHeart as MonitorIcon,
+  RocketLaunch as DeployIcon,
 } from '@mui/icons-material'
+import {
+  MetricTile,
+  PageShell,
+  SectionCard,
+  StatusChip,
+  WorkflowActionPanel,
+  type StatusChipConfigMap,
+} from '@/components/common'
+import { getRoutePath } from '@/config/navigation'
+import type { ModelInfo } from '@/types/api'
+import type { BenchmarkRouteState, DeploymentRouteContext } from '@/types/runtimeHandoff'
+import { deployStateFromDeployment } from '@/types/runtimeHandoff'
+import { accentColors } from '@/utils/theme'
 
 // Types
 interface RunMetrics {
@@ -131,32 +128,102 @@ interface EndpointConfig {
   api_key: string
 }
 
+const benchmarkModelLabel = (model: ModelInfo) => (
+  [model.name, model.variant || model.quantization].filter(Boolean).join(' / ')
+)
+
 // Tab panel component
 function TabPanel({ children, value, index, ...other }: { children?: React.ReactNode; value: number; index: number; [key: string]: any }) {
   return (
     <div role="tabpanel" hidden={value !== index} {...other}>
-      {value === index && <Box sx={{ pt: 2 }}>{children}</Box>}
+      {value === index && <Box>{children}</Box>}
     </div>
   )
 }
 
-// Metric card component
-function MetricCard({ icon, value, label, unit, color = 'primary' }: { icon: React.ReactNode; value: string | number; label: string; unit?: string; color?: string }) {
-  return (
-    <Card variant="outlined" sx={{ height: '100%' }}>
-      <CardContent sx={{ textAlign: 'center', py: 1.5 }}>
-        <Box sx={{ color: `${color}.main`, mb: 0.5 }}>{icon}</Box>
-        <Typography variant="h5" sx={{ fontFamily: 'monospace' }}>
-          {value}{unit && <Typography component="span" variant="body2" color="text.secondary">{unit}</Typography>}
-        </Typography>
-        <Typography variant="caption" color="text.secondary">{label}</Typography>
-      </CardContent>
-    </Card>
-  )
+const benchmarkModes = [
+  {
+    label: 'Speed',
+    detail: 'Measure tokens/sec, TTFT, and run-to-run variance for a model.',
+    tab: 0,
+    status: 'speed',
+    icon: <SpeedIcon />,
+    color: accentColors.info,
+  },
+  {
+    label: 'Compare',
+    detail: 'Run the same prompt across local or remote OpenAI-compatible endpoints.',
+    tab: 1,
+    status: 'compare',
+    icon: <CompareIcon />,
+    color: accentColors.purple,
+  },
+  {
+    label: 'Context',
+    detail: 'Probe how long contexts affect latency and output throughput.',
+    tab: 2,
+    status: 'context',
+    icon: <TimelineIcon />,
+    color: accentColors.success,
+  },
+  {
+    label: 'Load',
+    detail: 'Stress concurrency levels to find practical serving capacity.',
+    tab: 3,
+    status: 'load',
+    icon: <StorageIcon />,
+    color: accentColors.warning,
+  },
+  {
+    label: 'History',
+    detail: 'Review saved benchmark runs and export evidence.',
+    tab: 4,
+    status: 'history',
+    icon: <HistoryIcon />,
+    color: accentColors.slate,
+  },
+]
+
+const BENCHMARK_STATUS_CONFIG: StatusChipConfigMap = {
+  lab: { color: accentColors.rose, label: 'Benchmark lab' },
+  evidence: { color: accentColors.info, label: 'Evidence workflow' },
+  speed: { color: accentColors.info, label: 'Speed' },
+  compare: { color: accentColors.purple, label: 'Compare' },
+  context: { color: accentColors.success, label: 'Context' },
+  load: { color: accentColors.warning, label: 'Load' },
+  history: { color: accentColors.slate, label: 'History' },
 }
 
+const benchmarkIconButtonSx = {
+  width: 32,
+  height: 32,
+  borderRadius: '8px',
+  border: '1px solid',
+  borderColor: 'divider',
+  bgcolor: 'action.hover',
+  color: 'text.secondary',
+  '&:hover': {
+    bgcolor: 'action.selected',
+  },
+} as const
+
 export default function BenchmarkPage() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const chatPath = getRoutePath('chat')
+  const deployPath = getRoutePath('deploy')
+  const monitoringPath = getRoutePath('monitoring')
+  const routeState = useMemo(() => location.state as BenchmarkRouteState | null, [location.state])
+  const incomingModel = useMemo(() => {
+    return routeState?.model && typeof routeState.model.name === 'string' ? routeState.model : null
+  }, [routeState])
+  const incomingDeployment = useMemo(() => {
+    return routeState?.deployment && typeof routeState.deployment.modelName === 'string'
+      ? routeState.deployment
+      : null
+  }, [routeState])
   const [tabValue, setTabValue] = useState(0)
+  const [benchmarkTarget, setBenchmarkTarget] = useState<string | null>(null)
   
   // Speed test state
   const [speedTestPrompt, setSpeedTestPrompt] = useState('Explain the concept of neural networks in simple terms.')
@@ -209,6 +276,17 @@ export default function BenchmarkPage() {
     loadStats()
     loadHistory()
   }, [])
+
+  useEffect(() => {
+    if (!incomingModel && !incomingDeployment) return
+
+    const label = incomingDeployment?.modelName || (incomingModel ? benchmarkModelLabel(incomingModel) : '')
+    if (!label) return
+    setTabValue(0)
+    setSpeedTestModelName(label)
+    setBenchmarkTarget(label)
+    setSpeedTestResult(null)
+  }, [incomingDeployment, incomingModel])
 
   const loadStats = async () => {
     try {
@@ -468,109 +546,187 @@ export default function BenchmarkPage() {
     }
   }
 
-  return (
-    <Box sx={{ p: 3, maxWidth: 1400, mx: 'auto' }}>
-      {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Box>
-          <Typography variant="h5" sx={{ fontWeight: 600 }}>
-            LLM Benchmark Suite
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Measure and compare language model inference performance
-          </Typography>
-        </Box>
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Tooltip title="Refresh">
-            <IconButton onClick={() => { loadStats(); loadHistory(); }}>
-              <RefreshIcon />
-            </IconButton>
-          </Tooltip>
-        </Box>
-      </Box>
+  const getBenchmarkStatusKey = (type: string) => {
+    switch (type) {
+      case 'speed_test': return 'speed'
+      case 'comparison': return 'compare'
+      case 'context_scaling': return 'context'
+      case 'throughput': return 'load'
+      default: return 'history'
+    }
+  }
 
+  const formatTps = (num: number | undefined) => (
+    num === undefined || num === null ? '-' : `${formatNumber(num)} t/s`
+  )
+
+  const formatCompactDate = (date: string) => {
+    const parsed = new Date(date)
+    if (Number.isNaN(parsed.getTime())) return '-'
+    return parsed.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  }
+
+  const benchmarkDeploymentContext: DeploymentRouteContext | null = incomingDeployment
+    ?? (
+      speedTestResult?.model_name || speedTestModelName || benchmarkTarget
+        ? {
+            modelName: speedTestResult?.model_name || speedTestModelName || benchmarkTarget || undefined,
+            endpoint: speedTestResult?.endpoint || speedTestEndpoint || undefined,
+          }
+        : null
+    )
+  const benchmarkTargetLabel = benchmarkDeploymentContext?.modelName || benchmarkTarget || 'Current local deployment'
+  const benchmarkEndpointLabel = benchmarkDeploymentContext?.endpoint || 'Backend proxy'
+  const deployRouteState = deployStateFromDeployment(benchmarkDeploymentContext, incomingModel)
+  const benchmarkFollowUpActions = benchmarkDeploymentContext
+    ? [
+        {
+          label: 'Chat',
+          icon: <ChatIcon />,
+          onClick: () => navigate(chatPath, { state: { deployment: benchmarkDeploymentContext } }),
+        },
+        {
+          label: 'Monitor',
+          icon: <MonitorIcon />,
+          onClick: () => navigate(monitoringPath, { state: { deployment: benchmarkDeploymentContext } }),
+        },
+        {
+          label: 'Deploy',
+          icon: <DeployIcon />,
+          onClick: () => navigate(deployPath, { state: deployRouteState }),
+        },
+      ]
+    : []
+  const benchmarkExportAction = speedTestResult?.id
+    ? {
+        label: 'Export',
+        icon: <DownloadIcon />,
+        onClick: () => exportResult(speedTestResult.id, 'json'),
+      }
+    : null
+  const benchmarkTargetActions = benchmarkExportAction
+    ? [...benchmarkFollowUpActions, benchmarkExportAction]
+    : benchmarkFollowUpActions
+  const activeBenchmarkMode = benchmarkModes.find((mode) => mode.tab === tabValue)
+  const activeBenchmarkLabel = activeBenchmarkMode?.label ?? 'History'
+  const recentBenchmarkResults = historyResults.slice(0, 5)
+  const totalBenchmarkCount = stats?.total_benchmarks ?? historyTotal
+  const recentAverageTps = stats?.average_tps_recent ?? 0
+  const savedSpeedTests = stats?.by_type?.speed_test ?? historyResults.filter((result) => result.type === 'speed_test').length
+  const hasRecentBenchmarkResults = recentBenchmarkResults.length > 0
+  const showBenchmarkSidePanel = Boolean(speedTestResult || historyLoading || hasRecentBenchmarkResults || totalBenchmarkCount > 0)
+  const speedSummaryStats = [
+    { label: 'Saved', value: String(totalBenchmarkCount) },
+    { label: 'Speed tests', value: String(savedSpeedTests) },
+    { label: 'Recent TPS', value: formatTps(recentAverageTps) },
+  ]
+  const benchmarkHeaderActions = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.35, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      {benchmarkModes.filter((mode) => mode.tab !== tabValue).map((mode) => (
+        <Tooltip key={mode.label} title={`${mode.label}: ${mode.detail}`}>
+          <IconButton
+            aria-label={mode.label}
+            size="small"
+            onClick={() => setTabValue(mode.tab)}
+            sx={{
+              ...benchmarkIconButtonSx,
+              bgcolor: tabValue === mode.tab ? mode.color : 'action.hover',
+              color: tabValue === mode.tab ? '#fff' : mode.color,
+              borderColor: tabValue === mode.tab ? mode.color : 'divider',
+              '&:hover': {
+                bgcolor: tabValue === mode.tab ? mode.color : 'action.selected',
+              },
+              '& .MuiSvgIcon-root': { fontSize: 18 },
+            }}
+          >
+            {mode.icon}
+          </IconButton>
+        </Tooltip>
+      ))}
+      <Tooltip title="Refresh benchmark history">
+        <IconButton
+          aria-label="Refresh benchmark history"
+          size="small"
+          onClick={() => { loadStats(); loadHistory(); }}
+          sx={benchmarkIconButtonSx}
+        >
+          <RefreshIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  )
+  const hasBenchmarkSummary = totalBenchmarkCount > 0 || recentAverageTps > 0 || Boolean(benchmarkTarget || benchmarkDeploymentContext)
+  const benchmarkSummaryRow = hasBenchmarkSummary ? (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+      {totalBenchmarkCount > 0 && (
+        <StatusChip
+          status="history"
+          label={`${totalBenchmarkCount} saved`}
+          statusConfig={BENCHMARK_STATUS_CONFIG}
+          height={22}
+        />
+      )}
+      {recentAverageTps > 0 && (
+        <StatusChip
+          status="speed"
+          label={`${formatNumber(recentAverageTps)} TPS`}
+          statusConfig={BENCHMARK_STATUS_CONFIG}
+          height={22}
+        />
+      )}
+      {(benchmarkTarget || benchmarkDeploymentContext) && (
+        <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
+          {benchmarkTargetLabel} / {benchmarkEndpointLabel}
+        </Typography>
+      )}
+    </Box>
+  ) : null
+
+  return (
+    <PageShell sx={{ maxWidth: 1440, mx: 'auto', py: 1 }}>
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
 
-      {/* Stats Overview */}
-      {stats && (
-        <Grid container spacing={2} sx={{ mb: 3 }}>
-          <Grid item xs={6} sm={3}>
-            <MetricCard
-              icon={<HistoryIcon />}
-              value={stats.total_benchmarks}
-              label="Total Benchmarks"
-              color="primary"
-            />
-          </Grid>
-          <Grid item xs={6} sm={3}>
-            <MetricCard
-              icon={<SpeedIcon />}
-              value={formatNumber(stats.average_tps_recent)}
-              label="Avg TPS (Recent)"
-              unit=" t/s"
-              color="success"
-            />
-          </Grid>
-          <Grid item xs={6} sm={3}>
-            <MetricCard
-              icon={<TimelineIcon />}
-              value={stats.by_type?.speed_test || 0}
-              label="Speed Tests"
-              color="info"
-            />
-          </Grid>
-          <Grid item xs={6} sm={3}>
-            <MetricCard
-              icon={<CompareIcon />}
-              value={stats.by_type?.comparison || 0}
-              label="Comparisons"
-              color="secondary"
-            />
-          </Grid>
-        </Grid>
-      )}
-
       {/* Main Tabs */}
-      <Paper sx={{ mb: 3 }}>
-        <Tabs
-          value={tabValue}
-          onChange={(_, v) => setTabValue(v)}
-          variant="scrollable"
-          scrollButtons="auto"
-          sx={{ borderBottom: 1, borderColor: 'divider' }}
-        >
-          <Tab icon={<SpeedIcon />} label="Speed Test" iconPosition="start" />
-          <Tab icon={<CompareIcon />} label="Compare" iconPosition="start" />
-          <Tab icon={<TimelineIcon />} label="Context Scaling" iconPosition="start" />
-          <Tab icon={<StorageIcon />} label="Throughput" iconPosition="start" />
-          <Tab icon={<HistoryIcon />} label="History" iconPosition="start" />
-        </Tabs>
-
-        <Box sx={{ p: 3 }}>
+      <SectionCard
+        title={activeBenchmarkLabel}
+        subtitle={benchmarkTarget || benchmarkDeploymentContext ? benchmarkEndpointLabel : undefined}
+        icon={activeBenchmarkMode?.icon ?? <HistoryIcon />}
+        accentColor={activeBenchmarkMode?.color ?? accentColors.slate}
+        action={benchmarkHeaderActions}
+        sx={{
+          mb: 1,
+        }}
+      >
+        {benchmarkSummaryRow}
+        <Box>
           {/* Speed Test Tab */}
           <TabPanel value={tabValue} index={0}>
-            <Grid container spacing={3}>
-              <Grid item xs={12} md={5}>
-                <Typography variant="subtitle1" sx={{ mb: 2, fontWeight: 600 }}>
-                  Quick Speed Test
-                </Typography>
-                
+            <Grid container spacing={1.25} alignItems="flex-start">
+              <Grid item xs={12} lg={showBenchmarkSidePanel ? 5 : 12}>
+                {benchmarkTarget && (
+                  <Alert severity="info" sx={{ mb: 1.25, py: 0.25, borderRadius: '8px' }} onClose={() => setBenchmarkTarget(null)}>
+                    Benchmark label: <strong>{benchmarkTarget}</strong>
+                  </Alert>
+                )}
+
                 <TextField
-                  label="Test Prompt"
+                  label="Prompt"
                   multiline
-                  rows={4}
+                  minRows={1}
+                  maxRows={3}
                   value={speedTestPrompt}
                   onChange={(e) => setSpeedTestPrompt(e.target.value)}
                   fullWidth
-                  sx={{ mb: 2 }}
+                  size="small"
+                  sx={{ mt: 0.5, mb: 0.75 }}
                 />
                 
-                <Grid container spacing={2} sx={{ mb: 2 }}>
-                  <Grid item xs={6}>
+                <Grid container spacing={0.75} sx={{ mb: speedTestRunning ? 0.75 : 0 }} alignItems="stretch">
+                  <Grid item xs={6} lg={3}>
                     <TextField
                       label="Max Tokens"
                       type="number"
@@ -581,9 +737,9 @@ export default function BenchmarkPage() {
                       inputProps={{ min: 1, max: 4096 }}
                     />
                   </Grid>
-                  <Grid item xs={6}>
+                  <Grid item xs={6} lg={3}>
                     <TextField
-                      label="Number of Runs"
+                      label="Runs"
                       type="number"
                       value={speedTestNumRuns}
                       onChange={(e) => setSpeedTestNumRuns(parseInt(e.target.value) || 1)}
@@ -592,45 +748,60 @@ export default function BenchmarkPage() {
                       inputProps={{ min: 1, max: 10 }}
                     />
                   </Grid>
+                  <Grid item xs={12} sm={6} lg={3}>
+                    <TextField
+                      label="Endpoint"
+                      value={speedTestEndpoint}
+                      onChange={(e) => setSpeedTestEndpoint(e.target.value)}
+                      fullWidth
+                      size="small"
+                      placeholder="Local LLM"
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6} lg={3}>
+                    <TextField
+                      label="Model label"
+                      value={speedTestModelName}
+                      onChange={(e) => setSpeedTestModelName(e.target.value)}
+                      fullWidth
+                      size="small"
+                      placeholder="Optional"
+                    />
+                  </Grid>
                 </Grid>
                 
-                <TextField
-                  label="Custom Endpoint (optional)"
-                  value={speedTestEndpoint}
-                  onChange={(e) => setSpeedTestEndpoint(e.target.value)}
-                  fullWidth
-                  size="small"
-                  placeholder="Leave empty for local LLM"
-                  sx={{ mb: 2 }}
-                />
-                
-                <TextField
-                  label="Model Name (optional)"
-                  value={speedTestModelName}
-                  onChange={(e) => setSpeedTestModelName(e.target.value)}
-                  fullWidth
-                  size="small"
-                  placeholder="For labeling results"
-                  sx={{ mb: 2 }}
-                />
-                
-                <Button
-                  variant="contained"
-                  fullWidth
-                  startIcon={speedTestRunning ? <CircularProgress size={20} color="inherit" /> : <StartIcon />}
-                  onClick={runSpeedTest}
-                  disabled={speedTestRunning || !speedTestPrompt.trim()}
-                  size="large"
-                >
-                  {speedTestRunning ? `Running ${speedTestProgress.current}/${speedTestProgress.total}...` : 'Run Speed Test'}
-                </Button>
-                
                 {speedTestRunning && (
-                  <LinearProgress sx={{ mt: 2 }} variant="determinate" value={(speedTestProgress.current / speedTestProgress.total) * 100} />
+                  <LinearProgress sx={{ mt: 0.75 }} variant="determinate" value={(speedTestProgress.current / speedTestProgress.total) * 100} />
                 )}
+
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 1,
+                    flexWrap: 'wrap',
+                    mt: 1,
+                  }}
+                >
+                  <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                    {benchmarkTargetLabel} / {benchmarkEndpointLabel}
+                  </Typography>
+                  <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={speedTestRunning ? <CircularProgress size={14} color="inherit" /> : <StartIcon />}
+                    onClick={runSpeedTest}
+                    disabled={speedTestRunning || !speedTestPrompt.trim()}
+                    sx={{ height: 34, borderRadius: '8px', fontWeight: 800, ml: 'auto' }}
+                  >
+                    {speedTestRunning ? `Running ${speedTestProgress.current}/${speedTestProgress.total}` : 'Run speed test'}
+                  </Button>
+                </Box>
               </Grid>
               
-              <Grid item xs={12} md={7}>
+              {showBenchmarkSidePanel && (
+              <Grid item xs={12} lg={7}>
                 {speedTestResult ? (
                   <Box>
                     <Typography variant="subtitle1" sx={{ mb: 2, fontWeight: 600 }}>
@@ -640,41 +811,59 @@ export default function BenchmarkPage() {
                     {/* Key Metrics */}
                     <Grid container spacing={2} sx={{ mb: 3 }}>
                       <Grid item xs={6} sm={3}>
-                        <MetricCard
+                        <MetricTile
+                          variant="centered"
                           icon={<SpeedIcon sx={{ fontSize: 28 }} />}
-                          value={formatNumber(speedTestResult.metrics?.tokens_per_second.mean)}
+                          value={`${formatNumber(speedTestResult.metrics?.tokens_per_second.mean)} t/s`}
                           label="Tokens/Second"
-                          unit=" t/s"
-                          color="primary"
+                          color={accentColors.primary}
+                          valueSx={{ fontFamily: 'monospace' }}
                         />
                       </Grid>
                       <Grid item xs={6} sm={3}>
-                        <MetricCard
+                        <MetricTile
+                          variant="centered"
                           icon={<TimerIcon sx={{ fontSize: 28 }} />}
-                          value={formatNumber(speedTestResult.metrics?.time_to_first_token_ms.mean, 0)}
+                          value={`${formatNumber(speedTestResult.metrics?.time_to_first_token_ms.mean, 0)} ms`}
                           label="TTFT"
-                          unit=" ms"
-                          color="info"
+                          color={accentColors.info}
+                          valueSx={{ fontFamily: 'monospace' }}
                         />
                       </Grid>
                       <Grid item xs={6} sm={3}>
-                        <MetricCard
+                        <MetricTile
+                          variant="centered"
                           icon={<TokenIcon sx={{ fontSize: 28 }} />}
                           value={speedTestResult.metrics?.total_tokens || 0}
                           label="Total Tokens"
-                          color="success"
+                          color={accentColors.success}
+                          valueSx={{ fontFamily: 'monospace' }}
                         />
                       </Grid>
                       <Grid item xs={6} sm={3}>
-                        <MetricCard
+                        <MetricTile
+                          variant="centered"
                           icon={<TrendingIcon sx={{ fontSize: 28 }} />}
-                          value={formatNumber((speedTestResult.metrics?.total_time_ms.mean || 0) / 1000)}
+                          value={`${formatNumber((speedTestResult.metrics?.total_time_ms.mean || 0) / 1000)} s`}
                           label="Avg Time"
-                          unit=" s"
-                          color="warning"
+                          color={accentColors.warning}
+                          valueSx={{ fontFamily: 'monospace' }}
                         />
                       </Grid>
                     </Grid>
+
+                    <WorkflowActionPanel
+                      eyebrow="Result next steps"
+                      title={benchmarkTargetLabel}
+                      actions={benchmarkTargetActions}
+                      emphasizedAction="Chat"
+                      sx={{
+                        mb: 3,
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        bgcolor: 'action.hover',
+                      }}
+                    />
                     
                     {/* Detailed Stats */}
                     <Typography variant="subtitle2" sx={{ mb: 1 }}>Detailed Statistics</Typography>
@@ -757,17 +946,123 @@ export default function BenchmarkPage() {
                     )}
                   </Box>
                 ) : (
-                  <Box sx={{ textAlign: 'center', py: 8 }}>
-                    <SpeedIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
-                    <Typography color="text.secondary">
-                      Run a speed test to measure inference performance
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                      Enter a prompt and click "Run Speed Test"
-                    </Typography>
+                  <Box
+                    sx={{
+                      minHeight: hasRecentBenchmarkResults ? 255 : undefined,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 1.25,
+                      p: 1.25,
+                      border: '1px solid',
+                      borderColor: 'divider',
+                      borderRadius: '8px',
+                      bgcolor: 'action.hover',
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                          Recent results
+                        </Typography>
+                      </Box>
+                      <Tooltip title="Open history">
+                        <IconButton
+                          aria-label="Open benchmark history"
+                          size="small"
+                          onClick={() => setTabValue(4)}
+                          sx={benchmarkIconButtonSx}
+                        >
+                          <HistoryIcon sx={{ fontSize: 18 }} />
+                        </IconButton>
+                      </Tooltip>
+                    </Box>
+
+                    <Box
+                      sx={{
+                        display: 'grid',
+                        gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, minmax(0, 1fr))' },
+                        gap: 1,
+                      }}
+                    >
+                      {speedSummaryStats.map((item) => (
+                        <Box
+                          key={item.label}
+                          sx={{
+                            minWidth: 0,
+                            p: 1,
+                            border: '1px solid',
+                            borderColor: 'divider',
+                            borderRadius: '8px',
+                            bgcolor: 'background.paper',
+                          }}
+                        >
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                            {item.label}
+                          </Typography>
+                          <Typography variant="body2" sx={{ mt: 0.25, fontWeight: 800, fontFamily: 'monospace' }}>
+                            {item.value}
+                          </Typography>
+                        </Box>
+                      ))}
+                    </Box>
+
+                    <Box sx={{ flex: hasRecentBenchmarkResults ? 1 : undefined, minHeight: 0, overflow: 'hidden' }}>
+                      {historyLoading ? (
+                        <Box sx={{ display: 'grid', placeItems: 'center', py: 2 }}>
+                          <CircularProgress size={22} />
+                        </Box>
+                      ) : recentBenchmarkResults.length === 0 ? (
+                        <Box sx={{ py: 2, color: 'text.secondary' }}>
+                          <Typography variant="body2">No saved results.</Typography>
+                        </Box>
+                      ) : (
+                        <Box sx={{ display: 'grid', gap: 0.75 }}>
+                          {recentBenchmarkResults.map((result) => (
+                            <Box
+                              key={result.id}
+                              sx={{
+                                display: 'grid',
+                                gridTemplateColumns: { xs: '1fr', sm: 'minmax(0, 1fr) auto 92px 100px' },
+                                gap: { xs: 0.5, sm: 1 },
+                                alignItems: 'center',
+                                minWidth: 0,
+                                px: 1,
+                                py: 0.75,
+                                border: '1px solid',
+                                borderColor: 'divider',
+                                borderRadius: '8px',
+                                bgcolor: 'background.paper',
+                              }}
+                            >
+                              <Box sx={{ minWidth: 0 }}>
+                                <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>
+                                  {result.name || result.model_name || getTypeLabel(result.type)}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
+                                  {result.model_name || result.endpoint || 'Local endpoint'}
+                                </Typography>
+                              </Box>
+                              <StatusChip
+                                status={getBenchmarkStatusKey(result.type)}
+                                label={getTypeLabel(result.type)}
+                                statusConfig={BENCHMARK_STATUS_CONFIG}
+                                height={20}
+                              />
+                              <Typography variant="caption" sx={{ textAlign: { xs: 'left', sm: 'right' }, fontFamily: 'monospace', fontWeight: 700 }}>
+                                {formatTps(result.metrics?.tokens_per_second?.mean)}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" sx={{ textAlign: { xs: 'left', sm: 'right' } }}>
+                                {formatCompactDate(result.created_at)}
+                              </Typography>
+                            </Box>
+                          ))}
+                        </Box>
+                      )}
+                    </Box>
                   </Box>
                 )}
               </Grid>
+              )}
             </Grid>
           </TabPanel>
 
@@ -822,7 +1117,17 @@ export default function BenchmarkPage() {
                 </Box>
                 
                 {compareEndpoints.map((ep, index) => (
-                  <Paper key={index} variant="outlined" sx={{ p: 2, mb: 2 }}>
+                  <Paper
+                    key={index}
+                    variant="outlined"
+                    sx={{
+                      p: 2,
+                      mb: 2,
+                      borderRadius: '8px',
+                      borderColor: 'divider',
+                      bgcolor: 'action.hover',
+                    }}
+                  >
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
                       <TextField
                         label="Name"
@@ -933,7 +1238,7 @@ export default function BenchmarkPage() {
                             <LinearProgress
                               variant="determinate"
                               value={percentage}
-                              sx={{ height: 20, borderRadius: 1 }}
+                              sx={{ height: 20, borderRadius: '8px' }}
                             />
                           </Box>
                         )
@@ -1072,7 +1377,7 @@ export default function BenchmarkPage() {
                           <LinearProgress
                             variant="determinate"
                             value={percentage}
-                            sx={{ height: 16, borderRadius: 1 }}
+                            sx={{ height: 16, borderRadius: '8px' }}
                             color={percentage > 80 ? 'success' : percentage > 50 ? 'warning' : 'error'}
                           />
                         </Box>
@@ -1220,7 +1525,7 @@ export default function BenchmarkPage() {
                           <LinearProgress
                             variant="determinate"
                             value={percentage}
-                            sx={{ height: 16, borderRadius: 1 }}
+                            sx={{ height: 16, borderRadius: '8px' }}
                           />
                         </Box>
                       )
@@ -1343,7 +1648,7 @@ export default function BenchmarkPage() {
             )}
           </TabPanel>
         </Box>
-      </Paper>
-    </Box>
+      </SectionCard>
+    </PageShell>
   )
 }

@@ -8,6 +8,16 @@ from typing import Optional
 
 from enhanced_logger import enhanced_logger as logger
 from app_state import manager, vllm_manager, _merge_and_persist_config
+from routes.models import (
+    _first_live_openai_model_info,
+    _live_openai_context_size,
+    _live_openai_model_id,
+    _openai_api_key_candidates,
+)
+from modules.inference_targets import (
+    has_explicit_vllm_proxy_base_url,
+    vllm_proxy_base_url_candidates,
+)
 import os
 
 try:
@@ -20,6 +30,17 @@ router = APIRouter(prefix="/api/v1", tags=["system"])
 
 def _llamacpp_container_name() -> str:
     return os.getenv("LLAMACPP_CONTAINER_NAME", "llamacpp-api")
+
+
+def _container_logs_unavailable(stderr: str) -> bool:
+    """Docker reports missing/stopped runtime containers on stderr."""
+    normalized = stderr.lower()
+    return (
+        "no such container" in normalized
+        or "no such object" in normalized
+        or "not found" in normalized
+        or "is not running" in normalized
+    )
 
 @router.get("/health")
 async def health_check():
@@ -62,9 +83,18 @@ async def get_container_logs(lines: int = 100, backend: str = "llamacpp"):
         text=True,
     )
     if result.returncode != 0:
+        detail = result.stderr.strip() or "Failed to read container logs"
+        if _container_logs_unavailable(detail):
+            return {
+                "logs": [],
+                "available": False,
+                "container": container_name,
+                "reason": detail,
+            }
+
         raise HTTPException(
             status_code=500,
-            detail=result.stderr.strip() or "Failed to read container logs",
+            detail=detail,
         )
 
     return {"logs": result.stdout or ""}
@@ -87,7 +117,8 @@ async def stream_container_logs(backend: str = "llamacpp"):
         )
 
         if not check.stdout.strip():
-            yield "data: Container is not running\n\n"
+            import json
+            yield f"data: {json.dumps({'type': 'status', 'available': False, 'message': 'Container is not running'})}\n\n"
             return
 
         process = await asyncio.create_subprocess_exec(
@@ -231,14 +262,27 @@ async def get_current_model():
     When vLLM is running, returns the vLLM served model name so that
     chat requests use the correct model ID.
     """
-    # Prefer vLLM if it's running
-    if vllm_manager and vllm_manager.is_running():
+    # Prefer vLLM if it's running or an explicit host-reachable proxy is configured.
+    if vllm_manager and (vllm_manager.is_running() or has_explicit_vllm_proxy_base_url()):
         vllm_status = vllm_manager.get_status()
         model_info = vllm_status.get("model", {})
+        api_key = vllm_manager.config.get("server", {}).get("api_key", "")
+        internal_base_url = None
+        if hasattr(vllm_manager, "internal_http_base"):
+            try:
+                internal_base_url = vllm_manager.internal_http_base()
+            except Exception:
+                internal_base_url = None
+        live_model = await _first_live_openai_model_info(
+            vllm_proxy_base_url_candidates(internal_base_url),
+            _openai_api_key_candidates(api_key),
+        )
+        live_model_name = _live_openai_model_id(live_model)
+        live_context_size = _live_openai_context_size(live_model)
         return {
-            "name": model_info.get("served_name") or model_info.get("name", "vllm-model"),
+            "name": live_model_name or model_info.get("served_name") or model_info.get("name", "vllm-model"),
             "variant": "NVFP4",
-            "context_size": model_info.get("max_model_len", 16384),
+            "context_size": live_context_size or model_info.get("max_model_len", 16384),
             "gpu_layers": 0,
             "status": "loaded",
             "backend": "vllm",

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from enhanced_logger import enhanced_logger as logger
+from local_paths import app_or_backend_data_subdir
 
 from .config import (
     QuantizationJob,
@@ -27,7 +28,10 @@ class QuantizationExecutor:
     def __init__(self, manager: QuantizationManager):
         self.manager = manager
         self.models_dir = Path(os.getenv("MODELS_DIR", "/home/llamacpp/models"))
-        self.output_dir = Path(os.getenv("QUANTIZATION_OUTPUT_DIR", "/app/quantization_output"))
+        self.output_dir = Path(
+            os.getenv("QUANTIZATION_OUTPUT_DIR")
+            or app_or_backend_data_subdir("quantization_output")
+        )
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def start_job(self, job_id: str) -> bool:

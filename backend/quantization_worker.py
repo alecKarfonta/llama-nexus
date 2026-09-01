@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import time
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -179,6 +180,13 @@ class QuantizationWorker:
             logger.error("Failed to download/find model", extra={"error": str(e)})
             return None
 
+    def output_model_name(self, job: QuantizationJob, model_path: Path) -> str:
+        """Return a deployable filename stem for quantized outputs."""
+        source_name = model_path.name or job.source_model.replace("/", "_")
+        preferred_name = job.name or source_name
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", preferred_name).strip("-._")
+        return safe_name or source_name or job.id
+
     def quantize_to_gguf(self, job: QuantizationJob, model_path: Path):
         """Quantize model to GGUF format."""
         try:
@@ -189,8 +197,9 @@ class QuantizationWorker:
                 current_step="Converting to GGUF FP16",
             )
 
-            # Determine model name for output files
-            model_name = model_path.name if model_path.name else job.source_model.replace('/', '_')
+            # Determine model name for output files. Use the job name so fine-tuned
+            # adapter exports do not all collide as "merged-Q4_K_M.gguf".
+            model_name = self.output_model_name(job, model_path)
             
             # Convert to FP16 GGUF first (in output dir as intermediate)
             fp16_path = self.output_dir / f"{model_name}_fp16.gguf"

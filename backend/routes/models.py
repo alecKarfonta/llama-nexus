@@ -7,6 +7,12 @@ from dataclasses import asdict
 import os
 import logging
 import re
+import httpx
+
+from modules.inference_targets import (
+    has_explicit_vllm_proxy_base_url,
+    vllm_proxy_base_url_candidates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +42,92 @@ def get_vllm_manager(request: Request):
     return getattr(request.app.state, 'vllm_manager', None)
 
 
+def _live_openai_model_id(model: dict | None) -> str | None:
+    if not isinstance(model, dict):
+        return None
+    model_id = model.get("id") or model.get("name")
+    return str(model_id) if model_id else None
+
+
+def _live_openai_context_size(model: dict | None) -> int | None:
+    if not isinstance(model, dict):
+        return None
+    for key in ("max_model_len", "context_length", "max_context_length", "n_ctx"):
+        try:
+            value = int(model.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
+async def _live_openai_model_info(base_url: str | None, api_key: str = "") -> dict | None:
+    """Return the first model record from a reachable OpenAI-compatible backend."""
+    if not base_url:
+        return None
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{base_url.rstrip('/')}/v1/models", headers=headers)
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+    except Exception:
+        return None
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list) or not data:
+        return None
+    first = data[0]
+    if not isinstance(first, dict):
+        return None
+    return first
+
+
+async def _live_openai_model_name(base_url: str | None, api_key: str = "") -> str | None:
+    """Return the first model ID from a reachable OpenAI-compatible backend."""
+    return _live_openai_model_id(await _live_openai_model_info(base_url, api_key))
+
+
+def _openai_api_key_candidates(primary: str = "") -> list[str]:
+    """Return likely API keys for local OpenAI-compatible runtimes in priority order."""
+    candidates = [
+        primary,
+        os.getenv("VLLM_PROXY_API_KEY", ""),
+        os.getenv("VLLM_API_KEY", ""),
+        os.getenv("API_KEY", ""),
+        os.getenv("OPENAI_API_KEY", ""),
+        "placeholder-api-key",
+        "",
+    ]
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+async def _first_live_openai_model_name(base_urls: list[str | None], api_keys: list[str]) -> str | None:
+    return _live_openai_model_id(await _first_live_openai_model_info(base_urls, api_keys))
+
+
+async def _first_live_openai_model_info(base_urls: list[str | None], api_keys: list[str]) -> dict | None:
+    for base_url in base_urls:
+        if not base_url:
+            continue
+        for api_key in api_keys:
+            model = await _live_openai_model_info(base_url, api_key)
+            if _live_openai_model_id(model):
+                return model
+    return None
+
+
 @router.get("")
 async def list_models(request: Request):
     """List all available models."""
@@ -57,15 +149,28 @@ async def get_current_model(request: Request):
     When vLLM is running, returns the vLLM served model name so that
     chat requests use the correct model ID.
     """
-    # Prefer vLLM if it's running
+    # Prefer vLLM if it's running or a host-reachable proxy is configured.
     vllm_mgr = get_vllm_manager(request)
-    if vllm_mgr and vllm_mgr.is_running():
+    if vllm_mgr and (vllm_mgr.is_running() or has_explicit_vllm_proxy_base_url()):
         vllm_status = vllm_mgr.get_status()
         model_info = vllm_status.get("model", {})
+        api_key = vllm_mgr.config.get("server", {}).get("api_key", "")
+        internal_base_url = None
+        if hasattr(vllm_mgr, "internal_http_base"):
+            try:
+                internal_base_url = vllm_mgr.internal_http_base()
+            except Exception:
+                internal_base_url = None
+        live_model = await _first_live_openai_model_info(
+            vllm_proxy_base_url_candidates(internal_base_url),
+            _openai_api_key_candidates(api_key),
+        )
+        live_model_name = _live_openai_model_id(live_model)
+        live_context_size = _live_openai_context_size(live_model)
         return {
-            "name": model_info.get("served_name") or model_info.get("name", "vllm-model"),
+            "name": live_model_name or model_info.get("served_name") or model_info.get("name", "vllm-model"),
             "variant": "NVFP4",
-            "context_size": model_info.get("max_model_len", 16384),
+            "context_size": live_context_size or model_info.get("max_model_len", 16384),
             "gpu_layers": 0,
             "status": "loaded",
             "backend": "vllm",

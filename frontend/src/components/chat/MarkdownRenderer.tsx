@@ -4,8 +4,6 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import {
   Box,
   IconButton,
@@ -19,6 +17,8 @@ import {
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
 } from '@mui/icons-material'
+import { useClipboard } from '@/hooks/useClipboard'
+import { CodeHighlighter } from '@/components/common'
 
 interface MarkdownRendererProps {
   content: string
@@ -50,6 +50,43 @@ function stripOrphanThinkingTags(s: string): string {
     .trim()
 }
 
+const SAFE_BREAK_TAG_RE = /<br\s*\/?>/gi
+
+const textWithSafeBreaks = (value: string, keyPrefix: string): React.ReactNode => {
+  const parts = value.split(SAFE_BREAK_TAG_RE)
+  if (parts.length === 1) return value
+
+  return parts.flatMap((part, index) => {
+    if (index === 0) return part ? [part] : []
+    return [
+      <br key={`${keyPrefix}-br-${index}`} />,
+      ...(part ? [part] : []),
+    ]
+  })
+}
+
+const renderSafeBreaks = (children: React.ReactNode, keyPrefix = 'md-br'): React.ReactNode =>
+  React.Children.toArray(children).flatMap((child, index) => {
+    if (typeof child === 'string') {
+      return textWithSafeBreaks(child, `${keyPrefix}-${index}`)
+    }
+
+    if (
+      React.isValidElement(child) &&
+      child.props?.children &&
+      child.type !== 'code' &&
+      child.type !== 'pre' &&
+      child.props?.component !== 'code'
+    ) {
+      return React.cloneElement(child, {
+        key: child.key ?? `${keyPrefix}-${index}`,
+        children: renderSafeBreaks(child.props.children, `${keyPrefix}-${index}`),
+      } as Partial<typeof child.props>)
+    }
+
+    return child
+  })
+
 interface CodeBlockProps {
   language: string
   value: string
@@ -57,11 +94,17 @@ interface CodeBlockProps {
 
 const CodeBlock: React.FC<CodeBlockProps> = ({ language, value }) => {
   const [copied, setCopied] = useState(false)
+  const copyToClipboard = useClipboard()
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(value)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    const ok = await copyToClipboard(value, {
+      successMessage: `${language || 'Code'} copied.`,
+      successTitle: 'Code copied',
+    })
+    if (ok) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
   }
 
   return (
@@ -89,18 +132,16 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, value }) => {
           </IconButton>
         </Tooltip>
       </Box>
-      <SyntaxHighlighter
+      <CodeHighlighter
         language={language || 'text'}
-        style={oneDark}
+        code={value}
         customStyle={{
           margin: 0,
           borderRadius: '0 0 4px 4px',
           fontSize: '0.85rem',
         }}
         showLineNumbers={value.split('\n').length > 3}
-      >
-        {value}
-      </SyntaxHighlighter>
+      />
     </Box>
   )
 }
@@ -268,7 +309,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         rehypePlugins={[rehypeKatex]}
         components={{
           // Code blocks with syntax highlighting
-          code({ node, inline, className, children, ...props }: any) {
+          code({ inline, className, children, ...props }: any) {
             const match = /language-(\w+)/.exec(className || '')
             const value = String(children).replace(/\n$/, '')
 
@@ -301,7 +342,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                 variant="body1"
                 sx={{ mb: 1.5, lineHeight: 1.7, '&:last-child': { mb: 0 } }}
               >
-                {children}
+                {renderSafeBreaks(children, 'p')}
               </Typography>
             )
           },
@@ -354,7 +395,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
           li({ children }) {
             return (
               <Typography component="li" variant="body1" sx={{ lineHeight: 1.7 }}>
-                {children}
+                {renderSafeBreaks(children, 'li')}
               </Typography>
             )
           },
@@ -407,7 +448,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                   textAlign: 'left',
                 }}
               >
-                {children}
+                {renderSafeBreaks(children, 'th')}
               </Box>
             )
           },
@@ -421,7 +462,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                   p: 1,
                 }}
               >
-                {children}
+                {renderSafeBreaks(children, 'td')}
               </Box>
             )
           },

@@ -28,7 +28,6 @@ import {
   Psychology as LlmIcon,
   AccountTree as WorkflowIcon,
   Lightbulb as TipIcon,
-  Error as ErrorIcon,
 } from '@mui/icons-material';
 import { apiService } from '@/services/api';
 import type { ModelInfo } from '@/types/api';
@@ -65,7 +64,7 @@ export const WorkflowOnboarding: React.FC<WorkflowOnboardingProps> = ({
       setError(null);
       const allModels = await apiService.getModels();
       const availableModels = allModels.filter(
-        (m) => m.status === 'available' || m.status === 'deployed'
+        (m) => m.status === 'available' || m.status === 'running'
       );
       setModels(availableModels);
     } catch (err: any) {

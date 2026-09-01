@@ -11,81 +11,48 @@ import {
   ListItemText,
   Typography,
   InputAdornment,
-  Chip,
   alpha,
   Fade,
 } from '@mui/material'
 import {
   Search as SearchIcon,
-  Dashboard as DashboardIcon,
-  Chat as ChatIcon,
-  Memory as ModelsIcon,
-  Settings as ConfigIcon,
-  RocketLaunch as DeployIcon,
-  Science as TestingIcon,
-  Insights as MonitoringIcon,
-  Description as TemplatesIcon,
-  MenuBook as PromptsIcon,
-  Inventory2 as RegistryIcon,
-  Speed as BenchmarkIcon,
-  BatchPrediction as BatchIcon,
-  CompareArrows as CompareIcon,
-  Api as ApiIcon,
-  AccountTree as WorkflowIcon,
-  Storage as KnowledgeIcon,
-  Hub as GraphIcon,
-  Folder as DocumentsIcon,
-  TravelExplore as DiscoveryIcon,
-  Mic as MicIcon,
-  RecordVoiceOver as TTSIcon,
-  TextFields as EmbeddingIcon,
-  KeyboardReturn as EnterIcon,
 } from '@mui/icons-material'
+import { searchableNavigationItems, type SearchableNavigationItem } from '@/config/navigation'
 
-interface CommandItem {
-  id: string
-  label: string
-  description: string
-  path: string
-  icon: React.ElementType
-  color: string
-  section: string
-  keywords: string[]
+type ScoredNavigationItem = SearchableNavigationItem & { score: number }
+
+const normalizeQuery = (value: string) => value.trim().toLowerCase()
+
+const scoreCommand = (command: SearchableNavigationItem, normalizedQuery: string): number => {
+  const terms = normalizedQuery.split(/\s+/).filter(Boolean)
+
+  return terms.reduce((score, term) => {
+    let termScore = 0
+    const label = command.label.toLowerCase()
+    const title = command.title.toLowerCase()
+    const description = command.description.toLowerCase()
+    const section = command.section.toLowerCase()
+    const path = command.path.toLowerCase()
+    const parentLabels = command.parentLabels.map((label) => label.toLowerCase())
+    const keywords = command.keywords.map((keyword) => keyword.toLowerCase())
+
+    if (label === term || title === term) termScore += 120
+    if (label.startsWith(term) || title.startsWith(term)) termScore += 80
+    if (label.includes(term) || title.includes(term)) termScore += 50
+    if (keywords.some((keyword) => keyword === term)) termScore += 45
+    if (keywords.some((keyword) => keyword.includes(term))) termScore += 30
+    if (parentLabels.some((label) => label.includes(term))) termScore += 28
+    if (section.includes(term)) termScore += 24
+    if (description.includes(term)) termScore += 18
+    if (path.includes(term)) termScore += 14
+
+    return score + termScore
+  }, 0)
 }
 
-const commands: CommandItem[] = [
-  // Overview
-  { id: 'dashboard', label: 'Dashboard', description: 'System overview and metrics', path: '/dashboard', icon: DashboardIcon, color: '#6366f1', section: 'Overview', keywords: ['home', 'overview', 'stats'] },
-  { id: 'models', label: 'Models', description: 'Browse and download models', path: '/models', icon: ModelsIcon, color: '#8b5cf6', section: 'Overview', keywords: ['download', 'gguf', 'llm'] },
-  { id: 'registry', label: 'Registry', description: 'Model metadata cache', path: '/registry', icon: RegistryIcon, color: '#a855f7', section: 'Overview', keywords: ['cache', 'metadata'] },
-  
-  // Deployment
-  { id: 'deploy', label: 'Deploy LLM', description: 'Launch language model', path: '/deploy', icon: DeployIcon, color: '#f59e0b', section: 'Deployment', keywords: ['start', 'launch', 'run', 'llm'] },
-  { id: 'embedding', label: 'Deploy Embedding', description: 'Launch embedding service', path: '/embedding-deploy', icon: EmbeddingIcon, color: '#06b6d4', section: 'Deployment', keywords: ['embed', 'vector'] },
-  { id: 'stt', label: 'Deploy STT', description: 'Speech-to-text service', path: '/stt-deploy', icon: MicIcon, color: '#10b981', section: 'Deployment', keywords: ['speech', 'whisper', 'transcribe'] },
-  { id: 'tts', label: 'Deploy TTS', description: 'Text-to-speech service', path: '/tts-deploy', icon: TTSIcon, color: '#8b5cf6', section: 'Deployment', keywords: ['voice', 'speak', 'audio'] },
-  
-  // Development
-  { id: 'chat', label: 'Chat', description: 'Interactive conversation', path: '/chat', icon: ChatIcon, color: '#06b6d4', section: 'Development', keywords: ['conversation', 'talk', 'message'] },
-  { id: 'prompts', label: 'Prompt Library', description: 'Manage prompt templates', path: '/prompts', icon: PromptsIcon, color: '#14b8a6', section: 'Development', keywords: ['template', 'system'] },
-  { id: 'templates', label: 'Chat Templates', description: 'Jinja chat templates', path: '/templates', icon: TemplatesIcon, color: '#10b981', section: 'Development', keywords: ['jinja', 'format'] },
-  { id: 'workflows', label: 'Workflows', description: 'Build multi-step pipelines', path: '/workflows', icon: WorkflowIcon, color: '#a855f7', section: 'Development', keywords: ['pipeline', 'chain', 'flow'] },
-  { id: 'testing', label: 'Testing', description: 'Function calling playground', path: '/testing', icon: TestingIcon, color: '#f97316', section: 'Development', keywords: ['tools', 'function'] },
-  { id: 'benchmark', label: 'Benchmark', description: 'Performance testing', path: '/benchmark', icon: BenchmarkIcon, color: '#ef4444', section: 'Development', keywords: ['performance', 'speed', 'bfcl'] },
-  { id: 'batch', label: 'Batch Processing', description: 'Process multiple requests', path: '/batch', icon: BatchIcon, color: '#ec4899', section: 'Development', keywords: ['bulk', 'queue'] },
-  { id: 'compare', label: 'Compare Models', description: 'Side-by-side comparison', path: '/compare', icon: CompareIcon, color: '#f43f5e', section: 'Development', keywords: ['diff', 'versus'] },
-  
-  // Knowledge & RAG
-  { id: 'documents', label: 'Documents', description: 'Upload and manage documents', path: '/documents', icon: DocumentsIcon, color: '#10b981', section: 'Knowledge', keywords: ['upload', 'pdf', 'file'] },
-  { id: 'knowledge-graph', label: 'Knowledge Graph', description: 'Entity relationships', path: '/knowledge-graph', icon: GraphIcon, color: '#6366f1', section: 'Knowledge', keywords: ['graph', 'entity', 'neo4j'] },
-  { id: 'discovery', label: 'Discovery', description: 'Web search and review', path: '/discovery', icon: DiscoveryIcon, color: '#8b5cf6', section: 'Knowledge', keywords: ['search', 'web'] },
-  { id: 'knowledge', label: 'RAG Search', description: 'Semantic retrieval', path: '/knowledge', icon: KnowledgeIcon, color: '#14b8a6', section: 'Knowledge', keywords: ['rag', 'semantic', 'vector'] },
-  
-  // Operations
-  { id: 'monitoring', label: 'Monitoring', description: 'System metrics and logs', path: '/monitoring', icon: MonitoringIcon, color: '#0ea5e9', section: 'Operations', keywords: ['logs', 'metrics', 'status'] },
-  { id: 'api-docs', label: 'API Docs', description: 'Interactive documentation', path: '/api-docs', icon: ApiIcon, color: '#14b8a6', section: 'Operations', keywords: ['swagger', 'openapi'] },
-  { id: 'configuration', label: 'Settings', description: 'Application configuration', path: '/configuration', icon: ConfigIcon, color: '#64748b', section: 'Operations', keywords: ['config', 'preferences'] },
-]
+const getCommandContext = (command: SearchableNavigationItem): string => (
+  [command.section, ...command.parentLabels].filter(Boolean).join(' / ')
+)
 
 interface CommandPaletteProps {
   open: boolean
@@ -98,20 +65,26 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
   const [selectedIndex, setSelectedIndex] = useState(0)
 
   // Filter commands based on query
-  const filteredCommands = useMemo(() => {
-    if (!query.trim()) return commands
-    
-    const lowerQuery = query.toLowerCase()
-    return commands.filter(cmd => 
-      cmd.label.toLowerCase().includes(lowerQuery) ||
-      cmd.description.toLowerCase().includes(lowerQuery) ||
-      cmd.keywords.some(kw => kw.includes(lowerQuery))
-    )
+  const filteredCommands = useMemo<ScoredNavigationItem[]>(() => {
+    const normalizedQuery = normalizeQuery(query)
+
+    if (!normalizedQuery) {
+      return searchableNavigationItems.map((command) => ({ ...command, score: 0 }))
+    }
+
+    return searchableNavigationItems
+      .map((command) => ({ ...command, score: scoreCommand(command, normalizedQuery) }))
+      .filter((command) => command.score > 0)
+      .sort((a, b) => (
+        b.score - a.score ||
+        a.section.localeCompare(b.section) ||
+        a.label.localeCompare(b.label)
+      ))
   }, [query])
 
   // Group filtered commands by section
   const groupedCommands = useMemo(() => {
-    const groups: Record<string, CommandItem[]> = {}
+    const groups: Record<string, ScoredNavigationItem[]> = {}
     filteredCommands.forEach(cmd => {
       if (!groups[cmd.section]) groups[cmd.section] = []
       groups[cmd.section].push(cmd)
@@ -123,6 +96,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
   useEffect(() => {
     setSelectedIndex(0)
   }, [query])
+
+  useEffect(() => {
+    setSelectedIndex((current) => Math.min(current, Math.max(filteredCommands.length - 1, 0)))
+  }, [filteredCommands.length])
 
   // Reset state when dialog opens
   useEffect(() => {
@@ -137,11 +114,15 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
     switch (e.key) {
       case 'ArrowDown':
         e.preventDefault()
-        setSelectedIndex(prev => Math.min(prev + 1, filteredCommands.length - 1))
+        if (filteredCommands.length > 0) {
+          setSelectedIndex(prev => Math.min(prev + 1, filteredCommands.length - 1))
+        }
         break
       case 'ArrowUp':
         e.preventDefault()
-        setSelectedIndex(prev => Math.max(prev - 1, 0))
+        if (filteredCommands.length > 0) {
+          setSelectedIndex(prev => Math.max(prev - 1, 0))
+        }
         break
       case 'Enter':
         e.preventDefault()
@@ -176,7 +157,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
           bgcolor: 'rgba(15, 15, 35, 0.98)',
           backdropFilter: 'blur(20px)',
           border: '1px solid rgba(255, 255, 255, 0.1)',
-          borderRadius: 3,
+          borderRadius: '8px',
           overflow: 'hidden',
           mt: -10,
         }
@@ -205,25 +186,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
                 <SearchIcon sx={{ color: 'text.secondary' }} />
               </InputAdornment>
             ),
-            endAdornment: (
-              <InputAdornment position="end">
-                <Chip 
-                  label="esc" 
-                  size="small" 
-                  sx={{ 
-                    height: 20, 
-                    fontSize: '0.625rem',
-                    bgcolor: 'rgba(255,255,255,0.05)',
-                    color: 'text.secondary',
-                  }} 
-                />
-              </InputAdornment>
-            ),
           }}
           sx={{
             '& .MuiOutlinedInput-root': {
               bgcolor: 'rgba(255, 255, 255, 0.03)',
-              borderRadius: 2,
+                borderRadius: '8px',
               '& fieldset': { border: 'none' },
               '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.05)' },
               '&.Mui-focused': { bgcolor: 'rgba(255, 255, 255, 0.05)' },
@@ -255,7 +222,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
                   color: 'text.secondary',
                   fontSize: '0.6875rem',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.08em',
+                  letterSpacing: 0,
                   fontWeight: 600,
                 }}
               >
@@ -275,7 +242,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
                         sx={{
                           py: 1,
                           px: 1.5,
-                          borderRadius: 2,
+                            borderRadius: '8px',
                           mb: 0.25,
                           bgcolor: isSelected ? alpha(cmd.color, 0.12) : 'transparent',
                           '&:hover': {
@@ -294,7 +261,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
                             sx={{
                               width: 28,
                               height: 28,
-                              borderRadius: 1.5,
+                              borderRadius: '8px',
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',
@@ -306,7 +273,30 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
                         </ListItemIcon>
                         <ListItemText
                           primary={cmd.label}
-                          secondary={cmd.description}
+                          secondary={
+                            <Box component="span" sx={{ display: 'grid', gap: 0.25, minWidth: 0 }}>
+                              <Typography
+                                component="span"
+                                sx={{
+                                  color: 'text.secondary',
+                                  fontSize: '0.75rem',
+                                  lineHeight: 1.35,
+                                }}
+                              >
+                                {cmd.description}
+                              </Typography>
+                              <Typography
+                                component="span"
+                                sx={{
+                                  color: alpha(cmd.color, 0.82),
+                                  fontSize: '0.6875rem',
+                                  lineHeight: 1.25,
+                                }}
+                              >
+                                {getCommandContext(cmd)}
+                              </Typography>
+                            </Box>
+                          }
                           primaryTypographyProps={{
                             fontSize: '0.875rem',
                             fontWeight: 500,
@@ -316,22 +306,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
                             color: 'text.secondary',
                           }}
                         />
-                        {isSelected && (
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                            <Chip
-                              label="enter"
-                              size="small"
-                              icon={<EnterIcon sx={{ fontSize: '12px !important' }} />}
-                              sx={{
-                                height: 20,
-                                fontSize: '0.625rem',
-                                bgcolor: 'rgba(255,255,255,0.08)',
-                                color: 'text.secondary',
-                                '& .MuiChip-icon': { ml: 0.5 },
-                              }}
-                            />
-                          </Box>
-                        )}
                       </ListItemButton>
                     </ListItem>
                   )
@@ -348,25 +322,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onClose })
           p: 1.5,
           borderTop: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
-          justifyContent: 'space-between',
+          justifyContent: 'flex-end',
           alignItems: 'center',
           bgcolor: 'rgba(0, 0, 0, 0.2)',
         }}
       >
-        <Box sx={{ display: 'flex', gap: 2 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <Chip label="arrow" size="small" sx={{ height: 18, fontSize: '0.625rem', bgcolor: 'rgba(255,255,255,0.05)' }} />
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem' }}>
-              navigate
-            </Typography>
-          </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <Chip label="enter" size="small" sx={{ height: 18, fontSize: '0.625rem', bgcolor: 'rgba(255,255,255,0.05)' }} />
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem' }}>
-              select
-            </Typography>
-          </Box>
-        </Box>
         <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6875rem' }}>
           {filteredCommands.length} results
         </Typography>

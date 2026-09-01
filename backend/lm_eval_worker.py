@@ -1,8 +1,9 @@
 """
-LM-Eval Worker for GPU-accelerated GGUF model evaluation.
+LM-Eval Worker for deployed-model evaluation.
 
-Polls Redis for benchmark jobs and runs lm-evaluation-harness with local
-GGUF model loading. Reports progress and results back via Redis pub/sub.
+Polls Redis for benchmark jobs and runs lm-evaluation-harness against the
+OpenAI/llama.cpp-compatible endpoint exposed by the app's active deployment.
+Reports progress and results back via Redis pub/sub.
 """
 
 import json
@@ -125,6 +126,7 @@ def save_to_db(
     gpu_device: Optional[int] = None,
     num_fewshot: int = 5,
     limit: Optional[int] = None,
+    endpoint_url: Optional[str] = None,
 ):
     """Save lm-eval benchmark results to SQLite database."""
     try:
@@ -160,6 +162,7 @@ def save_to_db(
             "limit": limit,
             "gpu_device": gpu_device,
             "model_path": model_path,
+            "endpoint_url": endpoint_url,
         }
         
         cursor.execute("""
@@ -170,7 +173,7 @@ def save_to_db(
             job_id,
             f"LM-Eval: {model_name}",
             "lm_eval",
-            None,
+            endpoint_url,
             model_name,
             json.dumps(config),
             json.dumps(results),
@@ -273,13 +276,14 @@ def run_evaluation(
     tasks: list,
     num_fewshot: int = 5,
     limit: Optional[int] = None,
+    endpoint_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run lm-eval benchmark via the llama.cpp API server using local-chat-completions."""
+    """Run lm-eval benchmark via the app's deployed inference endpoint."""
     
     output_path = Path(OUTPUT_DIR) / f"lm_eval_{job_id}"
     output_path.mkdir(parents=True, exist_ok=True)
     
-    api_base_url = os.getenv("LLAMACPP_API_URL", "http://llamacpp-api:8080")
+    api_base_url = endpoint_url or os.getenv("LLAMACPP_API_URL", "http://backend-api:8700")
     api_key = os.getenv("LM_EVAL_API_KEY", "placeholder-api-key")
     proxy_port = os.getenv("PROXY_PORT", "8888")
     
@@ -288,9 +292,11 @@ def run_evaluation(
     
     task_str = ",".join(tasks)
     
+    deployed_model = model_path or os.getenv("LM_EVAL_MODEL_NAME", "default")
+
     model_args = json.dumps({
         "base_url": f"{proxy_base_url}/v1/completions",
-        "pretrained": "Qwen/Qwen2.5-7B",
+        "pretrained": deployed_model,
         "header": {"Authorization": f"Bearer {api_key}"},
         "num_concurrent": int(os.getenv("LM_EVAL_NUM_CONCURRENT", "4")),
         "max_length": 4096,
@@ -312,15 +318,23 @@ def run_evaluation(
         cmd.extend(["--limit", str(limit)])
     
     print(f"[LM-Eval Worker] Running: {' '.join(cmd)}")
-    publish_log(client, job_id, f"Starting evaluation via API: {task_str}")
+    publish_log(client, job_id, f"Starting evaluation via deployed API: {task_str}")
     publish_status(client, job_id, "running", 0.0, f"Starting {len(tasks)} benchmark(s) via {api_base_url}...")
     
+    process_env = os.environ.copy()
+    pythonpath_parts = ["/app"]
+    if process_env.get("PYTHONPATH"):
+        pythonpath_parts.append(process_env["PYTHONPATH"])
+    process_env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+    process_env["LM_EVAL_MODEL_NAME"] = deployed_model
+
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=process_env,
     )
     
     all_output = []
@@ -504,7 +518,7 @@ def run_terminal_bench_evaluation(client: redis.Redis, job: Dict[str, Any]) -> D
     mode = job.get("mode", "smoke")
     task_limit = job.get("task_limit")
     timeout_multiplier = _safe_float(job.get("timeout_multiplier", 1.0), 1.0)
-    endpoint_url = job.get("endpoint_url", "http://llamacpp-api:8080/v1")
+    endpoint_url = job.get("endpoint_url", "http://backend-api:8700/v1")
     api_key = job.get("api_key", "placeholder-api-key")
     harbor_agent = job.get("harbor_agent", "local-openai-agent")
 
@@ -552,12 +566,19 @@ def run_terminal_bench_evaluation(client: redis.Redis, job: Dict[str, Any]) -> D
         message=f"Starting Terminal-Bench {dataset}",
     )
 
+    process_env = os.environ.copy()
+    pythonpath_parts = ["/app"]
+    if process_env.get("PYTHONPATH"):
+        pythonpath_parts.append(process_env["PYTHONPATH"])
+    process_env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=process_env,
     )
 
     output_lines = []
@@ -685,12 +706,13 @@ def process_job(client: redis.Redis, job_data: str) -> None:
     
     print(f"[LM-Eval Worker] Processing job {job_id}")
     
-    # model_path is informational when using API backend - the server already has a model loaded
+    # model_path is informational when using the deployed API backend.
     model_name = job.get("model_path") or job.get("model_name") or "api-model"
     model_path = model_name  # Kept for logging and DB record only
+    endpoint_url = job.get("endpoint_url") or os.getenv("LLAMACPP_API_URL", "http://backend-api:8700")
     
-    print(f"[LM-Eval Worker] Evaluating via API (model label: {model_path})")
-    publish_log(client, job_id, f"Evaluating model: {model_path} via API")
+    print(f"[LM-Eval Worker] Evaluating deployed model via API (label: {model_path}, endpoint: {endpoint_url})")
+    publish_log(client, job_id, f"Evaluating deployed model: {model_path}")
     
     # Get task configuration
     tasks = job.get("tasks", ["hellaswag"])
@@ -700,7 +722,7 @@ def process_job(client: redis.Redis, job_data: str) -> None:
     
     # Run evaluation
     try:
-        results = run_evaluation(client, job_id, model_path, tasks, num_fewshot, limit)
+        results = run_evaluation(client, job_id, model_path, tasks, num_fewshot, limit, endpoint_url)
         print(f"[LM-Eval Worker] Job {job_id} completed with results: {results}")
         
         # Save results to database if evaluation succeeded
@@ -713,6 +735,7 @@ def process_job(client: redis.Redis, job_data: str) -> None:
                 gpu_device=gpu_device,
                 num_fewshot=num_fewshot,
                 limit=limit,
+                endpoint_url=endpoint_url,
             )
     except Exception as e:
         error_msg = f"Evaluation failed: {str(e)}"
@@ -791,7 +814,7 @@ def process_terminal_bench_job(client: redis.Redis, job_data: str) -> None:
 
 def poll_for_jobs():
     """Main polling loop for benchmark jobs."""
-    api_url = os.getenv("LLAMACPP_API_URL", "http://llamacpp-api:8080")
+    api_url = os.getenv("LLAMACPP_API_URL", "http://backend-api:8700")
     print(f"[Worker] Starting job polling mode={WORKER_MODE}")
     print(f"[Worker] LM-Eval API endpoint: {api_url}")
     print(f"[Worker] LM-Eval output directory: {OUTPUT_DIR}")
@@ -827,7 +850,7 @@ def main():
     print(f"[Worker] Benchmark Worker (mode={WORKER_MODE})")
     print("=" * 60)
     
-    api_url = os.getenv("LLAMACPP_API_URL", "http://llamacpp-api:8080")
+    api_url = os.getenv("LLAMACPP_API_URL", "http://backend-api:8700")
     print(f"[Worker] Using API endpoint: {api_url}")
     
     # Create output directory

@@ -2,8 +2,6 @@ import React, { useEffect, useState, useCallback } from "react";
 import {
   Box,
   Typography,
-  Card,
-  CardContent,
   Button,
   TextField,
   Select,
@@ -11,18 +9,14 @@ import {
   FormControl,
   InputLabel,
   IconButton,
-  Chip,
   Grid,
   Alert,
   Tooltip,
   LinearProgress,
-  Divider,
   Switch,
   FormControlLabel,
-  Stepper,
-  Step,
-  StepLabel,
   alpha,
+  useMediaQuery,
 } from "@mui/material";
 import {
   Psychology as DistillIcon,
@@ -34,15 +28,17 @@ import {
   ArrowBack as BackIcon,
   Refresh as RefreshIcon,
   RocketLaunch as TrainIcon,
-  CheckCircle as SuccessIcon,
-  Timer as TimerIcon,
   Speed as SpeedIcon,
   Grade as GradeIcon,
-  Lightbulb as TipIcon,
   Api as ApiIcon,
   AutoAwesome as AutoIcon,
 } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
+import { trainingDatasetHandoffFromDistillationJob } from "@/types/trainingHandoff";
+import { getRoutePath } from "@/config/navigation";
+import { debugLog } from "@/utils/debug";
+import { PageShell, SectionCard, StatusChip, type StatusChipConfigMap } from "@/components/common";
+import { accentColors } from "@/utils/theme";
 
 // Types
 type PromptTemplate = {
@@ -124,127 +120,34 @@ const MODEL_PRESETS: Record<string, { value: string; label: string }[]> = {
   ],
 };
 
-// Accent colors
-const accentColors = {
-  primary: "#6366f1",
-  success: "#10b981",
-  warning: "#f59e0b",
-  info: "#06b6d4",
-  purple: "#8b5cf6",
-  rose: "#f43f5e",
+const DISTILLATION_STATUS_CONFIG: StatusChipConfigMap = {
+  studio: { color: accentColors.purple, label: "Distillation studio" },
+  manual: { color: accentColors.info, label: "Manual source" },
+  topic: { color: accentColors.info, label: "Topic source" },
+  create: { color: accentColors.success, label: "New dataset" },
+  append: { color: accentColors.success, label: "Append mode" },
+  active: { color: accentColors.warning, label: "Active" },
+  completed: { color: accentColors.success, label: "Completed" },
+  examples: { color: accentColors.purple, label: "Examples" },
 };
 
-// Section Card Component
-interface SectionCardProps {
-  title: string;
-  subtitle?: string;
-  icon?: React.ReactNode;
-  accentColor?: string;
-  children: React.ReactNode;
-  action?: React.ReactNode;
-}
-
-const SectionCard: React.FC<SectionCardProps> = ({
-  title,
-  subtitle,
-  icon,
-  accentColor = accentColors.primary,
-  children,
-  action,
-}) => (
-  <Card
-    sx={{
-      position: "relative",
-      overflow: "hidden",
-      background: "linear-gradient(145deg, rgba(30, 30, 63, 0.6) 0%, rgba(26, 26, 46, 0.8) 100%)",
-      backdropFilter: "blur(12px)",
-      border: "1px solid rgba(255, 255, 255, 0.06)",
-      borderRadius: 3,
-      transition: "all 0.3s ease-in-out",
-      "&:hover": {
-        borderColor: alpha(accentColor, 0.2),
-        boxShadow: `0 8px 32px ${alpha(accentColor, 0.15)}`,
-      },
-    }}
-  >
-    <Box
-      sx={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        height: 3,
-        background: `linear-gradient(90deg, ${accentColor} 0%, ${alpha(accentColor, 0.3)} 100%)`,
-      }}
-    />
-    <CardContent sx={{ p: 2.5 }}>
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2.5 }}>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-          {icon && (
-            <Box
-              sx={{
-                width: 40,
-                height: 40,
-                borderRadius: 2,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                bgcolor: alpha(accentColor, 0.1),
-                color: accentColor,
-                "& .MuiSvgIcon-root": { fontSize: 22 },
-              }}
-            >
-              {icon}
-            </Box>
-          )}
-          <Box>
-            <Typography variant="h6" sx={{ fontWeight: 600, fontSize: "1rem", lineHeight: 1.3 }}>
-              {title}
-            </Typography>
-            {subtitle && (
-              <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.75rem" }}>
-                {subtitle}
-              </Typography>
-            )}
-          </Box>
-        </Box>
-        {action}
-      </Box>
-      <Box sx={{ maxWidth: "100%", overflow: "auto" }}>{children}</Box>
-    </CardContent>
-  </Card>
-);
-
-// Status Chip
-const StatusChip: React.FC<{ status: string }> = ({ status }) => {
-  const config: Record<string, { color: string; label: string }> = {
-    completed: { color: accentColors.success, label: "Completed" },
-    running: { color: accentColors.info, label: "Running" },
-    failed: { color: accentColors.rose, label: "Failed" },
-    pending: { color: accentColors.warning, label: "Pending" },
-    cancelled: { color: "#64748b", label: "Cancelled" },
-  };
-  const { color, label } = config[status] || { color: "#64748b", label: status };
-
-  return (
-    <Chip
-      label={label}
-      size="small"
-      sx={{
-        bgcolor: alpha(color, 0.1),
-        color: color,
-        border: `1px solid ${alpha(color, 0.3)}`,
-        fontWeight: 600,
-        fontSize: "0.7rem",
-        height: 24,
-      }}
-    />
-  );
+const distillationModeButtonSx = {
+  height: 30,
+  borderRadius: "8px",
+  fontWeight: 800,
+  px: 1,
+  textTransform: "none",
+  minWidth: 0,
+  boxShadow: "none",
+  "&:hover": {
+    boxShadow: "none",
+  },
 };
-
 
 export const DistillationPage: React.FC = () => {
   const navigate = useNavigate();
+  const isNarrow = useMediaQuery("(max-width:599.95px)");
+  const trainingPath = getRoutePath("finetuning");
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   const [jobs, setJobs] = useState<DistillationJob[]>([]);
   const [selectedJob, setSelectedJob] = useState<DistillationJob | null>(null);
@@ -262,6 +165,7 @@ export const DistillationPage: React.FC = () => {
   const [apiKey, setApiKey] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
   const [customSystemPrompt, setCustomSystemPrompt] = useState("");
+  const [showPromptSettings, setShowPromptSettings] = useState(false);
   const [prompts, setPrompts] = useState<string>("");
   const [createManagedDataset, setCreateManagedDataset] = useState(true);
   const [datasetName, setDatasetName] = useState("");
@@ -275,14 +179,12 @@ export const DistillationPage: React.FC = () => {
   // Topic-based generation state
   const [inputMode, setInputMode] = useState<"manual" | "topic">("manual");
   const [topic, setTopic] = useState("");
-  const [subtopics, setSubtopics] = useState<string[]>([]);
   const [generationMode, setGenerationMode] = useState("qa_pairs");
   const [targetExamples, setTargetExamples] = useState(100);
   const [refinementEnabled, setRefinementEnabled] = useState(true);
   const [refinementPasses, setRefinementPasses] = useState(2);
   const [previewPrompts, setPreviewPrompts] = useState<string[]>([]);
   const [costEstimate, setCostEstimate] = useState<any>(null);
-  const [expandingTopic, setExpandingTopic] = useState(false);
   const [generatingPreview, setGeneratingPreview] = useState(false);
 
   const fetchTemplates = useCallback(async () => {
@@ -351,7 +253,7 @@ export const DistillationPage: React.FC = () => {
       fetch(`/api/v1/finetune/distillation/jobs/${selectedJob.id}/preview?limit=50`)
         .then((res) => res.json())
         .then((data) => {
-          console.log("Examples response:", data);
+          debugLog("distillation", "Examples response", data);
           setGeneratedExamples(data.examples || []);
         })
         .catch((err) => {
@@ -480,164 +382,174 @@ export const DistillationPage: React.FC = () => {
     }
   };
 
-  const handleStartTraining = async (job: DistillationJob) => {
+  const handleStartTraining = (job: DistillationJob) => {
     if (!job.output_dataset_id) {
       setError("No dataset available for training");
       return;
     }
 
-    try {
-      setActionStatus("Creating training job...");
-
-      const trainingJobData = {
-        name: `${job.name} - Fine-tuned`,
-        dataset_id: job.output_dataset_id,
-        base_model: "meta-llama/Llama-3.2-8B-Instruct",
-        preset_name: "balanced",
-        config: {
-          num_train_epochs: Math.min(3, Math.max(1, Math.ceil(1000 / job.generated_count))),
-          learning_rate: job.generated_count < 100 ? 5e-4 : 2e-4,
-          per_device_train_batch_size: job.generated_count < 500 ? 1 : 2,
-          gradient_accumulation_steps: 4,
-          warmup_steps: Math.max(10, Math.floor(job.generated_count * 0.1)),
-          save_steps: Math.max(50, Math.floor(job.generated_count * 0.2)),
-          eval_steps: Math.max(25, Math.floor(job.generated_count * 0.1)),
-        },
-      };
-
-      const res = await fetch("/api/v1/finetune/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(trainingJobData),
-      });
-
-      if (res.ok) {
-        const trainingJob = await res.json();
-        setActionStatus("Training job created! Redirecting...");
-        setTimeout(() => {
-          navigate(`/finetuning?job=${trainingJob.id}`);
-        }, 1000);
-      } else {
-        const data = await res.json();
-        setError(data.detail || "Failed to create training job");
-      }
-    } catch (err) {
-      setError("Failed to create training job");
-    }
+    navigate(trainingPath, {
+      state: {
+        dataset: trainingDatasetHandoffFromDistillationJob({
+          output_dataset_id: job.output_dataset_id,
+          name: job.name,
+          generated_count: job.generated_count,
+        }),
+      },
+    });
   };
 
   const promptCount = prompts.split("\n").filter((p) => p.trim()).length;
+  const activeDistillationJobs = jobs.filter((job) =>
+    ["running", "pending", "queued"].includes(job.status.toLowerCase())
+  ).length;
+  const completedDistillationJobs = jobs.filter((job) => job.status.toLowerCase() === "completed").length;
+  const generatedTotal = jobs.reduce((total, job) => total + (job.generated_count || 0), 0);
+  const teacherProviderLabel =
+    TEACHER_PROVIDERS.find((provider) => provider.value === teacherProvider)?.label.split(" (")[0] ?? teacherProvider;
+  const selectedTeacherLabel = teacherProvider === "local" ? "Local active model" : teacherModel;
+  const outputPlanLabel = datasetMode === "create" ? (createManagedDataset ? "Managed dataset" : "JSONL export") : "Append dataset";
+  const distillationSummaryParts = [
+    `${teacherProviderLabel} / ${selectedTeacherLabel}`,
+    inputMode === "topic" ? `${targetExamples} examples` : promptCount > 0 ? `${promptCount} prompt${promptCount === 1 ? "" : "s"}` : null,
+    outputPlanLabel,
+  ].filter(Boolean);
+  const hasDistillationJobs = jobs.length > 0;
+  const jobReady = Boolean(jobName.trim());
+  const sourceReady = inputMode === "manual" ? promptCount > 0 : Boolean(topic.trim());
+  const outputReady = datasetMode === "create" || Boolean(appendDatasetId);
+  const canStartDistillation = jobReady && sourceReady && outputReady;
+  const runPlanItems = [
+    {
+      label: "Job",
+      ready: jobReady,
+      value: jobReady ? jobName : "Name required",
+    },
+    {
+      label: "Teacher",
+      ready: true,
+      value: `${teacherProviderLabel} / ${selectedTeacherLabel}`,
+    },
+    {
+      label: "Source",
+      ready: sourceReady,
+      value: inputMode === "manual"
+        ? (sourceReady ? `${promptCount} prompt${promptCount === 1 ? "" : "s"}` : "Add prompts")
+        : (sourceReady ? topic : "Topic required"),
+    },
+    {
+      label: "Output",
+      ready: outputReady,
+      value: outputReady ? outputPlanLabel : "Select dataset",
+    },
+  ];
+  const nextRequiredInput = runPlanItems.find((item) => !item.ready)?.value || "Ready";
+  const distillationIconButtonSx = {
+    width: 32,
+    height: 32,
+    borderRadius: "8px",
+    border: "1px solid",
+    borderColor: "divider",
+    bgcolor: "action.hover",
+    "&:hover": { bgcolor: "action.selected" },
+  };
+  const distillationHeaderActions = (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      <Button
+        size="small"
+        variant={inputMode === "manual" ? "contained" : "outlined"}
+        onClick={() => setInputMode("manual")}
+        sx={distillationModeButtonSx}
+      >
+        Manual
+      </Button>
+      <Button
+        size="small"
+        variant={inputMode === "topic" ? "contained" : "outlined"}
+        onClick={() => setInputMode("topic")}
+        sx={distillationModeButtonSx}
+      >
+        Topic
+      </Button>
+      <Tooltip title="Back to training">
+        <IconButton
+          size="small"
+          aria-label="Back to training"
+          onClick={() => navigate(trainingPath)}
+          sx={distillationIconButtonSx}
+        >
+          <BackIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title="Refresh jobs">
+        <IconButton
+          size="small"
+          aria-label="Refresh jobs"
+          onClick={fetchJobs}
+          sx={distillationIconButtonSx}
+        >
+          <RefreshIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  );
+  const shouldShowDistillationSummary =
+    !isNarrow && (
+      activeDistillationJobs > 0 ||
+      completedDistillationJobs > 0 ||
+      generatedTotal > 0 ||
+      distillationSummaryParts.length > 0
+    );
+  const distillationSummaryRow = shouldShowDistillationSummary ? (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap", mb: 1 }}>
+      {activeDistillationJobs > 0 && (
+        <StatusChip status="active" label={`${activeDistillationJobs} active`} statusConfig={DISTILLATION_STATUS_CONFIG} height={22} />
+      )}
+      {completedDistillationJobs > 0 && (
+        <StatusChip status="completed" label={`${completedDistillationJobs} complete`} statusConfig={DISTILLATION_STATUS_CONFIG} height={22} />
+      )}
+      {generatedTotal > 0 && (
+        <StatusChip status="examples" label={`${generatedTotal} examples`} statusConfig={DISTILLATION_STATUS_CONFIG} height={22} />
+      )}
+      <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
+        {distillationSummaryParts.join(" / ")}
+      </Typography>
+    </Box>
+  ) : null;
 
   return (
-    <Box
-      sx={{
-        width: "100%",
-        maxWidth: "100vw",
-        overflow: "hidden",
-        px: { xs: 2, sm: 3, md: 4 },
-        py: 3,
-        boxSizing: "border-box",
-        minHeight: "100%",
-      }}
-    >
-      {/* Header */}
-      <Box
-        sx={{
-          display: "flex",
-          flexDirection: { xs: "column", sm: "row" },
-          justifyContent: "space-between",
-          alignItems: { xs: "flex-start", sm: "center" },
-          mb: 4,
-          gap: 2,
-        }}
-      >
-        <Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 1 }}>
-            <Typography
-              variant="h1"
-              sx={{
-                fontWeight: 700,
-                fontSize: { xs: "1.5rem", sm: "1.75rem", md: "2rem" },
-                lineHeight: 1,
-                background: "linear-gradient(135deg, #f1f5f9 0%, #94a3b8 100%)",
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent",
-              }}
-            >
-              Knowledge Distillation
-            </Typography>
-            <Chip
-              size="small"
-              label="Beta"
-              sx={{
-                height: 22,
-                bgcolor: alpha(accentColors.info, 0.1),
-                border: `1px solid ${alpha(accentColors.info, 0.2)}`,
-                color: accentColors.info,
-                fontWeight: 600,
-                fontSize: "0.6875rem",
-              }}
-            />
-          </Box>
-          <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.875rem", maxWidth: 500 }}>
-            Generate high-quality training data from teacher models like GPT-4 or Claude
-          </Typography>
-        </Box>
-
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<BackIcon />}
-            onClick={() => navigate("/finetuning")}
-            sx={{
-              borderColor: "rgba(255, 255, 255, 0.1)",
-              color: "text.secondary",
-              "&:hover": { borderColor: accentColors.primary, color: accentColors.primary },
-            }}
-          >
-            Back
-          </Button>
-          <Tooltip title="Refresh">
-            <IconButton
-              size="small"
-              onClick={fetchJobs}
-              sx={{
-                width: 38,
-                height: 38,
-                borderRadius: 2,
-                border: "1px solid rgba(255, 255, 255, 0.08)",
-                bgcolor: "rgba(255, 255, 255, 0.03)",
-              }}
-            >
-              <RefreshIcon sx={{ fontSize: 18 }} />
-            </IconButton>
-          </Tooltip>
-        </Box>
-      </Box>
-
+    <PageShell sx={{ py: 1 }}>
       {/* Alerts */}
       {error && (
-        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
+        <Alert severity="error" sx={{ mb: 1.25 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
       {actionStatus && (
-        <Alert severity="success" sx={{ mb: 3 }} onClose={() => setActionStatus(null)}>
+        <Alert severity="success" sx={{ mb: 1.25 }} onClose={() => setActionStatus(null)}>
           {actionStatus}
         </Alert>
       )}
 
-      <Grid container spacing={3}>
+      <Grid container spacing={1.25}>
         {/* Create Job Form */}
-        <Grid item xs={12} lg={6}>
+        <Grid item xs={12} lg={8}>
           <SectionCard
-            title="Create Distillation Job"
-            subtitle="Configure and generate training examples"
-            icon={<DistillIcon />}
-            accentColor={accentColors.purple}
-          >
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
+	            title="Create job"
+	            icon={<DistillIcon />}
+	            accentColor={accentColors.purple}
+	            action={distillationHeaderActions}
+	          >
+              {distillationSummaryRow}
+	            <Box
+	              sx={{
+	                display: "grid",
+	                gridTemplateColumns: { xs: "1fr", xl: "minmax(0, 0.95fr) minmax(0, 1.05fr)" },
+	                gap: 1.25,
+	                alignItems: "start",
+	              }}
+	            >
+	              <Box sx={{ display: "flex", flexDirection: "column", gap: 1.1, minWidth: 0 }}>
               <TextField
                 label="Job Name"
                 value={jobName}
@@ -647,8 +559,8 @@ export const DistillationPage: React.FC = () => {
                 size="small"
               />
 
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
+	              <Grid container spacing={1.25}>
+                <Grid item xs={12} sm={6}>
                   <FormControl fullWidth size="small">
                     <InputLabel>Teacher Provider</InputLabel>
                     <Select
@@ -667,7 +579,7 @@ export const DistillationPage: React.FC = () => {
                     </Select>
                   </FormControl>
                 </Grid>
-                <Grid item xs={6}>
+                <Grid item xs={12} sm={6}>
                   <FormControl fullWidth size="small">
                     <InputLabel>Model</InputLabel>
                     <Select
@@ -698,80 +610,56 @@ export const DistillationPage: React.FC = () => {
                 />
               )}
 
-              <FormControl fullWidth size="small">
-                <InputLabel>Prompt Template</InputLabel>
-                <Select
-                  value={selectedTemplate}
-                  onChange={(e) => handleTemplateSelect(e.target.value)}
-                  label="Prompt Template"
-                >
-                  <MenuItem value="">Custom / None</MenuItem>
-                  {templates.map((t) => (
-                    <MenuItem key={t.id} value={t.id}>
-                      {t.name} - {t.description}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-
-              <TextField
-                label="System Prompt"
-                value={customSystemPrompt}
-                onChange={(e) => setCustomSystemPrompt(e.target.value)}
-                placeholder="You are a helpful assistant..."
-                multiline
-                rows={2}
-                fullWidth
-                size="small"
-              />
-
-              {/* Input Mode Toggle */}
-              <Box
-                sx={{
-                  display: "flex",
-                  gap: 1,
-                  p: 0.5,
-                  borderRadius: 2,
-                  bgcolor: "rgba(0, 0, 0, 0.2)",
-                  border: "1px solid rgba(255, 255, 255, 0.06)",
-                }}
-              >
+              <Box>
                 <Button
                   size="small"
-                  variant={inputMode === "manual" ? "contained" : "text"}
-                  onClick={() => setInputMode("manual")}
-                  sx={{
-                    flex: 1,
-                    bgcolor: inputMode === "manual" ? alpha(accentColors.primary, 0.2) : "transparent",
-                    color: inputMode === "manual" ? accentColors.primary : "text.secondary",
-                    "&:hover": { bgcolor: alpha(accentColors.primary, 0.15) },
-                  }}
+                  variant={showPromptSettings ? "contained" : "outlined"}
+                  onClick={() => setShowPromptSettings((show) => !show)}
+                  sx={{ height: 30, borderRadius: "8px", fontWeight: 800, textTransform: "none" }}
                 >
-                  Manual Prompts
-                </Button>
-                <Button
-                  size="small"
-                  variant={inputMode === "topic" ? "contained" : "text"}
-                  onClick={() => setInputMode("topic")}
-                  sx={{
-                    flex: 1,
-                    bgcolor: inputMode === "topic" ? alpha(accentColors.purple, 0.2) : "transparent",
-                    color: inputMode === "topic" ? accentColors.purple : "text.secondary",
-                    "&:hover": { bgcolor: alpha(accentColors.purple, 0.15) },
-                  }}
-                >
-                  Topic-Based
+                  Prompt settings
                 </Button>
               </Box>
 
-              {/* Topic-Based Configuration */}
+              {showPromptSettings && (
+                <>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Prompt Template</InputLabel>
+                    <Select
+                      value={selectedTemplate}
+                      onChange={(e) => handleTemplateSelect(e.target.value)}
+                      label="Prompt Template"
+                    >
+                      <MenuItem value="">Custom / None</MenuItem>
+                      {templates.map((t) => (
+                        <MenuItem key={t.id} value={t.id}>
+                          {t.name} - {t.description}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+
+                  <TextField
+                    label="System Prompt"
+                    value={customSystemPrompt}
+                    onChange={(e) => setCustomSystemPrompt(e.target.value)}
+                    placeholder="You are a helpful assistant..."
+                    multiline
+                    rows={1}
+                    fullWidth
+                    size="small"
+                  />
+                </>
+              )}
+
+	              {/* Topic-Based Configuration */}
               {inputMode === "topic" && (
                 <Box
                   sx={{
-                    p: 2,
-                    borderRadius: 2,
-                    bgcolor: "rgba(0, 0, 0, 0.2)",
-                    border: `1px solid ${alpha(accentColors.purple, 0.2)}`,
+	                    p: 2,
+	                    borderRadius: "8px",
+	                    bgcolor: "action.hover",
+	                    border: `1px solid ${alpha(accentColors.purple, 0.2)}`,
                   }}
                 >
                   <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2, color: accentColors.purple }}>
@@ -878,12 +766,14 @@ export const DistillationPage: React.FC = () => {
                     {previewPrompts.length > 0 && (
                       <Box
                         sx={{
-                          maxHeight: 120,
-                          overflow: "auto",
-                          p: 1.5,
-                          borderRadius: 1,
-                          bgcolor: "rgba(0, 0, 0, 0.3)",
-                          fontFamily: "monospace",
+	                          maxHeight: 120,
+	                          overflow: "auto",
+	                          p: 1.5,
+	                          borderRadius: "8px",
+	                          bgcolor: "action.hover",
+	                          border: "1px solid",
+	                          borderColor: "divider",
+	                          fontFamily: "monospace",
                           fontSize: "0.75rem",
                         }}
                       >
@@ -928,7 +818,7 @@ export const DistillationPage: React.FC = () => {
                           setGeneratingPreview(false);
                         }}
                         disabled={!topic || !apiKey || generatingPreview}
-                        sx={{ flex: 1 }}
+                        sx={{ flex: 1, height: 34, borderRadius: "8px" }}
                       >
                         {generatingPreview ? "Generating..." : "Preview"}
                       </Button>
@@ -958,7 +848,7 @@ export const DistillationPage: React.FC = () => {
                           }
                         }}
                         disabled={!topic}
-                        sx={{ flex: 1 }}
+                        sx={{ flex: 1, height: 34, borderRadius: "8px" }}
                       >
                         Estimate Cost
                       </Button>
@@ -967,98 +857,92 @@ export const DistillationPage: React.FC = () => {
                 </Box>
               )}
 
-              {/* Dataset Options */}
-              <Box
-                sx={{
-                  p: 2,
-                  borderRadius: 2,
-                  bgcolor: "rgba(0, 0, 0, 0.2)",
-                  border: "1px solid rgba(255, 255, 255, 0.06)",
-                }}
-              >
-                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2 }}>
-                  Output Options
-                </Typography>
-                <Box sx={{ display: "flex", gap: 1, mb: 2 }}>
-                  <Button
-                    size="small"
-                    variant={datasetMode === "create" ? "contained" : "outlined"}
-                    onClick={() => setDatasetMode("create")}
-                    sx={{ flex: 1 }}
-                  >
-                    Create New Dataset
-                  </Button>
-                  <Button
-                    size="small"
-                    variant={datasetMode === "append" ? "contained" : "outlined"}
-                    onClick={() => setDatasetMode("append")}
-                    sx={{ flex: 1 }}
-                  >
-                    Append to Existing
-                  </Button>
-                </Box>
+	              </Box>
 
-                {datasetMode === "create" ? (
-                  <>
-                    <FormControlLabel
-                      control={
-                        <Switch
-                          checked={createManagedDataset}
-                          onChange={(e) => setCreateManagedDataset(e.target.checked)}
-                          color="primary"
-                        />
-                      }
-                      label={
-                        <Box>
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                            Create managed dataset
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            Automatically create a dataset for training
-                          </Typography>
-                        </Box>
-                      }
-                    />
-                    {createManagedDataset && (
-                      <Box sx={{ mt: 2, display: "flex", flexDirection: "column", gap: 1.5 }}>
-                        <TextField
-                          label="Dataset Name (optional)"
-                          value={datasetName}
-                          onChange={(e) => setDatasetName(e.target.value)}
-                          placeholder="Leave empty to use job name"
-                          fullWidth
-                          size="small"
-                        />
-                        <TextField
-                          label="Description (optional)"
-                          value={datasetDescription}
-                          onChange={(e) => setDatasetDescription(e.target.value)}
-                          placeholder="Describe the dataset purpose"
-                          multiline
-                          rows={2}
-                          fullWidth
-                          size="small"
-                        />
-                      </Box>
-                    )}
-                  </>
-                ) : (
-                  <FormControl fullWidth size="small">
-                    <InputLabel>Select Dataset to Append To</InputLabel>
-                    <Select
-                      value={appendDatasetId}
-                      onChange={(e) => setAppendDatasetId(e.target.value)}
-                      label="Select Dataset to Append To"
-                    >
-                      {datasets.map((ds) => (
-                        <MenuItem key={ds.id} value={ds.id}>
-                          {ds.name} ({ds.num_examples} examples)
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                )}
-              </Box>
+	              <Box sx={{ display: "flex", flexDirection: "column", gap: 1.1, minWidth: 0 }}>
+
+	              {/* Dataset Options */}
+	              <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+	                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, flexWrap: "wrap" }}>
+	                  <Typography variant="body2" sx={{ fontWeight: 800 }}>
+	                    Output
+	                  </Typography>
+	                  <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", justifyContent: "flex-end" }}>
+	                    <Button
+	                      size="small"
+	                      variant={datasetMode === "create" ? "contained" : "outlined"}
+	                      onClick={() => setDatasetMode("create")}
+	                      sx={distillationModeButtonSx}
+	                    >
+	                      New dataset
+	                    </Button>
+	                    <Button
+	                      size="small"
+	                      variant={datasetMode === "append" ? "contained" : "outlined"}
+	                      onClick={() => setDatasetMode("append")}
+	                      sx={distillationModeButtonSx}
+	                    >
+	                      Append
+	                    </Button>
+	                  </Box>
+	                </Box>
+
+	                {datasetMode === "create" ? (
+	                  <>
+	                    <FormControlLabel
+	                      control={
+	                        <Switch
+	                          checked={createManagedDataset}
+	                          onChange={(e) => setCreateManagedDataset(e.target.checked)}
+	                          color="primary"
+	                          size="small"
+	                        />
+	                      }
+	                      label={<Typography variant="body2" sx={{ fontWeight: 600 }}>Managed dataset</Typography>}
+	                      sx={{ my: -0.25 }}
+	                    />
+	                    {createManagedDataset && (
+	                      <Grid container spacing={1}>
+	                        <Grid item xs={12} md={5}>
+	                          <TextField
+	                            label="Dataset Name (optional)"
+	                            value={datasetName}
+	                            onChange={(e) => setDatasetName(e.target.value)}
+	                            placeholder="Leave empty to use job name"
+	                            fullWidth
+	                            size="small"
+	                          />
+	                        </Grid>
+	                        <Grid item xs={12} md={7}>
+	                          <TextField
+	                            label="Description (optional)"
+	                            value={datasetDescription}
+	                            onChange={(e) => setDatasetDescription(e.target.value)}
+	                            placeholder="Describe the dataset purpose"
+	                            fullWidth
+	                            size="small"
+	                          />
+	                        </Grid>
+	                      </Grid>
+	                    )}
+	                  </>
+	                ) : (
+	                  <FormControl fullWidth size="small">
+	                    <InputLabel>Select Dataset to Append To</InputLabel>
+	                    <Select
+	                      value={appendDatasetId}
+	                      onChange={(e) => setAppendDatasetId(e.target.value)}
+	                      label="Select Dataset to Append To"
+	                    >
+	                      {datasets.map((ds) => (
+	                        <MenuItem key={ds.id} value={ds.id}>
+	                          {ds.name} ({ds.num_examples} examples)
+	                        </MenuItem>
+	                      ))}
+	                    </Select>
+	                  </FormControl>
+	                )}
+	              </Box>
 
               {/* Manual Prompts - only shown in manual mode */}
               {inputMode === "manual" && (
@@ -1067,151 +951,202 @@ export const DistillationPage: React.FC = () => {
                     label="Prompts (one per line)"
                     value={prompts}
                     onChange={(e) => setPrompts(e.target.value)}
-                    placeholder={"Write a Python function to sort a list\nExplain quantum computing\nHow do I optimize database queries?"}
-                    multiline
-                    rows={5}
-                    fullWidth
-                    size="small"
+	                    placeholder={"Write a Python function to sort a list\nExplain quantum computing\nHow do I optimize database queries?"}
+	                    multiline
+	                    rows={isNarrow ? 3 : 4}
+	                    fullWidth
+	                    size="small"
                     sx={{ "& textarea": { fontFamily: "monospace", fontSize: "0.85rem" } }}
                   />
-                  <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
-                    {promptCount} prompt{promptCount !== 1 ? "s" : ""} to process
-                  </Typography>
+                  {promptCount > 0 && (
+                    <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+                      {promptCount} prompt{promptCount !== 1 ? "s" : ""} to process
+                    </Typography>
+                  )}
                 </Box>
               )}
 
-              <Button
-                variant="contained"
-                startIcon={<StartIcon />}
-                onClick={handleCreateJob}
-                disabled={!jobName || (inputMode === "manual" ? promptCount === 0 : !topic)}
-                sx={{
-                  background: `linear-gradient(135deg, ${accentColors.purple} 0%, ${accentColors.primary} 100%)`,
-                }}
-              >
-                Start Distillation
-              </Button>
+              <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1, minHeight: 34 }}>
+                {canStartDistillation ? (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={<StartIcon />}
+                    onClick={handleCreateJob}
+                    sx={{
+                      height: 34,
+                      borderRadius: "8px",
+                      fontWeight: 800,
+                      px: 1.5,
+                      boxShadow: "none",
+                      "&:hover": {
+                        boxShadow: "none",
+                      },
+                    }}
+                  >
+                    Start
+                  </Button>
+                ) : (
+                  <Typography variant="caption" color="text.secondary">
+                    {nextRequiredInput}
+                  </Typography>
+                )}
+              </Box>
+              </Box>
             </Box>
           </SectionCard>
         </Grid>
 
         {/* Jobs List */}
-        <Grid item xs={12} lg={6}>
-          <SectionCard
-            title="Distillation Jobs"
-            subtitle={`${jobs.length} jobs`}
-            icon={<TeacherIcon />}
-            accentColor={accentColors.info}
-          >
-            {jobs.length === 0 ? (
-              <Box sx={{ p: 4, textAlign: "center" }}>
-                <DistillIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-                <Typography color="text.secondary">No distillation jobs yet</Typography>
-              </Box>
-            ) : (
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-                {jobs.map((job) => (
-                  <Box
-                    key={job.id}
-                    onClick={() => setSelectedJob(job)}
-                    sx={{
-                      p: 2,
-                      borderRadius: 2,
-                      bgcolor: selectedJob?.id === job.id ? alpha(accentColors.success, 0.1) : "rgba(255, 255, 255, 0.02)",
-                      border: `1px solid ${selectedJob?.id === job.id ? accentColors.success : "rgba(255, 255, 255, 0.06)"}`,
-                      cursor: "pointer",
-                      transition: "all 0.2s",
-                      "&:hover": {
-                        bgcolor: alpha(accentColors.primary, 0.08),
-                        borderColor: alpha(accentColors.primary, 0.3),
-                      },
-                    }}
-                  >
-                    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1 }}>
-                      <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                        {job.name}
-                      </Typography>
-                      <StatusChip status={job.status} />
-                    </Box>
-                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                      {job.config.teacher_provider}/{job.config.teacher_model} | {job.generated_count}/{job.total_prompts} generated
-                    </Typography>
-
-                    {job.status === "running" && (
-                      <Box sx={{ mb: 1.5 }}>
-                        <LinearProgress
-                          variant="determinate"
-                          value={job.progress}
-                          sx={{
-                            height: 6,
-                            borderRadius: 3,
-                            bgcolor: "rgba(255, 255, 255, 0.1)",
-                            "& .MuiLinearProgress-bar": {
-                              background: `linear-gradient(90deg, ${accentColors.info}, ${accentColors.success})`,
-                            },
-                          }}
-                        />
-                        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
-                          {job.progress.toFixed(1)}% complete
+        <Grid item xs={12} lg={4}>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+            {hasDistillationJobs ? (
+              <SectionCard
+                title="Jobs"
+                icon={<TeacherIcon />}
+                accentColor={accentColors.info}
+                action={<StatusChip status="active" label={`${activeDistillationJobs} active`} statusConfig={DISTILLATION_STATUS_CONFIG} height={22} />}
+              >
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
+                  {jobs.map((job) => (
+                    <Box
+                      key={job.id}
+                      onClick={() => setSelectedJob(job)}
+                      sx={{
+                        p: 1.25,
+                        borderRadius: "8px",
+                        bgcolor: selectedJob?.id === job.id ? alpha(accentColors.success, 0.1) : "action.hover",
+                        border: "1px solid",
+                        borderColor: selectedJob?.id === job.id ? accentColors.success : "divider",
+                        cursor: "pointer",
+                        transition: "all 0.2s",
+                        "&:hover": {
+                          bgcolor: alpha(accentColors.primary, 0.08),
+                          borderColor: alpha(accentColors.primary, 0.3),
+                        },
+                      }}
+                    >
+                      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.75, gap: 1 }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }} noWrap>
+                          {job.name}
                         </Typography>
+                        <StatusChip status={job.status} />
                       </Box>
-                    )}
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+                        {job.config.teacher_provider}/{job.config.teacher_model} | {job.generated_count}/{job.total_prompts} generated
+                      </Typography>
 
-                    <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
                       {job.status === "running" && (
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          color="error"
-                          startIcon={<CancelIcon />}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleCancelJob(job.id);
-                          }}
-                          sx={{ fontSize: "0.7rem" }}
-                        >
-                          Cancel
-                        </Button>
+                        <Box sx={{ mb: 1 }}>
+                          <LinearProgress
+                            variant="determinate"
+                            value={job.progress}
+                            sx={{
+                              height: 6,
+                              borderRadius: 3,
+                              bgcolor: "action.hover",
+                              "& .MuiLinearProgress-bar": {
+                                background: `linear-gradient(90deg, ${accentColors.info}, ${accentColors.success})`,
+                              },
+                            }}
+                          />
+                          <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+                            {job.progress.toFixed(1)}% complete
+                          </Typography>
+                        </Box>
                       )}
-                      {job.status === "completed" && (
-                        <>
+
+                      <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+                        {job.status === "running" && (
                           <Button
                             size="small"
                             variant="outlined"
-                            startIcon={<DownloadIcon />}
+                            color="error"
+                            startIcon={<CancelIcon />}
                             onClick={(e) => {
                               e.stopPropagation();
-                              window.open(`/api/v1/finetune/distillation/jobs/${job.id}/download`, "_blank");
+                              handleCancelJob(job.id);
                             }}
                             sx={{ fontSize: "0.7rem" }}
                           >
-                            Download
+                            Cancel
                           </Button>
-                          {job.output_dataset_id && (
+                        )}
+                        {job.status === "completed" && (
+                          <>
                             <Button
                               size="small"
-                              variant="contained"
-                              startIcon={<TrainIcon />}
+                              variant="outlined"
+                              startIcon={<DownloadIcon />}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleStartTraining(job);
+                                window.open(`/api/v1/finetune/distillation/jobs/${job.id}/download`, "_blank");
                               }}
-                              sx={{
-                                fontSize: "0.7rem",
-                                background: `linear-gradient(135deg, ${accentColors.success} 0%, ${accentColors.info} 100%)`,
-                              }}
+                              sx={{ fontSize: "0.7rem" }}
                             >
-                              Start Training
+                              Download
                             </Button>
-                          )}
-                        </>
-                      )}
+                            {job.output_dataset_id && (
+                              <Button
+                                size="small"
+                                variant="contained"
+                                startIcon={<TrainIcon />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleStartTraining(job);
+                                }}
+                                sx={{ fontSize: "0.7rem" }}
+                              >
+                                Open Wizard
+                              </Button>
+                            )}
+                          </>
+                        )}
+                      </Box>
                     </Box>
-                  </Box>
-                ))}
-              </Box>
+                  ))}
+                </Box>
+              </SectionCard>
+            ) : (
+              <SectionCard
+                title="Run plan"
+                icon={<TeacherIcon />}
+                accentColor={accentColors.info}
+                collapsible
+                defaultExpanded={false}
+                action={
+                  <StatusChip
+                    status={canStartDistillation ? "create" : "manual"}
+                    label={canStartDistillation ? "Ready" : "Missing input"}
+                    statusConfig={DISTILLATION_STATUS_CONFIG}
+                    height={22}
+                  />
+                }
+              >
+                <Box sx={{ display: "grid", gap: 0.75 }}>
+                  {runPlanItems.map((item) => (
+                    <Box
+                      key={item.label}
+                      sx={{
+                        p: 1,
+                        borderRadius: "8px",
+                        border: "1px solid",
+                        borderColor: item.ready ? alpha(accentColors.success, 0.28) : "divider",
+                        bgcolor: item.ready ? alpha(accentColors.success, 0.07) : "action.hover",
+                      }}
+                    >
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                        {item.label}
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 800, overflowWrap: "anywhere" }}>
+                        {item.value}
+                      </Typography>
+                    </Box>
+                  ))}
+                </Box>
+              </SectionCard>
             )}
-          </SectionCard>
+          </Box>
         </Grid>
 
 
@@ -1249,7 +1184,7 @@ export const DistillationPage: React.FC = () => {
 
               <Grid container spacing={2} sx={{ mb: 3 }}>
                 <Grid item xs={4}>
-                  <Box sx={{ textAlign: "center", p: 1.5, borderRadius: 2, bgcolor: "rgba(0, 0, 0, 0.2)" }}>
+	                  <Box sx={{ textAlign: "center", p: 1.5, borderRadius: "8px", bgcolor: "action.hover" }}>
                     <Typography sx={{ fontSize: "1.5rem", fontWeight: 700, color: accentColors.success }}>
                       {qualityAssessment.metrics.success_rate}%
                     </Typography>
@@ -1259,7 +1194,7 @@ export const DistillationPage: React.FC = () => {
                   </Box>
                 </Grid>
                 <Grid item xs={4}>
-                  <Box sx={{ textAlign: "center", p: 1.5, borderRadius: 2, bgcolor: "rgba(0, 0, 0, 0.2)" }}>
+	                  <Box sx={{ textAlign: "center", p: 1.5, borderRadius: "8px", bgcolor: "action.hover" }}>
                     <Typography sx={{ fontSize: "1.5rem", fontWeight: 700, color: accentColors.info }}>
                       {qualityAssessment.metrics.avg_quality_score}
                     </Typography>
@@ -1269,7 +1204,7 @@ export const DistillationPage: React.FC = () => {
                   </Box>
                 </Grid>
                 <Grid item xs={4}>
-                  <Box sx={{ textAlign: "center", p: 1.5, borderRadius: 2, bgcolor: "rgba(0, 0, 0, 0.2)" }}>
+	                  <Box sx={{ textAlign: "center", p: 1.5, borderRadius: "8px", bgcolor: "action.hover" }}>
                     <Typography sx={{ fontSize: "1.5rem", fontWeight: 700, color: accentColors.warning }}>
                       {qualityAssessment.metrics.total_examples}
                     </Typography>
@@ -1350,12 +1285,13 @@ export const DistillationPage: React.FC = () => {
                     .map((ex, i) => (
                       <Box
                         key={i}
-                        sx={{
-                          p: 2,
-                          borderRadius: 2,
-                          bgcolor: "rgba(0, 0, 0, 0.2)",
-                          border: "1px solid rgba(255, 255, 255, 0.06)",
-                        }}
+	                        sx={{
+	                          p: 2,
+	                          borderRadius: "8px",
+	                          bgcolor: "action.hover",
+	                          border: "1px solid",
+	                          borderColor: "divider",
+	                        }}
                       >
                         <Box sx={{ mb: 1.5 }}>
                           <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
@@ -1393,7 +1329,7 @@ export const DistillationPage: React.FC = () => {
         )}
 
       </Grid>
-    </Box>
+    </PageShell>
   );
 };
 

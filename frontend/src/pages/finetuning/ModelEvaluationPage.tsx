@@ -1,9 +1,7 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   Box,
   Typography,
-  Card,
-  CardContent,
   Button,
   TextField,
   Select,
@@ -17,11 +15,10 @@ import {
   Tooltip,
   LinearProgress,
   Divider,
-  Tabs,
-  Tab,
   Switch,
   FormControlLabel,
   Slider,
+  useMediaQuery,
   alpha,
 } from "@mui/material";
 import {
@@ -30,20 +27,22 @@ import {
   Science as BenchmarkIcon,
   Balance as ABTestIcon,
   Psychology as JudgeIcon,
-  ArrowBack as BackIcon,
   Refresh as RefreshIcon,
   PlayArrow as StartIcon,
   Pause as PauseIcon,
   Add as AddIcon,
   ThumbUp as ThumbUpIcon,
   ThumbDown as ThumbDownIcon,
-  Speed as SpeedIcon,
-  Timer as TimerIcon,
   EmojiEvents as TrophyIcon,
   AutoFixHigh as MagicIcon,
   VisibilityOff as BlindIcon,
 } from "@mui/icons-material";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import type { EvaluationRouteState } from "@/types/trainingHandoff";
+import { adapterHandoffKey, findAdapterForHandoff } from "@/types/trainingHandoff";
+import { getRoutePath } from "@/config/navigation";
+import { PageShell, SectionCard, StatusChip } from "@/components/common";
+import { accentColors } from "@/utils/theme";
 
 // Types
 type FineTuningJob = {
@@ -75,27 +74,6 @@ type PromptComparison = {
   preferred_model?: string;
 };
 
-type BenchmarkInfo = {
-  name: string;
-  display_name: string;
-  description: string;
-};
-
-type BenchmarkJob = {
-  id: string;
-  name: string;
-  status: string;
-  progress: number;
-  current_benchmark?: string;
-  results: Array<{
-    benchmark_name: string;
-    base_model_score?: number;
-    finetuned_score?: number;
-    improvement?: number;
-    num_samples: number;
-  }>;
-};
-
 // LM Evaluation Harness Types (Standardized Benchmarks)
 type LMEvalTask = {
   name: string;
@@ -124,6 +102,7 @@ type LMEvalJob = {
   log_output?: string;
   model_path?: string;
   gpu_device?: number;
+  endpoint_url?: string;
 };
 
 type TerminalBenchDataset = {
@@ -194,126 +173,6 @@ type ABTestSummary = {
   samples_needed?: number;
 };
 
-// Accent colors
-const accentColors = {
-  primary: "#6366f1",
-  success: "#10b981",
-  warning: "#f59e0b",
-  info: "#06b6d4",
-  purple: "#8b5cf6",
-  rose: "#f43f5e",
-};
-
-// Section Card Component
-interface SectionCardProps {
-  title: string;
-  subtitle?: string;
-  icon?: React.ReactNode;
-  accentColor?: string;
-  children: React.ReactNode;
-  action?: React.ReactNode;
-}
-
-const SectionCard: React.FC<SectionCardProps> = ({
-  title,
-  subtitle,
-  icon,
-  accentColor = accentColors.primary,
-  children,
-  action,
-}) => (
-  <Card
-    sx={{
-      position: "relative",
-      overflow: "hidden",
-      background: "linear-gradient(145deg, rgba(30, 30, 63, 0.6) 0%, rgba(26, 26, 46, 0.8) 100%)",
-      backdropFilter: "blur(12px)",
-      border: "1px solid rgba(255, 255, 255, 0.06)",
-      borderRadius: 3,
-      transition: "all 0.3s ease-in-out",
-      height: "100%",
-      "&:hover": {
-        borderColor: alpha(accentColor, 0.2),
-        boxShadow: `0 8px 32px ${alpha(accentColor, 0.15)}`,
-      },
-    }}
-  >
-    <Box
-      sx={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        height: 3,
-        background: `linear-gradient(90deg, ${accentColor} 0%, ${alpha(accentColor, 0.3)} 100%)`,
-      }}
-    />
-    <CardContent sx={{ p: 2.5 }}>
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2.5 }}>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-          {icon && (
-            <Box
-              sx={{
-                width: 40,
-                height: 40,
-                borderRadius: 2,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                bgcolor: alpha(accentColor, 0.1),
-                color: accentColor,
-                "& .MuiSvgIcon-root": { fontSize: 22 },
-              }}
-            >
-              {icon}
-            </Box>
-          )}
-          <Box>
-            <Typography variant="h6" sx={{ fontWeight: 600, fontSize: "1rem", lineHeight: 1.3 }}>
-              {title}
-            </Typography>
-            {subtitle && (
-              <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.75rem" }}>
-                {subtitle}
-              </Typography>
-            )}
-          </Box>
-        </Box>
-        {action}
-      </Box>
-      <Box sx={{ maxWidth: "100%", overflow: "auto" }}>{children}</Box>
-    </CardContent>
-  </Card>
-);
-
-// Status Chip
-const StatusChip: React.FC<{ status: string }> = ({ status }) => {
-  const config: Record<string, { color: string; label: string }> = {
-    completed: { color: accentColors.success, label: "Completed" },
-    running: { color: accentColors.info, label: "Running" },
-    failed: { color: accentColors.rose, label: "Failed" },
-    pending: { color: accentColors.warning, label: "Pending" },
-    draft: { color: "#64748b", label: "Draft" },
-    paused: { color: accentColors.warning, label: "Paused" },
-  };
-  const { color, label } = config[status] || { color: "#64748b", label: status };
-
-  return (
-    <Chip
-      label={label}
-      size="small"
-      sx={{
-        bgcolor: alpha(color, 0.1),
-        color: color,
-        border: `1px solid ${alpha(color, 0.3)}`,
-        fontWeight: 600,
-        fontSize: "0.7rem",
-        height: 24,
-      }}
-    />
-  );
-};
-
 // Metric Bar Component
 const MetricBar: React.FC<{
   label: string;
@@ -349,28 +208,57 @@ const MetricBar: React.FC<{
   );
 };
 
+const evaluationIconButtonSx = {
+  width: 32,
+  height: 32,
+  borderRadius: "8px",
+  border: "1px solid",
+  borderColor: "divider",
+  bgcolor: "action.hover",
+  color: "text.secondary",
+  "&:hover": {
+    bgcolor: "action.selected",
+  },
+} as const;
+
+const evaluationModeButtonSx = {
+  height: 32,
+  minWidth: 0,
+  px: 1,
+  borderRadius: "8px",
+  border: "1px solid",
+  textTransform: "none",
+  fontSize: "0.74rem",
+  fontWeight: 800,
+  lineHeight: 1,
+  "& .MuiButton-startIcon": {
+    mr: 0.5,
+    ml: 0,
+  },
+} as const;
+
 export const ModelEvaluationPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isNarrow = useMediaQuery("(max-width:599.95px)");
+  const benchmarkComparisonPath = getRoutePath("finetuning-benchmarks");
+  const routeState = location.state as EvaluationRouteState | null;
+  const incomingAdapter = routeState?.adapter;
+  const appliedAdapterHandoffRef = useRef("");
   const [activeTab, setActiveTab] = useState(0);
   const [jobs, setJobs] = useState<FineTuningJob[]>([]);
   const [sessions, setSessions] = useState<ComparisonSession[]>([]);
   const [selectedSession, setSelectedSession] = useState<ComparisonSession | null>(null);
   const [comparisons, setComparisons] = useState<PromptComparison[]>([]);
-  const [benchmarks, setBenchmarks] = useState<BenchmarkInfo[]>([]);
-  const [benchmarkJobs, setBenchmarkJobs] = useState<BenchmarkJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
+  const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
 
   // Comparison form
   const [sessionName, setSessionName] = useState("");
   const [selectedAdapter, setSelectedAdapter] = useState("");
   const [testPrompt, setTestPrompt] = useState("");
   const [blindMode, setBlindMode] = useState(false);
-
-  // Benchmark form (legacy)
-  const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([]);
-  const [benchmarkAdapter, setBenchmarkAdapter] = useState("");
-  const [benchmarkSampleCount, setBenchmarkSampleCount] = useState(100);
 
   // LM-Eval (Standardized Benchmarks)
   const [lmEvalAvailable, setLmEvalAvailable] = useState(false);
@@ -381,10 +269,6 @@ export const ModelEvaluationPage: React.FC = () => {
   const [lmEvalLimit, setLmEvalLimit] = useState<number | null>(100);
   const [lmEvalRunning, setLmEvalRunning] = useState(false);
   const [lmEvalProgress, setLmEvalProgress] = useState("");
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string>("");
-  const [availableGpus, setAvailableGpus] = useState<Array<{ index: number; name: string }>>([]);
-  const [selectedGpu, setSelectedGpu] = useState<number | null>(null);
   const [terminalBenchAvailable, setTerminalBenchAvailable] = useState(false);
   const [terminalBenchDatasets, setTerminalBenchDatasets] = useState<TerminalBenchDataset[]>([]);
   const [terminalBenchJobs, setTerminalBenchJobs] = useState<TerminalBenchJob[]>([]);
@@ -422,32 +306,12 @@ export const ModelEvaluationPage: React.FC = () => {
     } catch { }
   }, []);
 
-  const fetchBenchmarks = useCallback(async () => {
-    try {
-      const res = await fetch("/api/v1/finetune/benchmarks/available");
-      if (res.ok) {
-        const data = await res.json();
-        setBenchmarks(data.benchmarks || []);
-      }
-    } catch { }
-  }, []);
-
   const fetchAbTests = useCallback(async () => {
     try {
       const res = await fetch("/api/v1/finetune/ab-tests");
       if (res.ok) {
         const data = await res.json();
         setAbTests(data.tests || []);
-      }
-    } catch { }
-  }, []);
-
-  const fetchBenchmarkJobs = useCallback(async () => {
-    try {
-      const res = await fetch("/api/v1/finetune/benchmarks/jobs");
-      if (res.ok) {
-        const data = await res.json();
-        setBenchmarkJobs(data.jobs || []);
       }
     } catch { }
   }, []);
@@ -517,45 +381,9 @@ export const ModelEvaluationPage: React.FC = () => {
     } catch { }
   }, []);
 
-  const fetchAvailableModels = useCallback(async () => {
-    try {
-      // Use local-files endpoint to list all GGUF files on disk
-      const res = await fetch("/v1/models/local-files");
-      if (res.ok) {
-        const data = await res.json();
-        // Response format: { data: { files: [{name, path, extension...}] } }
-        const files = data.data?.files || [];
-        // Filter for GGUF files only
-        const ggufModels = files
-          .filter((f: { extension?: string }) => f.extension?.toLowerCase() === '.gguf')
-          .map((f: { name?: string }) => f.name || '');
-        setAvailableModels(ggufModels);
-        // Auto-select first model if none selected
-        if (ggufModels.length > 0 && !selectedModel) {
-          setSelectedModel(ggufModels[0]);
-        }
-      }
-    } catch { }
-  }, [selectedModel]);
-
-  // Initialize GPU list (matching FineTuningPage pattern)
-  useEffect(() => {
-    // Use standard GPU indices like FineTuningPage does
-    const defaultGpus = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({
-      index: i,
-      name: `GPU ${i}`,
-    }));
-    setAvailableGpus(defaultGpus);
-    if (selectedGpu === null) {
-      setSelectedGpu(0);
-    }
-  }, [selectedGpu]);
-
   useEffect(() => {
     fetchJobs();
     fetchSessions();
-    fetchBenchmarks();
-    fetchBenchmarkJobs();
     fetchAbTests();
     // Initialize lm-eval
     fetchLmEvalStatus();
@@ -564,11 +392,9 @@ export const ModelEvaluationPage: React.FC = () => {
     fetchTerminalBenchStatus();
     fetchTerminalBenchDatasets();
     fetchTerminalBenchJobs();
-    fetchAvailableModels();
 
     const interval = setInterval(() => {
       fetchSessions();
-      fetchBenchmarkJobs();
       fetchAbTests();
       fetchLmEvalJobs();
       fetchTerminalBenchJobs();
@@ -577,10 +403,7 @@ export const ModelEvaluationPage: React.FC = () => {
   }, [
     fetchJobs,
     fetchSessions,
-    fetchBenchmarks,
-    fetchBenchmarkJobs,
     fetchAbTests,
-    fetchAvailableModels,
     fetchLmEvalStatus,
     fetchLmEvalTasks,
     fetchLmEvalJobs,
@@ -610,6 +433,39 @@ export const ModelEvaluationPage: React.FC = () => {
       .then(setAbTestSummary)
       .catch(() => setAbTestSummary(null));
   }, [selectedAbTest]);
+
+  useEffect(() => {
+    if (!incomingAdapter || jobs.length === 0) return;
+
+    const handoffKey = adapterHandoffKey(incomingAdapter);
+    if (appliedAdapterHandoffRef.current === handoffKey) return;
+
+    const matchedJob = findAdapterForHandoff(
+      incomingAdapter,
+      jobs,
+      (job) => job.status.toLowerCase() === "completed" && Boolean(job.adapter_path)
+    );
+
+    appliedAdapterHandoffRef.current = handoffKey;
+    if (!matchedJob) {
+      setHandoffNotice(`${incomingAdapter.name || "Adapter"} is not available for side-by-side evaluation yet`);
+      return;
+    }
+
+    setSelectedAdapter(matchedJob.id);
+    setSessionName((current) => current || `${incomingAdapter.name || matchedJob.name} evaluation`);
+    setActiveTab(0);
+    setHandoffNotice(`${incomingAdapter.name || matchedJob.name} selected for side-by-side evaluation`);
+  }, [
+    incomingAdapter,
+    incomingAdapter?.adapterPath,
+    incomingAdapter?.baseModel,
+    incomingAdapter?.id,
+    incomingAdapter?.name,
+    incomingAdapter?.source,
+    incomingAdapter?.trainingJobId,
+    jobs,
+  ]);
 
   const handleCreateSession = async () => {
     if (!sessionName || !selectedAdapter) {
@@ -696,43 +552,6 @@ export const ModelEvaluationPage: React.FC = () => {
     }
   };
 
-  const toggleBenchmark = (name: string) => {
-    setSelectedBenchmarks((prev) => (prev.includes(name) ? prev.filter((b) => b !== name) : [...prev, name]));
-  };
-
-  const handleRunBenchmark = async () => {
-    if (selectedBenchmarks.length === 0) {
-      setError("Select at least one benchmark");
-      return;
-    }
-    setActionStatus("Creating benchmark job...");
-    try {
-      const job = jobs.find((j) => j.id === benchmarkAdapter);
-      const benchmarkConfigs = selectedBenchmarks.map((name) => ({
-        benchmark_name: name,
-        num_samples: benchmarkSampleCount,
-        num_few_shot: 3,
-        temperature: 0.0,
-      }));
-      const res = await fetch("/api/v1/finetune/benchmarks/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: `Benchmark ${new Date().toISOString().slice(0, 16)}`,
-          base_model: job?.base_model || "unknown",
-          adapter_id: benchmarkAdapter || undefined,
-          benchmarks: benchmarkConfigs,
-        }),
-      });
-      const jobData = await res.json();
-      await fetch(`/api/v1/finetune/benchmarks/jobs/${jobData.id}/start`, { method: "POST" });
-      setActionStatus("Benchmark started successfully");
-      fetchBenchmarkJobs();
-    } catch {
-      setError("Failed to start benchmark");
-    }
-  };
-
   // LM-Eval toggle and run handler
   const toggleLmEvalTask = (name: string) => {
     setSelectedLmEvalTasks((prev) =>
@@ -745,25 +564,18 @@ export const ModelEvaluationPage: React.FC = () => {
       setError("Select at least one benchmark task");
       return;
     }
-    if (!selectedModel) {
-      setError("Please select a model to evaluate");
-      return;
-    }
 
     setLmEvalRunning(true);
     setLmEvalProgress("Creating benchmark job...");
     setError(null);
 
     try {
-      // Create job with model_path
       const createRes = await fetch("/api/v1/finetune/lm-eval/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: `LM-Eval ${new Date().toISOString().slice(0, 16)}`,
           tasks: selectedLmEvalTasks,
-          model_path: selectedModel,
-          gpu_device: selectedGpu,
           num_fewshot: lmEvalFewshot,
           limit: lmEvalLimit,
         }),
@@ -812,11 +624,6 @@ export const ModelEvaluationPage: React.FC = () => {
   };
 
   const handleRunTerminalBench = async () => {
-    if (!selectedModel) {
-      setError("Please select a model before running Terminal-Bench");
-      return;
-    }
-
     setTerminalBenchRunning(true);
     setTerminalBenchProgress("Creating Terminal-Bench job...");
     setError(null);
@@ -833,8 +640,6 @@ export const ModelEvaluationPage: React.FC = () => {
           n_concurrent: terminalBenchConcurrency,
           timeout_multiplier: 1.0,
           harbor_agent: "local-openai-agent",
-          model_name: selectedModel,
-          endpoint_url: "http://llamacpp-api:8080/v1",
           api_key: "placeholder-api-key",
         }),
       });
@@ -943,128 +748,152 @@ export const ModelEvaluationPage: React.FC = () => {
   };
 
   const completedJobs = jobs.filter((j) => j.status === "completed" && j.adapter_path);
-
-  return (
+  const comparisonTotal = sessions.reduce((total, session) => total + session.total_comparisons, 0);
+  const benchmarkJobTotal = lmEvalJobs.length + terminalBenchJobs.length;
+  const recentBenchmarkJobs = [...terminalBenchJobs, ...lmEvalJobs]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 3);
+  const evaluationQueueStats = [
+    { label: "Adapters", value: completedJobs.length, color: accentColors.success, summaryLabel: completedJobs.length === 1 ? "adapter" : "adapters" },
+    { label: "Sessions", value: sessions.length, color: accentColors.primary, summaryLabel: sessions.length === 1 ? "session" : "sessions" },
+    { label: "Benchmarks", value: benchmarkJobTotal, color: accentColors.info, summaryLabel: benchmarkJobTotal === 1 ? "benchmark job" : "benchmark jobs" },
+    { label: "A/B", value: abTests.length, color: accentColors.purple, summaryLabel: abTests.length === 1 ? "A/B test" : "A/B tests" },
+  ].filter((item) => item.value > 0);
+  const evaluationQueueSubtitle = evaluationQueueStats.map((item) => `${item.value} ${item.summaryLabel}`).join(" / ");
+  const evaluationModes = [
+    { label: "Side-by-side", shortLabel: "Side-by-side", icon: <CompareIcon sx={{ fontSize: 16 }} /> },
+    { label: "Benchmark jobs", shortLabel: "Benchmarks", icon: <BenchmarkIcon sx={{ fontSize: 16 }} /> },
+    { label: "A/B testing", shortLabel: "A/B", icon: <ABTestIcon sx={{ fontSize: 16 }} /> },
+    { label: "LLM judge", shortLabel: "Judge", icon: <JudgeIcon sx={{ fontSize: 16 }} /> },
+  ];
+  const refreshEvaluationData = () => {
+    fetchSessions();
+    fetchAbTests();
+    fetchLmEvalJobs();
+    fetchTerminalBenchJobs();
+  };
+  const hasEvaluationSummary =
+    sessions.length > 0 ||
+    completedJobs.length > 0 ||
+    benchmarkJobTotal > 0 ||
+    comparisonTotal > 0 ||
+    abTests.length > 0;
+  const evaluationHeaderActions = (
     <Box
       sx={{
-        width: "100%",
-        maxWidth: "100vw",
-        overflow: "hidden",
-        px: { xs: 2, sm: 3, md: 4 },
-        py: 3,
-        boxSizing: "border-box",
-        minHeight: "100%",
+        display: "flex",
+        alignItems: "center",
+        gap: 0.5,
+        flexWrap: "nowrap",
+        justifyContent: "flex-end",
       }}
     >
-      {/* Header */}
-      <Box
-        sx={{
-          display: "flex",
-          flexDirection: { xs: "column", sm: "row" },
-          justifyContent: "space-between",
-          alignItems: { xs: "flex-start", sm: "center" },
-          mb: 4,
-          gap: 2,
-        }}
-      >
-        <Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 1 }}>
-            <Typography
-              variant="h1"
-              sx={{
-                fontWeight: 700,
-                fontSize: { xs: "1.5rem", sm: "1.75rem", md: "2rem" },
-                lineHeight: 1,
-                background: "linear-gradient(135deg, #f1f5f9 0%, #94a3b8 100%)",
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent",
-              }}
-            >
-              Model Evaluation
-            </Typography>
-          </Box>
-          <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.875rem", maxWidth: 500 }}>
-            Compare, benchmark, and evaluate your fine-tuned models
-          </Typography>
-        </Box>
-
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+      {evaluationModes.map((mode, index) => (
+        <Tooltip key={mode.label} title={mode.label}>
           <Button
-            variant="outlined"
             size="small"
-            startIcon={<BackIcon />}
-            onClick={() => navigate("/benchmark")}
+            aria-label={mode.label}
+            aria-pressed={activeTab === index}
+            onClick={() => setActiveTab(index)}
+            startIcon={isNarrow ? undefined : mode.icon}
             sx={{
-              borderColor: "rgba(255, 255, 255, 0.1)",
-              color: "text.secondary",
-              "&:hover": { borderColor: accentColors.primary, color: accentColors.primary },
+              ...evaluationModeButtonSx,
+              width: { xs: 32, sm: "auto" },
+              px: { xs: 0, sm: 1 },
+              color: activeTab === index ? accentColors.primary : "text.secondary",
+              borderColor: activeTab === index ? alpha(accentColors.primary, 0.65) : "divider",
+              bgcolor: activeTab === index ? alpha(accentColors.primary, 0.16) : "action.hover",
+              "&:hover": {
+                bgcolor: activeTab === index ? alpha(accentColors.primary, 0.22) : "action.selected",
+              },
             }}
           >
-            Back
+            {isNarrow ? mode.icon : mode.shortLabel}
           </Button>
-          <Tooltip title="Refresh">
-            <IconButton
-              size="small"
-              onClick={() => {
-                fetchSessions();
-                fetchBenchmarkJobs();
-                fetchAbTests();
-                fetchLmEvalJobs();
-                fetchTerminalBenchJobs();
-              }}
-              sx={{
-                width: 38,
-                height: 38,
-                borderRadius: 2,
-                border: "1px solid rgba(255, 255, 255, 0.08)",
-                bgcolor: "rgba(255, 255, 255, 0.03)",
-              }}
-            >
-              <RefreshIcon sx={{ fontSize: 18 }} />
-            </IconButton>
-          </Tooltip>
-        </Box>
-      </Box>
+        </Tooltip>
+      ))}
+      <Tooltip title="Refresh evaluation data">
+        <IconButton
+          aria-label="Refresh evaluation data"
+          size="small"
+          onClick={refreshEvaluationData}
+          sx={evaluationIconButtonSx}
+        >
+          <RefreshIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  );
+  const evaluationSummaryRow = hasEvaluationSummary && !isNarrow ? (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexWrap: "wrap", mb: 1 }}>
+      {sessions.length > 0 && (
+        <Chip size="small" label={`${sessions.length} sessions`} sx={{ height: 22, fontSize: "0.68rem", fontWeight: 800 }} />
+      )}
+      {completedJobs.length > 0 && (
+        <Chip size="small" label={`${completedJobs.length} adapters`} sx={{ height: 22, fontSize: "0.68rem", fontWeight: 800 }} />
+      )}
+      {benchmarkJobTotal > 0 && (
+        <Chip size="small" label={`${benchmarkJobTotal} benchmark jobs`} sx={{ height: 22, fontSize: "0.68rem", fontWeight: 800 }} />
+      )}
+      {(comparisonTotal > 0 || abTests.length > 0) && (
+        <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
+          {comparisonTotal} comparisons / {abTests.length} A/B tests
+        </Typography>
+      )}
+    </Box>
+  ) : null;
+  const queueItemSx = {
+    p: 1,
+    borderRadius: "8px",
+    border: "1px solid",
+    borderColor: "divider",
+    bgcolor: "action.hover",
+    minWidth: 0,
+  } as const;
+
+  return (
+    <PageShell sx={{ py: 1.25 }}>
 
       {/* Alerts */}
       {error && (
-        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
+        <Alert severity="error" sx={{ mb: 1.25 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
+      {handoffNotice && (
+        <Alert severity="info" sx={{ mb: 1.25 }} onClose={() => setHandoffNotice(null)}>
+          {handoffNotice}
+        </Alert>
+      )}
       {actionStatus && (
-        <Alert severity="success" sx={{ mb: 3 }} onClose={() => setActionStatus(null)}>
+        <Alert severity="success" sx={{ mb: 1.25 }} onClose={() => setActionStatus(null)}>
           {actionStatus}
         </Alert>
       )}
 
-      {/* Tabs */}
-      <Box sx={{ mb: 3 }}>
-        <Tabs
-          value={activeTab}
-          onChange={(_, v) => setActiveTab(v)}
-          sx={{
-            "& .MuiTab-root": {
-              textTransform: "none",
-              fontWeight: 600,
-              fontSize: "0.875rem",
-              minHeight: 44,
-            },
-          }}
-        >
-          <Tab icon={<CompareIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="Side-by-Side" />
-          <Tab icon={<BenchmarkIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="Benchmark Jobs" />
-          <Tab icon={<ABTestIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="A/B Testing" />
-          <Tab icon={<JudgeIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="LLM Judge" />
-        </Tabs>
-      </Box>
-
       {/* Side-by-Side Comparison Tab */}
       {activeTab === 0 && (
-        <Grid container spacing={3}>
-          <Grid item xs={12} md={4}>
-            <SectionCard title="Comparison Sessions" icon={<CompareIcon />} accentColor={accentColors.primary}>
-              <Box sx={{ mb: 3, p: 2, bgcolor: "rgba(0, 0, 0, 0.2)", borderRadius: 2 }}>
+        <Grid container spacing={1.25} alignItems="flex-start">
+          <Grid item xs={12} md={selectedSession ? 4 : 8} lg={selectedSession ? 4 : 8}>
+            <SectionCard title="Comparison Sessions" icon={<CompareIcon />} accentColor={accentColors.primary} action={evaluationHeaderActions}>
+              {evaluationSummaryRow}
+              <Box
+                sx={{
+                  mb: 1,
+                  p: 1,
+                  bgcolor: "action.hover",
+                  borderRadius: "8px",
+                  border: "1px solid",
+                  borderColor: "divider",
+                  display: "grid",
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    md: selectedSession ? "1fr" : "minmax(180px, 1.15fr) minmax(180px, 1fr) auto",
+                  },
+                  alignItems: "center",
+                  gap: 1,
+                }}
+              >
                 <TextField
                   label="Session Name"
                   value={sessionName}
@@ -1072,9 +901,8 @@ export const ModelEvaluationPage: React.FC = () => {
                   placeholder="e.g., coding-quality-test"
                   fullWidth
                   size="small"
-                  sx={{ mb: 1.5 }}
                 />
-                <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
+                <FormControl fullWidth size="small">
                   <InputLabel>Select Adapter</InputLabel>
                   <Select value={selectedAdapter} onChange={(e) => setSelectedAdapter(e.target.value)} label="Select Adapter">
                     <MenuItem value="">
@@ -1087,45 +915,48 @@ export const ModelEvaluationPage: React.FC = () => {
                     ))}
                   </Select>
                 </FormControl>
-                <FormControlLabel
-                  control={<Switch checked={blindMode} onChange={(e) => setBlindMode(e.target.checked)} size="small" />}
-                  label={
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                      <BlindIcon sx={{ fontSize: 16 }} />
-                      <Typography variant="body2">Blind mode</Typography>
-                    </Box>
-                  }
-                  sx={{ mb: 1.5 }}
-                />
-                <Button
-                  variant="contained"
-                  fullWidth
-                  startIcon={<AddIcon />}
-                  onClick={handleCreateSession}
-                  sx={{ background: `linear-gradient(135deg, ${accentColors.primary} 0%, ${accentColors.purple} 100%)` }}
-                >
-                  Create Session
-                </Button>
+                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 1, minWidth: 0 }}>
+                  <FormControlLabel
+                    control={<Switch checked={blindMode} onChange={(e) => setBlindMode(e.target.checked)} size="small" />}
+                    label={
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                        <BlindIcon sx={{ fontSize: 16 }} />
+                        <Typography variant="body2">Blind mode</Typography>
+                      </Box>
+                    }
+                    sx={{ m: 0 }}
+                  />
+                  <Button
+                    variant="contained"
+                    startIcon={<AddIcon />}
+                    onClick={handleCreateSession}
+                    sx={{
+                      height: 32,
+                      borderRadius: "8px",
+                      fontWeight: 800,
+                      px: 1.25,
+                      minWidth: 0,
+                      textTransform: "none",
+                      background: `linear-gradient(135deg, ${accentColors.primary} 0%, ${accentColors.purple} 100%)`,
+                    }}
+                  >
+                    Create
+                  </Button>
+                </Box>
               </Box>
 
-              {sessions.length === 0 ? (
-                <Box sx={{ p: 3, textAlign: "center" }}>
-                  <CompareIcon sx={{ fontSize: 40, color: "text.secondary", opacity: 0.3, mb: 1 }} />
-                  <Typography variant="body2" color="text.secondary">
-                    No sessions yet
-                  </Typography>
-                </Box>
-              ) : (
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+              {sessions.length > 0 && (
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
                   {sessions.map((s) => (
                     <Box
                       key={s.id}
                       onClick={() => setSelectedSession(s)}
                       sx={{
-                        p: 2,
-                        borderRadius: 2,
-                        bgcolor: selectedSession?.id === s.id ? alpha(accentColors.success, 0.1) : "rgba(255, 255, 255, 0.02)",
-                        border: `1px solid ${selectedSession?.id === s.id ? accentColors.success : "rgba(255, 255, 255, 0.06)"}`,
+                        p: 1,
+                        borderRadius: "8px",
+                        bgcolor: selectedSession?.id === s.id ? alpha(accentColors.success, 0.1) : "background.paper",
+                        border: "1px solid",
+                        borderColor: selectedSession?.id === s.id ? accentColors.success : "divider",
                         cursor: "pointer",
                         transition: "all 0.2s",
                         "&:hover": { bgcolor: alpha(accentColors.primary, 0.08) },
@@ -1144,136 +975,187 @@ export const ModelEvaluationPage: React.FC = () => {
             </SectionCard>
           </Grid>
 
-          <Grid item xs={12} md={8}>
+          {!selectedSession && (
+            <Grid item xs={12} md={4} lg={4}>
+              <SectionCard
+                title="Evaluation queue"
+                subtitle={evaluationQueueSubtitle || undefined}
+                icon={<EvalIcon />}
+                accentColor={accentColors.info}
+                collapsible={isNarrow}
+                defaultExpanded={!isNarrow}
+              >
+                {evaluationQueueStats.length > 0 && (
+                  <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 1, mb: recentBenchmarkJobs.length > 0 ? 1 : 0 }}>
+                    {evaluationQueueStats.map((item) => (
+                      <Box key={item.label} sx={{ ...queueItemSx, borderColor: alpha(item.color, 0.24), bgcolor: alpha(item.color, 0.08) }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.1 }}>
+                          {item.label}
+                        </Typography>
+                        <Typography variant="body2" sx={{ fontWeight: 900 }}>
+                          {item.value}
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Box>
+                )}
+
+                {recentBenchmarkJobs.length > 0 && (
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
+                    {recentBenchmarkJobs.map((job) => (
+                      <Box key={job.id} sx={queueItemSx}>
+                        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+                          <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+                            {"tasks" in job ? job.tasks.join(", ") : job.name}
+                          </Typography>
+                          <StatusChip status={job.status} />
+                        </Box>
+                        <Typography variant="caption" color="text.secondary" noWrap>
+                          {new Date(job.created_at).toLocaleString()}
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Box>
+                )}
+              </SectionCard>
+            </Grid>
+          )}
+
+          {selectedSession && (
+            <Grid item xs={12} md={8}>
             <SectionCard
-              title={selectedSession ? selectedSession.name : "Comparison View"}
-              subtitle={selectedSession ? `${selectedSession.total_comparisons} comparisons` : "Select a session"}
+              title={selectedSession.name}
+              subtitle={`${selectedSession.total_comparisons} comparisons`}
               icon={<EvalIcon />}
               accentColor={accentColors.info}
             >
-              {selectedSession ? (
-                <Box>
-                  <Box sx={{ display: "flex", gap: 1.5, mb: 3 }}>
-                    <TextField
-                      value={testPrompt}
-                      onChange={(e) => setTestPrompt(e.target.value)}
-                      placeholder="Enter a test prompt..."
-                      fullWidth
-                      size="small"
-                    />
-                    <Button variant="contained" onClick={handleRunComparison} disabled={!testPrompt}>
-                      Compare
-                    </Button>
+              <Box>
+                <Box sx={{ display: "flex", gap: 1, mb: 1.25 }}>
+                  <TextField
+                    value={testPrompt}
+                    onChange={(e) => setTestPrompt(e.target.value)}
+                    placeholder="Enter a test prompt..."
+                    fullWidth
+                    size="small"
+                  />
+                  <Button variant="contained" onClick={handleRunComparison} disabled={!testPrompt}>
+                    Compare
+                  </Button>
+                </Box>
+
+                {comparisons.length === 0 ? (
+                  <Box
+                    sx={{
+                      px: 1,
+                      py: 0.75,
+                      borderRadius: "8px",
+                      border: "1px dashed",
+                      borderColor: "divider",
+                    }}
+                  >
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      No comparisons
+                    </Typography>
                   </Box>
+                ) : (
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 500, overflow: "auto" }}>
+                    {comparisons.map((comp) => (
+                      <Box
+                        key={comp.id}
+                        sx={{
+                          p: 2,
+                          borderRadius: 2,
+                          bgcolor: "rgba(0, 0, 0, 0.2)",
+                          border: "1px solid rgba(255, 255, 255, 0.06)",
+                        }}
+                      >
+                        <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: "block" }}>
+                          Prompt: {comp.prompt}
+                        </Typography>
 
-                  {comparisons.length === 0 ? (
-                    <Box sx={{ p: 4, textAlign: "center" }}>
-                      <Typography color="text.secondary">No comparisons yet. Enter a prompt to start.</Typography>
-                    </Box>
-                  ) : (
-                    <Box sx={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 500, overflow: "auto" }}>
-                      {comparisons.map((comp) => (
-                        <Box
-                          key={comp.id}
-                          sx={{
-                            p: 2,
-                            borderRadius: 2,
-                            bgcolor: "rgba(0, 0, 0, 0.2)",
-                            border: "1px solid rgba(255, 255, 255, 0.06)",
-                          }}
-                        >
-                          <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: "block" }}>
-                            Prompt: {comp.prompt}
-                          </Typography>
-
-                          <Grid container spacing={2} sx={{ mb: 2 }}>
-                            <Grid item xs={6}>
-                              <Box
-                                sx={{
-                                  p: 1.5,
-                                  borderRadius: 1.5,
-                                  bgcolor: "rgba(0, 0, 0, 0.3)",
-                                  border: `2px solid ${comp.preferred_model === "base" ? accentColors.success : "rgba(255, 255, 255, 0.1)"}`,
-                                }}
-                              >
-                                <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
-                                  <Typography variant="caption" color="text.secondary">
-                                    {blindMode ? "Response A" : "Base Model"}
-                                  </Typography>
-                                  <Typography variant="caption" sx={{ color: accentColors.info }}>
-                                    {comp.base_response?.tokens_per_second?.toFixed(1)} t/s
-                                  </Typography>
-                                </Box>
-                                <Typography variant="body2" sx={{ fontSize: "0.8rem", whiteSpace: "pre-wrap" }}>
-                                  {comp.base_response?.response || "-"}
+                        <Grid container spacing={2} sx={{ mb: 2 }}>
+                          <Grid item xs={6}>
+                            <Box
+                              sx={{
+                                p: 1.5,
+                                borderRadius: 1.5,
+                                bgcolor: "rgba(0, 0, 0, 0.3)",
+                                border: `2px solid ${comp.preferred_model === "base" ? accentColors.success : "rgba(255, 255, 255, 0.1)"}`,
+                              }}
+                            >
+                              <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
+                                <Typography variant="caption" color="text.secondary">
+                                  {blindMode ? "Response A" : "Base Model"}
+                                </Typography>
+                                <Typography variant="caption" sx={{ color: accentColors.info }}>
+                                  {comp.base_response?.tokens_per_second?.toFixed(1)} t/s
                                 </Typography>
                               </Box>
-                            </Grid>
-                            <Grid item xs={6}>
-                              <Box
-                                sx={{
-                                  p: 1.5,
-                                  borderRadius: 1.5,
-                                  bgcolor: "rgba(0, 0, 0, 0.3)",
-                                  border: `2px solid ${comp.preferred_model === "finetuned" ? accentColors.success : "rgba(255, 255, 255, 0.1)"}`,
-                                }}
-                              >
-                                <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
-                                  <Typography variant="caption" color="text.secondary">
-                                    {blindMode ? "Response B" : "Fine-tuned"}
-                                  </Typography>
-                                  <Typography variant="caption" sx={{ color: accentColors.success }}>
-                                    {comp.finetuned_response?.tokens_per_second?.toFixed(1)} t/s
-                                  </Typography>
-                                </Box>
-                                <Typography variant="body2" sx={{ fontSize: "0.8rem", whiteSpace: "pre-wrap" }}>
-                                  {comp.finetuned_response?.response || "-"}
-                                </Typography>
-                              </Box>
-                            </Grid>
-                          </Grid>
-
-                          {!comp.preferred_model ? (
-                            <Box sx={{ display: "flex", gap: 1 }}>
-                              <Button size="small" onClick={() => handleRate(comp.id, "base")}>
-                                {blindMode ? "A is Better" : "Base Better"}
-                              </Button>
-                              <Button size="small" variant="outlined" onClick={() => handleRate(comp.id, "tie")}>
-                                Tie
-                              </Button>
-                              <Button size="small" onClick={() => handleRate(comp.id, "finetuned")}>
-                                {blindMode ? "B is Better" : "Tuned Better"}
-                              </Button>
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                startIcon={<JudgeIcon sx={{ fontSize: 14 }} />}
-                                onClick={() => handleRunJudge(comp.id)}
-                                sx={{ ml: "auto" }}
-                              >
-                                LLM Judge
-                              </Button>
+                              <Typography variant="body2" sx={{ fontSize: "0.8rem", whiteSpace: "pre-wrap" }}>
+                                {comp.base_response?.response || "-"}
+                              </Typography>
                             </Box>
-                          ) : (
-                            <Chip
-                              label={`Preferred: ${comp.preferred_model}`}
+                          </Grid>
+                          <Grid item xs={6}>
+                            <Box
+                              sx={{
+                                p: 1.5,
+                                borderRadius: 1.5,
+                                bgcolor: "rgba(0, 0, 0, 0.3)",
+                                border: `2px solid ${comp.preferred_model === "finetuned" ? accentColors.success : "rgba(255, 255, 255, 0.1)"}`,
+                              }}
+                            >
+                              <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
+                                <Typography variant="caption" color="text.secondary">
+                                  {blindMode ? "Response B" : "Fine-tuned"}
+                                </Typography>
+                                <Typography variant="caption" sx={{ color: accentColors.success }}>
+                                  {comp.finetuned_response?.tokens_per_second?.toFixed(1)} t/s
+                                </Typography>
+                              </Box>
+                              <Typography variant="body2" sx={{ fontSize: "0.8rem", whiteSpace: "pre-wrap" }}>
+                                {comp.finetuned_response?.response || "-"}
+                              </Typography>
+                            </Box>
+                          </Grid>
+                        </Grid>
+
+                        {!comp.preferred_model ? (
+                          <Box sx={{ display: "flex", gap: 1 }}>
+                            <Button size="small" onClick={() => handleRate(comp.id, "base")}>
+                              {blindMode ? "A is Better" : "Base Better"}
+                            </Button>
+                            <Button size="small" variant="outlined" onClick={() => handleRate(comp.id, "tie")}>
+                              Tie
+                            </Button>
+                            <Button size="small" onClick={() => handleRate(comp.id, "finetuned")}>
+                              {blindMode ? "B is Better" : "Tuned Better"}
+                            </Button>
+                            <Button
                               size="small"
-                              sx={{ bgcolor: alpha(accentColors.success, 0.1), color: accentColors.success }}
-                            />
-                          )}
-                        </Box>
-                      ))}
-                    </Box>
-                  )}
-                </Box>
-              ) : (
-                <Box sx={{ p: 4, textAlign: "center" }}>
-                  <EvalIcon sx={{ fontSize: 48, color: "text.secondary", opacity: 0.3, mb: 2 }} />
-                  <Typography color="text.secondary">Select or create a session to start comparing</Typography>
-                </Box>
-              )}
+                              variant="outlined"
+                              startIcon={<JudgeIcon sx={{ fontSize: 14 }} />}
+                              onClick={() => handleRunJudge(comp.id)}
+                              sx={{ ml: "auto" }}
+                            >
+                              LLM Judge
+                            </Button>
+                          </Box>
+                        ) : (
+                          <Chip
+                            label={`Preferred: ${comp.preferred_model}`}
+                            size="small"
+                            sx={{ bgcolor: alpha(accentColors.success, 0.1), color: accentColors.success }}
+                          />
+                        )}
+                      </Box>
+                    ))}
+                  </Box>
+                )}
+              </Box>
             </SectionCard>
-          </Grid>
+            </Grid>
+          )}
         </Grid>
       )}
 
@@ -1282,51 +1164,23 @@ export const ModelEvaluationPage: React.FC = () => {
         <Grid container spacing={3}>
           <Grid item xs={12} md={5}>
             <SectionCard
+              fullHeight
               title="LM Evaluation Harness"
               subtitle={lmEvalAvailable ? "Standardized Benchmarks" : "Checking availability..."}
               icon={<BenchmarkIcon />}
               accentColor={accentColors.info}
+              action={evaluationHeaderActions}
             >
+              {evaluationSummaryRow}
               {!lmEvalAvailable && lmEvalTasks.length === 0 ? (
                 <Alert severity="warning" sx={{ mb: 2 }}>
                   lm-evaluation-harness is initializing or not available. Rebuild the backend container to install.
                 </Alert>
               ) : null}
 
-              {/* Model Selector */}
-              <FormControl fullWidth size="small" sx={{ mb: 3 }}>
-                <InputLabel>Select Model to Evaluate</InputLabel>
-                <Select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value as string)}
-                  label="Select Model to Evaluate"
-                >
-                  <MenuItem value="">
-                    <em>Choose a GGUF model...</em>
-                  </MenuItem>
-                  {availableModels.map((model) => (
-                    <MenuItem key={model} value={model}>
-                      {model}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-
-              {/* GPU Selector */}
-              <FormControl fullWidth size="small" sx={{ mb: 3 }}>
-                <InputLabel>Select GPU Device</InputLabel>
-                <Select
-                  value={selectedGpu ?? ""}
-                  onChange={(e) => setSelectedGpu(e.target.value === "" ? null : Number(e.target.value))}
-                  label="Select GPU Device"
-                >
-                  {availableGpus.map((gpu) => (
-                    <MenuItem key={gpu.index} value={gpu.index}>
-                      {gpu.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
+              <Alert severity="info" sx={{ mb: 3 }}>
+                Benchmarks run against the currently deployed model.
+              </Alert>
 
               <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
                 Select Benchmark Tasks
@@ -1499,6 +1353,7 @@ export const ModelEvaluationPage: React.FC = () => {
 
           <Grid item xs={12} md={7}>
             <SectionCard
+              fullHeight
               title="Benchmark Jobs"
               subtitle={`${lmEvalJobs.length + terminalBenchJobs.length} jobs`}
               icon={<EvalIcon />}
@@ -1663,7 +1518,7 @@ export const ModelEvaluationPage: React.FC = () => {
                         {job.status === "completed" && (
                           <Button
                             size="small"
-                            onClick={() => window.location.href = `/benchmark-comparison?job=${job.id}`}
+                            onClick={() => navigate(benchmarkComparisonPath, { state: { jobId: job.id } })}
                             sx={{ ml: 2, color: accentColors.info }}
                           >
                             View Results
@@ -1685,7 +1540,8 @@ export const ModelEvaluationPage: React.FC = () => {
         activeTab === 2 && (
           <Grid container spacing={3}>
             <Grid item xs={12} md={5}>
-              <SectionCard title="Create A/B Test" icon={<ABTestIcon />} accentColor={accentColors.purple}>
+              <SectionCard fullHeight title="Create A/B Test" icon={<ABTestIcon />} accentColor={accentColors.purple} action={evaluationHeaderActions}>
+                {evaluationSummaryRow}
                 <TextField
                   label="Test Name"
                   value={abTestName}
@@ -1812,6 +1668,7 @@ export const ModelEvaluationPage: React.FC = () => {
 
             <Grid item xs={12} md={7}>
               <SectionCard
+                fullHeight
                 title={selectedAbTest ? selectedAbTest.name : "A/B Test Details"}
                 icon={<EvalIcon />}
                 accentColor={accentColors.info}
@@ -1918,7 +1775,8 @@ export const ModelEvaluationPage: React.FC = () => {
       {/* LLM Judge Tab */}
       {
         activeTab === 3 && (
-          <SectionCard title="LLM-as-Judge Evaluation" subtitle="Use AI to automatically evaluate responses" icon={<JudgeIcon />} accentColor={accentColors.warning}>
+          <SectionCard fullHeight title="LLM-as-Judge Evaluation" subtitle="Use AI to automatically evaluate responses" icon={<JudgeIcon />} accentColor={accentColors.warning} action={evaluationHeaderActions}>
+            {evaluationSummaryRow}
             <Alert severity="info" icon={<MagicIcon />} sx={{ mb: 3 }}>
               Use GPT-4 or Claude to automatically evaluate and compare responses. Go to the Side-by-Side tab, run comparisons, and click "LLM Judge" on any comparison.
             </Alert>
@@ -1951,7 +1809,7 @@ export const ModelEvaluationPage: React.FC = () => {
           </SectionCard>
         )
       }
-    </Box >
+    </PageShell>
   );
 };
 

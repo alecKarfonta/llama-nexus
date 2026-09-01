@@ -100,6 +100,16 @@ const colors = {
   },
 };
 
+export const accentColors = {
+  primary: colors.primary.main,
+  success: colors.success.main,
+  warning: colors.warning.main,
+  info: colors.secondary.main,
+  purple: '#8b5cf6',
+  rose: colors.accent.rose,
+  slate: colors.text.muted,
+} as const;
+
 // Glass-morphism styles
 export const glassStyles = {
   light: {
@@ -153,6 +163,8 @@ export const shadows = {
   cardHover: '0 8px 30px rgba(0, 0, 0, 0.4), 0 0 1px rgba(255, 255, 255, 0.1)',
   elevated: '0 12px 40px rgba(0, 0, 0, 0.5), 0 0 1px rgba(255, 255, 255, 0.08)',
 };
+
+const compactDensitySelector = 'html[data-density="compact"] &';
 
 export const theme = createTheme({
   palette: {
@@ -434,6 +446,12 @@ export const theme = createTheme({
           '&:last-child': {
             paddingBottom: 20,
           },
+          [compactDensitySelector]: {
+            padding: 14,
+            '&:last-child': {
+              paddingBottom: 14,
+            },
+          },
         },
       },
     },
@@ -446,6 +464,11 @@ export const theme = createTheme({
           fontSize: '0.875rem',
           padding: '10px 20px',
           transition: 'all 0.2s ease-in-out',
+          [compactDensitySelector]: {
+            minHeight: 32,
+            padding: '7px 14px',
+            fontSize: '0.8125rem',
+          },
         },
         contained: {
           background: gradients.primary,
@@ -511,6 +534,9 @@ export const theme = createTheme({
         root: {
           borderRadius: 10,
           transition: 'all 0.2s ease-in-out',
+          [compactDensitySelector]: {
+            padding: 6,
+          },
           '&:hover': {
             backgroundColor: alpha(colors.primary.main, 0.1),
           },
@@ -527,6 +553,10 @@ export const theme = createTheme({
           backgroundColor: alpha(colors.primary.main, 0.1),
           border: `1px solid ${alpha(colors.primary.main, 0.2)}`,
           transition: 'all 0.2s ease-in-out',
+          [compactDensitySelector]: {
+            height: 22,
+            fontSize: '0.6875rem',
+          },
           '&:hover': {
             backgroundColor: alpha(colors.primary.main, 0.15),
           },
@@ -592,6 +622,13 @@ export const theme = createTheme({
               boxShadow: `0 0 0 3px ${alpha(colors.primary.main, 0.1)}`,
             },
           },
+          [compactDensitySelector]: {
+            '& .MuiInputBase-input': {
+              paddingTop: 9,
+              paddingBottom: 9,
+              fontSize: '0.8125rem',
+            },
+          },
         },
       },
     },
@@ -621,6 +658,11 @@ export const theme = createTheme({
           borderRadius: 8,
           margin: '2px 4px',
           transition: 'all 0.15s ease-in-out',
+          [compactDensitySelector]: {
+            minHeight: 32,
+            padding: '7px 12px',
+            fontSize: '0.8125rem',
+          },
           '&:hover': {
             backgroundColor: alpha(colors.primary.main, 0.1),
           },
@@ -648,6 +690,9 @@ export const theme = createTheme({
       styleOverrides: {
         root: {
           minHeight: 44,
+          [compactDensitySelector]: {
+            minHeight: 36,
+          },
         },
         indicator: {
           height: 3,
@@ -665,6 +710,11 @@ export const theme = createTheme({
           minHeight: 44,
           padding: '10px 20px',
           transition: 'all 0.2s ease-in-out',
+          [compactDensitySelector]: {
+            minHeight: 36,
+            padding: '7px 14px',
+            fontSize: '0.8125rem',
+          },
           '&.Mui-selected': {
             color: colors.primary.light,
           },
@@ -723,6 +773,10 @@ export const theme = createTheme({
           margin: '2px 8px',
           padding: '10px 12px',
           transition: 'all 0.15s ease-in-out',
+          [compactDensitySelector]: {
+            minHeight: 34,
+            padding: '7px 10px',
+          },
           '&:hover': {
             backgroundColor: alpha(colors.primary.main, 0.08),
           },
@@ -820,6 +874,9 @@ export const theme = createTheme({
         root: {
           borderColor: colors.surface.border,
           padding: '14px 16px',
+          [compactDensitySelector]: {
+            padding: '9px 12px',
+          },
         },
         head: {
           backgroundColor: alpha(colors.surface.main, 0.5),
@@ -871,6 +928,11 @@ export const theme = createTheme({
       styleOverrides: {
         root: {
           borderRadius: 12,
+          minHeight: 48,
+          [compactDensitySelector]: {
+            minHeight: 40,
+            padding: '0 12px',
+          },
           '&:hover': {
             backgroundColor: alpha(colors.primary.main, 0.04),
           },

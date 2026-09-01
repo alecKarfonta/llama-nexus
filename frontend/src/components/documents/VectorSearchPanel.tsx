@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
     Box,
     Paper,
@@ -14,7 +14,6 @@ import {
     ToggleButtonGroup,
     Tooltip,
     alpha,
-    useTheme,
 } from '@mui/material';
 import {
     Search as SearchIcon,
@@ -26,6 +25,7 @@ import {
     Close as CloseIcon,
 } from '@mui/icons-material';
 import { apiService as api } from '../../services/api';
+import { useClipboard } from '@/hooks/useClipboard';
 
 interface Domain {
     id: string;
@@ -47,6 +47,7 @@ interface SearchResult {
 
 interface VectorSearchPanelProps {
     selectedDomain: Domain | null;
+    defaultExpanded?: boolean;
 }
 
 function getScoreColor(score: number): string {
@@ -65,9 +66,10 @@ function getScoreLabel(score: number): string {
 
 const VectorSearchPanel: React.FC<VectorSearchPanelProps> = ({
     selectedDomain,
+    defaultExpanded = true,
 }) => {
-    const theme = useTheme();
-    const [expanded, setExpanded] = useState(false);
+    const [expanded, setExpanded] = useState(defaultExpanded);
+    const [userToggledExpanded, setUserToggledExpanded] = useState(false);
     const [query, setQuery] = useState('');
     const [topK, setTopK] = useState(5);
     const [scope, setScope] = useState<'global' | 'domain'>('global');
@@ -76,6 +78,7 @@ const VectorSearchPanel: React.FC<VectorSearchPanelProps> = ({
     const [error, setError] = useState<string | null>(null);
     const [expandedResults, setExpandedResults] = useState<Set<number>>(new Set());
     const [hasSearched, setHasSearched] = useState(false);
+    const copyToClipboard = useClipboard();
 
     const handleSearch = useCallback(async () => {
         if (!query.trim()) return;
@@ -125,38 +128,48 @@ const VectorSearchPanel: React.FC<VectorSearchPanelProps> = ({
     };
 
     const copyContent = (content: string) => {
-        navigator.clipboard.writeText(content);
+        copyToClipboard(content, {
+            successMessage: 'Search result content copied.',
+            successTitle: 'Content copied',
+        });
     };
+
+    useEffect(() => {
+        if (!userToggledExpanded) {
+            setExpanded(defaultExpanded);
+        }
+    }, [defaultExpanded, userToggledExpanded]);
 
     return (
         <Paper
             sx={{
-                mb: 2,
-                background: 'linear-gradient(135deg, rgba(26, 26, 46, 0.95) 0%, rgba(15, 15, 26, 0.95) 100%)',
+                mb: 0,
+                bgcolor: 'background.paper',
                 border: '1px solid',
-                borderColor: expanded ? 'rgba(6, 182, 212, 0.4)' : 'rgba(16, 185, 129, 0.2)',
-                borderRadius: 2,
+                borderColor: expanded ? alpha('#06B6D4', 0.36) : 'divider',
+                borderRadius: '8px',
                 overflow: 'hidden',
-                transition: 'border-color 0.3s ease',
             }}
         >
             {/* Header - always visible */}
             <Box
-                onClick={() => setExpanded(!expanded)}
+                onClick={() => {
+                    setUserToggledExpanded(true);
+                    setExpanded((current) => !current);
+                }}
                 sx={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 1.5,
-                    px: 2,
-                    py: 1.5,
+                    gap: 1,
+                    px: 1.5,
+                    py: 1,
                     cursor: 'pointer',
-                    '&:hover': { bgcolor: alpha('#06B6D4', 0.05) },
-                    transition: 'background-color 0.2s',
+                    '&:hover': { bgcolor: 'action.hover' },
                 }}
             >
                 <SearchIcon sx={{
                     color: '#06B6D4',
-                    fontSize: 22,
+                    fontSize: 20,
                 }} />
                 <Typography variant="subtitle2" sx={{ fontWeight: 600, flex: 1 }}>
                     Vector Search
@@ -178,9 +191,9 @@ const VectorSearchPanel: React.FC<VectorSearchPanelProps> = ({
 
             {/* Search interface */}
             <Collapse in={expanded}>
-                <Box sx={{ px: 2, pb: 2 }}>
+                <Box sx={{ px: 1.5, pb: 1.5 }}>
                     {/* Search input row */}
-                    <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
+                    <Box sx={{ display: 'flex', gap: 1, mb: 1, flexWrap: { xs: 'wrap', md: 'nowrap' } }}>
                         <TextField
                             size="small"
                             fullWidth
@@ -198,17 +211,14 @@ const VectorSearchPanel: React.FC<VectorSearchPanelProps> = ({
                         />
                         <Button
                             variant="contained"
+                            size="small"
                             onClick={handleSearch}
                             disabled={searching || !query.trim()}
                             sx={{
-                                minWidth: 100,
-                                background: 'linear-gradient(135deg, #06B6D4 0%, #10B981 100%)',
-                                '&:hover': {
-                                    background: 'linear-gradient(135deg, #0891B2 0%, #059669 100%)',
-                                },
-                                '&.Mui-disabled': {
-                                    background: 'rgba(255,255,255,0.1)',
-                                },
+                                minWidth: { xs: '100%', md: 92 },
+                                height: 40,
+                                borderRadius: '8px',
+                                fontWeight: 800,
                             }}
                         >
                             {searching ? <CircularProgress size={20} color="inherit" /> : 'Search'}
@@ -216,7 +226,7 @@ const VectorSearchPanel: React.FC<VectorSearchPanelProps> = ({
                     </Box>
 
                     {/* Controls row */}
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 1.5 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.25, flexWrap: 'wrap' }}>
                         {/* Scope toggle */}
                         <ToggleButtonGroup
                             size="small"
@@ -250,7 +260,7 @@ const VectorSearchPanel: React.FC<VectorSearchPanelProps> = ({
                         </ToggleButtonGroup>
 
                         {/* Top-K slider */}
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, maxWidth: 200 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: '1 1 180px', maxWidth: 240 }}>
                             <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
                                 Top-K:
                             </Typography>

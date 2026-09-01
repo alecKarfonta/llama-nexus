@@ -6,10 +6,6 @@ import {
   CardHeader,
   Typography,
   Button,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
   Alert,
   CircularProgress,
   Chip,
@@ -48,7 +44,6 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
 }) => {
   const [commits, setCommits] = useState<LlamaCppCommitsResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedCommit, setSelectedCommit] = useState<string>('');
   const [tabValue, setTabValue] = useState(0);
   const [applying, setApplying] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
@@ -72,7 +67,6 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
           ? await apiService.getVllmImageVersions()
           : await apiService.getLlamaCppCommits();
       setCommits(data);
-      setSelectedCommit(data.current_commit);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch commits');
     } finally {
@@ -100,7 +94,6 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
           ? await apiService.applyVllmOpenAiImageTag(commit.tag)
           : await apiService.applyLlamaCppCommit(commit.tag);
       setSuccess(`${result.message}. ${result.requires_rebuild ? 'Rebuild required.' : ''}`);
-      setSelectedCommit(commit.tag);
       onCommitChanged?.(commit.tag);
       
       // Refresh commits to update current status
@@ -117,8 +110,7 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
     try {
       setRebuilding(true);
       setError(null);
-      const result =
-        variant === 'vllm' ? await apiService.rebuildVllmApi() : await apiService.rebuildLlamaCpp();
+      await (variant === 'vllm' ? apiService.rebuildVllmApi() : apiService.rebuildLlamaCpp());
       setSuccess('Containers rebuilt successfully');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to rebuild containers');
@@ -179,7 +171,6 @@ export const LlamaCppCommitSelector: React.FC<LlamaCppCommitSelectorProps> = ({
           ? await apiService.applyVllmOpenAiImageTag(customCommit.trim())
           : await apiService.applyLlamaCppCommit(customCommit.trim());
       setSuccess(`${result.message}. ${result.requires_rebuild ? 'Rebuild required.' : ''}`);
-      setSelectedCommit(customCommit.trim());
       onCommitChanged?.(customCommit.trim());
       
       // Clear custom input

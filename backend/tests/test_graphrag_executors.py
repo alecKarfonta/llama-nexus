@@ -22,6 +22,7 @@ def mock_execution_context():
 
 class TestGraphRAGSearchExecutor:
     """Test GraphRAGSearchExecutor functionality."""
+    pytestmark = pytest.mark.asyncio
     
     @patch('httpx.AsyncClient')
     async def test_successful_search(self, mock_client, mock_execution_context):
@@ -126,6 +127,7 @@ class TestGraphRAGSearchExecutor:
 
 class TestEntityExtractionExecutor:
     """Test EntityExtractionExecutor functionality."""
+    pytestmark = pytest.mark.asyncio
     
     @patch('httpx.AsyncClient')
     async def test_successful_extraction(self, mock_client, mock_execution_context):
@@ -173,6 +175,7 @@ class TestEntityExtractionExecutor:
 
 class TestMultiHopReasoningExecutor:
     """Test MultiHopReasoningExecutor functionality."""
+    pytestmark = pytest.mark.asyncio
     
     @patch('httpx.AsyncClient')
     async def test_successful_reasoning(self, mock_client, mock_execution_context):
@@ -223,6 +226,7 @@ class TestMultiHopReasoningExecutor:
 
 class TestCodeIntelligenceExecutors:
     """Test code detection and search executors."""
+    pytestmark = pytest.mark.asyncio
     
     @patch('httpx.AsyncClient')
     async def test_code_detection(self, mock_client, mock_execution_context):
@@ -284,6 +288,7 @@ class TestCodeIntelligenceExecutors:
 
 class TestReasoningExecutors:
     """Test reasoning executors."""
+    pytestmark = pytest.mark.asyncio
     
     @patch('httpx.AsyncClient')
     async def test_causal_reasoning(self, mock_client, mock_execution_context):
@@ -355,6 +360,7 @@ class TestReasoningExecutors:
 
 class TestEntityLinkingExecutor:
     """Test entity linking executor."""
+    pytestmark = pytest.mark.asyncio
     
     @patch('httpx.AsyncClient')
     async def test_successful_linking(self, mock_client, mock_execution_context):
@@ -431,6 +437,7 @@ class TestExecutorConfiguration:
 
 class TestExecutorErrorHandling:
     """Test error handling across executors."""
+    pytestmark = pytest.mark.asyncio
     
     @patch('httpx.AsyncClient')
     async def test_connection_error(self, mock_client, mock_execution_context):
@@ -487,6 +494,7 @@ class TestExecutorErrorHandling:
 
 class TestExecutorIntegration:
     """Test executors working together in a workflow."""
+    pytestmark = pytest.mark.asyncio
     
     @patch('httpx.AsyncClient')
     async def test_extract_then_link_workflow(self, mock_client, mock_execution_context):
@@ -544,4 +552,3 @@ class TestExecutorIntegration:
 # Run tests with coverage
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--cov=modules.workflow.executors.graphrag_executors", "--cov-report=term-missing"])
-

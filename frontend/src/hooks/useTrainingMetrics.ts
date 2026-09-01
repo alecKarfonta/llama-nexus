@@ -2,6 +2,7 @@
  * Hook for real-time training metrics via WebSocket
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { debugLog } from '@/utils/debug';
 
 export interface TrainingMetrics {
   jobId: string;
@@ -150,7 +151,7 @@ export function useTrainingMetrics(options: UseTrainingMetricsOptions = {}): Use
         setIsConnected(true);
         setConnectionStatus('connected');
         setError(null);
-        console.log('Training WebSocket connected');
+        debugLog('training-metrics', 'Training WebSocket connected');
       };
 
       ws.onmessage = (event) => {
@@ -159,7 +160,7 @@ export function useTrainingMetrics(options: UseTrainingMetricsOptions = {}): Use
           
           switch (message.type) {
             case 'connected':
-              console.log('Training WebSocket confirmed:', message.data);
+              debugLog('training-metrics', 'Training WebSocket confirmed', message.data);
               break;
 
             case 'training_status':
@@ -246,7 +247,7 @@ export function useTrainingMetrics(options: UseTrainingMetricsOptions = {}): Use
         setIsConnected(false);
         setConnectionStatus('disconnected');
         wsRef.current = null;
-        console.log('Training WebSocket disconnected:', event.code, event.reason);
+        debugLog('training-metrics', 'Training WebSocket disconnected', event.code, event.reason);
 
         // Auto-reconnect after 3 seconds if not intentionally closed
         if (event.code !== 1000) {

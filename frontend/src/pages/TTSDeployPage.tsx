@@ -3,19 +3,19 @@ import {
   Box,
   Grid,
   Typography,
-  Card,
-  CardContent,
   TextField,
   Select,
   MenuItem,
-  Button,
   Alert,
   Chip,
   CircularProgress,
   FormHelperText,
   Slider,
   IconButton,
+  Tooltip,
+  useMediaQuery,
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import {
   PlayArrow as StartIcon,
   Stop as StopIcon,
@@ -26,7 +26,17 @@ import {
   PlayCircle as PlayIcon,
   StopCircle as StopPlayIcon,
   Download as DownloadIcon,
+  Refresh as RefreshIcon,
+  Speed as SpeedIcon,
 } from '@mui/icons-material'
+import {
+  compactCollapsibleCardSx,
+  optionalSectionGridSx,
+  PageShell,
+  SectionCard,
+} from '@/components/common'
+import { debugLog } from '@/utils/debug'
+import { accentColors } from '@/utils/theme'
 
 interface TTSConfig {
   model: {
@@ -79,42 +89,6 @@ const TTS_MODELS = [
   },
 ]
 
-// Legacy models (for reference)
-const LEGACY_TTS_MODELS = [
-  { 
-    name: 'piper-en-gb-alan-medium', 
-    provider: 'Piper', 
-    language: 'English (UK)', 
-    voice: 'alan',
-    quality: 'Balanced',
-    size: '~60MB'
-  },
-  { 
-    name: 'coqui-tacotron2-DDC', 
-    provider: 'Coqui', 
-    language: 'English', 
-    voice: 'default',
-    quality: 'High quality',
-    size: '~200MB'
-  },
-  { 
-    name: 'coqui-vits', 
-    provider: 'Coqui', 
-    language: 'Multi', 
-    voice: 'default',
-    quality: 'Best quality',
-    size: '~150MB'
-  },
-  { 
-    name: 'xtts-v2', 
-    provider: 'Coqui', 
-    language: 'Multi', 
-    voice: 'cloneable',
-    quality: 'Voice cloning capable',
-    size: '~2GB'
-  },
-]
-
 const OPENAI_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']
 
 const AUDIO_FORMATS = [
@@ -125,6 +99,8 @@ const AUDIO_FORMATS = [
 ]
 
 export const TTSDeployPage: React.FC = () => {
+  const isNarrow = useMediaQuery('(max-width:599.95px)')
+
   // Service state
   const [status, setStatus] = useState<TTSStatus | null>(null)
   const [config, setConfig] = useState<TTSConfig>({
@@ -177,7 +153,7 @@ export const TTSDeployPage: React.FC = () => {
           setStatus(data)
         }
       } catch (e) {
-        console.log('TTS service not configured yet')
+        debugLog('tts', 'TTS service not configured yet')
       } finally {
         setPageLoading(false)
       }
@@ -347,6 +323,136 @@ export const TTSDeployPage: React.FC = () => {
     setIsPlaying(false)
   }
 
+  const refreshStatus = async () => {
+    try {
+      const res = await fetch('/api/v1/tts/status')
+      if (res.ok) {
+        setStatus(await res.json())
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to refresh TTS status')
+    }
+  }
+
+  const serviceRunning = Boolean(status?.running)
+  const serviceStatusColor = serviceRunning ? accentColors.success : accentColors.warning
+  const serviceStatusLabel = serviceRunning ? 'Service running' : 'Service stopped'
+  const showStartAction = !serviceRunning || loading === 'start'
+  const showRestartAction = serviceRunning || loading === 'restart'
+  const showStopAction = serviceRunning || loading === 'stop'
+  const availableVoiceCount = (status?.available_voices || OPENAI_VOICES).length
+  const commandIconButtonSx = {
+    width: 32,
+    height: 32,
+    borderRadius: '8px',
+    border: '1px solid',
+    borderColor: 'divider',
+    bgcolor: 'action.hover',
+    '&:hover': { bgcolor: 'action.selected' },
+    '&.Mui-disabled': {
+      bgcolor: 'action.disabledBackground',
+      color: 'action.disabled',
+    },
+  }
+  const compactSectionCardSx = compactCollapsibleCardSx as Record<string, unknown>
+  const ttsHeaderActions = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: { xs: 'nowrap', sm: 'wrap' }, justifyContent: 'flex-end' }}>
+      {!isNarrow && (
+        <Tooltip title="Refresh TTS status">
+          <IconButton size="small" aria-label="Refresh TTS status" onClick={refreshStatus} sx={commandIconButtonSx}>
+            <RefreshIcon sx={{ fontSize: 17 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+      {showStartAction && (
+        <Tooltip title="Start service">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Start TTS service"
+              onClick={() => runAction('start')}
+              disabled={loading !== null || serviceRunning}
+              sx={{
+                ...commandIconButtonSx,
+                bgcolor: 'primary.main',
+                color: 'primary.contrastText',
+                borderColor: 'primary.main',
+                '&:hover': { bgcolor: 'primary.dark', borderColor: 'primary.dark' },
+              }}
+            >
+              {loading === 'start' ? <CircularProgress size={15} color="inherit" /> : <StartIcon sx={{ fontSize: 17 }} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
+      {!isNarrow && showRestartAction && (
+        <Tooltip title="Restart service">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Restart TTS service"
+              onClick={() => runAction('restart')}
+              disabled={loading !== null}
+              sx={commandIconButtonSx}
+            >
+              {loading === 'restart' ? <CircularProgress size={15} /> : <RestartIcon sx={{ fontSize: 17 }} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
+      {(!isNarrow || serviceRunning) && showStopAction && (
+        <Tooltip title="Stop service">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Stop TTS service"
+              color="error"
+              onClick={() => runAction('stop')}
+              disabled={loading !== null || !serviceRunning}
+              sx={commandIconButtonSx}
+            >
+              {loading === 'stop' ? <CircularProgress size={15} /> : <StopIcon sx={{ fontSize: 17 }} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
+      <Tooltip title="Save TTS settings">
+        <span>
+          <IconButton
+            size="small"
+            aria-label="Save TTS settings"
+            onClick={saveConfig}
+            sx={commandIconButtonSx}
+          >
+            <SaveIcon sx={{ fontSize: 17 }} />
+          </IconButton>
+        </span>
+      </Tooltip>
+    </Box>
+  )
+  const ttsSummaryRow = (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 1 }}>
+      <Chip
+        size="small"
+        label={serviceStatusLabel}
+        sx={{
+          height: 22,
+          fontSize: '0.68rem',
+          fontWeight: 800,
+          color: serviceStatusColor,
+          bgcolor: alpha(serviceStatusColor, 0.1),
+          border: `1px solid ${alpha(serviceStatusColor, 0.28)}`,
+        }}
+      />
+      <Chip size="small" label={`${config.model.name} / ${config.model.voice}`} sx={{ height: 22, fontSize: '0.68rem', fontWeight: 800 }} />
+      <Chip size="small" label={`${config.audio.format.toUpperCase()} / ${config.audio.speed.toFixed(2)}x`} sx={{ height: 22, fontSize: '0.68rem', fontWeight: 800, display: { xs: 'none', sm: 'inline-flex' } }} />
+      <Chip size="small" label={`${availableVoiceCount.toLocaleString()} voices`} sx={{ height: 22, fontSize: '0.68rem', fontWeight: 800, display: { xs: 'none', sm: 'inline-flex' } }} />
+      <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0, display: { xs: 'none', sm: 'block' } }}>
+        /v1/audio/speech
+      </Typography>
+    </Box>
+  )
+
   if (pageLoading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -356,395 +462,292 @@ export const TTSDeployPage: React.FC = () => {
   }
 
   return (
-    <Box sx={{ p: { xs: 2, sm: 3, md: 4 }, maxWidth: '100%', mx: 'auto' }}>
-      {/* Header */}
-      <Box sx={{ mb: 4, display: 'flex', alignItems: 'center', gap: 2 }}>
-        <TTSIcon sx={{ fontSize: 40, color: '#8b5cf6' }} />
-        <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
-            Text-to-Speech Deployment
-          </Typography>
-          <Typography variant="body1" color="text.secondary">
-            Deploy and manage TTS models for voice synthesis
-          </Typography>
-        </Box>
-      </Box>
-
+    <PageShell sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       {error && (
-        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
+        <Alert severity="error" onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
-      
+
       {success && (
-        <Alert severity="success" sx={{ mb: 3 }} onClose={() => setSuccess(null)}>
+        <Alert severity="success" onClose={() => setSuccess(null)}>
           {success}
         </Alert>
       )}
 
-      {/* Service Status */}
-      <Card sx={{ mb: 3, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-            Service Status
-          </Typography>
-          
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
-            <Chip
-              label={status?.running ? 'Running' : 'Stopped'}
-              color={status?.running ? 'success' : 'default'}
-              size="small"
-            />
-            {status?.running && (
-              <>
+      <Grid container spacing={1.5} alignItems="flex-start">
+        <Grid item xs={12} lg={7.2}>
+          <SectionCard
+            title="Speech test"
+            icon={<VolumeIcon />}
+            accentColor={accentColors.success}
+            action={ttsHeaderActions}
+          >
+            {!serviceRunning ? (
+              <Box
+                sx={{
+                  p: 1.25,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  borderRadius: '8px',
+                  border: '1px solid',
+                  borderColor: alpha(accentColors.warning, 0.35),
+                  bgcolor: alpha(accentColors.warning, 0.08),
+                }}
+              >
+                <Chip
+                  label="Service stopped"
+                  size="small"
+                  sx={{
+                    height: 22,
+                    bgcolor: alpha(accentColors.warning, 0.14),
+                    color: accentColors.warning,
+                    fontWeight: 800,
+                  }}
+                />
                 <Typography variant="body2" color="text.secondary">
-                  Uptime: {Math.floor((status.uptime || 0) / 60)}m {Math.floor((status.uptime || 0) % 60)}s
+                  Start the TTS service to generate and play speech.
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Model: {status.model?.name || config.model.name}
-                </Typography>
-              </>
-            )}
-          </Box>
-          
-          {status?.endpoint && (
-            <Alert severity="info" sx={{ mb: 3 }}>
-              <strong>Service Endpoint:</strong> {status.endpoint}
-              <br />
-              <Typography variant="caption" color="text.secondary">
-                OpenAI-compatible endpoint: POST {status.endpoint}/v1/audio/speech
-              </Typography>
-            </Alert>
-          )}
-          
-          <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-            <Button
-              variant="contained"
-              color="primary"
-              startIcon={loading === 'start' ? <CircularProgress size={20} /> : <StartIcon />}
-              onClick={() => runAction('start')}
-              disabled={loading !== null || status?.running}
-              sx={{ borderRadius: 1.5, fontWeight: 600 }}
-            >
-              Start Service
-            </Button>
-            <Button
-              variant="contained"
-              color="warning"
-              startIcon={loading === 'restart' ? <CircularProgress size={20} /> : <RestartIcon />}
-              onClick={() => runAction('restart')}
-              disabled={loading !== null}
-              sx={{ borderRadius: 1.5, fontWeight: 600 }}
-            >
-              Restart
-            </Button>
-            <Button
-              variant="outlined"
-              color="error"
-              startIcon={loading === 'stop' ? <CircularProgress size={20} /> : <StopIcon />}
-              onClick={() => runAction('stop')}
-              disabled={loading !== null || !status?.running}
-              sx={{ borderRadius: 1.5, fontWeight: 600 }}
-            >
-              Stop
-            </Button>
-          </Box>
-        </CardContent>
-      </Card>
-
-      {/* Model Configuration */}
-      <Card sx={{ mb: 3, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-            Model Configuration
-          </Typography>
-          
-          <Grid container spacing={3}>
-            <Grid item xs={12} md={6}>
-              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                TTS Model
-              </Typography>
-              <Select
-                fullWidth
-                value={config.model.name}
-                onChange={(e) => updateConfig('model.name', e.target.value)}
-              >
-                {TTS_MODELS.map((model) => (
-                  <MenuItem key={model.name} value={model.name}>
-                    {model.name} ({model.provider})
-                  </MenuItem>
-                ))}
-              </Select>
-              <FormHelperText>
-                {TTS_MODELS.find(m => m.name === config.model.name)?.description || 'Select a model'}
-              </FormHelperText>
-            </Grid>
-            
-            <Grid item xs={12} md={6}>
-              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                Voice (OpenAI-compatible)
-              </Typography>
-              <Select
-                fullWidth
-                value={config.model.voice}
-                onChange={(e) => updateConfig('model.voice', e.target.value)}
-              >
-                {(status?.available_voices || OPENAI_VOICES).map((voice) => (
-                  <MenuItem key={voice} value={voice}>
-                    {voice}
-                  </MenuItem>
-                ))}
-              </Select>
-              <FormHelperText>
-                Voice style for synthesis
-              </FormHelperText>
-            </Grid>
-            
-            <Grid item xs={12} md={6}>
-              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                Speed: {config.audio.speed.toFixed(2)}x
-              </Typography>
-              <Slider
-                value={config.audio.speed}
-                onChange={(_, value) => updateConfig('audio.speed', value)}
-                min={0.25}
-                max={4.0}
-                step={0.05}
-                marks={[
-                  { value: 0.5, label: '0.5x' },
-                  { value: 1.0, label: '1x' },
-                  { value: 2.0, label: '2x' },
-                  { value: 4.0, label: '4x' },
-                ]}
-              />
-              <FormHelperText>
-                Playback speed multiplier
-              </FormHelperText>
-            </Grid>
-            
-            <Grid item xs={12} md={6}>
-              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                Audio Format
-              </Typography>
-              <Select
-                fullWidth
-                value={config.audio.format}
-                onChange={(e) => updateConfig('audio.format', e.target.value)}
-              >
-                {AUDIO_FORMATS.map((format) => (
-                  <MenuItem key={format.value} value={format.value}>
-                    {format.label}
-                  </MenuItem>
-                ))}
-              </Select>
-              <FormHelperText>
-                Output audio format
-              </FormHelperText>
-            </Grid>
-
-            <Grid item xs={12} md={6}>
-              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                Sample Rate
-              </Typography>
-              <Select
-                fullWidth
-                value={config.audio.sample_rate}
-                onChange={(e) => updateConfig('audio.sample_rate', e.target.value)}
-              >
-                <MenuItem value={16000}>16000 Hz (Low)</MenuItem>
-                <MenuItem value={22050}>22050 Hz (Standard)</MenuItem>
-                <MenuItem value={44100}>44100 Hz (CD Quality)</MenuItem>
-                <MenuItem value={48000}>48000 Hz (High)</MenuItem>
-              </Select>
-              <FormHelperText>
-                Audio sample rate
-              </FormHelperText>
-            </Grid>
-            
-            <Grid item xs={12} md={6}>
-              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                Port
-              </Typography>
-              <TextField
-                fullWidth
-                type="number"
-                value={config.server.port}
-                onChange={(e) => updateConfig('server.port', parseInt(e.target.value))}
-                inputProps={{ min: 1024, max: 65535 }}
-              />
-              <FormHelperText>
-                Service port (default: 8604)
-              </FormHelperText>
-            </Grid>
-            
-            <Grid item xs={12} md={6}>
-              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                API Key
-              </Typography>
-              <TextField
-                fullWidth
-                value={config.server.api_key}
-                onChange={(e) => updateConfig('server.api_key', e.target.value)}
-              />
-              <FormHelperText>
-                API key for authentication
-              </FormHelperText>
-            </Grid>
-            
-            <Grid item xs={12} md={6}>
-              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                Execution Mode
-              </Typography>
-              <Select
-                fullWidth
-                value={config.execution.mode}
-                onChange={(e) => updateConfig('execution.mode', e.target.value)}
-              >
-                <MenuItem value="cpu">CPU (Recommended for Piper)</MenuItem>
-                <MenuItem value="gpu">GPU (For Coqui/XTTS)</MenuItem>
-              </Select>
-              <FormHelperText>
-                Piper is optimized for CPU, Coqui benefits from GPU
-              </FormHelperText>
-            </Grid>
-          </Grid>
-          
-          <Box sx={{ mt: 3 }}>
-            <Button
-              variant="contained"
-              startIcon={<SaveIcon />}
-              onClick={saveConfig}
-              sx={{ borderRadius: 1.5, fontWeight: 600 }}
-            >
-              Save Configuration
-            </Button>
-          </Box>
-        </CardContent>
-      </Card>
-
-      {/* Test Speech Synthesis */}
-      <Card sx={{ mb: 3, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-            Test Speech Synthesis
-          </Typography>
-          <Typography variant="body2" color="text.secondary" paragraph>
-            Enter text to generate speech and test the TTS service.
-          </Typography>
-          
-          {testError && (
-            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setTestError(null)}>
-              {testError}
-            </Alert>
-          )}
-          
-          <Grid container spacing={3}>
-            <Grid item xs={12}>
-              <Typography gutterBottom sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                Text to Speak
-              </Typography>
-              <TextField
-                fullWidth
-                multiline
-                rows={4}
-                value={testText}
-                onChange={(e) => setTestText(e.target.value)}
-                placeholder="Enter text to convert to speech..."
-              />
-              <FormHelperText>
-                {testText.length} characters
-              </FormHelperText>
-            </Grid>
-            
-            <Grid item xs={12}>
-              <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                <Button
-                  variant="contained"
-                  color="primary"
-                  size="large"
-                  startIcon={testLoading ? <CircularProgress size={20} /> : <VolumeIcon />}
-                  onClick={testSpeech}
-                  disabled={testLoading || !testText.trim() || !status?.running}
-                  sx={{ borderRadius: 1.5, fontWeight: 600 }}
-                >
-                  {testLoading ? 'Generating...' : 'Generate Speech'}
-                </Button>
-                {!status?.running && (
-                  <Typography variant="caption" color="error">
-                    Start the service first
-                  </Typography>
-                )}
               </Box>
-            </Grid>
-            
-            {/* Audio Player */}
-            {testResult && (
-              <Grid item xs={12}>
-                <Alert severity="success" sx={{ mb: 2 }}>
-                  Speech generated in {testResult.processingTime}ms
-                </Alert>
-                
-                <Card variant="outlined" sx={{ p: 3 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                    <IconButton
-                      color="primary"
-                      onClick={playAudio}
-                      sx={{ 
-                        width: 64, 
-                        height: 64,
-                        bgcolor: 'primary.light',
-                        '&:hover': { bgcolor: 'primary.main' }
-                      }}
-                    >
-                      {isPlaying ? <StopPlayIcon sx={{ fontSize: 32 }} /> : <PlayIcon sx={{ fontSize: 32 }} />}
-                    </IconButton>
-                    
-                    <Box sx={{ flex: 1 }}>
-                      <Typography variant="subtitle1" fontWeight={600}>
-                        Generated Audio
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Format: {config.audio.format.toUpperCase()} | Speed: {config.audio.speed}x | Voice: {config.model.voice}
-                      </Typography>
-                    </Box>
-                    
-                    <Button
-                      variant="outlined"
-                      startIcon={<DownloadIcon />}
-                      onClick={downloadAudio}
-                    >
-                      Download
-                    </Button>
+            ) : (
+              <>
+                {ttsSummaryRow}
+                {testError && (
+                  <Alert severity="error" sx={{ mb: 1.25 }} onClose={() => setTestError(null)}>
+                    {testError}
+                  </Alert>
+                )}
+
+                <TextField
+                  fullWidth
+                  multiline
+                  minRows={3}
+                  maxRows={3}
+                  value={testText}
+                  onChange={(e) => setTestText(e.target.value)}
+                  placeholder="Enter text to convert to speech..."
+                  sx={{
+                    '& .MuiInputBase-input': {
+                      fontSize: '0.875rem',
+                      lineHeight: 1.45,
+                    },
+                  }}
+                />
+
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1.25, minWidth: 0 }}>
+                  <Tooltip title="Generate speech">
+                    <span>
+                      <IconButton
+                        color="primary"
+                        aria-label="Generate speech"
+                        onClick={testSpeech}
+                        disabled={testLoading || !testText.trim()}
+                        sx={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: '8px',
+                          bgcolor: 'primary.main',
+                          color: 'primary.contrastText',
+                          '&:hover': { bgcolor: 'primary.dark' },
+                          '&.Mui-disabled': {
+                            bgcolor: 'action.disabledBackground',
+                            color: 'action.disabled',
+                          },
+                        }}
+                      >
+                        {testLoading ? <CircularProgress size={16} color="inherit" /> : <VolumeIcon sx={{ fontSize: 18 }} />}
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+                      {testLoading ? 'Generating audio' : testResult ? `Generated in ${testResult.processingTime}ms` : `${testText.length} characters`}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" noWrap>
+                      {`${config.model.voice} / ${config.audio.format.toUpperCase()} / ${config.audio.speed.toFixed(2)}x`}
+                    </Typography>
                   </Box>
-                  
+
+                  {testResult && (
+                    <>
+                      <Tooltip title={isPlaying ? 'Stop playback' : 'Play generated audio'}>
+                        <IconButton size="small" color="primary" onClick={playAudio} sx={commandIconButtonSx}>
+                          {isPlaying ? <StopPlayIcon sx={{ fontSize: 17 }} /> : <PlayIcon sx={{ fontSize: 17 }} />}
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="Download generated audio">
+                        <IconButton size="small" onClick={downloadAudio} sx={commandIconButtonSx}>
+                          <DownloadIcon sx={{ fontSize: 17 }} />
+                        </IconButton>
+                      </Tooltip>
+                    </>
+                  )}
+                </Box>
+
+                {testResult && (
                   <audio
                     ref={audioRef}
                     src={testResult.audioUrl}
                     onEnded={handleAudioEnded}
                     style={{ display: 'none' }}
                   />
-                </Card>
-              </Grid>
+                )}
+              </>
             )}
-          </Grid>
-        </CardContent>
-      </Card>
+          </SectionCard>
+        </Grid>
 
-      {/* API Documentation */}
-      <Card sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
-            API Usage
-          </Typography>
-          <Typography variant="body2" color="text.secondary" paragraph>
-            The TTS service provides an OpenAI-compatible API for speech synthesis.
-          </Typography>
-          
+        <Grid item xs={12} lg={4.8}>
+          <SectionCard
+            title="Voice settings"
+            subtitle={isNarrow ? `${config.model.name} / ${config.model.voice} / ${config.audio.speed.toFixed(2)}x` : undefined}
+            icon={<TTSIcon />}
+            accentColor={accentColors.purple}
+            collapsible={isNarrow}
+            defaultExpanded={!isNarrow}
+            sx={{ ...compactSectionCardSx }}
+          >
+            <Grid container spacing={1.25}>
+              <Grid item xs={12} sm={6}>
+                <Select
+                  fullWidth
+                  size="small"
+                  value={config.model.name}
+                  onChange={(e) => updateConfig('model.name', e.target.value)}
+                  displayEmpty
+                >
+                  {TTS_MODELS.map((model) => (
+                    <MenuItem key={model.name} value={model.name}>
+                      {model.name} ({model.provider})
+                    </MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText sx={{ mx: 0.25 }}>Model</FormHelperText>
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Select
+                  fullWidth
+                  size="small"
+                  value={config.model.voice}
+                  onChange={(e) => updateConfig('model.voice', e.target.value)}
+                >
+                  {(status?.available_voices || OPENAI_VOICES).map((voice) => (
+                    <MenuItem key={voice} value={voice}>
+                      {voice}
+                    </MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText sx={{ mx: 0.25 }}>Voice</FormHelperText>
+              </Grid>
+
+              <Grid item xs={12}>
+                <Box sx={{ px: 0.5 }}>
+                  <Typography variant="caption" sx={{ display: 'block', fontWeight: 700 }}>
+                    Speed: {config.audio.speed.toFixed(2)}x
+                  </Typography>
+                  <Slider
+                    size="small"
+                    value={config.audio.speed}
+                    onChange={(_, value) => updateConfig('audio.speed', value)}
+                    min={0.25}
+                    max={4.0}
+                    step={0.05}
+                    valueLabelDisplay="auto"
+                    sx={{ mt: 0.25 }}
+                  />
+                </Box>
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Select
+                  fullWidth
+                  size="small"
+                  value={config.audio.format}
+                  onChange={(e) => updateConfig('audio.format', e.target.value)}
+                >
+                  {AUDIO_FORMATS.map((format) => (
+                    <MenuItem key={format.value} value={format.value}>
+                      {format.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText sx={{ mx: 0.25 }}>Format</FormHelperText>
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Select
+                  fullWidth
+                  size="small"
+                  value={config.audio.sample_rate}
+                  onChange={(e) => updateConfig('audio.sample_rate', e.target.value)}
+                >
+                  <MenuItem value={16000}>16000 Hz</MenuItem>
+                  <MenuItem value={22050}>22050 Hz</MenuItem>
+                  <MenuItem value={44100}>44100 Hz</MenuItem>
+                  <MenuItem value={48000}>48000 Hz</MenuItem>
+                </Select>
+                <FormHelperText sx={{ mx: 0.25 }}>Sample rate</FormHelperText>
+              </Grid>
+
+            </Grid>
+          </SectionCard>
+        </Grid>
+      </Grid>
+
+      <Box sx={optionalSectionGridSx}>
+        <SectionCard
+          title="API / service"
+          icon={<SpeedIcon />}
+          accentColor={accentColors.primary}
+          collapsible
+          defaultExpanded={false}
+          sx={compactCollapsibleCardSx}
+        >
+          <Grid container spacing={1.25} sx={{ mb: 2 }}>
+            <Grid item xs={12} sm={4}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Port"
+                type="number"
+                value={config.server.port}
+                onChange={(e) => updateConfig('server.port', parseInt(e.target.value))}
+                inputProps={{ min: 1024, max: 65535 }}
+              />
+            </Grid>
+
+            <Grid item xs={12} sm={4}>
+              <Select
+                fullWidth
+                size="small"
+                value={config.execution.mode}
+                onChange={(e) => updateConfig('execution.mode', e.target.value)}
+              >
+                <MenuItem value="cpu">CPU</MenuItem>
+                <MenuItem value="gpu">GPU</MenuItem>
+              </Select>
+              <FormHelperText sx={{ mx: 0.25 }}>Execution</FormHelperText>
+            </Grid>
+
+            <Grid item xs={12} sm={4}>
+              <TextField
+                fullWidth
+                size="small"
+                label="API key"
+                value={config.server.api_key}
+                onChange={(e) => updateConfig('server.api_key', e.target.value)}
+              />
+            </Grid>
+          </Grid>
+
           <Typography variant="subtitle2" gutterBottom>
             Endpoint
           </Typography>
-          <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: 1, mb: 2 }}>
-            <code style={{ color: '#8b5cf6' }}>
+          <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: '8px', mb: 2 }}>
+            <code style={{ color: accentColors.purple }}>
               POST {status?.endpoint || `http://localhost:${config.server.port}`}/v1/audio/speech
             </code>
           </Box>
@@ -752,8 +755,8 @@ export const TTSDeployPage: React.FC = () => {
           <Typography variant="subtitle2" gutterBottom>
             Example (cURL)
           </Typography>
-          <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: 1, fontFamily: 'monospace', fontSize: '0.8rem', overflowX: 'auto' }}>
-            <pre style={{ margin: 0, color: '#e2e8f0' }}>
+          <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.8rem', overflowX: 'auto' }}>
+            <pre style={{ margin: 0, color: 'inherit' }}>
 {`curl ${status?.endpoint || `http://localhost:${config.server.port}`}/v1/audio/speech \\
   -H "Authorization: Bearer ${config.server.api_key}" \\
   -H "Content-Type: application/json" \\
@@ -770,8 +773,8 @@ export const TTSDeployPage: React.FC = () => {
           <Typography variant="subtitle2" gutterBottom sx={{ mt: 2 }}>
             Example (Python)
           </Typography>
-          <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: 1, fontFamily: 'monospace', fontSize: '0.8rem', overflowX: 'auto' }}>
-            <pre style={{ margin: 0, color: '#e2e8f0' }}>
+          <Box sx={{ p: 2, bgcolor: 'grey.900', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.8rem', overflowX: 'auto' }}>
+            <pre style={{ margin: 0, color: 'inherit' }}>
 {`from openai import OpenAI
 
 client = OpenAI(
@@ -789,14 +792,10 @@ response = client.audio.speech.create(
 response.stream_to_file("speech.${config.audio.format}")`}
             </pre>
           </Box>
-        </CardContent>
-      </Card>
-    </Box>
+        </SectionCard>
+      </Box>
+    </PageShell>
   )
 }
 
 export default TTSDeployPage
-
-
-
-

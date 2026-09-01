@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiService } from '@/services/api';
 import { websocketService } from '@/services/websocket';
-import type { ResourceMetrics, TokenUsageData } from '@/types/api';
+import type { ResourceMetrics } from '@/types/api';
 
 // Hook for fetching current metrics
 export const useMetrics = (enabled: boolean = true) => {
