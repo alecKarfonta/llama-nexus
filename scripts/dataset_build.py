@@ -17,10 +17,11 @@ Filtering:
   - template_ok records only (token snapshot verified server-side)
   - finish_reason must be stop/tool_calls (drops length-truncated tails)
   - min completion chars (default 16)
-  - tool-schema prefix dedupe: Cursor resends identical tool lists every
-    request; hash (system_prefix + tools) and keep at most --max-per-prefix
-    samples per distinct prefix so the set isn't dominated by one session
-    shape. Full-prompt dedupe on top.
+  - tool-schema prefix dedupe: Cursor resends identical system+tools every
+    request; hash (system_prefix + tools + session_discriminator) and keep at
+    most --max-per-prefix samples per distinct prefix so one session does not
+    dominate. Session discriminator is the first user message hash.
+    Full-prompt dedupe on top.
   - optional --scrub replaces absolute paths / emails / IPs with tokens
 
 Usage:
@@ -39,7 +40,7 @@ import re
 import sys
 from collections import Counter
 
-DEFAULT_CAPTURES = "/var/lib/docker/volumes/llama-nexus_datasets/_data/captures"
+DEFAULT_CAPTURES = "/mnt/comfyui-models/llama-nexus/datasets"
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -54,8 +55,27 @@ def scrub(text):
     return IP_RE.sub("<IP>", text)
 
 
+def render_completion(rec):
+    """Full assistant turn as one target string.
+
+    Agent traffic is mostly tool calls with empty content, so the tool call
+    payload has to be part of the target or those samples carry no signal.
+    """
+    resp = rec.get("response") or {}
+    parts = []
+    content = resp.get("content") or ""
+    if content:
+        parts.append(content)
+    for tc in resp.get("tool_calls") or []:
+        fn = (tc or {}).get("function") or {}
+        name = fn.get("name") or "unknown"
+        arguments = fn.get("arguments") or ""
+        parts.append(f"<tool_call>{name}({arguments})</tool_call>")
+    return "\n".join(parts)
+
+
 def record_sample_key(rec):
-    """Identity of the training example itself (prompt tail + completion)."""
+    """Identity of the training example itself (prompt tail + rendered completion)."""
     msgs = rec.get("request", {}).get("messages") or []
     tail = ""
     for m in reversed(msgs):
@@ -63,12 +83,27 @@ def record_sample_key(rec):
             tail = str(m["content"])[-2000:]
             break
     return hashlib.sha256(
-        (tail + "\x00" + (rec.get("response", {}).get("content") or "")).encode()
+        (tail + "\x00" + render_completion(rec)).encode()
     ).hexdigest()[:16]
 
 
+def session_discriminator(rec):
+    """First user message identifies the agent session within a shared envelope."""
+    for m in rec.get("request", {}).get("messages") or []:
+        if isinstance(m, dict) and m.get("role") == "user":
+            content = m.get("content")
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(str(block.get("text") or ""))
+                content = "\n".join(parts)
+            return hashlib.sha256(str(content or "")[:8000].encode()).hexdigest()[:16]
+    return "no-user"
+
+
 def record_prefix_key(rec):
-    """Cursor resends identical system+tools every turn; key on that prefix."""
+    """Cursor resends identical system+tools every turn; key on prefix + session."""
     req = rec.get("request", {})
     sysmsg = ""
     for m in req.get("messages") or []:
@@ -76,7 +111,10 @@ def record_prefix_key(rec):
             sysmsg = str(m.get("content"))[:4000]
             break
     tools_blob = json.dumps(req.get("tools") or [], sort_keys=True)[:8000]
-    return hashlib.sha256((sysmsg + "\x00" + tools_blob).encode()).hexdigest()[:16]
+    session = session_discriminator(rec)
+    return hashlib.sha256(
+        (sysmsg + "\x00" + tools_blob + "\x00" + session).encode()
+    ).hexdigest()[:16]
 
 
 def main():
@@ -85,7 +123,7 @@ def main():
     ap.add_argument("--out", default=None, help="default: <captures>/dataset-v1")
     ap.add_argument("--val-frac", type=float, default=0.02)
     ap.add_argument("--min-chars", type=int, default=16)
-    ap.add_argument("--max-per-prefix", type=int, default=4)
+    ap.add_argument("--max-per-prefix", type=int, default=64)
     ap.add_argument("--scrub", action="store_true")
     ap.add_argument("--since", default=None, help="only records from this date (YYYY-MM-DD)")
     ap.add_argument("--seed", type=int, default=42)
@@ -149,11 +187,24 @@ def main():
                         if isinstance(m, dict) and m.get("content"):
                             m["content"] = scrub(str(m["content"]))
 
+                rendered = render_completion(rec)
+                if args.scrub:
+                    rendered = scrub(rendered)
+                if content and tool_calls:
+                    kind = "text+tools"
+                elif tool_calls:
+                    kind = "tools-only"
+                else:
+                    kind = "text-only"
+                stats[f"kind:{kind}"] += 1
+
                 seen_samples.add(skey)
                 prefix_counts[pkey] += 1
                 kept.append({
                     "prompt_token_ids": ids,
                     "completion_text": content,
+                    "completion_render": rendered,
+                    "completion_kind": kind,
                     "tool_calls": tool_calls,
                     "sample_key": skey,
                     "prefix_key": pkey,
@@ -172,22 +223,37 @@ def main():
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+    drop_stats = {k: v for k, v in sorted(stats.items()) if k.startswith("drop:")}
+    kept_stats = {k: v for k, v in sorted(stats.items()) if not k.startswith("drop:")}
+
     report = {
         "files_read": [os.path.basename(p) for p in files],
         "since": args.since,
         "scrub": args.scrub,
+        "max_per_prefix": args.max_per_prefix,
         "stats": dict(stats),
+        "drop_histogram": drop_stats,
+        "kept_histogram": kept_stats,
         "distinct_prefixes": len(prefix_counts),
         "train": len(train),
         "val": len(val),
         "total_kept": len(kept),
         "avg_prompt_tokens": (sum(r["n_prompt_tokens"] for r in kept) / len(kept)) if kept else 0,
         "tools_present_frac": (sum(1 for r in kept if r["tools_present"]) / len(kept)) if kept else 0,
+        "completion_kinds": dict(Counter(r["completion_kind"] for r in kept)),
+        "distinct_completions": len({r["completion_render"] for r in kept}),
+        "avg_completion_chars": (
+            sum(len(r["completion_render"]) for r in kept) / len(kept)
+        ) if kept else 0,
     }
     with open(os.path.join(out_dir, "build_report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
     print(json.dumps(report, indent=2))
+    if drop_stats:
+        print("\ndrop histogram:")
+        for reason, count in drop_stats.items():
+            print(f"  {reason}: {count}")
     print(f"\nout: {out_dir}/train.jsonl, val.jsonl, build_report.json")
 
 

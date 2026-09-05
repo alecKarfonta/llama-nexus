@@ -463,8 +463,13 @@ class TeeHandler(BaseHTTPRequestHandler):
 
     def _finish_record(self, body_json, content, tool_calls, finish_reason,
                        usage, timings, status, t0, auth, stream, raw_response=None):
-        if status != 200 or not content:
-            _bump_dropped("bad-status" if status != 200 else "empty-content")
+        # [2026-09-01] | INFO | CAPTURE_TEE._FINISH_RECORD | keep tool-only
+        # Cursor turns; empty-content used to drop finish_reason=tool_calls
+        if status != 200:
+            _bump_dropped("bad-status")
+            return
+        if not content and not tool_calls:
+            _bump_dropped("empty-content")
             return
         prompt_ids, _, template_ok = _token_snapshot(auth, body_json)
         record = {

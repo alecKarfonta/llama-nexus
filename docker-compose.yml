@@ -146,6 +146,8 @@ services:
     volumes:
       - backend_data:/data
       - gpt_oss_models:/home/llamacpp/models
+      # [2026-09-01] | INFO | compose.backend-api | HF cache on USB NVMe
+      - huggingface_cache:/root/.cache/huggingface
       - ./chat-templates:/home/llamacpp/templates:ro
       # Mount llamacpp binaries
       - llamacpp_bin:/usr/local/bin:ro
@@ -800,14 +802,28 @@ volumes:
     driver: local
   datasets:
     driver: local
+    # [2026-09-04] | INFO | compose.volumes | MTP captures + datasets on USB NVMe
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/comfyui-models/llama-nexus/datasets
   llamacpp_bin:
     driver: local
   finetune_data:
     driver: local
   vllm_models:
     driver: local
+    # [2026-09-01] | INFO | compose.volumes | Cold model cache on USB NVMe
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/comfyui-models/cache/vllm-models
   vllm_cache:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/comfyui-models/cache/hf-vllm
   conversation_data:
     driver: local
   redis_data:
@@ -820,6 +836,11 @@ volumes:
     driver: local
   huggingface_cache:
     driver: local
+    # [2026-09-01] | INFO | compose.volumes | HF downloads on USB NVMe
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/comfyui-models/cache/hf-llama-nexus
   neo4j_data:
     driver: local
   neo4j_logs:
@@ -827,6 +848,11 @@ volumes:
   # GraphRAG service volumes
   ner_cache:
     driver: local
+    # [2026-09-01] | INFO | compose.volumes | Shared with /mnt/comfyui-models/cache
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/comfyui-models/cache/hf-graphrag-ner
   ner_models:
     driver: local
   rel_cache:
