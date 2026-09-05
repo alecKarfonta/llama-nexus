@@ -192,7 +192,7 @@ services:
         MTP_PATCH: "patches/qwen4exp-mtp-draft-head.patch"
         ENABLE_TURBOQUANT: "false"
         CMAKE_BUILD_JOBS: ${CMAKE_BUILD_JOBS:-2}
-        CUDA_ARCH: ${CUDA_ARCH:-86}
+        CUDA_ARCH: ${CUDA_ARCH:-120}
     container_name: llamacpp-builder
     volumes:
       - llamacpp_bin:/output
@@ -216,7 +216,7 @@ services:
         ENABLE_TURBOQUANT: "false"
         ENABLE_LLGUIDANCE: ${ENABLE_LLGUIDANCE:-false}
         CMAKE_BUILD_JOBS: ${CMAKE_BUILD_JOBS:-2}
-        CUDA_ARCH: ${CUDA_ARCH:-86}
+        CUDA_ARCH: ${CUDA_ARCH:-120}
         # qwen4exp (Qwen3.8-Flash-Next) — llama.cpp PR #27742, not yet in any release
         LLAMA_CPP_REMOTE: "https://github.com/unslothai/llama.cpp.git"
         LLAMA_CPP_REF: "bea3b12daee45876b0129a3602dc8f534ce30bf0"
@@ -390,7 +390,8 @@ services:
       - TRUST_REMOTE_CODE=${TRUST_REMOTE_CODE:-true}
       - VLLM_ENABLE_AUTO_TOOL_CHOICE=${VLLM_ENABLE_AUTO_TOOL_CHOICE:-true}
       - VLLM_SPECULATIVE_CONFIG=${VLLM_SPECULATIVE_CONFIG:-}
-      - VLLM_NVFP4_GEMM_BACKEND=${VLLM_NVFP4_GEMM_BACKEND:-marlin}
+      # [2026-08-24 | INFO | docker-compose.vllm-api | NVFP4 GEMM backend; empty = vLLM auto-select (native Blackwell W4A4)
+      - VLLM_NVFP4_GEMM_BACKEND=${VLLM_NVFP4_GEMM_BACKEND:-}
       - VLLM_ALLOW_LONG_MAX_MODEL_LEN=${VLLM_ALLOW_LONG_MAX_MODEL_LEN:-1}
       - VLLM_FLASHINFER_ALLREDUCE_BACKEND=${VLLM_FLASHINFER_ALLREDUCE_BACKEND:-trtllm}
       - VLLM_USE_FLASHINFER_MOE_FP4=${VLLM_USE_FLASHINFER_MOE_FP4:-0}
@@ -410,6 +411,72 @@ services:
       timeout: 10s
       retries: 3
       start_period: 600s
+
+  # ========================================
+  # NInfer API Server - Single-GPU Blackwell (RTX 5090) inference for
+  # registered Qwen checkpoints. Built from Neroued/ninfer.
+  # Start with: docker compose --profile ninfer up -d ninfer-api
+  # ========================================
+  ninfer-api:
+    profiles:
+      - ninfer
+    build:
+      context: ./fast-inference/ninfer
+      dockerfile: Dockerfile
+    image: ${NINFER_DOCKER_IMAGE:-llama-nexus-ninfer-api:latest}
+    container_name: ninfer-api
+    hostname: ninfer
+    ports:
+      - "${NINFER_PUBLISHED_PORT:-8603}:${PORT:-8080}"
+    shm_size: '4gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '${NINFER_GPU_DEVICE:-0}' ]
+              capabilities: [ gpu ]
+    volumes:
+      # Shared models volume; .ninfer artifacts downloaded via Models page land here
+      - gpt_oss_models:/models:ro
+      - ./scripts/start-ninfer.sh:/start-ninfer.sh:ro
+    environment:
+      # [2026-08-24 | INFO | docker-compose.ninfer-api | Values substituted from Deploy / NinferManager at compose time
+      - NINFER_MODELS_DIR=/models
+      - NINFER_ARTIFACT=${NINFER_ARTIFACT:-qwen3_8_27b_nvfp4.ninfer}
+      - NINFER_SERVED_MODEL_NAME=${NINFER_SERVED_MODEL_NAME:-}
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-8080}
+      - API_KEY=${API_KEY:-placeholder-api-key}
+      - NINFER_MAX_CONTEXT=${NINFER_MAX_CONTEXT:-32768}
+      - NINFER_KV_CAPACITY=${NINFER_KV_CAPACITY:-auto}
+      # [2026-08-30 | INFO | docker-compose.ninfer-api | int8 group-64 won Phase-1 A/B
+      - NINFER_KV_DTYPE=${NINFER_KV_DTYPE:-int8}
+      - NINFER_MAX_CONCURRENCY=${NINFER_MAX_CONCURRENCY:-2}
+      - NINFER_SPEC_ENABLED=${NINFER_SPEC_ENABLED:-true}
+      - NINFER_SPEC_METHOD=${NINFER_SPEC_METHOD:-mtp}
+      # [2026-08-28 | INFO | docker-compose.ninfer-api | 4 is the measured sweet
+      # spot for Qwen3.8-27B MTP on Blackwell (chat +8%, code/json +10-20%; smaller
+      # workloads within noise). See scripts/start-ninfer.sh for the acceptance curve.
+      - NINFER_DRAFT_TOKENS=${NINFER_DRAFT_TOKENS:-4}
+      - NINFER_LM_HEAD_DRAFT=${NINFER_LM_HEAD_DRAFT:-true}
+      - NINFER_VISION=${NINFER_VISION:-true}
+      - NINFER_TEMPERATURE=${NINFER_TEMPERATURE:-0.6}
+      - NINFER_TOP_P=${NINFER_TOP_P:-0.95}
+      - NINFER_TOP_K=${NINFER_TOP_K:-20}
+      - NINFER_PRESENCE_PENALTY=${NINFER_PRESENCE_PENALTY:-1.0}
+      - NINFER_GREEDY=${NINFER_GREEDY:-false}
+      - NINFER_NO_THINKING=${NINFER_NO_THINKING:-true}
+      - NINFER_GPU_DEVICE=${NINFER_GPU_DEVICE:-0}
+    restart: unless-stopped
+    healthcheck:
+      # [2026-08-31 | INFO | docker-compose.ninfer-api | /health stays open when --api-key is set
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    entrypoint: [ "/bin/bash", "/start-ninfer.sh" ]
 
   # Llama.cpp Embedding Server - Optional RAG Embedding Service
   llamacpp-embed:

@@ -27,34 +27,51 @@ def get_vllm_manager(request: Request):
     return getattr(request.app.state, 'vllm_manager', None)
 
 
+def get_ninfer_manager(request: Request):
+    """Get the NInfer manager from app state."""
+    return getattr(request.app.state, 'ninfer_manager', None)
+
+
+# [2026-08-24 | INFO | service.MODULE | Registry of inference backend names -> app.state attr getters
+_BACKEND_MANAGERS = {
+    "llamacpp": get_manager,
+    "vllm": get_vllm_manager,
+    "ninfer": get_ninfer_manager,
+}
+
+# Backends whose configs are merged in-memory + persisted by the manager itself
+_SELF_PERSISTING_BACKENDS = ("vllm", "ninfer")
+
+
 def get_backend_manager(request: Request, backend: str = "llamacpp"):
     """Get the appropriate backend manager by type."""
-    if backend == "vllm":
-        return get_vllm_manager(request)
+    getter = _BACKEND_MANAGERS.get(backend)
+    if getter is not None:
+        return getter(request)
     return get_manager(request)
 
 
 async def _stop_other_backend_if_running(request: Request, backend: str) -> None:
     """Ensure only one inference backend is active at a time."""
-    other_backend = "vllm" if backend == "llamacpp" else "llamacpp"
-    other_mgr = get_backend_manager(request, other_backend)
-    if other_mgr is None:
-        return
-    other_status = other_mgr.get_status() if hasattr(other_mgr, "get_status") else {}
-    if not other_status.get("running"):
-        return
+    for other_backend, getter in _BACKEND_MANAGERS.items():
+        if other_backend == backend:
+            continue
+        other_mgr = getter(request)
+        if other_mgr is None:
+            continue
+        other_status = other_mgr.get_status() if hasattr(other_mgr, "get_status") else {}
+        if not other_status.get("running"):
+            continue
 
-    logger.info("Stopping %s before %s to keep single active deployment", other_backend, backend)
-    stopped = await other_mgr.stop()
-    if stopped:
-        return
+        logger.info("Stopping %s before %s to keep single active deployment", other_backend, backend)
+        stopped = await other_mgr.stop()
+        if stopped:
+            continue
 
-    detail = f"Failed to stop {other_backend} before starting {backend}"
-    if other_backend == "vllm":
-        vm = get_vllm_manager(request)
-        if vm and vm.last_action_error:
-            detail = f"{detail}: {vm.last_action_error}"
-    raise HTTPException(status_code=500, detail=detail)
+        detail = f"Failed to stop {other_backend} before starting {backend}"
+        if hasattr(other_mgr, "last_action_error") and other_mgr.last_action_error:
+            detail = f"{detail}: {other_mgr.last_action_error}"
+        raise HTTPException(status_code=500, detail=detail)
 
 
 def get_embedding_manager(request: Request):
@@ -87,11 +104,16 @@ def _prepare_proxy_headers(request: Request, api_key: str) -> Dict[str, Any]:
 def _active_inference_target(request: Request) -> tuple[str, str, str]:
     llamacpp_mgr = get_manager(request)
     vllm_mgr = get_vllm_manager(request)
+    ninfer_mgr = get_ninfer_manager(request)
 
     if vllm_mgr and vllm_mgr.is_running():
         api_key = vllm_mgr.config.get("server", {}).get("api_key", "")
         target = vllm_proxy_base_url(vllm_mgr.internal_http_base())
         return target or vllm_mgr.internal_http_base(), api_key, "vllm"
+
+    if ninfer_mgr and ninfer_mgr.is_running():
+        api_key = ninfer_mgr.config.get("server", {}).get("api_key", "")
+        return ninfer_mgr.internal_http_base(), api_key, "ninfer"
 
     if llamacpp_mgr and llamacpp_mgr.is_running():
         target = os.getenv("LLAMACPP_PROXY_BASE_URL") or os.getenv("INFERENCE_BACKEND_URL")
@@ -105,7 +127,7 @@ def _active_inference_target(request: Request) -> tuple[str, str, str]:
         api_key = llamacpp_mgr.config.get("server", {}).get("api_key", "")
         return target, api_key, "llamacpp"
 
-    raise HTTPException(status_code=503, detail="No inference backend is running. Start llama.cpp or vLLM first.")
+    raise HTTPException(status_code=503, detail="No inference backend is running. Start llama.cpp, vLLM, or NInfer first.")
 
 
 def _empty_metrics_response(reason: str) -> PlainTextResponse:
@@ -212,6 +234,7 @@ async def get_backends_status(request: Request):
     """Get status of all available inference backends."""
     llamacpp_mgr = get_manager(request)
     vllm_mgr = get_vllm_manager(request)
+    ninfer_mgr = get_ninfer_manager(request)
 
     result = {
         "active": "llamacpp",
@@ -234,6 +257,14 @@ async def get_backends_status(request: Request):
             result["active"] = "vllm"
         result["backends"]["vllm"] = vllm_status
 
+    if ninfer_mgr:
+        ninfer_status = ninfer_mgr.get_status()
+        if ninfer_status.get("running"):
+            health = await ninfer_mgr.get_health()
+            ninfer_status["health"] = health
+            result["active"] = "ninfer"
+        result["backends"]["ninfer"] = ninfer_status
+
     return result
 
 
@@ -246,6 +277,19 @@ async def get_vllm_status(request: Request):
     status = vllm_mgr.get_status()
     if status.get("running"):
         health = await vllm_mgr.get_health()
+        status["health"] = health
+    return status
+
+
+@router.get("/api/v1/service/ninfer/status")
+async def get_ninfer_status(request: Request):
+    """Get NInfer backend status."""
+    ninfer_mgr = get_ninfer_manager(request)
+    if ninfer_mgr is None:
+        raise HTTPException(status_code=503, detail="NInfer manager not available")
+    status = ninfer_mgr.get_status()
+    if status.get("running"):
+        health = await ninfer_mgr.get_health()
         status["health"] = health
     return status
 
@@ -271,6 +315,24 @@ async def get_config(request: Request, backend: str = "llamacpp"):
                                  "max_num_batched_tokens", "kv_cache_dtype"],
                 "reasoning": ["reasoning_parser"],
                 "server": ["api_key"],
+            }
+        }
+
+    if backend == "ninfer":
+        ninfer_mgr = mgr
+        return {
+            "config": ninfer_mgr.config,
+            "command": " ".join(ninfer_mgr.build_command()),
+            "backend": "ninfer",
+            "registered_artifacts": ninfer_mgr.registered_artifacts(),
+            "artifact_exists": ninfer_mgr.artifact_exists(),
+            "editable_fields": {
+                "model": ["artifact", "served_name"],
+                "performance": ["max_context", "kv_capacity", "kv_dtype", "max_concurrency"],
+                "speculative": ["enabled", "draft_tokens", "lm_head_draft"],
+                "vision": ["enabled"],
+                "sampling": ["temperature", "top_p", "top_k", "presence_penalty", "greedy"],
+                "server": ["api_key", "published_port"],
             }
         }
 
@@ -308,13 +370,14 @@ def _deep_merge_config(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[s
 async def update_config(request: Request, config: Dict[str, Any], backend: str = "llamacpp"):
     """Update configuration (requires restart to apply).
 
-    Use query param ``backend=vllm`` to update the vLLM manager in-memory config.
-    llama.cpp continues to use persisted merge when ``merge_and_persist_config`` is available.
+    Use query param ``backend=vllm`` or ``backend=ninfer`` to update those
+    managers' in-memory config. llama.cpp continues to use persisted merge when
+    ``merge_and_persist_config`` is available.
     """
-    if backend == "vllm":
-        mgr = get_vllm_manager(request)
+    if backend in _SELF_PERSISTING_BACKENDS:
+        mgr = get_backend_manager(request, backend)
         if mgr is None:
-            raise HTTPException(status_code=503, detail="vLLM manager not available")
+            raise HTTPException(status_code=503, detail=f"{backend} manager not available")
         try:
             _deep_merge_config(mgr.config, config)
             mgr.persist_deploy_config()
@@ -322,11 +385,11 @@ async def update_config(request: Request, config: Dict[str, Any], backend: str =
                 "success": True,
                 "config": mgr.config,
                 "command": " ".join(mgr.build_command()),
-                "backend": "vllm",
-                "message": "vLLM configuration updated in memory. Restart vLLM service to apply.",
+                "backend": backend,
+                "message": f"{backend} configuration updated in memory. Restart service to apply.",
             }
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to update vLLM config: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to update {backend} config: {str(e)}")
 
     manager = get_manager(request)
     merge_config = get_merge_config_func(request)
@@ -461,8 +524,8 @@ async def service_action(request: Request, payload: Dict[str, Any]):
             else:
                 logger.info(f"Directly updating manager config before {action}")
                 mgr.config = {**mgr.config, **config}
-        elif backend == "vllm":
-            logger.info(f"Applying vLLM config before {action}")
+        elif backend in _SELF_PERSISTING_BACKENDS:
+            logger.info(f"Applying {backend} config before {action}")
             _deep_merge_config(mgr.config, config)
             mgr.persist_deploy_config()
 
@@ -479,10 +542,8 @@ async def service_action(request: Request, payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="Unsupported action. Use 'start', 'stop', or 'restart'.")
     if not success:
         parts = [f"{backend} failed to {action}"]
-        if backend == "vllm":
-            vm = get_vllm_manager(request)
-            if vm and vm.last_action_error:
-                parts.append(vm.last_action_error)
+        if hasattr(mgr, "last_action_error") and mgr.last_action_error:
+            parts.append(mgr.last_action_error)
         raise HTTPException(status_code=500, detail=" — ".join(parts))
     return {"success": True, "status": mgr.get_status(), "backend": backend}
 

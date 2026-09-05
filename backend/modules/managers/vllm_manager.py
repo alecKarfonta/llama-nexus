@@ -149,7 +149,7 @@ class VLLMManager:
                 "video_num_frames": int(os.getenv("VLLM_VIDEO_NUM_FRAMES", "256")),
             },
             "environment": {
-                "vllm_nvfp4_gemm_backend": os.getenv("VLLM_NVFP4_GEMM_BACKEND", "marlin"),
+                "vllm_nvfp4_gemm_backend": os.getenv("VLLM_NVFP4_GEMM_BACKEND", ""),
                 "vllm_allow_long_max_model_len": os.getenv("VLLM_ALLOW_LONG_MAX_MODEL_LEN", "1"),
                 "vllm_flashinfer_allreduce_backend": os.getenv("VLLM_FLASHINFER_ALLREDUCE_BACKEND", "trtllm"),
                 "vllm_use_flashinfer_moe_fp4": os.getenv("VLLM_USE_FLASHINFER_MOE_FP4", "0"),
@@ -437,11 +437,16 @@ class VLLMManager:
             "VLLM_ASYNC_SCHEDULING": tf_perf("async_scheduling", True),
             "TRUST_REMOTE_CODE": tf_server("trust_remote_code", True),
             "VLLM_ENABLE_AUTO_TOOL_CHOICE": tf_tools("enable_auto_tool_choice", True),
-            "VLLM_NVFP4_GEMM_BACKEND": str(env_section.get("vllm_nvfp4_gemm_backend") or "marlin"),
             "VLLM_ALLOW_LONG_MAX_MODEL_LEN": str(env_section.get("vllm_allow_long_max_model_len") or "1"),
             "VLLM_FLASHINFER_ALLREDUCE_BACKEND": str(env_section.get("vllm_flashinfer_allreduce_backend") or "trtllm"),
             "VLLM_USE_FLASHINFER_MOE_FP4": str(env_section.get("vllm_use_flashinfer_moe_fp4") or "0"),
         }
+
+        # [2026-08-24 | INFO | VLLMManager.COMPOSE_LAUNCH_ENVIRONMENT | Only pass GEMM backend when explicitly set;
+        # an empty string would force vLLM's deprecated-env path and override native Blackwell W4A4 auto-selection
+        gemm_backend = str(env_section.get("vllm_nvfp4_gemm_backend") or "").strip()
+        if gemm_backend:
+            out["VLLM_NVFP4_GEMM_BACKEND"] = gemm_backend
 
         spec_method = str(speculative.get("method") or "").strip()
         if spec_method:

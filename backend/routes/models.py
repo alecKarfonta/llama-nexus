@@ -222,7 +222,7 @@ async def list_local_model_files():
         
         for item in models_dir.rglob('*'):
             if item.is_file():
-                if item.suffix.lower() in ['.gguf', '.safetensors', '.bin', '.pth', '.pt']:
+                if item.suffix.lower() in ['.gguf', '.safetensors', '.bin', '.pth', '.pt', '.ninfer']:
                     stat = item.stat()
                     files.append({
                         "name": item.name,
@@ -320,6 +320,21 @@ async def delete_local_model_file(file_path: str):
         raise
     except Exception as e:
         logger.error(f"Error deleting model file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/downloads/{model_id}")
+async def cancel_download(request: Request, model_id: str):
+    """Cancel an active download."""
+    download_manager = get_download_manager(request)
+    if download_manager is None:
+        raise HTTPException(status_code=503, detail="Download manager not available")
+    try:
+        await download_manager.cancel_download(model_id)
+        return {"success": True, "data": {"modelId": model_id, "status": "cancelled"}, "timestamp": datetime.now().isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -434,7 +449,7 @@ async def list_repo_files(repo_id: str, revision: str = "main"):
         try:
             logger.info(f"Listing repo files for {repo_id}")
             files = api.list_repo_files(repo_id=repo_id, revision=revision, repo_type="model")
-            model_extensions = ('.gguf', '.safetensors', '.bin', '.pth', '.pt')
+            model_extensions = ('.gguf', '.safetensors', '.bin', '.pth', '.pt', '.ninfer')
             
             def is_model_file(filename: str) -> bool:
                 """Check if a file is a model file, including split GGUF parts."""
@@ -479,7 +494,7 @@ async def download_model(request: Request, payload: Dict[str, Any]):
     if not repo_id or not filename:
         raise HTTPException(status_code=400, detail="'repositoryId' and 'filename' are required")
     
-    supported_extensions = ('.gguf', '.safetensors', '.bin', '.pth', '.pt')
+    supported_extensions = ('.gguf', '.safetensors', '.bin', '.pth', '.pt', '.ninfer')
     is_split_gguf = '.gguf' in str(filename).lower() and re.search(r'\.part\d+of\d+$', str(filename).lower())
     if not is_split_gguf and not str(filename).lower().endswith(supported_extensions):
         raise HTTPException(status_code=400, detail=f"Only files with extensions {supported_extensions} or split GGUF parts (.gguf.partXofY) are supported")
@@ -506,19 +521,61 @@ async def list_downloads(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/downloads/{model_id}")
-async def cancel_download(request: Request, model_id: str):
-    """Cancel an active download."""
-    download_manager = get_download_manager(request)
-    if download_manager is None:
-        raise HTTPException(status_code=503, detail="Download manager not available")
-    try:
-        await download_manager.cancel_download(model_id)
-        return {"success": True, "data": {"modelId": model_id, "status": "cancelled"}, "timestamp": datetime.now().isoformat()}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def get_mtp_graft_manager(request: Request):
+    return getattr(request.app.state, "mtp_graft_manager", None)
+
+
+@router.post("/mtp-graft/preflight")
+async def mtp_graft_preflight(request: Request, payload: Dict[str, Any]):
+    mgr = get_mtp_graft_manager(request)
+    if mgr is None:
+        raise HTTPException(status_code=503, detail="MTP graft manager not available")
+    return {"success": True, "data": await mgr.preflight(payload), "timestamp": datetime.now().isoformat()}
+
+
+@router.post("/mtp-graft")
+async def mtp_graft_start(request: Request, payload: Dict[str, Any]):
+    mgr = get_mtp_graft_manager(request)
+    if mgr is None:
+        raise HTTPException(status_code=503, detail="MTP graft manager not available")
+    job = await mgr.start_job(payload)
+    return {"success": True, "data": job.to_dict(), "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/mtp-graft")
+async def mtp_graft_list(request: Request):
+    mgr = get_mtp_graft_manager(request)
+    if mgr is None:
+        raise HTTPException(status_code=503, detail="MTP graft manager not available")
+    jobs = await mgr.list_jobs()
+    return {"success": True, "data": jobs, "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/mtp-graft/suggestions/donor")
+async def mtp_graft_donor_suggestions(target_name: str = "", architecture: str = ""):
+    from modules.mtp_hf_hints import suggest_donor_for_target
+
+    data = suggest_donor_for_target(target_name=target_name, architecture=architecture)
+    return {"success": True, "data": data, "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/mtp-graft/{job_id}")
+async def mtp_graft_get(request: Request, job_id: str):
+    mgr = get_mtp_graft_manager(request)
+    if mgr is None:
+        raise HTTPException(status_code=503, detail="MTP graft manager not available")
+    job = await mgr.get_job(job_id)
+    return {"success": True, "data": job.to_dict(), "timestamp": datetime.now().isoformat()}
+
+
+@router.delete("/mtp-graft/{job_id}")
+async def mtp_graft_cancel(request: Request, job_id: str):
+    mgr = get_mtp_graft_manager(request)
+    if mgr is None:
+        raise HTTPException(status_code=503, detail="MTP graft manager not available")
+    await mgr.cancel_job(job_id)
+    job = await mgr.get_job(job_id)
+    return {"success": True, "data": job.to_dict(), "timestamp": datetime.now().isoformat()}
 
 
 @router.post("/estimate-vram")

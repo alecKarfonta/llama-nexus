@@ -1881,16 +1881,16 @@ function normalizeChatSettings(settings: ChatSettings): ChatSettings {
   };
 }
 
-/** Direct port URLs bypass the backend router (8600=llama.cpp, 8601=vLLM). */
+/** Direct port URLs bypass the backend router (8600=llama.cpp, 8601=vLLM, 8603=NInfer). */
 function isDirectInferencePortBaseUrl(baseUrl: string): boolean {
   const trimmed = baseUrl?.trim();
   if (!trimmed) return false;
   try {
     const u = new URL(trimmed);
     const port = u.port || (u.protocol === "https:" ? "443" : "80");
-    return port === "8600" || port === "8601";
+    return port === "8600" || port === "8601" || port === "8603";
   } catch {
-    return /:8600\b|:8601\b/.test(trimmed);
+    return /:8600\b|:8601\b|:8603\b/.test(trimmed);
   }
 }
 
@@ -2630,6 +2630,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         const backends = await apiService.getBackendsStatus();
         setActiveInferenceBackend(backends.active || null);
         const llamacpp = backends.backends?.llamacpp;
+        const ninfer = backends.backends?.ninfer;
         const profile = llamacpp?.config?.mtp?.workload_profile;
         setDeployWorkloadProfile(typeof profile === "string" ? profile : null);
 
@@ -2647,9 +2648,13 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             .catch(() => null);
           const llamacppServer = llamacpp?.config?.server as
             { api_key?: string; apiKey?: string } | undefined;
+          const ninferServer = ninfer?.config?.server as
+            { api_key?: string; apiKey?: string } | undefined;
           const serviceServer = serviceConfig?.server as
             { api_key?: string; apiKey?: string } | undefined;
           const deployKey =
+            ninferServer?.api_key ||
+            ninferServer?.apiKey ||
             llamacppServer?.api_key ||
             llamacppServer?.apiKey ||
             serviceServer?.api_key ||

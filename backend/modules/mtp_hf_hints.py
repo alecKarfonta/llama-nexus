@@ -58,3 +58,46 @@ def enrich_repo_files_response(repo_id: str, files: List[str]) -> Dict[str, Any]
         },
         "file_hints": file_hints,
     }
+
+
+def suggest_donor_for_target(
+    *,
+    target_name: str = "",
+    architecture: str = "",
+) -> Dict[str, Any]:
+    """Suggest HF MTP donor repos/files for a graft target (hints only)."""
+    name_lower = (target_name or "").lower()
+    arch_lower = (architecture or "").lower()
+
+    if "a3b" in name_lower or "moe" in name_lower or arch_lower == "qwen35moe":
+        family = "qwen3.6-moe"
+        repos = [
+            {
+                "repo_id": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+                "filename": "Qwen3.6-35B-A3B-Q8_0.gguf",
+                "note": "Official MTP donor; Q8_0 recommended for mixed-quant graft",
+            },
+            {
+                "repo_id": "havenoammo/Qwen3.6-35B-A3B-MTP-GGUF",
+                "filename": "Qwen3.6-35B-A3B-MTP-UD-Q8_K_XL.gguf",
+                "note": "Alternative MTP donor",
+            },
+        ]
+    elif "qwen" in name_lower or arch_lower.startswith("qwen"):
+        family = "qwen3.6"
+        repos = [
+            {
+                "repo_id": "unsloth/Qwen3.6-27B-MTP-GGUF",
+                "filename": "Qwen3.6-27B-Q8_0.gguf",
+                "note": "Dense 27B MTP donor",
+            },
+        ]
+    else:
+        family = "default"
+        repos = []
+
+    return {
+        "family": family,
+        "caveat": MTP_GGUF_CAVEAT,
+        "suggested_donors": repos,
+    }

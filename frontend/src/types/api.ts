@@ -61,6 +61,72 @@ export interface ModelInfo {
   mtpScanError?: string;
 }
 
+export interface MtpGraftTarget {
+  name?: string;
+  variant?: string;
+  filename?: string;
+}
+
+export interface MtpGraftDonor {
+  name?: string;
+  variant?: string;
+  filename?: string;
+  repo_id?: string;
+}
+
+export interface MtpGraftRequest {
+  target?: MtpGraftTarget;
+  donor?: MtpGraftDonor;
+  name?: string;
+  variant?: string;
+  overwrite?: boolean;
+  output_filename?: string;
+}
+
+export interface MtpGraftPreflightResult {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  architecture?: string;
+  target_block_count?: number;
+  donor_block_count?: number;
+  donor_nextn?: number;
+  extra_tensor_count?: number;
+  planned_output_filename?: string;
+  planned_deploy_name?: string;
+  planned_deploy_variant?: string;
+  disk_required_bytes?: number;
+}
+
+export interface MtpGraftJob {
+  job_id: string;
+  status: 'queued' | 'preflight' | 'grafting' | 'validating' | 'completed' | 'failed' | 'cancelled';
+  target_name: string;
+  target_variant: string;
+  donor_name?: string;
+  donor_variant?: string;
+  donor_filename?: string;
+  donor_repo_id?: string;
+  output_filename?: string;
+  progress: number;
+  error?: string;
+  created_at: string;
+  finished_at?: string;
+  logs: string[];
+}
+
+export interface MtpGraftDonorSuggestion {
+  repo_id: string;
+  filename: string;
+  note?: string;
+}
+
+export interface MtpGraftDonorSuggestions {
+  family: string;
+  caveat?: string;
+  suggested_donors: MtpGraftDonorSuggestion[];
+}
+
 export interface ModelDownload {
   modelId: string;
   progress: number; // 0-100
@@ -242,7 +308,7 @@ export interface ServiceActionResponse {
 
 export interface ServiceActionRequest {
   action: "start" | "stop" | "restart" | "reload";
-  backend?: "llamacpp" | "vllm";
+  backend?: "llamacpp" | "vllm" | "ninfer";
   config?: Partial<ServiceConfig>;
 }
 

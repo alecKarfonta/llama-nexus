@@ -29,7 +29,7 @@ interface LogViewerProps {
   containerName?: string
   maxLines?: number
   height?: number | string
-  backend?: 'llamacpp' | 'vllm'
+  backend?: 'llamacpp' | 'vllm' | 'ninfer'
   compact?: boolean
   collapseEmpty?: boolean
 }

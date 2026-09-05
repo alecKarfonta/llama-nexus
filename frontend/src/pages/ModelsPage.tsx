@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Typography,
   Box,
@@ -48,6 +48,7 @@ import {
   Tune as TuneIcon,
   MoreVert as MoreVertIcon,
   Close as CloseIcon,
+  MergeType as GraftIcon,
 } from '@mui/icons-material'
 import { ModelInfo, ModelDownload, ModelArchiveRequest } from '@/types/api'
 import { quantizationModelHandoffFromModelInfo } from '@/types/quantizationHandoff'
@@ -96,6 +97,7 @@ const MODELS_STATUS_CONFIG: StatusChipConfigMap = {
 
 export const ModelsPage: React.FC = () => {
   const navigate = useNavigate()
+  const location = useLocation()
   const isNarrow = useMediaQuery('(max-width:599.95px)')
   const hasInlineModelDetails = useMediaQuery('(min-width:1200px)')
   const benchmarkPath = getRoutePath('benchmark')
@@ -152,6 +154,14 @@ export const ModelsPage: React.FC = () => {
   const [modelToDelete, setModelToDelete] = useState<ModelInfo | null>(null)
   const [deletingModel, setDeletingModel] = useState(false)
 
+  const [graftDialogOpen, setGraftDialogOpen] = useState(false)
+  const [graftTargetModel, setGraftTargetModel] = useState<ModelInfo | null>(null)
+  const [graftDonorRepo, setGraftDonorRepo] = useState('')
+  const [graftDonorFilename, setGraftDonorFilename] = useState('')
+  const [graftBusy, setGraftBusy] = useState(false)
+  const [graftError, setGraftError] = useState<string | null>(null)
+  const [graftLogs, setGraftLogs] = useState<string[]>([])
+
   // State for highlighting a local file when linked from model
   const [highlightedFilePath, setHighlightedFilePath] = useState<string | null>(null)
 
@@ -177,6 +187,14 @@ export const ModelsPage: React.FC = () => {
       }
     }
   }, [])
+
+  useEffect(() => {
+    const state = location.state as { openMtpGraft?: boolean; model?: ModelInfo } | null
+    if (state?.openMtpGraft && state.model) {
+      handleGraftMtp(state.model)
+      navigate(location.pathname, { replace: true, state: null })
+    }
+  }, [location.pathname, location.state, navigate])
 
   // Fetch models from API
   const fetchModels = async () => {
@@ -330,6 +348,53 @@ export const ModelsPage: React.FC = () => {
 
   const handleDeploy = (model: ModelInfo) => {
     navigate(deployPath, { state: { model } })
+  }
+
+  const handleGraftMtp = (model: ModelInfo) => {
+    setGraftTargetModel(model)
+    setGraftDonorRepo('')
+    setGraftDonorFilename('')
+    setGraftError(null)
+    setGraftLogs([])
+    setGraftDialogOpen(true)
+  }
+
+  const handleStartGraft = async () => {
+    if (!graftTargetModel) return
+    setGraftBusy(true)
+    setGraftError(null)
+    try {
+      const request = {
+        target: {
+          name: graftTargetModel.name,
+          variant: graftTargetModel.variant,
+          filename: graftTargetModel.filename || graftTargetModel.localPath,
+        },
+        donor: {
+          repo_id: graftDonorRepo.trim() || undefined,
+          filename: graftDonorFilename.trim() || undefined,
+        },
+      }
+      const preflight = await apiService.mtpGraftPreflight(request)
+      if (!preflight.ok) {
+        setGraftError(preflight.errors.join(' ') || 'Preflight failed')
+        setGraftBusy(false)
+        return
+      }
+      const job = await apiService.startMtpGraft(request)
+      setGraftLogs(job.logs || [`Started graft job ${job.job_id}`])
+      setSnackbar({
+        open: true,
+        message: `MTP graft started (${job.job_id})`,
+        severity: 'success',
+      })
+      setGraftDialogOpen(false)
+      fetchModels()
+    } catch (error) {
+      setGraftError(error instanceof Error ? error.message : 'Failed to start MTP graft')
+    } finally {
+      setGraftBusy(false)
+    }
   }
 
   const handleBenchmark = (model: ModelInfo) => {
@@ -1630,6 +1695,18 @@ export const ModelsPage: React.FC = () => {
             Fine-tune
           </MenuItem>,
           <MenuItem
+            key="graft-mtp"
+            dense
+            disabled={selectedActiveIsDownloading || !selectedActiveModel.localPath || Boolean(selectedActiveModel.mtpCapable)}
+            onClick={() => {
+              setModelActionsAnchorEl(null)
+              handleGraftMtp(selectedActiveModel)
+            }}
+          >
+            <GraftIcon sx={{ mr: 1.25, fontSize: 18 }} />
+            Add MTP heads
+          </MenuItem>,
+          <MenuItem
             key="details"
             dense
             onClick={() => {
@@ -1679,6 +1756,44 @@ export const ModelsPage: React.FC = () => {
           </MenuItem>,
         ]}
       </Menu>
+
+      <Dialog open={graftDialogOpen} onClose={() => !graftBusy && setGraftDialogOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Graft MTP heads</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Copy MTP prediction heads from a donor GGUF onto {graftTargetModel?.name || 'this model'}.
+          </Typography>
+          <TextField
+            fullWidth
+            size="small"
+            label="Donor Hugging Face repo (optional)"
+            value={graftDonorRepo}
+            onChange={(e) => setGraftDonorRepo(e.target.value)}
+            sx={{ mb: 1.5 }}
+          />
+          <TextField
+            fullWidth
+            size="small"
+            label="Donor filename (optional)"
+            value={graftDonorFilename}
+            onChange={(e) => setGraftDonorFilename(e.target.value)}
+          />
+          {graftError && (
+            <Alert severity="error" sx={{ mt: 2 }}>{graftError}</Alert>
+          )}
+          {graftLogs.length > 0 && (
+            <Typography variant="caption" component="pre" sx={{ mt: 2, whiteSpace: 'pre-wrap' }}>
+              {graftLogs.join('\n')}
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setGraftDialogOpen(false)} disabled={graftBusy}>Cancel</Button>
+          <Button onClick={() => void handleStartGraft()} disabled={graftBusy || !graftTargetModel} variant="contained">
+            {graftBusy ? 'Starting…' : 'Start graft'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Snackbar for notifications */}
       <Snackbar

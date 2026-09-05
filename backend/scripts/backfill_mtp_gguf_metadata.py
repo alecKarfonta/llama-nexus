@@ -14,24 +14,11 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from modules.gguf_metadata import gguf_header_path_for_filename, scan_gguf_mtp  # noqa: E402
+from modules.gguf_model_naming import parse_name_variant  # noqa: E402
 
 
 def _parse_name_variant(filename: str):
-    import re
-
-    stem = filename[:-5] if filename.lower().endswith(".gguf") else Path(filename).stem
-    multipart_match = re.match(r"(.+)-(\d{5}-of-\d{5})$", stem)
-    if multipart_match:
-        stem = multipart_match.group(1)
-    if "." in stem:
-        parts = stem.split(".")
-        if parts[-1].startswith("Q"):
-            return ".".join(parts[:-1]), parts[-1]
-    if "-" in stem:
-        parts = stem.split("-")
-        if parts[-1].startswith("Q"):
-            return "-".join(parts[:-1]), parts[-1]
-    return stem, None
+    return parse_name_variant(filename)
 
 
 def main() -> int:

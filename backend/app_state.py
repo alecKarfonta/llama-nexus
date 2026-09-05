@@ -19,11 +19,15 @@ from modules.managers import (
     TTSManager
 )
 from modules.managers.vllm_manager import VLLMManager
+from modules.managers.ninfer_manager import NinferManager
+from modules.managers.mtp_graft_manager import MtpGraftManager
 
 # Initialize service managers
 manager = LlamaCPPManager()
 vllm_manager = VLLMManager()
+ninfer_manager = NinferManager()
 download_manager = ModelDownloadManager()
+mtp_graft_manager = MtpGraftManager()
 embedding_manager = EmbeddingManager()
 stt_manager = STTManager()
 streaming_stt_manager = StreamingSTTManager()

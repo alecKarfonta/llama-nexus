@@ -1,6 +1,6 @@
 import type { ModelInfo } from './api'
 
-export type RuntimeBackend = 'llamacpp' | 'vllm'
+export type RuntimeBackend = 'llamacpp' | 'vllm' | 'ninfer'
 export type RuntimeAction = 'start' | 'restart'
 
 export interface DeploymentRouteContext {
@@ -31,7 +31,7 @@ export interface DeployRouteState {
 }
 
 export const runtimeBackendLabel = (backend?: RuntimeBackend) => (
-  backend === 'vllm' ? 'vLLM' : backend === 'llamacpp' ? 'llama.cpp' : 'Runtime'
+  backend === 'vllm' ? 'vLLM' : backend === 'ninfer' ? 'NInfer' : backend === 'llamacpp' ? 'llama.cpp' : 'Runtime'
 )
 
 export const modelInfoFromDeployment = (deployment: DeploymentRouteContext): ModelInfo => ({
@@ -40,7 +40,7 @@ export const modelInfoFromDeployment = (deployment: DeploymentRouteContext): Mod
   variant: '',
   size: 0,
   status: 'running',
-  framework: deployment.backend === 'vllm' ? 'vllm' : 'llama.cpp',
+  framework: deployment.backend === 'vllm' ? 'vllm' : deployment.backend === 'ninfer' ? 'ninfer' : 'llama.cpp',
   port: Number(deployment.endpoint?.match(/:(\d+)$/)?.[1]) || undefined,
 })
 

@@ -1,0 +1,21 @@
+--- a/src/targets/qwen3_6/impl/runtime/program_impl.h
++++ b/src/targets/qwen3_6/impl/runtime/program_impl.h
+@@ -9038,6 +9038,18 @@
+                 } else {
+                     const std::int32_t next  = mtp_host_egress->next_extents[row];
+                     sequence.mtp_draft_count = static_cast<std::uint32_t>(next);
++                    // [2026-08-30 | INFO | Program.settle_speculative | Adaptive MTP window:
++                    // shrink to 2 when rolling accept < 40% after 8 rounds (chat/RP). Do not
++                    // raise above `next` — next_drafts only has that many valid tokens.
++                    if (request.speculative_stats.rounds >= 8 &&
++                        request.speculative_stats.drafted_tokens > 0) {
++                        const double acc =
++                            static_cast<double>(request.speculative_stats.accepted_tokens) /
++                            static_cast<double>(request.speculative_stats.drafted_tokens);
++                        if (acc < 0.40 && sequence.mtp_draft_count > 2) {
++                            sequence.mtp_draft_count = 2;
++                        }
++                    }
+                     for (std::uint32_t step = 0; step < sequence.mtp_draft_count; ++step) {
+                         sequence.mtp_drafts[step] =
+                             mtp_host_egress->next_drafts[step * max_concurrency + row];

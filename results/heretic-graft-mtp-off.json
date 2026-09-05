@@ -1,0 +1,20 @@
+{
+  "prompt": "Write a Python function `merge_sorted(a, b)` that merges two sorted lists into one sorted list in O(n) time. Include a s",
+  "runs": [
+    {
+      "label": "current_server",
+      "metrics": {
+        "prompt_tokens": 48,
+        "completion_tokens": 128,
+        "time_to_first_token_ms": 39.58,
+        "decode_tokens_per_second": 170.1,
+        "prompt_tokens_per_second": 1212.7,
+        "total_time_ms": 828.56,
+        "error": null
+      },
+      "text_preview": "```python\ndef merge_sorted(a, b):\n    \"\"\"Merge two sorted lists into one sorted list in O(n) time.\"\"\"\n    result = []\n    i, j = 0, 0\n    while i < len(a) and j < len(b):\n        if a[i] <= b[j]:\n    ",
+      "text_len": 437,
+      "warmup_error": "list index out of range"
+    }
+  ]
+}

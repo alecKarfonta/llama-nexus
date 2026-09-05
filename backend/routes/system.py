@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from enhanced_logger import enhanced_logger as logger
-from app_state import manager, vllm_manager, _merge_and_persist_config
+from app_state import manager, vllm_manager, ninfer_manager, _merge_and_persist_config
 from routes.models import (
     _first_live_openai_model_info,
     _live_openai_context_size,
@@ -42,6 +42,23 @@ def _container_logs_unavailable(stderr: str) -> bool:
         or "is not running" in normalized
     )
 
+
+def _backend_log_manager(backend: str):
+    if backend == "vllm":
+        return vllm_manager
+    if backend == "ninfer":
+        return ninfer_manager
+    return manager
+
+
+def _backend_container_name(backend: str) -> str:
+    if backend == "vllm":
+        return "vllm-api"
+    if backend == "ninfer":
+        return "ninfer-api"
+    return _llamacpp_container_name()
+
+
 @router.get("/health")
 async def health_check():
     """Detailed health check endpoint"""
@@ -58,13 +75,13 @@ async def health_check():
 @router.get("/logs")
 async def get_logs(lines: int = 100, backend: str = "llamacpp"):
     """Get recent logs from the specified backend service."""
-    log_mgr = vllm_manager if backend == "vllm" else manager
+    log_mgr = _backend_log_manager(backend)
     return {"logs": log_mgr.get_logs(lines)}
 
 @router.delete("/logs")
 async def clear_logs(backend: str = "llamacpp"):
     """Clear internal log buffer."""
-    log_mgr = vllm_manager if backend == "vllm" else manager
+    log_mgr = _backend_log_manager(backend)
     log_mgr.log_buffer.clear()
     last_log = f"[{datetime.now().strftime('%H:%M:%S')}] Logs cleared by user\n"
     log_mgr.log_buffer.append(last_log)
@@ -75,7 +92,7 @@ async def clear_logs(backend: str = "llamacpp"):
 @router.get("/container/logs")
 async def get_container_logs(lines: int = 100, backend: str = "llamacpp"):
     """Fetch logs directly from Docker container."""
-    container_name = "vllm-api" if backend == "vllm" else _llamacpp_container_name()
+    container_name = _backend_container_name(backend)
 
     result = subprocess.run(
         ["docker", "logs", "--tail", str(max(1, lines)), container_name],
@@ -107,7 +124,7 @@ async def get_container_logs_legacy(lines: int = 100, backend: str = "llamacpp")
 @router.get("/container/logs/stream")
 async def stream_container_logs(backend: str = "llamacpp"):
     """Stream logs directly from Docker container."""
-    container_name = "vllm-api" if backend == "vllm" else _llamacpp_container_name()
+    container_name = _backend_container_name(backend)
 
     async def log_generator():
         # First check if the container is running

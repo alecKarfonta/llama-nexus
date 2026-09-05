@@ -35,7 +35,7 @@ function parseMtpFromLogLine(message: string): Partial<MtpStatsSnapshot> | null 
 
 export function useMtpStats(options: {
   enabled?: boolean;
-  backend?: 'llamacpp' | 'vllm';
+  backend?: 'llamacpp' | 'vllm' | 'ninfer';
 }) {
   const { enabled = true, backend = 'llamacpp' } = options;
   const [stats, setStats] = useState<MtpStatsSnapshot | null>(null);

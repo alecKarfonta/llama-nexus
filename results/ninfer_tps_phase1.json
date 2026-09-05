@@ -1,0 +1,23 @@
+{
+  "date": "2026-08-30",
+  "harness": "scripts/bench_ninfer_suite.py",
+  "runs": 3,
+  "max_tokens": 400,
+  "results": {
+    "baseline-bf16-d4": {"geomean": 179.9, "chat/tech": 168.5, "chat/casual": 139.1, "code/python": 226.9, "roleplay": 130.3, "json": 271.5, "notes": "draft=4, KV bf16, temp=0.7"},
+    "kv-int8-d4": {"geomean": 182.1, "chat/tech": 166.9, "chat/casual": 139.2, "code/python": 237.3, "roleplay": 132.9, "json": 273.1, "notes": "WIN vs bf16; baked as default"},
+    "kv-int8-campaign": {"geomean": 184.7, "chat/tech": 173.8, "chat/casual": 141.5, "code/python": 229.7, "roleplay": 138.6, "json": 274.9, "notes": "temp=0.6 top_k=20 presence=1.0; baked as process default"},
+    "kv-int8-greedy": {"geomean": 188.9, "chat/tech": 182.0, "chat/casual": 143.4, "code/python": 239.1, "roleplay": 139.0, "json": 277.0, "notes": "temp=0; optional --greedy, not default"},
+    "kv-int8-ctx8192": {"geomean": 182.2, "chat/tech": 165.9, "chat/casual": 145.6, "code/python": 222.1, "roleplay": 137.0, "json": 273.7, "notes": "no C=1 win; keep max_context=32768"},
+    "cuda132-int8-campaign": {"geomean": 180.8, "notes": "slightly worse; keep CUDA 13.1.2"},
+    "adaptive-int8-campaign": {"geomean": 177.7, "notes": "lost; keep adaptive patch off"},
+    "chat-mtp": {"geomean": 180.2, "chat/tech": 164.9, "chat/casual": 139.3, "code/python": 224.7, "roleplay": 132.5, "json": 278.0, "notes": "self-gen 111k tok, 195 steps, loss 1.55->0.52; chat accept ~42-47% vs ~55% stock; do not bake. artifact qwen3_8_27b_nvfp4.chat-mtp.ninfer left on volume"},
+    "campaign-today": {"geomean": 181.9, "chat/tech": 165.6, "chat/casual": 145.2, "code/python": 221.6, "roleplay": 136.7, "json": 273.2, "notes": "2026-08-31 same-day control on pre-3d9fda2 image"},
+    "vision-off": {"geomean": 180.9, "chat/tech": 164.2, "chat/casual": 144.4, "code/python": 220.6, "roleplay": 136.0, "json": 272.1, "notes": "within noise of campaign-today; keep vision on"},
+    "conc-1": {"geomean": 181.4, "chat/tech": 163.9, "chat/casual": 145.0, "code/python": 221.4, "roleplay": 136.6, "json": 273.1, "notes": "within noise; keep max_concurrency=8"},
+    "upstream-3d9fda2-int8": {"geomean": 182.3, "chat/tech": 175.5, "chat/casual": 137.3, "code/python": 230.4, "roleplay": 133.4, "json": 271.5, "notes": "WIN on chat/tech (+6% vs same-day); baked as llama-nexus-ninfer-api:latest (NINFER_SHA=3d9fda2)"},
+    "upstream-3d9fda2-fp8": {"geomean": 180.2, "chat/tech": 166.1, "chat/casual": 135.0, "code/python": 232.4, "roleplay": 135.0, "json": 269.9, "notes": "lost chat vs int8; keep kv-dtype int8"},
+    "upstream-3d9fda2-d3": {"geomean": 168.2, "chat/tech": 157.6, "chat/casual": 134.6, "code/python": 207.6, "roleplay": 132.1, "json": 231.8, "notes": "draft=3 lost hard; keep draft=4"},
+    "chat-mtp-v2": {"geomean": 181.6, "chat/tech": 169.2, "chat/casual": 136.8, "code/python": 224.3, "roleplay": 140.1, "json": 271.8, "notes": "500k one-pass, lr 2e-5, origin-mix 0.3, C=1; chat accept still ~40-52%; do not bake. artifact qwen3_8_27b_nvfp4.chat-mtp.v2.ninfer"}
+  }
+}

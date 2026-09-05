@@ -1,0 +1,6 @@
+[chat-mtp] chat/tech      164.9 TPS  (±15  runs: ['158', '173', '163'])
+[chat-mtp] chat/casual    139.3 TPS  (±13  runs: ['138', '133', '146'])
+[chat-mtp] code/python    224.7 TPS  (±6  runs: ['222', '223', '229'])
+[chat-mtp] roleplay       132.5 TPS  (±12  runs: ['125', '135', '137'])
+[chat-mtp] json           278.0 TPS  (±7  runs: ['274', '282', '278'])
+[chat-mtp] GEOMEAN        180.2 TPS

@@ -377,6 +377,14 @@ Secondary: vLLM (profile `vllm`) where GPU supports it; bundled Nemotron NVFP4 r
 
 **Next:** Phase 4 GPU presets; optional `ENABLE_LLGUIDANCE=true` rebuild for jump-forward tier.
 
+## llamacpp-api b10089 (2026-06-09)
+
+- Pinned `Dockerfile` + `docker-compose.yml` to latest release **b10089** (was b9193).
+- Default `CUDA_ARCH=120` for RTX 5090 (Blackwell sm_120).
+- Rebuilt: `docker compose build --no-cache llamacpp-api` (~18 min).
+- Start on single-GPU host: `CUDA_VISIBLE_DEVICES=0 NVIDIA_VISIBLE_DEVICES=0 docker compose --profile extra up -d llamacpp-api`
+- Status: `mtp_supported: true`, `build_number: 10089`.
+
 ## llamacpp-api b9193 (2026-06-08)
 
 - Root cause: `llama-nexus-llamacpp-api:latest` image missing; backend docker-py client failed → build info null
@@ -407,7 +415,43 @@ Secondary: vLLM (profile `vllm`) where GPU supports it; bundled Nemotron NVFP4 r
 - `_docker_gpu_attachment`: `device_ids` + quoted CLI `--gpus '"device=0,1"'` (bare `device=0,1` breaks Docker).
 - `apply_mtp_workload_profile`: use `setdefault` so chat profile does not overwrite `mtp.enabled: false`.
 
-**256k note:** Full 256000 still OOMs compute buffers on this 5070+5060 pair with MTP; try ~128k–180k without MTP, or Q4_K_M MTP on 0,1,3 for experiment-backed 180k+MTP.
+**2026-06-09 MTP graft (heretic Q6_K):** Safe offline job via `scripts/run_mtp_graft_heretic.sh` — isolated `python:3.12-slim` container, `ionice -c3 nice -n19`, never touches `llamacpp-api`. Donor: `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` → `Qwen3.6-35B-A3B-Q8_0.gguf`. Output: `Qwen3.6-35B-A3B-uncensored-heretic-Q6_K-MTP.gguf`. Deploy symlink: `…-heretic-MTP-Q6_K.gguf`.
+
+**2026-06-09 Heretic MTP live benchmark** (`:8600`, grafted file, MTP chat n2 vs off):
+
+| Metric | MTP off | MTP on | Notes |
+|--------|---------|--------|-------|
+| compare_live decode tok/s | 170.1 | 227.6 | **1.34×** |
+| compare_live completion_tokens | 128 | 128 | same prompt |
+| bench code tok/s | 184.8 | 210.6 | 1.14× |
+| bench structured tok/s | 186.7 | 220.5 | 1.18× |
+| bench chat tok/s | 186.8 | 173.9 | 0.93× (acceptance dipped on persona prompt) |
+| seed=42 add(a,b) tokens | 18 | 18 | **content match: yes** |
+| draft acceptance (15 samples) | n/a | mean **76.9%** | min 33% max 100% |
+
+Results: `results/heretic-graft-mtp-{off,on}.json`, `results/heretic-output-mtp-{off,on}.json`, `fast-inference/bench/results/heretic-mtp-{off,on}.json`. Verdict: graft is **lossless** on fixed-seed output; **worth enabling** for code/structured; chat profile may need n3 or accept lower acceptance on graft.
+
+## MTP graft UI (2026-06-09)
+
+- Backend: `MtpGraftManager` runs graft in isolated `python:3.12-slim` Docker (never in `llamacpp-api`). API: `POST/GET/DELETE /v1/models/mtp-graft*`, preflight + donor suggestions.
+- Frontend: `MtpGraftDialog` on Models page (**Add MTP** on non-MTP models); Deploy MTP section links to graft flow.
+- Output naming: `{name}-MTP-{variant}.gguf` for deploy `{name}-{variant}.gguf` resolution.
+- Rebuild: `docker compose --profile extra up -d --build backend-api llamacpp-frontend`
+
+## mlapi.us ingress (2026-06-09)
+
+- **Edge host:** node-4 `192.168.1.4` (nginx active, TLS on `:8443`; router NAT `:443` → `:8443`).
+- **llama.cpp API:** `https://mlapi.us/vllm/` → sonic `192.168.1.78:8600` (upstream `host77_vllm`). Added `proxy_buffering off` for streaming.
+- **llama-nexus UI:** `https://mlapi.us/nexus/` → sonic `:3002` (upstream `host78_llama_nexus`). Config: `/etc/nginx/conf.d/apps/llama-nexus.conf` on node-4.
+- **Caveat:** UI built for `/` — static assets under `/nexus/` may 404 (`/assets/...` not prefixed). Subdomain or Vite `base: '/nexus/'` rebuild fixes that.
+
+## Git (2026-06-08)
+
+- Pulled latest `origin/master` (`1e8377f` — MTP deploy/chat integration, Dockerfile/compose updates).
+- Stashed local WIP (mmproj download feature) before pull; stash: `WIP before pull latest`.
+- Rebase conflict in `backend/routes/service.py` resolved: use `_inject_inference_api_key()` for llama.cpp proxy paths (matches vLLM path).
+- Local commit rebased on top: `fb8f20d` Fix Chat 401 when llama.cpp deploy API key is unset.
+- Rebuilt: `docker compose --profile extra up -d --build redis backend-api llamacpp-frontend llamacpp-api`.
 
 ## Git (2026-05-11)
 
@@ -415,6 +459,8 @@ Secondary: vLLM (profile `vllm`) where GPU supports it; bundled Nemotron NVFP4 r
 - Merge commit: `d30135b`. Pushed to `origin` (`master`).
 - `origin` was switched from HTTPS to SSH (`git@github.com:alecKarfonta/llama-nexus.git`) because HTTPS push failed with no stored credentials in this environment.
 
+## Chat UI max tokens (2026-06-09)
 
+- Raised Chat settings slider max from 4K → 128K (default remains 8K). Matches workflow OpenAI node limit.
 
 

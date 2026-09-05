@@ -24,7 +24,11 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
   TokenUsageData,
-  LlamaCppCommitsResponse
+  LlamaCppCommitsResponse,
+  MtpGraftRequest,
+  MtpGraftPreflightResult,
+  MtpGraftJob,
+  MtpGraftDonorSuggestions,
 } from '@/types/api';
 
 type GraphRAGCapability = {
@@ -690,6 +694,52 @@ class ApiService {
     return response.data.data;
   }
 
+  async mtpGraftPreflight(request: MtpGraftRequest): Promise<MtpGraftPreflightResult> {
+    const response = await this.backendClient.post<ApiResponse<MtpGraftPreflightResult>>(
+      '/v1/models/mtp-graft/preflight',
+      request,
+    );
+    return response.data.data;
+  }
+
+  async startMtpGraft(request: MtpGraftRequest): Promise<MtpGraftJob> {
+    const response = await this.backendClient.post<ApiResponse<MtpGraftJob>>(
+      '/v1/models/mtp-graft',
+      request,
+    );
+    return response.data.data;
+  }
+
+  async getMtpGraftJobs(): Promise<MtpGraftJob[]> {
+    const response = await this.backendClient.get<ApiResponse<MtpGraftJob[]>>('/v1/models/mtp-graft');
+    return response.data.data || [];
+  }
+
+  async getMtpGraftJob(jobId: string): Promise<MtpGraftJob> {
+    const response = await this.backendClient.get<ApiResponse<MtpGraftJob>>(
+      `/v1/models/mtp-graft/${encodeURIComponent(jobId)}`,
+    );
+    return response.data.data;
+  }
+
+  async cancelMtpGraftJob(jobId: string): Promise<MtpGraftJob> {
+    const response = await this.backendClient.delete<ApiResponse<MtpGraftJob>>(
+      `/v1/models/mtp-graft/${encodeURIComponent(jobId)}`,
+    );
+    return response.data.data;
+  }
+
+  async getMtpGraftDonorSuggestions(
+    targetName?: string,
+    architecture?: string,
+  ): Promise<MtpGraftDonorSuggestions> {
+    const response = await this.backendClient.get<ApiResponse<MtpGraftDonorSuggestions>>(
+      '/v1/models/mtp-graft/suggestions/donor',
+      { params: { target_name: targetName || '', architecture: architecture || '' } },
+    );
+    return response.data.data;
+  }
+
   async archiveModel(request: ModelArchiveRequest): Promise<ModelArchiveResponse> {
     const response = await this.backendClient.post<ApiResponse<ModelArchiveResponse>>('/v1/models/archive', request);
     if (!response.data.data) {
@@ -809,6 +859,11 @@ class ApiService {
 
   async getVllmStatus(): Promise<any> {
     const response = await this.backendClient.get('/api/v1/service/vllm/status');
+    return response.data;
+  }
+
+  async getNinferStatus(): Promise<any> {
+    const response = await this.backendClient.get('/api/v1/service/ninfer/status');
     return response.data;
   }
 

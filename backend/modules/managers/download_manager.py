@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, List
 from pathlib import Path
 import psutil
 import httpx
+from fastapi import HTTPException
 from collections import deque
 import re
 
@@ -18,6 +19,7 @@ from modules.gguf_metadata import (
     gguf_header_path_for_filename,
     scan_gguf_mtp,
 )
+from modules.gguf_model_naming import parse_name_variant as parse_gguf_name_variant
 from enhanced_logger import enhanced_logger as logger
 from local_paths import container_or_backend_subdir, backend_data_path
 from modules.managers.base import DOCKER_AVAILABLE, docker_client
@@ -359,59 +361,7 @@ class ModelDownloadManager:
         return items
 
     def _parse_name_variant(self, filename: str) -> (str, Optional[str]):
-        # Remove extension
-        stem = filename[:-5] if filename.endswith('.gguf') else Path(filename).stem
-
-        # Strip any subdirectory prefix (e.g. "UD-Q4_K_XL/Model-UD-Q4_K_XL.gguf" -> "Model-UD-Q4_K_XL")
-        stem = Path(stem).name
-
-        # Handle multi-part files by removing the part suffix first
-        import re
-        multipart_pattern = r'(.+)-(\d{5}-of-\d{5})$'
-        multipart_match = re.match(multipart_pattern, stem)
-        if multipart_match:
-            stem = multipart_match.group(1)
-
-        # [TIME] | INFO | DOWNLOAD_MANAGER.PARSE_NAME_VARIANT | Unsloth-style variants
-        # "Model-UD-Q4_K_XL" -> ("Model", "UD-Q4_K_XL"); likewise plain IQ/Q prefixes.
-        unsloth_match = re.match(r'(.+?)-((?:UD-)?(?:IQ|Q)\d\S*)$', stem)
-        if unsloth_match:
-            return (unsloth_match.group(1), unsloth_match.group(2))
-
-        # Try dot pattern: ModelName.Q4_K_M
-        if '.' in stem:
-            parts = stem.split('.')
-            if parts[-1].startswith('Q'):
-                return ('.'.join(parts[:-1]), parts[-1])
-        
-        # Try hyphen pattern: ModelName-Q4_K_M
-        if '-' in stem:
-            parts = stem.split('-')
-            if parts[-1].startswith('Q'):
-                return ('-'.join(parts[:-1]), parts[-1])
-        
-        # Try to extract variant from end of filename (e.g., devstralQ4_K_M)
-        # Look for common quantization patterns like Q4_K_M, Q5_K_S, etc.
-        pattern = r'(.*?)(Q\d+_[KS](_[MS])?)$'
-        match = re.match(pattern, stem)
-        if match:
-            return (match.group(1), match.group(2))
-        
-        # If no pattern matches, check if the entire name contains a quantization pattern
-        # This handles cases where the quantization is embedded in the name
-        if re.search(r'Q\d+_[KS](_[MS])?', stem):
-            # Extract the quantization pattern
-            quant_match = re.search(r'(Q\d+_[KS](_[MS])?)', stem)
-            if quant_match:
-                quant = quant_match.group(1)
-                # Remove the quantization from the name
-                name = stem.replace(quant, '')
-                # Clean up any trailing underscores or hyphens
-                name = name.rstrip('_-')
-                if name:
-                    return (name, quant)
-        
-        return (stem, None)
+        return parse_gguf_name_variant(filename)
 
     def _extract_parameter_count(self, config: Dict[str, Any]) -> str:
         """Extract or estimate parameter count from Transformers config.json."""

@@ -31,13 +31,13 @@ Typical steady-state acceptance is ~75% at 3 draft tokens. For our single-stream
 - MTP capability detection in the model registry (GGUF metadata inspection)
 - Deploy Manager support for MTP flags in generated `llama-server` invocations
 - Deploy UI: MTP toggle + draft tunables, gated on model capability and backend build version
+- **MTP head graft UI + backend job runner** (tensor transplant from local MTP donor GGUF; isolated Docker worker)
 - Container image upgrade to an MTP-capable llama.cpp build
 - Benchmark harness extension + before/after validation on our standard model set
 - Documentation: README Performance Tuning section rewrite (part of the wider overhaul)
 
 ### Out of scope (this epic)
 - vLLM backend MTP/speculative config (separate ticket; vLLM handles MTP natively for DeepSeek-style models)
-- Training or converting MTP heads ourselves
 - llama-bench integration (upstream gap — spec flags not yet supported there; tracked as ggml-org/llama.cpp #22947)
 
 ---

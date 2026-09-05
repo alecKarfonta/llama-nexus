@@ -10,7 +10,7 @@ Usage:
   ./bench.py --url http://localhost:8000 --label vllm-tp2 --concurrency 4
   ./bench.py --compare results/*.json
 """
-import argparse, asyncio, json, statistics, sys, time
+import argparse, asyncio, json, os, statistics, sys, time
 from pathlib import Path
 
 import aiohttp
@@ -35,7 +35,7 @@ PROMPTS = {
 MAX_TOKENS = 512
 
 
-async def one_request(session, url, model, prompt, temperature):
+async def one_request(session, url, model, prompt, temperature, headers=None):
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -48,7 +48,7 @@ async def one_request(session, url, model, prompt, temperature):
     ttft = None
     n_chunks = 0
     completion_tokens = None
-    async with session.post(f"{url}/v1/chat/completions", json=payload) as resp:
+    async with session.post(f"{url}/v1/chat/completions", json=payload, headers=headers) as resp:
         resp.raise_for_status()
         async for raw in resp.content:
             line = raw.decode("utf-8", "ignore").strip()
@@ -84,8 +84,12 @@ async def one_request(session, url, model, prompt, temperature):
 
 async def run(args):
     results = {}
+    headers = {}
+    if args.api_key:
+        headers["Authorization"] = f"Bearer {args.api_key}"
     async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=600)
+        timeout=aiohttp.ClientTimeout(total=600),
+        headers=headers,
     ) as session:
         # discover model name
         model = args.model
@@ -95,14 +99,16 @@ async def run(args):
         print(f"endpoint={args.url} model={model} runs={args.runs} "
               f"concurrency={args.concurrency}\n")
 
-        for name, prompt in PROMPTS.items():
+        for name, prompt in (
+            (k, PROMPTS[k]) for k in args.profiles.split(",") if k in PROMPTS
+        ):
             temp = 0.7 if name == "chat" else 0.2
             runs = []
             # warmup (populates prefix cache / JIT / cuda graphs)
-            await one_request(session, args.url, model, prompt, temp)
+            await one_request(session, args.url, model, prompt, temp, headers)
             for i in range(args.runs):
                 batch = await asyncio.gather(*[
-                    one_request(session, args.url, model, prompt, temp)
+                    one_request(session, args.url, model, prompt, temp, headers)
                     for _ in range(args.concurrency)
                 ])
                 runs.extend(batch)
@@ -147,10 +153,13 @@ def compare(paths):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://localhost:8080")
+    ap.add_argument("--api-key", default=os.environ.get("LLAMACPP_API_KEY", ""))
     ap.add_argument("--model", default=None)
     ap.add_argument("--label", default="run")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--concurrency", type=int, default=1)
+    ap.add_argument("--profiles", default="code,structured,chat",
+                    help="Comma-separated workload profiles (code, structured, chat)")
     ap.add_argument("--compare", nargs="+", default=None)
     args = ap.parse_args()
     if args.compare:

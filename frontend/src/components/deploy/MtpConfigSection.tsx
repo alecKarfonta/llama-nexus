@@ -10,6 +10,7 @@ import {
   Grid,
   Slider,
   Switch,
+  Button,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
@@ -42,6 +43,7 @@ interface MtpConfigSectionProps {
   onChange: (path: string, value: unknown) => void;
   onWorkloadProfileChange: (profile: MtpWorkloadProfile) => void;
   onMtpEnabledChange: (enabled: boolean) => void;
+  onGraftMtp?: () => void;
 }
 
 const PROFILE_LABELS: Record<MtpWorkloadProfile, string> = {
@@ -61,6 +63,7 @@ export const MtpConfigSection: React.FC<MtpConfigSectionProps> = ({
   onChange,
   onWorkloadProfileChange,
   onMtpEnabledChange,
+  onGraftMtp,
 }) => {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const canEnable = modelMtpCapable && backendMtpSupported === true;
@@ -124,6 +127,18 @@ export const MtpConfigSection: React.FC<MtpConfigSectionProps> = ({
                 MTP is forced off for deploy — save again if the command preview still shows
                 draft-mtp flags.
               </>
+            )}
+            {!modelMtpCapable && onGraftMtp && selectedModel?.localPath && (
+              <Box sx={{ mt: 1 }}>
+                <Typography variant="body2" component="span">
+                  You can graft MTP heads from an official donor GGUF on the Models page.
+                </Typography>
+                <Box sx={{ mt: 1 }}>
+                  <Button size="small" variant="outlined" onClick={onGraftMtp}>
+                    Add MTP heads…
+                  </Button>
+                </Box>
+              </Box>
             )}
           </Alert>
         )}

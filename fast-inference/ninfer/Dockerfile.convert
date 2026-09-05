@@ -1,0 +1,15 @@
+# [2026-08-27 | INFO | Dockerfile.convert | One-off conversion env for building a custom
+# .ninfer artifact from Huihui-Qwen3.8-27B-abliterated BF16 weights. Uses the same
+# vLLM base as the serving stack so torch/CUDA match the runtime exactly.
+FROM vllm/vllm-openai:v0.22.0
+
+# [2026-08-28 | INFO | Dockerfile.convert | Adds MTP fine-tuning deps on top of the
+# base conversion env: bitsandbytes for NF4 frozen backbone, datasets for streaming
+# chat corpora, hf_transfer for fast pulls, safetensors already present via vLLM.
+RUN pip install --no-cache-dir \
+        huggingface_hub[hf_transfer] hf_transfer \
+        bitsandbytes>=0.45 \
+        datasets>=3.0 \
+        accelerate>=1.0
+
+WORKDIR /work

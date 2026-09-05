@@ -1,0 +1,14 @@
+{
+  "label": "chat_sweep_baseline",
+  "url": "http://127.0.0.1:8600",
+  "model": "Qwen3.6-35B-A3B-uncensored-heretic-MTP-Q6_K.gguf",
+  "concurrency": 1,
+  "results": {
+    "chat": {
+      "decode_tps_mean": 152.8,
+      "decode_tps_p50": 152.8,
+      "ttft_ms_mean": 439.0,
+      "n": 2
+    }
+  }
+}

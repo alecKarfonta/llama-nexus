@@ -1,0 +1,26 @@
+{
+  "label": "heretic-mtp-off",
+  "url": "http://127.0.0.1:8600",
+  "model": "Qwen3.6-35B-A3B-uncensored-heretic-MTP-Q6_K.gguf",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 184.8,
+      "decode_tps_p50": 184.9,
+      "ttft_ms_mean": 77.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 186.7,
+      "decode_tps_p50": 186.7,
+      "ttft_ms_mean": 79.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 186.8,
+      "decode_tps_p50": 186.5,
+      "ttft_ms_mean": 78.0,
+      "n": 3
+    }
+  }
+}

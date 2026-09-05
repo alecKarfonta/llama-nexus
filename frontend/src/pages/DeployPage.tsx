@@ -21,6 +21,8 @@ import {
   AccordionDetails,
   ToggleButtonGroup,
   ToggleButton,
+  Switch,
+  FormControlLabel,
   useMediaQuery,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
@@ -285,7 +287,7 @@ interface VllmConfig {
 
 // Field metadata from backend
 interface FieldMeta {
-  scope: 'shared' | 'vllm' | 'llamacpp';
+  scope: 'shared' | 'vllm' | 'llamacpp' | 'ninfer';
   type: 'number' | 'text' | 'select' | 'boolean';
   description: string;
   vllm_flag?: string;
@@ -305,10 +307,11 @@ const FRAMEWORK_BADGE_STATUS_CONFIG: StatusChipConfigMap = {
   shared: { color: accentColors.success, label: 'Shared' },
   vllm: { color: accentColors.info, label: 'vLLM' },
   llamacpp: { color: accentColors.warning, label: 'llama.cpp' },
+  ninfer: { color: accentColors.purple, label: 'NInfer' },
 }
 
 const FrameworkBadge: React.FC<{ scope: string }> = ({ scope }) => {
-  const normalizedScope = scope === 'vllm' || scope === 'llamacpp' ? scope : 'shared'
+  const normalizedScope = scope === 'vllm' || scope === 'llamacpp' || scope === 'ninfer' ? scope : 'shared'
 
   return (
     <StatusChip
@@ -499,7 +502,109 @@ const VLLM_DEFAULT_VALUES: VllmConfig = {
 /** Last tab index for each backend (Model = 0). */
 const DEPLOY_TAB_MAX_LLAMACPP = 6
 const DEPLOY_TAB_MAX_VLLM = 8
+const DEPLOY_TAB_MAX_NINFER = 1
 const LLAMACPP_CONTEXT_SIZE_MAX = 1000000
+
+type DeployBackend = 'llamacpp' | 'vllm' | 'ninfer'
+
+interface NinferConfig {
+  backend_type: string
+  model: {
+    artifact: string
+    served_name: string
+  }
+  performance: {
+    max_context: number
+    kv_capacity: string
+    kv_dtype: string
+    max_concurrency: number
+  }
+  speculative: {
+    enabled: boolean
+    method: string
+    draft_tokens: number
+    lm_head_draft: boolean
+  }
+  vision: {
+    enabled: boolean
+  }
+  sampling: {
+    temperature: number
+    top_p: number
+    top_k: number
+    presence_penalty: number
+    greedy: boolean
+    no_thinking: boolean
+  }
+  execution: {
+    gpu_device: string
+  }
+  server: {
+    host: string
+    port: number
+    api_key: string
+    published_port: number
+  }
+}
+
+const NINFER_DEFAULT_VALUES: NinferConfig = {
+  backend_type: 'ninfer',
+  model: {
+    artifact: 'qwen3_8_27b_nvfp4.ninfer',
+    served_name: '',
+  },
+  performance: {
+    max_context: 32768,
+    kv_capacity: 'auto',
+    kv_dtype: 'int8',
+    max_concurrency: 1,
+  },
+  speculative: {
+    enabled: true,
+    method: 'mtp',
+    draft_tokens: 4,
+    lm_head_draft: true,
+  },
+  vision: {
+    enabled: true,
+  },
+  sampling: {
+    temperature: 0.6,
+    top_p: 0.95,
+    top_k: 20,
+    presence_penalty: 1.0,
+    greedy: false,
+    no_thinking: true,
+  },
+  execution: {
+    gpu_device: '0',
+  },
+  server: {
+    host: '0.0.0.0',
+    port: 8080,
+    api_key: 'placeholder-api-key',
+    published_port: 8603,
+  },
+}
+
+function mergeNinferApiWithDefaults(raw: unknown): NinferConfig | null {
+  if (raw == null || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  const d = NINFER_DEFAULT_VALUES
+  const obj = (x: unknown) =>
+    x && typeof x === 'object' && !Array.isArray(x) ? (x as Record<string, unknown>) : {}
+
+  return {
+    backend_type: typeof r.backend_type === 'string' ? r.backend_type : d.backend_type,
+    model: { ...d.model, ...obj(r.model) } as NinferConfig['model'],
+    performance: { ...d.performance, ...obj(r.performance) } as NinferConfig['performance'],
+    speculative: { ...d.speculative, ...obj(r.speculative) } as NinferConfig['speculative'],
+    vision: { ...d.vision, ...obj(r.vision) } as NinferConfig['vision'],
+    sampling: { ...d.sampling, ...obj(r.sampling) } as NinferConfig['sampling'],
+    execution: { ...d.execution, ...obj(r.execution) } as NinferConfig['execution'],
+    server: { ...d.server, ...obj(r.server) } as NinferConfig['server'],
+  }
+}
 
 const DEPLOY_STATUS_CONFIG: StatusChipConfigMap = {
   control: { color: accentColors.primary, label: 'Deployment control' },
@@ -509,6 +614,7 @@ const DEPLOY_STATUS_CONFIG: StatusChipConfigMap = {
   warning: { color: accentColors.warning, label: 'Deploy warning' },
   vllm: { color: accentColors.info, label: 'vLLM (HF weights)' },
   llamacpp: { color: accentColors.warning, label: 'llama.cpp' },
+  ninfer: { color: accentColors.purple, label: 'NInfer' },
   vision: { color: accentColors.success, label: 'Vision ready' },
   text: { color: accentColors.slate, label: 'Text only' },
   'vram-fit': { color: accentColors.success, label: 'Fits in VRAM' },
@@ -722,11 +828,13 @@ const saveDeploySettings = (config: Config, selectedApiKey: string) => {
 const loadDeploySettings = (): {
   config: Config | null
   selectedApiKey: string
-  deployBackend: 'llamacpp' | 'vllm'
+  deployBackend: DeployBackend
   vllmConfig: VllmConfig | undefined
+  ninferConfig: NinferConfig | undefined
 } => {
   const p = readDeployStorage()
-  const deployBackend = p.deployBackend === 'vllm' ? 'vllm' : 'llamacpp'
+  const deployBackend: DeployBackend =
+    p.deployBackend === 'vllm' ? 'vllm' : p.deployBackend === 'ninfer' ? 'ninfer' : 'llamacpp'
   return {
     config: (p.config as Config) ?? null,
     selectedApiKey: typeof p.selectedApiKey === 'string' ? p.selectedApiKey : '',
@@ -734,6 +842,10 @@ const loadDeploySettings = (): {
     vllmConfig:
       p.vllmConfig && typeof p.vllmConfig === 'object' && !Array.isArray(p.vllmConfig)
         ? (p.vllmConfig as VllmConfig)
+        : undefined,
+    ninferConfig:
+      p.ninferConfig && typeof p.ninferConfig === 'object' && !Array.isArray(p.ninferConfig)
+        ? (p.ninferConfig as NinferConfig)
         : undefined,
   }
 }
@@ -988,7 +1100,7 @@ export const DeployPage: React.FC = () => {
   const incomingModel = useMemo(() => {
     return routeState?.model && typeof routeState.model.name === 'string' ? routeState.model : null
   }, [routeState])
-  const incomingBackend = routeState?.backend === 'vllm' || routeState?.backend === 'llamacpp'
+  const incomingBackend = routeState?.backend === 'vllm' || routeState?.backend === 'llamacpp' || routeState?.backend === 'ninfer'
     ? routeState.backend
     : null
   const [models, setModels] = useState<ModelInfo[]>([])
@@ -1012,12 +1124,19 @@ export const DeployPage: React.FC = () => {
   const [selectedTemplate, setSelectedTemplate] = useState<string>('')
   const [templatesDir, setTemplatesDir] = useState<string>('')
   const [templatesLoading, setTemplatesLoading] = useState<boolean>(false)
-  const [backend, setBackend] = useState<'llamacpp' | 'vllm'>(() => loadDeploySettings().deployBackend)
+  const [backend, setBackend] = useState<DeployBackend>(() => loadDeploySettings().deployBackend)
   const [vllmStatus, setVllmStatus] = useState<any | null>(null)
   const [vllmConfig, setVllmConfig] = useState<VllmConfig | null>(null)
   const [originalVllmConfig, setOriginalVllmConfig] = useState<VllmConfig | null>(null)
   const [vllmReloading, setVllmReloading] = useState(false)
   const [vllmReloadError, setVllmReloadError] = useState<string | null>(null)
+  const [ninferStatus, setNinferStatus] = useState<any | null>(null)
+  const [ninferConfig, setNinferConfig] = useState<NinferConfig | null>(null)
+  const [originalNinferConfig, setOriginalNinferConfig] = useState<NinferConfig | null>(null)
+  const [ninferReloading, setNinferReloading] = useState(false)
+  const [ninferReloadError, setNinferReloadError] = useState<string | null>(null)
+  const [ninferArtifacts, setNinferArtifacts] = useState<Array<{ name: string; filename: string }>>([])
+  const [ninferArtifactExists, setNinferArtifactExists] = useState<boolean | null>(null)
   const [fieldMetadata, setFieldMetadata] = useState<FieldMetadata>({})
 
   // API Key management
@@ -1039,11 +1158,21 @@ export const DeployPage: React.FC = () => {
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null)
 
   const buildLaunchContext = useCallback((action: 'start' | 'restart'): DeploymentLaunchContext => {
-    const host = backend === 'vllm' ? vllmConfig?.server.host : config?.server.host
-    const port = backend === 'vllm' ? vllmConfig?.server.port : config?.server.port
+    const host = backend === 'vllm'
+      ? vllmConfig?.server.host
+      : backend === 'ninfer'
+        ? ninferConfig?.server.host
+        : config?.server.host
+    const port = backend === 'vllm'
+      ? vllmConfig?.server.port
+      : backend === 'ninfer'
+        ? ninferConfig?.server.published_port || ninferConfig?.server.port
+        : config?.server.port
     const modelName = backend === 'vllm'
       ? vllmConfig?.model.served_name || vllmConfig?.model.name || 'Local vLLM model'
-      : [config?.model.name, config?.model.variant].filter(Boolean).join(' / ') || 'Local llama.cpp model'
+      : backend === 'ninfer'
+        ? ninferConfig?.model.served_name || ninferConfig?.model.artifact || 'Local NInfer model'
+        : [config?.model.name, config?.model.variant].filter(Boolean).join(' / ') || 'Local llama.cpp model'
 
     return {
       action,
@@ -1051,7 +1180,7 @@ export const DeployPage: React.FC = () => {
       modelName,
       endpoint: host && port ? `${host === '0.0.0.0' ? 'localhost' : host}:${port}` : 'Backend proxy',
     }
-  }, [backend, config, vllmConfig])
+  }, [backend, config, vllmConfig, ninferConfig])
 
   // Log component mount
   useEffect(() => {
@@ -1064,6 +1193,9 @@ export const DeployPage: React.FC = () => {
   useEffect(() => {
     if (backend !== 'vllm') {
       setVllmReloading(false)
+    }
+    if (backend !== 'ninfer') {
+      setNinferReloading(false)
     }
   }, [backend])
 
@@ -1082,13 +1214,22 @@ export const DeployPage: React.FC = () => {
 
     setBackend(incomingBackend)
     writeDeployStorage({ deployBackend: incomingBackend })
-    setSuccess(`Opened ${incomingBackend === 'vllm' ? 'vLLM' : 'llama.cpp'} deployment workspace`)
+    setSuccess(`Opened ${incomingBackend === 'vllm' ? 'vLLM' : incomingBackend === 'ninfer' ? 'NInfer' : 'llama.cpp'} deployment workspace`)
   }, [incomingBackend, incomingModel, backend])
 
   const refreshVllmStatus = useCallback(async () => {
     try {
       const r = await fetch('/api/v1/service/vllm/status')
       if (r.ok) setVllmStatus(await r.json())
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  const refreshNinferStatus = useCallback(async () => {
+    try {
+      const r = await fetch('/api/v1/service/ninfer/status')
+      if (r.ok) setNinferStatus(await r.json())
     } catch {
       /* ignore */
     }
@@ -1101,6 +1242,13 @@ export const DeployPage: React.FC = () => {
     return () => window.clearInterval(id)
   }, [backend, refreshVllmStatus])
 
+  useEffect(() => {
+    if (backend !== 'ninfer') return undefined
+    refreshNinferStatus()
+    const id = window.setInterval(() => refreshNinferStatus(), 5000)
+    return () => window.clearInterval(id)
+  }, [backend, refreshNinferStatus])
+
   // Reload config when backend selection changes
   useEffect(() => {
     if (loading) return
@@ -1109,6 +1257,10 @@ export const DeployPage: React.FC = () => {
     if (activeBackend === 'vllm') {
       setVllmReloading(true)
       setVllmReloadError(null)
+    }
+    if (activeBackend === 'ninfer') {
+      setNinferReloading(true)
+      setNinferReloadError(null)
     }
 
     let cancelled = false
@@ -1124,6 +1276,11 @@ export const DeployPage: React.FC = () => {
             setVllmReloadError(msg)
             setVllmConfig(null)
             setOriginalVllmConfig(null)
+          }
+          if (!cancelled && activeBackend === 'ninfer') {
+            setNinferReloadError(msg)
+            setNinferConfig(null)
+            setOriginalNinferConfig(null)
           }
         } else if (!cancelled) {
           const cfgJson = await cfgRes.json()
@@ -1146,6 +1303,27 @@ export const DeployPage: React.FC = () => {
               setVllmReloadError(null)
               writeDeployStorage({ vllmConfig: merged })
             }
+          } else if (activeBackend === 'ninfer') {
+            const persisted = loadDeploySettings()
+            const raw =
+              cfgJson.config != null && typeof cfgJson.config === 'object'
+                ? cfgJson.config
+                : persisted.ninferConfig
+            const merged = mergeNinferApiWithDefaults(raw)
+            if (merged == null) {
+              setNinferReloadError('Server returned an invalid or empty NInfer configuration')
+              setNinferConfig(null)
+              setOriginalNinferConfig(null)
+            } else {
+              setNinferConfig(merged)
+              setOriginalNinferConfig(JSON.parse(JSON.stringify(merged)))
+              setNinferReloadError(null)
+              setNinferArtifacts(Array.isArray(cfgJson.registered_artifacts) ? cfgJson.registered_artifacts : [])
+              setNinferArtifactExists(
+                typeof cfgJson.artifact_exists === 'boolean' ? cfgJson.artifact_exists : null,
+              )
+              writeDeployStorage({ ninferConfig: merged })
+            }
           } else {
             setConfig(cfgJson.config)
             setOriginalConfig(JSON.parse(JSON.stringify(cfgJson.config)))
@@ -1164,9 +1342,16 @@ export const DeployPage: React.FC = () => {
           setVllmReloadError(e instanceof Error ? e.message : 'Failed to load vLLM config')
           setVllmConfig(null)
         }
+        if (!cancelled && activeBackend === 'ninfer') {
+          setNinferReloadError(e instanceof Error ? e.message : 'Failed to load NInfer config')
+          setNinferConfig(null)
+        }
       } finally {
         if (!cancelled && activeBackend === 'vllm') {
           setVllmReloading(false)
+        }
+        if (!cancelled && activeBackend === 'ninfer') {
+          setNinferReloading(false)
         }
       }
     })()
@@ -1699,8 +1884,12 @@ export const DeployPage: React.FC = () => {
       if (!vllmConfig || !originalVllmConfig) return false
       return JSON.stringify(vllmConfig) !== JSON.stringify(originalVllmConfig)
     }
+    if (backend === 'ninfer') {
+      if (!ninferConfig || !originalNinferConfig) return false
+      return JSON.stringify(ninferConfig) !== JSON.stringify(originalNinferConfig)
+    }
     return JSON.stringify(config) !== JSON.stringify(originalConfig)
-  }, [backend, config, originalConfig, vllmConfig, originalVllmConfig])
+  }, [backend, config, originalConfig, vllmConfig, originalVllmConfig, ninferConfig, originalNinferConfig])
 
   // Function to update command line preview in real-time
   const updateCommandPreview = async (configToPreview: Config) => {
@@ -1843,6 +2032,36 @@ export const DeployPage: React.FC = () => {
     updateCommandPreviewVllm(next)
   }
 
+  const updateCommandPreviewNinfer = async (configToPreview: NinferConfig) => {
+    deployLog('commandPreview', 'Updating NInfer command preview')
+    try {
+      const response = await fetch('/api/v1/service/config/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: JSON.parse(JSON.stringify(configToPreview)), backend: 'ninfer' }),
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setCommandLine(data.command || '')
+      }
+    } catch (error) {
+      deployLog('commandPreview', 'NInfer preview error:', error)
+    }
+  }
+
+  const updateNinferConfig = (path: string, value: any) => {
+    deployLog('updateNinferConfig', `Updating NInfer config path: ${path}`, { value })
+    if (!ninferConfig) return
+    const next: NinferConfig = JSON.parse(JSON.stringify(ninferConfig))
+    const keys = path.split('.')
+    let ref: any = next
+    for (let i = 0; i < keys.length - 1; i++) ref = ref[keys[i]]
+    ref[keys[keys.length - 1]] = value
+    setNinferConfig(next)
+    writeDeployStorage({ ninferConfig: next })
+    void updateCommandPreviewNinfer(next)
+  }
+
   const applyVllmModelFromCatalog = useCallback(
     (displayName: string, variant: string) => {
       deployLog('vllmCatalog', 'Apply catalog model', { displayName, variant })
@@ -1913,7 +2132,7 @@ export const DeployPage: React.FC = () => {
 
   const handleValidate = async () => {
     deployLog('validate', 'Starting validation', { modelName: config?.model?.name })
-    if (backend === 'vllm') {
+    if (backend === 'vllm' || backend === 'ninfer') {
       setError(null)
       setValidateErrors(null)
       setValidateWarnings(null)
@@ -1950,6 +2169,38 @@ export const DeployPage: React.FC = () => {
 
   const handleSave = async () => {
     deployLog('save', 'Starting save', { backend })
+    if (backend === 'ninfer') {
+      if (!ninferConfig) {
+        deployLog('save', 'ABORT: ninferConfig is null')
+        return
+      }
+      try {
+        setSaving(true)
+        const res = await fetch('/api/v1/service/config?backend=ninfer', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(JSON.parse(JSON.stringify(ninferConfig))),
+        })
+        if (!res.ok) {
+          const t = await res.text()
+          throw new Error(t || res.statusText)
+        }
+        const cfgRes = await fetch('/api/v1/service/config?backend=ninfer')
+        const cfgJson = await cfgRes.json()
+        setCommandLine(cfgJson.command || '')
+        setOriginalNinferConfig(JSON.parse(JSON.stringify(ninferConfig)))
+        setNinferArtifactExists(
+          typeof cfgJson.artifact_exists === 'boolean' ? cfgJson.artifact_exists : ninferArtifactExists,
+        )
+        setSuccess('NInfer configuration saved')
+      } catch (e) {
+        deployLog('save', 'Save error:', e)
+        setError(e instanceof Error ? e.message : 'Failed to save configuration')
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
     if (backend === 'vllm') {
       if (!vllmConfig) {
         deployLog('save', 'ABORT: vllmConfig is null')
@@ -2022,6 +2273,13 @@ export const DeployPage: React.FC = () => {
       updateCommandPreviewVllm(next)
       return
     }
+    if (backend === 'ninfer') {
+      const next = JSON.parse(JSON.stringify(NINFER_DEFAULT_VALUES)) as NinferConfig
+      setNinferConfig(next)
+      writeDeployStorage({ ninferConfig: next })
+      void updateCommandPreviewNinfer(next)
+      return
+    }
     if (!config) {
       deployLog('reset', 'ABORT: config is null')
       return
@@ -2055,6 +2313,11 @@ export const DeployPage: React.FC = () => {
         deployLog('action', 'ABORT: vllmConfig is null and action is not stop')
         return
       }
+    } else if (backend === 'ninfer') {
+      if (!ninferConfig && action !== 'stop') {
+        deployLog('action', 'ABORT: ninferConfig is null and action is not stop')
+        return
+      }
     } else if (!config && action !== 'stop') {
       deployLog('action', 'ABORT: config is null and action is not stop')
       return
@@ -2071,6 +2334,8 @@ export const DeployPage: React.FC = () => {
       let configForAction: any = null
       if (backend === 'vllm' && vllmConfig) {
         configForAction = JSON.parse(JSON.stringify(vllmConfig))
+      } else if (backend === 'ninfer' && ninferConfig) {
+        configForAction = JSON.parse(JSON.stringify(ninferConfig))
       } else if (config) {
         configForAction = prepareConfigForBackend(config, selectedModelMtpCapable)
       }
@@ -2105,6 +2370,7 @@ export const DeployPage: React.FC = () => {
       deployLog('action', 'Action completed successfully')
 
       if (backend === 'vllm') await refreshVllmStatus()
+      if (backend === 'ninfer') await refreshNinferStatus()
       try {
         deployLog('action', 'Refreshing current model info')
         const res = await fetch(`/api/v1/models/current`)
@@ -2260,14 +2526,24 @@ export const DeployPage: React.FC = () => {
     )
   }
 
-  const deployTabMax = backend === 'llamacpp' ? DEPLOY_TAB_MAX_LLAMACPP : DEPLOY_TAB_MAX_VLLM
+  const deployTabMax = backend === 'llamacpp'
+    ? DEPLOY_TAB_MAX_LLAMACPP
+    : backend === 'ninfer'
+      ? DEPLOY_TAB_MAX_NINFER
+      : DEPLOY_TAB_MAX_VLLM
   const activeDeployTab = Math.min(Math.max(0, tab), deployTabMax)
   const deployTabOptions = backend === 'llamacpp'
     ? ['Model', 'Sampling', 'Performance', 'Context', 'Server', 'Version', 'Command']
-    : ['Model', 'Sampling', 'Performance', 'MoE', 'Tools', 'Env', 'Version', 'Server', 'Command']
+    : backend === 'ninfer'
+      ? ['Model', 'Command']
+      : ['Model', 'Sampling', 'Performance', 'MoE', 'Tools', 'Env', 'Version', 'Server', 'Command']
 
   const selectDeployTab = useCallback((idx: number) => {
-    const max = backend === 'llamacpp' ? DEPLOY_TAB_MAX_LLAMACPP : DEPLOY_TAB_MAX_VLLM
+    const max = backend === 'llamacpp'
+      ? DEPLOY_TAB_MAX_LLAMACPP
+      : backend === 'ninfer'
+        ? DEPLOY_TAB_MAX_NINFER
+        : DEPLOY_TAB_MAX_VLLM
     setTab(Math.min(Math.max(0, idx), max))
   }, [backend])
 
@@ -2306,33 +2582,53 @@ export const DeployPage: React.FC = () => {
     )
   }
 
-  const backendLabel = backend === 'vllm' ? 'vLLM' : 'llama.cpp'
-  const endpointHost = backend === 'vllm' ? vllmConfig?.server.host : config.server.host
-  const endpointPort = backend === 'vllm' ? vllmConfig?.server.port : config.server.port
+  const backendLabel = backend === 'vllm' ? 'vLLM' : backend === 'ninfer' ? 'NInfer' : 'llama.cpp'
+  const endpointHost = backend === 'vllm'
+    ? vllmConfig?.server.host
+    : backend === 'ninfer'
+      ? ninferConfig?.server.host
+      : config.server.host
+  const endpointPort = backend === 'vllm'
+    ? vllmConfig?.server.port
+    : backend === 'ninfer'
+      ? ninferConfig?.server.published_port || ninferConfig?.server.port
+      : config.server.port
   const endpointDisplay = endpointHost && endpointPort
     ? `${endpointHost === '0.0.0.0' ? 'localhost' : endpointHost}:${endpointPort}`
     : 'Not configured'
   const deploymentRunning = backend === 'vllm'
     ? vllmStatus?.running === true
-    : ['active', 'loaded', 'running'].includes(String(currentModel?.status ?? '').toLowerCase())
+    : backend === 'ninfer'
+      ? ninferStatus?.running === true
+      : ['active', 'loaded', 'running'].includes(String(currentModel?.status ?? '').toLowerCase())
   const deploymentStatus = backend === 'vllm'
     ? vllmStatus
       ? vllmStatus.running ? 'Running' : 'Stopped'
       : 'Status unknown'
-    : currentModel?.status
-      ? String(currentModel.status)
-      : 'Status unknown'
+    : backend === 'ninfer'
+      ? ninferStatus
+        ? ninferStatus.running ? 'Running' : 'Stopped'
+        : 'Status unknown'
+      : currentModel?.status
+        ? String(currentModel.status)
+        : 'Status unknown'
   const deploymentStatusKey = deploymentRunning ? 'running' : 'stopped'
-  const modelCapabilityStatus = backend === 'vllm' ? 'vllm' : config?.model?.mmproj ? 'vision' : 'text'
-  const modelCapabilityLabel = backend === 'vllm' ? 'vLLM (HF weights)' : config?.model?.mmproj ? 'Vision ready' : 'Text only'
-  const modelCapabilityIcon = backend === 'vllm'
+  const modelCapabilityStatus = backend === 'vllm' ? 'vllm' : backend === 'ninfer' ? 'ninfer' : config?.model?.mmproj ? 'vision' : 'text'
+  const modelCapabilityLabel = backend === 'vllm'
+    ? 'vLLM (HF weights)'
+    : backend === 'ninfer'
+      ? 'NInfer (.ninfer)'
+      : config?.model?.mmproj ? 'Vision ready' : 'Text only'
+  const modelCapabilityIcon = backend === 'vllm' || backend === 'ninfer'
     ? <DeployIcon sx={{ fontSize: 14 }} />
     : config?.model?.mmproj
       ? <VisionIcon sx={{ fontSize: 14 }} />
       : <VisionOffIcon sx={{ fontSize: 14 }} />
   const selectedRuntimeModel = backend === 'vllm'
     ? vllmConfig?.model.served_name || vllmConfig?.model.name || 'No model selected'
-    : [config.model.name, config.model.variant].filter(Boolean).join(' / ') || 'No model selected'
+    : backend === 'ninfer'
+      ? ninferConfig?.model.served_name || ninferConfig?.model.artifact || 'No artifact selected'
+      : [config.model.name, config.model.variant].filter(Boolean).join(' / ') || 'No model selected'
   const vramSummary = vramLoading
     ? 'Estimating'
     : vramEstimate
@@ -2458,6 +2754,16 @@ export const DeployPage: React.FC = () => {
               />
             </Tooltip>
           ) : null}
+          {backend === 'ninfer' && ninferStatus?.last_action_error ? (
+            <Tooltip title={ninferStatus.last_action_error}>
+              <StatusChip
+                status="warning"
+                label="Warning"
+                height={22}
+                statusConfig={DEPLOY_STATUS_CONFIG}
+              />
+            </Tooltip>
+          ) : null}
           <Typography
             variant="caption"
             color="text.secondary"
@@ -2537,6 +2843,7 @@ export const DeployPage: React.FC = () => {
           >
             <ToggleButton value="llamacpp">llama.cpp</ToggleButton>
             <ToggleButton value="vllm">vLLM</ToggleButton>
+            <ToggleButton value="ninfer">NInfer</ToggleButton>
           </ToggleButtonGroup>
           <Tooltip title="Start runtime">
             <span>
@@ -3233,6 +3540,134 @@ export const DeployPage: React.FC = () => {
         </Alert>
       )}
 
+      {backend === 'ninfer' && ninferReloading && (
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, py: 4, mb: 2 }}>
+          <CircularProgress size={28} />
+          <Typography variant="body2" color="text.secondary">Loading NInfer configuration…</Typography>
+        </Box>
+      )}
+      {backend === 'ninfer' && !ninferReloading && ninferReloadError && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setNinferReloadError(null)}>
+          {ninferReloadError}
+        </Alert>
+      )}
+
+      {backend === 'ninfer' && ninferConfig && activeDeployTab === 0 && (
+        <SectionCard
+          title="NInfer artifact"
+          subtitle="Serve a converted .ninfer checkpoint with MTP speculative decoding on the Blackwell engine."
+          icon={<LibraryIcon />}
+          accentColor={accentColors.purple}
+          sx={{ mb: 3, scrollMarginTop: '96px' }}
+          action={<StatusChip status="ninfer" statusConfig={DEPLOY_STATUS_CONFIG} />}
+        >
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={6}>
+              <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>Artifact</Typography>
+              {ninferArtifacts.length > 0 ? (
+                <Select
+                  fullWidth
+                  size="small"
+                  value={ninferConfig.model.artifact}
+                  onChange={(e) => updateNinferConfig('model.artifact', e.target.value)}
+                >
+                  {ninferArtifacts.map((artifact) => (
+                    <MenuItem key={artifact.filename || artifact.name} value={artifact.filename || artifact.name}>
+                      {artifact.name || artifact.filename}
+                    </MenuItem>
+                  ))}
+                </Select>
+              ) : (
+                <TextField
+                  fullWidth
+                  size="small"
+                  value={ninferConfig.model.artifact}
+                  onChange={(e) => updateNinferConfig('model.artifact', e.target.value)}
+                />
+              )}
+              {ninferArtifactExists === false && (
+                <FormHelperText error>Artifact file is not present on the models volume yet.</FormHelperText>
+              )}
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>Served name</Typography>
+              <TextField
+                fullWidth
+                size="small"
+                value={ninferConfig.model.served_name}
+                onChange={(e) => updateNinferConfig('model.served_name', e.target.value)}
+              />
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>Max context</Typography>
+              <TextField
+                fullWidth
+                size="small"
+                type="number"
+                value={ninferConfig.performance.max_context}
+                onChange={(e) => updateNinferConfig('performance.max_context', Number(e.target.value) || 0)}
+              />
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>KV dtype</Typography>
+              <Select
+                fullWidth
+                size="small"
+                value={ninferConfig.performance.kv_dtype}
+                onChange={(e) => updateNinferConfig('performance.kv_dtype', e.target.value)}
+              >
+                <MenuItem value="int8">int8</MenuItem>
+                <MenuItem value="fp8">fp8</MenuItem>
+                <MenuItem value="bf16">bf16</MenuItem>
+              </Select>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Typography sx={{ fontSize: '0.875rem', mb: 0.5 }}>Draft tokens</Typography>
+              <TextField
+                fullWidth
+                size="small"
+                type="number"
+                value={ninferConfig.speculative.draft_tokens}
+                onChange={(e) => updateNinferConfig('speculative.draft_tokens', Number(e.target.value) || 0)}
+              />
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={ninferConfig.speculative.enabled}
+                    onChange={(e) => updateNinferConfig('speculative.enabled', e.target.checked)}
+                  />
+                }
+                label="MTP speculative"
+              />
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={ninferConfig.sampling.no_thinking}
+                    onChange={(e) => updateNinferConfig('sampling.no_thinking', e.target.checked)}
+                  />
+                }
+                label="No thinking"
+              />
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={ninferConfig.vision.enabled}
+                    onChange={(e) => updateNinferConfig('vision.enabled', e.target.checked)}
+                  />
+                }
+                label="Vision"
+              />
+            </Grid>
+          </Grid>
+        </SectionCard>
+      )}
+
       {backend === 'vllm' && vllmConfig && activeDeployTab === 0 && (
         <SectionCard
           title="vLLM model"
@@ -3578,6 +4013,11 @@ export const DeployPage: React.FC = () => {
                   onChange={updateConfig}
                   onWorkloadProfileChange={handleMtpWorkloadProfileChange}
                   onMtpEnabledChange={handleMtpEnabledChange}
+                  onGraftMtp={
+                    selectedDeployModel
+                      ? () => navigate(modelsPath, { state: { openMtpGraft: true, model: selectedDeployModel } })
+                      : undefined
+                  }
                 />
               </Grid>
 
@@ -5284,6 +5724,21 @@ export const DeployPage: React.FC = () => {
         </SectionCard>
       )}
 
+      {backend === 'ninfer' && ninferConfig && activeDeployTab === 1 && (
+        <SectionCard
+          title="NInfer launch command"
+          subtitle="Flags assembled from the saved NInfer config and start-ninfer.sh."
+          icon={<TerminalIcon />}
+          accentColor={accentColors.warning}
+          action={<StatusChip status="command" statusConfig={DEPLOY_STATUS_CONFIG} />}
+          sx={{ scrollMarginTop: '96px' }}
+        >
+          <Paper sx={deployCommandPreviewSx}>
+            {commandLine || 'Adjust settings to refresh command preview.'}
+          </Paper>
+        </SectionCard>
+      )}
+
       {backend === 'vllm' && vllmConfig && activeDeployTab === 8 && (
         <SectionCard
           title="vLLM launch command"
@@ -5300,13 +5755,13 @@ export const DeployPage: React.FC = () => {
       )}
 
       {/* Container Logs Section */}
-      {currentModel && currentModel.status === 'loaded' && !isNarrow && (
+      {((currentModel && currentModel.status === 'loaded') || (backend === 'ninfer' && ninferStatus?.running)) && !isNarrow && (
         <SectionCard
           key={actionLoading ? 'runtime-logs-active' : 'runtime-logs-idle'}
           title="Logs"
           icon={<MonitoringIcon />}
           accentColor={accentColors.info}
-          action={<StatusChip status="logs" label={backend === 'vllm' ? 'vLLM API' : 'llama.cpp API'} statusConfig={DEPLOY_STATUS_CONFIG} />}
+          action={<StatusChip status="logs" label={backend === 'vllm' ? 'vLLM API' : backend === 'ninfer' ? 'NInfer API' : 'llama.cpp API'} statusConfig={DEPLOY_STATUS_CONFIG} />}
           collapsible
           defaultExpanded={Boolean(actionLoading)}
           sx={{
@@ -5333,7 +5788,7 @@ export const DeployPage: React.FC = () => {
           )}
           <LogViewer
             ref={logViewerRef}
-            containerName={backend === 'vllm' ? 'vllm-api' : 'llamacpp-api'}
+            containerName={backend === 'vllm' ? 'vllm-api' : backend === 'ninfer' ? 'ninfer-api' : 'llamacpp-api'}
             backend={backend}
             maxLines={100}
             height={72}

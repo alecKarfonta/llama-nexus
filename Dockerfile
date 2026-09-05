@@ -46,10 +46,10 @@ RUN if [ "$ENABLE_LLGUIDANCE" = "true" ]; then \
     fi
 # CUDA architecture(s) passed to CMake. Run on the host: nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 # (use the major.minor as an integer SM, e.g. 8.6 -> 86). Common values: 75 (T4), 80 (A100), 86 (RTX 30xx),
-# 89 (RTX 40xx), 90 (H100). Default 86 suits Ampere builds.
+# 89 (RTX 40xx), 90 (H100), 120 (RTX 50xx / Blackwell). Default 120 suits RTX 5090; override via CUDA_ARCH.
 # IMPORTANT: Do not use "native" here when building Docker images — the builder usually has no GPU, so CMake
 # cannot detect SM and nvcc fails with: Unsupported gpu architecture 'compute_' .
-ARG CUDA_ARCH=86
+ARG CUDA_ARCH=120
 
 # [TIME] | INFO | DOCKERFILE.PATCH_CONTEXT | the MTP patch lives in the build context
 # (./patches/); COPY it into the builder so the build RUN can git-apply it.
@@ -111,7 +111,7 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
 # Runtime stage
 FROM nvidia/cuda:13.0.0-runtime-ubuntu22.04
 
-ARG LLAMACPP_BUILD_TAG=b9193
+ARG LLAMACPP_BUILD_TAG=b10631-qwen4exp-mtp
 LABEL org.opencontainers.image.version="${LLAMACPP_BUILD_TAG}"
 ENV LLAMACPP_BUILD_TAG=${LLAMACPP_BUILD_TAG}
 

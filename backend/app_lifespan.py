@@ -10,7 +10,9 @@ from enhanced_logger import enhanced_logger as logger
 from app_state import (
     manager,
     vllm_manager,
+    ninfer_manager,
     download_manager,
+    mtp_graft_manager,
     embedding_manager,
     stt_manager,
     streaming_stt_manager,
@@ -305,7 +307,9 @@ async def lifespan(app: FastAPI):
     app.state.batch_processor = batch_processor
     app.state.manager = manager
     app.state.vllm_manager = vllm_manager
+    app.state.ninfer_manager = ninfer_manager
     app.state.download_manager = download_manager
+    app.state.mtp_graft_manager = mtp_graft_manager
     app.state.merge_and_persist_config = _merge_and_persist_config
     app.state.token_tracker = token_tracker
 

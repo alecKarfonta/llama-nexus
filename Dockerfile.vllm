@@ -1,6 +1,7 @@
 # vLLM Dockerfile for Nemotron Omni multimodal deployment
 # Based on official vLLM OpenAI image with audio extras
-FROM vllm/vllm-openai:v0.20.1
+# [2026-08-24 | INFO | Dockerfile.vllm | v0.22.0 required for compressed-tensors NVFP4 + qwen3_5_mtp spec
+FROM vllm/vllm-openai:v0.22.0
 
 # Install audio extras for video+audio multimodal support
 RUN pip install --no-cache-dir "vllm[audio]"
