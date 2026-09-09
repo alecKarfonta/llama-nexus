@@ -15,6 +15,7 @@ Design constraints:
   blind-forwarded.
 """
 
+import fcntl
 import json
 import os
 import select
@@ -36,6 +37,7 @@ KEY_LABELS = json.loads(os.environ.get("TEE_KEY_LABELS", "{}"))
 # --api-key; substitute it on the upstream leg. Capture records keep the
 # ORIGINAL client key id, never the upstream secret.
 UPSTREAM_API_KEY = os.environ.get("TEE_UPSTREAM_API_KEY", "")
+UPSTREAM_USER_AGENT = os.environ.get("TEE_UPSTREAM_USER_AGENT", "llama-nexus-tee/1.0")
 MAX_CAPTURE_BODY = int(os.environ.get("TEE_MAX_CAPTURE_BODY", str(2 * 1024 * 1024)))
 # [TIME] | INFO | CAPTURE_TEE.COMPACT_BUDGET | Cursor cannot be told how much
 # context to send (no UI for custom endpoints) and abandons a request after
@@ -74,10 +76,31 @@ def _capture_path():
     return os.path.join(CAPTURE_DIR, f"captures-{day}.jsonl")
 
 
+_write_lock = threading.Lock()
+
+
 def _write_record(record):
+    """[TIME] | INFO | CAPTURE_TEE._write_record | append one JSONL record.
+
+    Defensive locking, not a fix for an observed corruption. A ~200 KB record
+    reaches the kernel as one write() and O_APPEND makes that atomic for a
+    regular file on Linux, so 12 concurrent writers were measured producing
+    zero corrupt lines without any lock. But nothing in Python guarantees one
+    syscall per write, and the guarantee is weaker on NFS, so the lock removes
+    the assumption now that multi-slot servers make overlapping writes routine.
+    The threading lock covers handler threads; flock covers sibling tee
+    processes sharing a capture dir.
+    """
     os.makedirs(CAPTURE_DIR, exist_ok=True)
-    with open(_capture_path(), "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with _write_lock:
+        with open(_capture_path(), "a", encoding="utf-8") as f:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                pass  # non-POSIX or unsupported fs: threading lock still applies
+            f.write(line)
+            f.flush()
 
 
 def _upstream_auth():
@@ -89,7 +112,8 @@ def _upstream_call(path, payload, auth):
     req = urllib.request.Request(
         UPSTREAM + path,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Authorization": auth},
+        headers={"Content-Type": "application/json", "Authorization": auth,
+                 "User-Agent": UPSTREAM_USER_AGENT},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as r:
@@ -317,6 +341,10 @@ class TeeHandler(BaseHTTPRequestHandler):
         accept = self.headers.get("Accept")
         if accept:
             headers["Accept"] = accept
+        # urllib's default agent is rejected with a 403 by reverse proxies in
+        # front of remote upstreams (the RunPod pod proxy does this), so always
+        # send an explicit one.
+        headers["User-Agent"] = UPSTREAM_USER_AGENT
         req = urllib.request.Request(
             UPSTREAM + self.path, data=req_body if method == "POST" else None,
             headers=headers, method=method,

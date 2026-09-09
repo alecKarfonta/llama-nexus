@@ -3,6 +3,10 @@
 # running Qwen3.8-Flash-Next deployment. Prose / code / JSON, temp 0, 2 runs each,
 # reports predicted tok/s per workload plus the latest MTP draft acceptance from logs.
 #
+# Decode only, and decode is just ~32% of real wall time on this box. For the
+# other 68% use scripts/bench_prefill.sh; see
+# fast-inference/plans/throughput-tuning.md for the split.
+#
 # Usage: ./scripts/bench_tps.sh [label]
 #   label - free-form experiment tag printed with results (default: "run")
 set -euo pipefail
@@ -38,7 +42,10 @@ def call(prompt):
     }).encode()
     req = urllib.request.Request(
         f"{url}/v1/chat/completions", data=body,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        # Explicit UA: reverse proxies in front of remote llama-servers (e.g. the
+        # RunPod pod proxy) reject urllib's default agent with a 403.
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                 "User-Agent": "llama-nexus-bench/1.0"})
     with urllib.request.urlopen(req, timeout=600) as resp:
         r = json.load(resp)
     return r.get("timings", {}).get("predicted_per_second", 0)
