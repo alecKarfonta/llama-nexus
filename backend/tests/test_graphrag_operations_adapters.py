@@ -149,7 +149,7 @@ async def test_domain_statistics_proxies_upstream_domain_stats():
         result = await operations.graphrag_domain_statistics()
 
     assert result["general"]["entities"] == 4
-    get.assert_awaited_once_with("http://graphrag.test/knowledge-graph/domain-stats")
+    get.assert_awaited_once_with("http://graphrag.test/knowledge-graph/domain-stats", timeout=60.0)
 
 
 @pytest.mark.asyncio

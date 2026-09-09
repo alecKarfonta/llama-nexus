@@ -843,6 +843,7 @@ async def graphrag_search(request: Request):
                 "query": query,
                 "top_k": str(top_k),
             },
+            timeout=60.0,
         )
         response.raise_for_status()
         payload = response.json()
@@ -914,7 +915,7 @@ async def graphrag_advanced_search(request: Request):
 
     try:
         client = get_http_client()
-        response = await client.post(f"{_graphrag_url()}/search-advanced", json=data)
+        response = await client.post(f"{_graphrag_url()}/search-advanced", json=data, timeout=60.0)
         response.raise_for_status()
         payload = response.json()
         if use_local and isinstance(payload, dict):
@@ -957,6 +958,7 @@ async def analyze_query_intent(query: str):
         response = await client.post(
             f"{_graphrag_url()}/api/analyze-query-intent",
             params={"query": query},
+            timeout=60.0,
         )
         response.raise_for_status()
         return response.json()
@@ -981,6 +983,7 @@ async def analyze_query_complexity(request: Request):
         response = await client.post(
             f"{_graphrag_url()}/api/query-complexity-analysis",
             params={"query": query},
+            timeout=60.0,
         )
         response.raise_for_status()
         return response.json()
@@ -1231,6 +1234,7 @@ async def explain_relationship(request: Request):
         response = await client.post(
             f"{_graphrag_url()}/reasoning/explain-relationship",
             json=payload,
+            timeout=60.0,
         )
         response.raise_for_status()
         result = response.json()
@@ -1553,6 +1557,7 @@ async def graphrag_detect_code(request: Request):
         response = await client.post(
             f"{_graphrag_url()}/code-detection/detect",
             files={"file": (filename, file_content, upload_content_type)},
+            timeout=60.0,
         )
         response.raise_for_status()
         return _normalize_detection_response(response.json(), text, filename)
@@ -1594,11 +1599,13 @@ async def graphrag_search_code(request: Request):
                     "threshold": data.get("threshold", 0.0),
                     "context": data.get("context"),
                 },
+                timeout=60.0,
             )
         else:
             response = await client.post(
                 f"{_graphrag_url()}/search/code",
                 json={**data, "top_k": top_k},
+                timeout=60.0,
             )
         response.raise_for_status()
         return _normalize_code_search_response(response.json())

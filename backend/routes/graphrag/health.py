@@ -1857,7 +1857,7 @@ async def graphrag_get_stats(domain: str | None = None):
     try:
         client = get_http_client()
         params = {"domain": domain} if domain else None
-        response = await client.get(f"{cfg.graphrag_url}/knowledge-graph/stats", params=params)
+        response = await client.get(f"{cfg.graphrag_url}/knowledge-graph/stats", params=params, timeout=30.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPError as e:
@@ -1875,7 +1875,7 @@ async def graphrag_get_domains():
 
     try:
         client = get_http_client()
-        response = await client.get(f"{cfg.graphrag_url}/knowledge-graph/domains")
+        response = await client.get(f"{cfg.graphrag_url}/knowledge-graph/domains", timeout=30.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPError as e:
@@ -1905,7 +1905,7 @@ async def graphrag_ner_status():
     if cfg.graphrag_url:
         try:
             client = get_http_client()
-            response = await client.get(f"{cfg.graphrag_url}/ner/status")
+            response = await client.get(f"{cfg.graphrag_url}/ner/status", timeout=30.0)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
@@ -1939,7 +1939,7 @@ async def graphrag_code_health():
     if cfg.graphrag_url:
         try:
             client = get_http_client()
-            response = await client.get(f"{cfg.graphrag_url}/code-detection/health")
+            response = await client.get(f"{cfg.graphrag_url}/code-detection/health", timeout=30.0)
             return response.json()
         except Exception as e:
             return {"available": False, "error": str(e)}

@@ -122,6 +122,7 @@ async def test_graph_stats_forwards_optional_domain_filter():
     get.assert_awaited_once_with(
         "http://graphrag.test/knowledge-graph/stats",
         params={"domain": "ops"},
+        timeout=30.0,
     )
 
 
@@ -149,6 +150,7 @@ async def test_top_entities_forwards_entity_type_filter():
             "domain": "research",
             "entity_type": "organisation",
         },
+        timeout=40.0,
     )
 
 
@@ -176,6 +178,7 @@ async def test_top_relationships_forwards_relationship_type_filter():
             "domain": "software",
             "relationship_type": "uses",
         },
+        timeout=40.0,
     )
 
 
@@ -228,6 +231,7 @@ async def test_communities_forwards_domain_filter_to_domain_stats():
     get.assert_awaited_once_with(
         "http://graphrag.test/knowledge-graph/domain-stats",
         params={"domain": "research"},
+        timeout=40.0,
     )
 
 
@@ -261,4 +265,5 @@ async def test_graph_export_forwards_full_filter_params():
             "max_relationships": 40,
             "min_occurrence": 2,
         },
+        timeout=40.0,
     )

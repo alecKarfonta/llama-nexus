@@ -1856,6 +1856,7 @@ async def test_query_intent_proxy_uses_post_params():
     mock_get_client.return_value.post.assert_awaited_once_with(
         "http://graphrag.test/api/analyze-query-intent",
         params={"query": "compare llama nexus and graphrag"},
+        timeout=60.0,
     )
 
 
@@ -1880,6 +1881,7 @@ async def test_query_complexity_proxy_uses_typed_backend_route():
     mock_get_client.return_value.post.assert_awaited_once_with(
         "http://graphrag.test/api/query-complexity-analysis",
         params={"query": "compare A and B"},
+        timeout=60.0,
     )
 
 
@@ -7842,7 +7844,7 @@ async def test_document_list_forwards_to_upstream_documents_list():
         result = await ingest.graphrag_list_documents()
 
     assert result["total_documents"] == 1
-    mock_get_client.return_value.get.assert_awaited_once_with("http://graphrag.test/documents/list")
+    mock_get_client.return_value.get.assert_awaited_once_with("http://graphrag.test/documents/list", timeout=60.0)
 
 
 @pytest.mark.asyncio
@@ -7859,7 +7861,7 @@ async def test_document_delete_encodes_document_name_for_upstream():
 
     assert result["deleted"] is True
     mock_get_client.return_value.delete.assert_awaited_once_with(
-        "http://graphrag.test/documents/docs%2Fnote%201.md"
+        "http://graphrag.test/documents/docs%2Fnote%201.md", timeout=60.0
     )
 
 

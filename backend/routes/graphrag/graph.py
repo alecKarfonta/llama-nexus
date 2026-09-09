@@ -80,6 +80,7 @@ async def graphrag_get_graph(request: Request):
         response = await client.post(
             f"{_graphrag_url()}/knowledge-graph/filtered",
             json=data,
+            timeout=40.0,
         )
         response.raise_for_status()
         result = response.json()
@@ -111,6 +112,7 @@ async def graphrag_get_graph(request: Request):
             rel_response = await client.get(
                 f"{_graphrag_url()}/knowledge-graph/top-relationships",
                 params=params,
+                timeout=40.0,
             )
 
             if rel_response.status_code == 200:
@@ -170,6 +172,7 @@ async def graphrag_top_entities(
         response = await client.get(
             f"{cfg.graphrag_url}/knowledge-graph/top-entities",
             params=params,
+            timeout=40.0,
         )
         response.raise_for_status()
         return response.json()
@@ -202,6 +205,7 @@ async def graphrag_top_relationships(
         response = await client.get(
             f"{cfg.graphrag_url}/knowledge-graph/top-relationships",
             params=params,
+            timeout=40.0,
         )
         response.raise_for_status()
         return response.json()
@@ -244,6 +248,7 @@ async def graphrag_get_communities(domain: Optional[str] = None):
         response = await client.get(
             f"{_graphrag_url()}/knowledge-graph/domain-stats",
             params=params,
+            timeout=40.0,
         )
         response.raise_for_status()
         return response.json()
@@ -266,6 +271,7 @@ async def graphrag_export_graph(request: Request):
         response = await client.get(
             f"{_graphrag_url()}/knowledge-graph/export",
             params=data,
+            timeout=40.0,
         )
         response.raise_for_status()
         return response.json()

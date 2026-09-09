@@ -171,7 +171,7 @@ async def graphrag_domain_statistics():
 
     try:
         client = get_http_client()
-        response = await client.get(f"{cfg.graphrag_url}/knowledge-graph/domain-stats")
+        response = await client.get(f"{cfg.graphrag_url}/knowledge-graph/domain-stats", timeout=60.0)
         return await _response_payload(response)
     except HTTPException:
         raise

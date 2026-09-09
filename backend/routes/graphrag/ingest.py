@@ -3259,6 +3259,7 @@ async def graphrag_extract_entities(request: Request):
         response = await client.post(
             f"{_graphrag_url()}/extract-entities-relations",
             json=data,
+            timeout=60.0,
         )
         response.raise_for_status()
         return response.json()
@@ -3324,7 +3325,7 @@ async def graphrag_list_documents():
 
     try:
         client = get_http_client()
-        response = await client.get(f"{_graphrag_url()}/documents/list")
+        response = await client.get(f"{_graphrag_url()}/documents/list", timeout=60.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPError as e:
@@ -3338,7 +3339,7 @@ async def graphrag_delete_document(document_name: str):
 
     try:
         client = get_http_client()
-        response = await client.delete(f"{_graphrag_url()}/documents/{quote(document_name, safe='')}")
+        response = await client.delete(f"{_graphrag_url()}/documents/{quote(document_name, safe='')}", timeout=60.0)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPError as e:
@@ -3458,7 +3459,8 @@ async def graphrag_ingest_pipeline_preview(
 ):
     """Preview document extraction, chunking, and graph candidates without upstream ingestion."""
     file_content = await file.read()
-    preview = build_document_pipeline_preview(
+    preview = await asyncio.to_thread(
+        build_document_pipeline_preview,
         filename=file.filename or "document",
         content=file_content,
         content_type=file.content_type or "application/octet-stream",
@@ -3493,7 +3495,8 @@ async def _build_and_submit_pipeline_run(
     health_probe: dict[str, Any] | None = None,
     run_id: str | None = None,
 ) -> dict[str, Any]:
-    preview = build_document_pipeline_preview(
+    preview = await asyncio.to_thread(
+        build_document_pipeline_preview,
         filename=filename or "document",
         content=content,
         content_type=content_type or "application/octet-stream",
@@ -3679,7 +3682,7 @@ def _form_bool(value: Any, *, default: bool = False) -> bool:
     return default
 
 
-def _build_async_pipeline_upload_handoff(
+async def _build_async_pipeline_upload_handoff(
     *,
     filename: str | None,
     content: bytes,
@@ -3690,7 +3693,8 @@ def _build_async_pipeline_upload_handoff(
     sample_limit: int,
     submit_structured_text: bool,
 ) -> dict[str, Any]:
-    preview = build_document_pipeline_preview(
+    preview = await asyncio.to_thread(
+        build_document_pipeline_preview,
         filename=filename or "document",
         content=content,
         content_type=content_type or "application/octet-stream",
@@ -3754,7 +3758,7 @@ async def graphrag_ingest_pipeline_upload(
     """
     file_content = await file.read()
     if _form_bool(submit_async, default=False):
-        handoff = _build_async_pipeline_upload_handoff(
+        handoff = await _build_async_pipeline_upload_handoff(
             filename=file.filename,
             content=file_content,
             content_type=file.content_type,
@@ -4065,6 +4069,7 @@ async def graphrag_link_entities(request: Request):
         response = await client.post(
             f"{_graphrag_url()}/entity/link",
             json=entities,
+            timeout=60.0,
         )
         response.raise_for_status()
         result = response.json()
@@ -4103,6 +4108,7 @@ async def graphrag_disambiguate_entities(request: Request):
         response = await client.post(
             f"{_graphrag_url()}/entity/disambiguate",
             json=payload,
+            timeout=60.0,
         )
         response.raise_for_status()
         return response.json()
