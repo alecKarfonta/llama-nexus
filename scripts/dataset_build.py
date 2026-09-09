@@ -13,6 +13,15 @@ completion with the same tokenizer at fit time (prompt ids were captured
 server-side and ARE exact). Sample format kept minimal so the trainer owns
 loss shaping (draft-head distillation over target tokens).
 
+DO NOT train on `completion_render`. It is a dedupe/stats key, not a target:
+render_completion() writes tool calls as `<tool_call>name(args)</tool_call>`,
+while the model actually emits the template's XML form
+(`<tool_call>\n<function=name>\n<parameter=k>\n...`), and the render also omits
+the `\n</think>\n\n` that opens every assistant turn. ~80% of samples carry
+tool calls, so a trainer using this field learns a token sequence that never
+occurs in production. scripts/mtp_dataprep.py rebuilds the true sequence from
+the server's own chat template and is the source of truth for training.
+
 Filtering:
   - template_ok records only (token snapshot verified server-side)
   - finish_reason must be stop/tool_calls (drops length-truncated tails)
@@ -23,6 +32,10 @@ Filtering:
     dominate. Session discriminator is the first user message hash.
     Full-prompt dedupe on top.
   - optional --scrub replaces absolute paths / emails / IPs with tokens
+
+Split:
+  - train/val is prefix-disjoint: whole sessions are held out, so no val row
+    has a sibling turn from the same conversation sitting in train.
 
 Usage:
   python3 scripts/dataset_build.py [--captures DIR] [--out DIR]
@@ -56,10 +69,15 @@ def scrub(text):
 
 
 def render_completion(rec):
-    """Full assistant turn as one target string.
+    """Full assistant turn as one string, for dedupe and stats only.
 
     Agent traffic is mostly tool calls with empty content, so the tool call
-    payload has to be part of the target or those samples carry no signal.
+    payload has to be part of this string or identical-looking turns collapse
+    onto each other during dedupe.
+
+    This is deliberately NOT the training target — the shape below is not what
+    the model emits (see the module docstring). scripts/mtp_dataprep.py derives
+    the real token sequence from the live chat template.
     """
     resp = rec.get("response") or {}
     parts = []
@@ -162,6 +180,15 @@ def main():
                     continue
                 content = rec.get("response", {}).get("content") or ""
                 tool_calls = rec.get("response", {}).get("tool_calls") or []
+                # Cursor writes "[REDACTED]" into transcripts where it scrubbed a
+                # secret. capture_cursor_synth strips it from replayed history now,
+                # but captures from before that fix (2026-09-04) have the model
+                # echoing the placeholder as a trailing line. Training a draft head
+                # on those teaches it to predict a token sequence that never occurs
+                # in real traffic, which costs acceptance.
+                if "[REDACTED]" in content:
+                    stats["drop:redaction-echo"] += 1
+                    continue
                 if len(content) < args.min_chars and not tool_calls:
                     stats["drop:too-short"] += 1
                     continue
@@ -214,9 +241,36 @@ def main():
                 })
                 stats["kept"] += 1
 
-    rng.shuffle(kept)
+    # [TIME] | INFO | SCRIPTS.DATASET_BUILD.MAIN | hold out whole prefixes, not
+    # random rows. One session contributes many turns sharing system+tools and
+    # most of the conversation prefix, so a row-level shuffle lands siblings of
+    # every val row in train and val loss then scores memorization inside known
+    # conversations. Deal out entire prefix groups, skipping any group too large
+    # for the remaining budget so val never overshoots --val-frac.
+    by_prefix = {}
+    for row in kept:
+        by_prefix.setdefault(row["prefix_key"], []).append(row)
+    groups = list(by_prefix.values())
+    rng.shuffle(groups)
+
     n_val = max(1, int(len(kept) * args.val_frac)) if kept else 0
-    val, train = kept[:n_val], kept[n_val:]
+    val, train = [], []
+    for group in groups:
+        if len(val) + len(group) <= n_val:
+            val.extend(group)
+        else:
+            train.extend(group)
+    # Every group outgrew the budget (tiny corpus, or one giant session): give
+    # up the smallest one so val is never empty.
+    if not val and groups:
+        smallest = min(groups, key=len)
+        val = list(smallest)
+        train = [r for r in train if r["prefix_key"] != smallest[0]["prefix_key"]]
+    rng.shuffle(val)
+    rng.shuffle(train)
+
+    val_prefixes = {r["prefix_key"] for r in val}
+    train_prefixes = {r["prefix_key"] for r in train}
 
     for name, rows in (("train", train), ("val", val)):
         with open(os.path.join(out_dir, f"{name}.jsonl"), "w", encoding="utf-8") as f:
@@ -238,6 +292,10 @@ def main():
         "train": len(train),
         "val": len(val),
         "total_kept": len(kept),
+        "split": "prefix-disjoint",
+        "train_prefixes": len(train_prefixes),
+        "val_prefixes": len(val_prefixes),
+        "split_prefix_overlap": len(train_prefixes & val_prefixes),
         "avg_prompt_tokens": (sum(r["n_prompt_tokens"] for r in kept) / len(kept)) if kept else 0,
         "tools_present_frac": (sum(1 for r in kept if r["tools_present"]) / len(kept)) if kept else 0,
         "completion_kinds": dict(Counter(r["completion_kind"] for r in kept)),

@@ -282,10 +282,16 @@ def _grep_tool(args: Dict[str, Any]) -> str:
     if args.get("glob"):
         cmd.extend(["--glob", str(args["glob"])])
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+        # errors="replace": rg walks real repos, so a hit inside a latin-1 source
+        # file or a binary blob emits bytes that are not valid UTF-8. text=True
+        # alone decodes strictly and raises inside communicate(), which killed a
+        # replay worker 33 sessions into a 40-session shard. Every other read in
+        # this file already replaces; this call was the one that did not.
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
+                              check=False, errors="replace")
         out = (proc.stdout or "").strip()
         return out[:3000] if out else "No matches found."
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError):
         return "No matches found."
 
 
@@ -720,6 +726,18 @@ def run_transcripts(args: argparse.Namespace) -> int:
         if args.offset:
             paths = paths[args.offset:]
         selected = paths[: args.sessions]
+
+    # Deterministic split so several workers (e.g. one against the local rig and
+    # one against a rented pod) cover disjoint sessions from the same selection.
+    if args.shards > 1:
+        before = len(selected)
+        selected = selected[args.shard :: args.shards]
+        print(
+            f"[capture_cursor_synth] shard {args.shard}/{args.shards}: "
+            f"{len(selected)} of {before} sessions",
+            flush=True,
+        )
+
     print(
         f"[capture_cursor_synth] corpus={args.corpus} sessions={len(selected)}/{len(paths)} "
         f"envelopes={len(envelopes)} max_turns={args.max_turns} deep_frac={args.deep_frac}",
@@ -832,6 +850,10 @@ def main() -> int:
     p.add_argument("--no-variants", action="store_true", help="only real captured envelopes")
     p.add_argument("--stack", default=None,
                    help="target this environment's stack mix: natural|balanced|python|frontend|backend-api")
+    p.add_argument("--shards", type=int, default=1,
+                   help="split the selected sessions across this many workers")
+    p.add_argument("--shard", type=int, default=0,
+                   help="which shard this worker handles (0-based)")
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
