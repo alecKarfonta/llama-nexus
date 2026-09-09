@@ -95,6 +95,9 @@ bower_components
 out
 .nuxt
 dist/
+# vite builds with a custom outDir (frontend/dist-graphrag)
+dist-*/
+test-results/
 .vuepress/dist
 .serverless/
 .fusebox/
