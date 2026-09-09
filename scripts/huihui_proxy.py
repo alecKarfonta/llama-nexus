@@ -15,6 +15,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 UPSTREAM = os.environ.get("HUIHUI_UPSTREAM", "http://192.168.50.78:8603")
 LISTEN_PORT = int(os.environ.get("HUIHUI_PORT", "8788"))
 LOG_PATH = os.environ.get("HUIHUI_LOG", "/tmp/huihui_proxy.log")
+# [2026-09-05 14:45] | INFO | HUIHUI_PROXY | public model id is uncensored
+REAL_MODEL = os.environ.get("HUIHUI_REAL_MODEL", "Huihui-Qwen3.8-27B-abliterated")
+PUBLIC_MODEL = os.environ.get("HUIHUI_PUBLIC_MODEL", "uncensored")
+MODEL_ALIASES = {None, "", PUBLIC_MODEL, "huihui", REAL_MODEL}
 
 # fields ninfer 400s on or that hide content from Cursor
 DROP_KEYS = (
@@ -79,6 +83,9 @@ def _rewrite(raw):
         return raw
     for k in DROP_KEYS:
         body.pop(k, None)
+    # [2026-09-05 14:45] | INFO | HUIHUI_PROXY.REWRITE | map public model id
+    if body.get("model") in MODEL_ALIASES or "model" not in body:
+        body["model"] = REAL_MODEL
     # [TIME] | INFO | HUIHUI_PROXY.REWRITE | ninfer: top-level flag, not kwargs
     body["enable_thinking"] = False
     if not body.get("messages"):
@@ -207,6 +214,9 @@ class Handler(BaseHTTPRequestHandler):
         up.close()
         if status >= 400:
             _log(f"err-body {body[:300]!r}")
+        # [2026-09-05 14:45] | INFO | HUIHUI_PROXY.FORWARD | expose public model id
+        if status < 400 and REAL_MODEL.encode() in body:
+            body = body.replace(REAL_MODEL.encode(), PUBLIC_MODEL.encode())
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
