@@ -73,7 +73,9 @@ Depth is the dominant knob — JSON nearly +42% from n3→n16. Acceptance stays 
 
 **Final config (applied, verified via public endpoint):** `draft_n_max 16, draft_p_min 0.75, poll 100, draft_poll 1, tensor_split 0.85,1.1,1.0,1.05, mmproj off, ubatch 1024` → prose 38.9 / code 85.4 / JSON 106.3 tok/s (STRUCT 95.9 vs 69.2 at session start, **+39%**; decode ~76.9 avg all-workload vs 57.8).
 
-**New tooling:** `scripts/bench_tps.sh` (fixed 3-workload decode bench), `scripts/qwen_set.sh` (config push + restart + health-wait helper), `scripts/bench_prefill.py` (cold-prefill tok/s).
+**New tooling:** `scripts/bench_tps.sh` (fixed 3-workload decode bench), `scripts/qwen_set.sh` (config push + restart + health-wait helper), `scripts/bench_prefill.py` (cold-prefill tok/s — superseded by
+`scripts/bench_prefill.sh`, which adds a nonce so the probe cannot be served
+from the prompt cache; the `.py` reports cache hits, not prefill).
 
 ## 2026-08-30 (round 2) p_min drift fix, parallel slots unlocked, ctx 128k
 
