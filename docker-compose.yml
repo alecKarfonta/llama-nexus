@@ -867,6 +867,11 @@ services:
 volumes:
   gpt_oss_models:
     driver: local
+    # [2026-09-06] | INFO | compose.volumes | GGUF weights on USB NVMe
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/comfyui-models/llama-nexus/gpt_oss_models
   datasets:
     driver: local
     # [2026-09-04] | INFO | compose.volumes | MTP captures + datasets on USB NVMe

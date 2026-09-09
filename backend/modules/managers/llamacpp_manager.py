@@ -712,7 +712,13 @@ class LlamaCPPManager:
             },
             "environment": env_vars,
             "shm_size": "16g",
-            "ports": {"8080/tcp": 8600}
+            "ports": {"8080/tcp": 8600},
+            # [TIME] | INFO | LLAMACPP_MANAGER.START_DOCKER_SDK | match the
+            # compose service: come back after a host reboot or daemon restart,
+            # but stay down when the Deploy UI stops the model on purpose.
+            # Without this the container is created with RestartPolicy=no and a
+            # power loss leaves the inference server down until started by hand.
+            "restart_policy": {"Name": "unless-stopped"},
         }
         
         # Attach GPU unless explicitly in CPU mode (or gpu_layers=0)
@@ -809,6 +815,9 @@ class LlamaCPPManager:
         docker_cmd = [
             'docker', 'run', '-d',
             '--name', self.container_name,
+            # [TIME] | INFO | LLAMACPP_MANAGER.START_DOCKER_CLI | keep parity
+            # with the SDK path and the compose service (see start_docker_sdk).
+            '--restart', 'unless-stopped',
             '--shm-size', '16g',
             '-p', '8600:8080',
             '--network', self.docker_network,
