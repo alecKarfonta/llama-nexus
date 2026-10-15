@@ -100,10 +100,10 @@ class VLLMManager:
         return {
             "backend_type": "vllm",
             "model": {
-                "name": os.getenv("VLLM_MODEL_NAME", "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"),
-                "served_name": os.getenv("VLLM_SERVED_MODEL_NAME", "Nemotron-3-Nano-Omni-30B-A3B-Reasoning"),
+                "name": os.getenv("VLLM_MODEL_NAME", "unsloth/Qwen3.8-27B-NVFP4"),
+                "served_name": os.getenv("VLLM_SERVED_MODEL_NAME", "Qwen3.8-27B"),
                 "dtype": os.getenv("VLLM_DTYPE", "auto"),
-                "quantization": os.getenv("VLLM_QUANTIZATION", "fp4"),
+                "quantization": os.getenv("VLLM_QUANTIZATION", ""),
             },
             "sampling": {
                 "temperature": float(os.getenv("VLLM_TEMPERATURE", "0.7")),
@@ -114,24 +114,24 @@ class VLLMManager:
                 "presence_penalty": float(os.getenv("VLLM_PRESENCE_PENALTY", "0.0")),
             },
             "performance": {
-                "max_model_len": int(os.getenv("VLLM_MAX_MODEL_LEN", "16384")),
+                "max_model_len": int(os.getenv("VLLM_MAX_MODEL_LEN", "131072")),
                 "gpu_memory_utilization": float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.95")),
-                "tensor_parallel_size": int(os.getenv("VLLM_TENSOR_PARALLEL_SIZE", "1")),
+                "tensor_parallel_size": int(os.getenv("VLLM_TENSOR_PARALLEL_SIZE", "2")),
                 "pipeline_parallel_size": int(os.getenv("VLLM_PIPELINE_PARALLEL_SIZE", "1")),
                 "data_parallel_size": int(os.getenv("VLLM_DATA_PARALLEL_SIZE", "1")),
                 "max_num_seqs": int(os.getenv("VLLM_MAX_NUM_SEQS", "16")),
                 "max_num_batched_tokens": int(os.getenv("VLLM_MAX_NUM_BATCHED_TOKENS", "8192")),
                 "kv_cache_dtype": os.getenv("VLLM_KV_CACHE_DTYPE", "fp8"),
-                "enforce_eager": os.getenv("VLLM_ENFORCE_EAGER", "true").lower() == "true",
+                "enforce_eager": os.getenv("VLLM_ENFORCE_EAGER", "false").lower() == "true",
                 "enable_chunked_prefill": os.getenv("VLLM_ENABLE_CHUNKED_PREFILL", "true").lower() == "true",
                 "async_scheduling": os.getenv("VLLM_ASYNC_SCHEDULING", "true").lower() == "true",
             },
             "moe": {
-                "moe_backend": os.getenv("VLLM_MOE_BACKEND", "marlin"),
+                "moe_backend": os.getenv("VLLM_MOE_BACKEND", ""),
                 "mamba_ssm_cache_dtype": os.getenv("VLLM_MAMBA_SSM_CACHE_DTYPE", "float16"),
             },
             "reasoning": {
-                "reasoning_parser": os.getenv("VLLM_REASONING_PARSER", "nemotron_v3"),
+                "reasoning_parser": os.getenv("VLLM_REASONING_PARSER", "qwen3"),
                 "reasoning_parser_plugin": os.getenv("VLLM_REASONING_PARSER_PLUGIN", ""),
             },
             "speculative": {
@@ -334,7 +334,7 @@ class VLLMManager:
                 "mamba_ssm_cache_dtype": {"scope": "vllm", "type": "select", "description": "Data type for Mamba SSM cache.", "vllm_flag": "--mamba_ssm_cache_dtype", "options": ["float16", "float32", "bfloat16"], "llamacpp_equivalent": None},
             },
             "reasoning": {
-                "reasoning_parser": {"scope": "vllm", "type": "select", "description": "Parser for extracting reasoning/thinking content from model output.", "vllm_flag": "--reasoning-parser", "options": ["nemotron_v3", "deepseek_r1", "None"], "llamacpp_equivalent": "server.reasoning_format", "mapping_note": "llama.cpp: reasoning_format, vLLM: reasoning_parser"},
+                "reasoning_parser": {"scope": "vllm", "type": "select", "description": "Parser for extracting reasoning/thinking content from model output.", "vllm_flag": "--reasoning-parser", "options": ["qwen3", "nemotron_v3", "deepseek_r1", "None"], "llamacpp_equivalent": "server.reasoning_format", "mapping_note": "llama.cpp: reasoning_format, vLLM: reasoning_parser"},
                 "reasoning_parser_plugin": {"scope": "vllm", "type": "text", "description": "Path to custom reasoning parser plugin Python file.", "vllm_flag": "--reasoning-parser-plugin", "llamacpp_equivalent": None},
             },
             "speculative": {
@@ -405,14 +405,14 @@ class VLLMManager:
             port_int = 8080
 
         out: Dict[str, str] = {
-            "MODEL_NAME": str(model.get("name") or "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"),
-            "SERVED_MODEL_NAME": str(model.get("served_name") or "Nemotron-3-Nano-Omni-30B-A3B-Reasoning"),
+            "MODEL_NAME": str(model.get("name") or "unsloth/Qwen3.8-27B-NVFP4"),
+            "SERVED_MODEL_NAME": str(model.get("served_name") or "Qwen3.8-27B"),
             "HOST": str(server.get("host") or "0.0.0.0"),
             "PORT": str(port_int),
             "API_KEY": str(server.get("api_key") or "placeholder-api-key"),
-            "MAX_MODEL_LEN": str(int(perf.get("max_model_len") or 16384)),
+            "MAX_MODEL_LEN": str(int(perf.get("max_model_len") or 131072)),
             "GPU_MEMORY_UTILIZATION": str(gpu_mu),
-            "TENSOR_PARALLEL_SIZE": str(int(perf.get("tensor_parallel_size") or 1)),
+            "TENSOR_PARALLEL_SIZE": str(int(perf.get("tensor_parallel_size") or 2)),
             "PIPELINE_PARALLEL_SIZE": str(int(perf.get("pipeline_parallel_size") or 1)),
             "DATA_PARALLEL_SIZE": str(int(perf.get("data_parallel_size") or 1)),
             "KV_CACHE_DTYPE": str(perf.get("kv_cache_dtype") or "fp8"),

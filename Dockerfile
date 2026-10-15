@@ -22,20 +22,22 @@ RUN pip3 install huggingface_hub hf_transfer
 
 # Clone and build llama.cpp with CUDA support
 # Pin a revision so Docker cache does not keep an old llama.cpp without newer arch support.
-# 2026-08-28: pinned to unslothai/llama.cpp@bea3b12da (the exact PR #27742 snapshot the
-# qwen4exp MTP draft-head patch was verified against — dzannotti/Qwen3.8-Flash-Next-MTP-GGUF).
-# The commit is orphaned on the fork (force-pushed past), so it is fetched by full SHA from
-# a URL ref, which works even when no branch points at it.
+# [TIME] | INFO | DOCKERFILE.ARG_PINS | 2026-10-15: default b10723 — qwen4exp (Qwen3.8-Flash-Next,
+# [TIME] | INFO | DOCKERFILE.ARG_PINS | PR #27742) is merged upstream, so the official tag suffices.
 # MTP_PATCH: optional git-apply patch layered on top (qwen4exp draft-head graph + converter
-# --mtp export). Kept optional so a plain PR build needs no patch file present.
-# Override at build time: docker compose build --build-arg LLAMA_CPP_REF=b9496 llamacpp-api
-ARG LLAMA_CPP_REF=bea3b12daee45876b0129a3602dc8f534ce30bf0
-ARG LLAMA_CPP_REMOTE=https://github.com/unslothai/llama.cpp.git
-ARG MTP_PATCH=patches/qwen4exp-mtp-draft-head.patch
-ARG LLAMACPP_BUILD_TAG=b10631-qwen4exp-mtp
+# --mtp export) for MTP-converted GGUFs; verified against unslothai/llama.cpp@bea3b12da.
+# MTP flavor build (patch applies to the fork snapshot, not to merged b10723):
+#   docker compose build --build-arg LLAMA_CPP_REF=bea3b12daee45876b0129a3602dc8f534ce30bf0 \
+#     --build-arg LLAMA_CPP_REMOTE=https://github.com/unslothai/llama.cpp.git \
+#     --build-arg MTP_PATCH=patches/qwen4exp-mtp-draft-head.patch --build-arg LLAMACPP_BUILD_TAG=b10631-qwen4exp-mtp
+# Override at build time: docker compose build --build-arg LLAMA_CPP_REF=b10723 llamacpp-api
+ARG LLAMA_CPP_REF=b10723
+ARG LLAMA_CPP_REMOTE=https://github.com/ggml-org/llama.cpp.git
+ARG MTP_PATCH=
+ARG LLAMACPP_BUILD_TAG=b10723
 WORKDIR /build
 ARG SKIP_BUILD_FROM_SOURCE=false
-ARG LLAMACPP_VERSION=b9193
+ARG LLAMACPP_VERSION=b10723
 ARG ENABLE_TURBOQUANT=false
 # Opt-in: requires Rust in builder; enables jump-forward grammar tier in llama-server
 ARG ENABLE_LLGUIDANCE=false
@@ -46,7 +48,7 @@ RUN if [ "$ENABLE_LLGUIDANCE" = "true" ]; then \
     fi
 # CUDA architecture(s) passed to CMake. Run on the host: nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 # (use the major.minor as an integer SM, e.g. 8.6 -> 86). Common values: 75 (T4), 80 (A100), 86 (RTX 30xx),
-# 89 (RTX 40xx), 90 (H100), 120 (RTX 50xx / Blackwell). Default 120 suits RTX 5090; override via CUDA_ARCH.
+# 89 (RTX 40xx), 90 (H100), 120 (RTX 50xx / Blackwell). Default 120 suits 4x 5070 Ti / RTX 5090.
 # IMPORTANT: Do not use "native" here when building Docker images — the builder usually has no GPU, so CMake
 # cannot detect SM and nvcc fails with: Unsupported gpu architecture 'compute_' .
 ARG CUDA_ARCH=120
@@ -111,7 +113,7 @@ RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
 # Runtime stage
 FROM nvidia/cuda:13.0.0-runtime-ubuntu22.04
 
-ARG LLAMACPP_BUILD_TAG=b10631-qwen4exp-mtp
+ARG LLAMACPP_BUILD_TAG=b10723
 LABEL org.opencontainers.image.version="${LLAMACPP_BUILD_TAG}"
 ENV LLAMACPP_BUILD_TAG=${LLAMACPP_BUILD_TAG}
 

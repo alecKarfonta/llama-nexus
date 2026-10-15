@@ -48,18 +48,18 @@ services:
     ports:
       - "8700:8700" # Management API port
     environment:
-      # Default LlamaCPP configuration - Qwen3.6-27B
-      - MODEL_NAME=Qwen3.6-27B
-      - MODEL_VARIANT=Q6_K
-      - MODEL_REPO=unsloth/Qwen3.6-27B-GGUF
+      # Default LlamaCPP configuration - Qwen3.8-Flash-Next (qwen4exp, n-gram offload)
+      - MODEL_NAME=Qwen3.8-Flash-Next
+      - MODEL_VARIANT=UD-IQ1_S
+      - MODEL_REPO=unsloth/Qwen3.8-Flash-Next-GGUF
       # Host path for chat templates so backend can mount it into the managed container
       - TEMPLATES_HOST_DIR=${PWD}/chat-templates
-      - CONTEXT_SIZE=256000
+      - CONTEXT_SIZE=32768
       - GPU_LAYERS=999
-      - TEMPERATURE=0.15
+      - TEMPERATURE=1.0
       - TOP_P=0.95
-      - TOP_K=0
-      - MIN_P=0.02
+      - TOP_K=20
+      - MIN_P=0.0
       - REPEAT_PENALTY=1
       - REPEAT_LAST_N=64
       - FREQUENCY_PENALTY=0
@@ -79,6 +79,9 @@ services:
       - CACHE_TYPE_K=q8_0
       - CACHE_TYPE_V=q8_0
       - N_CPU_MOE=0
+      - OVERRIDE_TENSOR=per_layer_token_embd.weight=CPU
+      - TENSOR_READ_LAZY=on
+      - MMPROJ_FILE=mmproj-F16.gguf
       - API_KEY=${API_KEY:-placeholder-api-key}
       - TEMPLATE_PATH=/home/llamacpp/chat-template.jinja
       # Docker socket + compose project root (read-only mount at this path)
@@ -92,8 +95,8 @@ services:
       - LLAMACPP_DOCKER_IMAGE=${LLAMACPP_DOCKER_IMAGE:-llama-nexus-llamacpp-api:latest}
       # Optional; if unset, derived from DOCKER_NETWORK as {project}_gpt_oss_models
       - LLAMACPP_MODELS_VOLUME=${LLAMACPP_MODELS_VOLUME:-}
-      - CUDA_DEVICES=0,1
-      - TENSOR_SPLIT=1,1
+      - CUDA_DEVICES=0,1,2,3
+      - TENSOR_SPLIT=1,1,1,1
       # Pass through HuggingFace token from host environment
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
       # Enable colored logging
@@ -184,12 +187,13 @@ services:
       target: builder
       args:
         SKIP_BUILD_FROM_SOURCE: "false"
-        # qwen4exp (Qwen3.8-Flash-Next) — llama.cpp PR #27742, not yet in any release
-        LLAMACPP_VERSION: "b10631-qwen4exp-mtp"
-        LLAMACPP_BUILD_TAG: "b10631-qwen4exp-mtp"
-        LLAMA_CPP_REMOTE: "https://github.com/unslothai/llama.cpp.git"
-        LLAMA_CPP_REF: "bea3b12daee45876b0129a3602dc8f534ce30bf0"
-        MTP_PATCH: "patches/qwen4exp-mtp-draft-head.patch"
+        # qwen4exp (Qwen3.8-Flash-Next) — merged upstream as of llama.cpp b10723 (PR #27742)
+        LLAMACPP_VERSION: "b10723"
+        LLAMACPP_BUILD_TAG: "b10723"
+        # MTP flavor (optional): fork snapshot + draft-head patch, see Dockerfile header
+        # LLAMA_CPP_REMOTE: "https://github.com/unslothai/llama.cpp.git"
+        # LLAMA_CPP_REF: "bea3b12daee45876b0129a3602dc8f534ce30bf0"
+        # MTP_PATCH: "patches/qwen4exp-mtp-draft-head.patch"
         ENABLE_TURBOQUANT: "false"
         CMAKE_BUILD_JOBS: ${CMAKE_BUILD_JOBS:-2}
         CUDA_ARCH: ${CUDA_ARCH:-120}
@@ -217,12 +221,13 @@ services:
         ENABLE_LLGUIDANCE: ${ENABLE_LLGUIDANCE:-false}
         CMAKE_BUILD_JOBS: ${CMAKE_BUILD_JOBS:-2}
         CUDA_ARCH: ${CUDA_ARCH:-120}
-        # qwen4exp (Qwen3.8-Flash-Next) — llama.cpp PR #27742, not yet in any release
-        LLAMA_CPP_REMOTE: "https://github.com/unslothai/llama.cpp.git"
-        LLAMA_CPP_REF: "bea3b12daee45876b0129a3602dc8f534ce30bf0"
-        MTP_PATCH: "patches/qwen4exp-mtp-draft-head.patch"
-        LLAMACPP_BUILD_TAG: "b10631-qwen4exp-mtp"
-        LLAMACPP_VERSION: "b10631-qwen4exp-mtp"
+        # qwen4exp (Qwen3.8-Flash-Next) — merged upstream as of llama.cpp b10723 (PR #27742)
+        LLAMA_CPP_REF: "b10723"
+        LLAMACPP_BUILD_TAG: "b10723"
+        LLAMACPP_VERSION: "b10723"
+        # MTP flavor (optional): fork snapshot + draft-head patch, see Dockerfile header
+        # LLAMA_CPP_REMOTE: "https://github.com/unslothai/llama.cpp.git"
+        # MTP_PATCH: "patches/qwen4exp-mtp-draft-head.patch"
     container_name: llamacpp-api
     hostname: llamacpp
     ports:
@@ -237,15 +242,14 @@ services:
       # __embedded_jinja__ = GGUF embedded template + --jinja only (correct multi-turn framing).
       # Empty = embedded template without --jinja (legacy). Custom files via CHAT_TEMPLATE=name.jinja.
       - CHAT_TEMPLATE=__embedded_jinja__
-      # CUDA optimizations - Qwen3.6-27B Q6_K is split across two GPUs
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,2}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0,2}
-      # Model configuration - Qwen3.6-27B
-      - MODEL_NAME=Qwen3.6-27B
-      - MODEL_VARIANT=Q6_K
-      - MODEL_REPO=unsloth/Qwen3.6-27B-GGUF
-      - CONTEXT_SIZE=256000
-      # Disable aggressive DRY + freq/presence penalties that caused intermittent empty replies.
+      # CUDA — 4× 5070 Ti; n-gram table stays on host via OVERRIDE_TENSOR
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0,1,2,3}
+      # Model configuration - Qwen3.8-Flash-Next UD-IQ1_S
+      - MODEL_NAME=Qwen3.8-Flash-Next
+      - MODEL_VARIANT=UD-IQ1_S
+      - MODEL_REPO=unsloth/Qwen3.8-Flash-Next-GGUF
+      - CONTEXT_SIZE=32768
       - DRY_MULTIPLIER=0.0
       - DRY_ALLOWED_LENGTH=2
       - DRY_PENALTY_LAST_N=0
@@ -253,10 +257,12 @@ services:
       - PRESENCE_PENALTY=0.0
       - MIN_P=0.0
       - GPU_LAYERS=999
-      - TEMPERATURE=0.15
+      - TEMPERATURE=1.0
       - TOP_P=0.95
-      - TOP_K=0
-      - MIN_P=0.02
+      - TOP_K=20
+      - OVERRIDE_TENSOR=per_layer_token_embd.weight=CPU
+      - TENSOR_READ_LAZY=on
+      - MMPROJ_FILE=mmproj-F16.gguf
       - API_KEY=${API_KEY:-placeholder-api-key}
       - BATCH_SIZE=1024
       - UBATCH_SIZE=512
@@ -338,7 +344,7 @@ services:
       retries: 3
       start_period: 30s
 
-  # vLLM API Server - Nemotron-3-Nano-Omni multimodal (text, image, video, audio)
+  # vLLM API Server - Qwen3.8-27B NVFP4 (hybrid Gated DeltaNet + VL; text/image/video)
   vllm-api:
     profiles:
       - vllm
@@ -361,20 +367,20 @@ services:
     environment:
       # Values substituted from the host env at `docker compose` time.
       # The backend merges Deploy / VLLMManager.config here when starting or rebuilding vLLM.
-      - MODEL_NAME=${MODEL_NAME:-nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4}
-      - SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-Nemotron-3-Nano-Omni-30B-A3B-Reasoning}
+      - MODEL_NAME=${MODEL_NAME:-unsloth/Qwen3.8-27B-NVFP4}
+      - SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-Qwen3.8-27B}
       - HOST=${HOST:-0.0.0.0}
       - PORT=${PORT:-8080}
       - API_KEY=${API_KEY:-placeholder-api-key}
-      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-16384}
+      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-131072}
       - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.95}
-      - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
+      - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-2}
       - PIPELINE_PARALLEL_SIZE=${PIPELINE_PARALLEL_SIZE:-1}
       - DATA_PARALLEL_SIZE=${DATA_PARALLEL_SIZE:-1}
       - KV_CACHE_DTYPE=${KV_CACHE_DTYPE:-fp8}
-      - REASONING_PARSER=${REASONING_PARSER-nemotron_v3}
-      - REASONING_PARSER_PLUGIN=${REASONING_PARSER_PLUGIN-}
-      - TOOL_CALL_PARSER=${TOOL_CALL_PARSER-qwen3_coder}
+      - REASONING_PARSER=${REASONING_PARSER:-qwen3}
+      - REASONING_PARSER_PLUGIN=${REASONING_PARSER_PLUGIN:-}
+      - TOOL_CALL_PARSER=${TOOL_CALL_PARSER:-qwen3_coder}
       - VIDEO_PRUNING_RATE=${VIDEO_PRUNING_RATE:-0.5}
       - VIDEO_FPS=${VIDEO_FPS:-2}
       - VIDEO_NUM_FRAMES=${VIDEO_NUM_FRAMES:-256}
@@ -384,7 +390,7 @@ services:
       - VLLM_QUANTIZATION=${VLLM_QUANTIZATION:-}
       - MOE_BACKEND=${MOE_BACKEND:-}
       - MAMBA_SSM_CACHE_DTYPE=${MAMBA_SSM_CACHE_DTYPE:-}
-      - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-true}
+      - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
       - VLLM_ENABLE_CHUNKED_PREFILL=${VLLM_ENABLE_CHUNKED_PREFILL:-true}
       - VLLM_ASYNC_SCHEDULING=${VLLM_ASYNC_SCHEDULING:-true}
       - TRUST_REMOTE_CODE=${TRUST_REMOTE_CODE:-true}
@@ -399,8 +405,10 @@ services:
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=${HF_HOME:-/home/vllm/.cache/huggingface}
       - HF_HUB_CACHE=${HF_HUB_CACHE:-/home/vllm/.cache/huggingface/hub}
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
+      # Free GPUs on this rig: 0/1 host llamacpp-embed + moss-tts; vLLM takes 2,3
+      # Free pair after Qwen3.6 llama.cpp stop: 1+3 (GPU 2 hosts moss-realtime)
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1,3}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-1,3}
     volumes:
       - vllm_models:/home/vllm/models
       - vllm_cache:/home/vllm/.cache

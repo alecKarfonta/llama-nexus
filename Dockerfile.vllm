@@ -1,17 +1,28 @@
-# vLLM Dockerfile for Nemotron Omni multimodal deployment
-# Based on official vLLM OpenAI image with audio extras
-# [2026-08-24 | INFO | Dockerfile.vllm | v0.22.0 required for compressed-tensors NVFP4 + qwen3_5_mtp spec
-FROM vllm/vllm-openai:v0.22.0
+# vLLM Dockerfile — Qwen3.8 family (hybrid Gated DeltaNet + VL) serving
+# Base tag "qwen38" is pinned by the official vLLM recipe for this model
+# (vLLM 0.17.0+, transformers>=5.8.0 for the Qwen3-VL processor classes).
+# The Deploy "vLLM Version" tab rewrites this FROM line via the backend.
+# [TIME] | INFO | DOCKERFILE_VLLM.NOTE | v0.22.0 pin (Nemotron NVFP4 + qwen3_5_mtp spec)
+# [TIME] | INFO | DOCKERFILE_VLLM.NOTE | superseded 2026-10-15 by the qwen38 recipe tag.
+FROM vllm/vllm-openai:qwen38
 
-# Install audio extras for video+audio multimodal support
-RUN pip install --no-cache-dir "vllm[audio]"
+# [TIME] | INFO | DOCKERFILE_VLLM | Opt-in audio extras (video+audio multimodal) for
+# [TIME] | INFO | DOCKERFILE_VLLM | Omni-style models. Disabled by default: the pinned
+# [TIME] | INFO | DOCKERFILE_VLLM | recipe tag ships a dev build (0.1.dev…) not on PyPI, so a
+# [TIME] | INFO | DOCKERFILE_VLLM | version-pinned `vllm[audio]` install cannot resolve. Qwen3.8
+# [TIME] | INFO | DOCKERFILE_VLLM | (text/image/video) needs no extra packages.
+ARG VLLM_AUDIO_EXTRAS=false
+RUN if [ "$VLLM_AUDIO_EXTRAS" = "true" ]; then \
+        python3 -m pip install --no-cache-dir "vllm[audio]"; \
+    fi
 
 # Additional utilities
-RUN pip install --no-cache-dir huggingface_hub hf_transfer
+RUN python3 -m pip install --no-cache-dir huggingface_hub hf_transfer
 
 RUN mkdir -p /home/vllm/models /home/vllm/.cache
 
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
+ENV HF_HOME=/home/vllm/.cache
 
 COPY scripts/start-vllm.sh /start-vllm.sh
 RUN chmod +x /start-vllm.sh

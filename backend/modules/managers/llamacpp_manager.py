@@ -176,13 +176,16 @@ class LlamaCPPManager:
 
         return {
             "model": {
-                "name": os.getenv("MODEL_NAME", "Qwen3.6-27B"),
-                "variant": os.getenv("MODEL_VARIANT", "Q6_K"),
+                "name": os.getenv("MODEL_NAME", "Qwen3.8-Flash-Next"),
+                "variant": os.getenv("MODEL_VARIANT", "UD-IQ1_S"),
                 "mmproj": os.getenv("MMPROJ_FILE"),
-                "context_size": int(os.getenv("CONTEXT_SIZE", "128000")),
+                "context_size": int(os.getenv("CONTEXT_SIZE", "32768")),
                 "gpu_layers": int(os.getenv("GPU_LAYERS", "999")),
                 "n_cpu_moe": int(os.getenv("N_CPU_MOE", "0")),
                 "flash_attn": os.getenv("FLASH_ATTN", "auto"),
+                # [TIME] | INFO | LLAMACPP_MANAGER.LOAD_DEFAULT | n-gram / PLE offload for qwen4exp
+                "override_tensor": os.getenv("OVERRIDE_TENSOR", ""),
+                "tensor_read_lazy": os.getenv("TENSOR_READ_LAZY", ""),
             },
             "template": {
                 "directory": os.getenv("TEMPLATE_DIR", "/home/llamacpp/templates"),
@@ -254,6 +257,8 @@ class LlamaCPPManager:
             f"/home/llamacpp/models/{variant}/{model_name}-{variant}.gguf",  # In variant subdirectory
             f"/home/llamacpp/models/{variant}/{model_name}-{variant}-00001-of-00002.gguf",  # Multi-part in subdirectory
             f"/home/llamacpp/models/{variant}/{model_name}-{variant}-00001-of-00003.gguf",  # 3-part in subdirectory
+            f"/home/llamacpp/models/{variant}/{model_name}-{variant}-00001-of-00004.gguf",
+            f"/home/llamacpp/models/{model_name}-{variant}-00001-of-00004.gguf",
         ]
         
         # Find the first path that exists
@@ -323,8 +328,15 @@ class LlamaCPPManager:
         
         add_param_if_set(cmd, "--n-cpu-moe", self.config["model"].get("n_cpu_moe"))
         # [TIME] | INFO | LLAMACPP_MANAGER.BUILD_COMMAND | --override-tensor keeps selected
-        # tensors in host RAM (e.g. qwen4exp n-gram/PLE: per_layer_token_embd=CPU)
-        add_param_if_set(cmd, "--override-tensor", self.config["model"].get("override_tensor"))
+        # tensors in host RAM (e.g. qwen4exp n-gram/PLE: per_layer_token_embd=CPU).
+        # Comma-separated specs each get their own flag occurrence.
+        override_tensor = self.config["model"].get("override_tensor")
+        if override_tensor:
+            for spec in str(override_tensor).split(","):
+                spec = spec.strip()
+                if spec:
+                    cmd.extend(["--override-tensor", spec])
+        add_param_if_set(cmd, "--tensor-read-lazy", self.config["model"].get("tensor_read_lazy"))
         
         # Add optional RoPE parameters
         add_param_if_set(cmd, "--rope-scaling", self.config["model"].get("rope_scaling"))
@@ -1511,7 +1523,8 @@ class LlamaCPPManager:
                 "context_size": {"scope": "llamacpp", "type": "number", "description": "Context window size in tokens.", "llamacpp_flag": "--ctx-size", "vllm_equivalent": "performance.max_model_len", "mapping_note": "llama.cpp: context_size, vLLM: max_model_len", "min": 512, "max": 1000000},
                 "gpu_layers": {"scope": "llamacpp", "type": "number", "description": "Number of model layers to offload to GPU. -1 for all, 0 for CPU only.", "llamacpp_flag": "--n-gpu-layers", "vllm_equivalent": None, "note": "vLLM auto-offloads all layers; use gpu_memory_utilization to control VRAM usage", "min": -1, "max": 999},
                 "n_cpu_moe": {"scope": "llamacpp", "type": "number", "description": "Run MoE experts on CPU (0=GPU, >0=number of CPU MoE layers).", "llamacpp_flag": "--n-cpu-moe", "vllm_equivalent": None},
-                "override_tensor": {"scope": "llamacpp", "type": "text", "description": "Tensor buffer overrides (e.g. per_layer_token_embd=CPU to keep n-gram/PLE tables in host RAM).", "llamacpp_flag": "--override-tensor", "vllm_equivalent": None},
+                "override_tensor": {"scope": "llamacpp", "type": "text", "description": "Tensor buffer overrides (e.g. per_layer_token_embd=CPU to keep n-gram/PLE tables in host RAM). Comma-separated for multiple.", "llamacpp_flag": "--override-tensor", "vllm_equivalent": None},
+                "tensor_read_lazy": {"scope": "llamacpp", "type": "select", "description": "Lazily mmap large tensors (n-gram / PLE) instead of prefetching into RAM.", "llamacpp_flag": "--tensor-read-lazy", "options": ["", "on", "off", "auto"], "vllm_equivalent": None},
                 "flash_attn": {"scope": "llamacpp", "type": "select", "description": "Flash attention mode.", "llamacpp_flag": "--flash-attn", "options": ["auto", "on", "off"], "vllm_equivalent": None, "note": "vLLM uses flash attention by default when available"},
                 "mmproj": {"scope": "llamacpp", "type": "text", "description": "Vision projection model file for multimodal models.", "llamacpp_flag": "--mmproj", "vllm_equivalent": None},
                 "lora": {"scope": "llamacpp", "type": "text", "description": "Path to LoRA adapter file.", "llamacpp_flag": "--lora", "vllm_equivalent": None, "note": "vLLM handles LoRA differently via its own adapter system"},

@@ -1,0 +1,26 @@
+{
+  "label": "qwen38-27b-nvfp4-tp2",
+  "url": "http://localhost:8601",
+  "model": "Qwen3.8-27B",
+  "concurrency": 1,
+  "results": {
+    "code": {
+      "decode_tps_mean": 57.2,
+      "decode_tps_p50": 57.2,
+      "ttft_ms_mean": 163.0,
+      "n": 3
+    },
+    "structured": {
+      "decode_tps_mean": 57.1,
+      "decode_tps_p50": 57.1,
+      "ttft_ms_mean": 162.0,
+      "n": 3
+    },
+    "chat": {
+      "decode_tps_mean": 57.1,
+      "decode_tps_p50": 57.1,
+      "ttft_ms_mean": 168.0,
+      "n": 3
+    }
+  }
+}
