@@ -15,10 +15,12 @@ import {
 } from '@mui/material'
 import {
   ChevronRight as ChevronRightIcon,
+  Tune as TuneIcon,
+  ViewCompact as SimpleIcon,
 } from '@mui/icons-material'
-import { navigationSections } from '@/config/navigation'
+import { navigationSections, getNavigationSections } from '@/config/navigation'
 import type { NavigationItem } from '@/types'
-import { preferenceStorageKeys, readStoredJson, writeStoredJson } from '@/utils/preferences'
+import { preferenceStorageKeys, readStoredJson, writeStoredJson, getLocalPreference, setLocalPreference, localPreferenceChangeEvent } from '@/utils/preferences'
 
 interface SidebarProps {
   open: boolean
@@ -35,6 +37,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ open, onToggle, temporary = fa
   const location = useLocation()
   const navigate = useNavigate()
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(loadCollapsedSections())
+  // [2026-10-15] | INFO | SIDEBAR.SIMPLE_MODE | Simple (default) shows core pages;
+  // Advanced shows the full navigation. Synced across components via the
+  // local-preference change event.
+  const [simpleMode, setSimpleMode] = useState<boolean>(() => getLocalPreference('simpleNavigationMode'))
+
+  useEffect(() => {
+    const onPreferenceChange = () => setSimpleMode(getLocalPreference('simpleNavigationMode'))
+    window.addEventListener(localPreferenceChangeEvent, onPreferenceChange)
+    return () => window.removeEventListener(localPreferenceChangeEvent, onPreferenceChange)
+  }, [])
+
+  const toggleSimpleMode = () => {
+    setLocalPreference('simpleNavigationMode', !simpleMode)
+    setSimpleMode(!simpleMode)
+  }
+
+  const visibleSections = simpleMode ? getNavigationSections(true) : navigationSections
 
   // Save collapsed state to localStorage
   useEffect(() => {
@@ -189,7 +208,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ open, onToggle, temporary = fa
           borderRadius: 2,
         },
       }}>
-        {navigationSections.map((section) => {
+        {visibleSections.map((section) => {
           const hasActiveItem = section.items.some(isItemActive)
           const hasStoredPreference = Object.prototype.hasOwnProperty.call(collapsedSections, section.id)
           const isCollapsed = hasStoredPreference ? collapsedSections[section.id] : !hasActiveItem
@@ -267,6 +286,31 @@ export const Sidebar: React.FC<SidebarProps> = ({ open, onToggle, temporary = fa
         p: 1.25,
         borderTop: '1px solid rgba(255, 255, 255, 0.06)',
       }}>
+        {/* [2026-10-15] | INFO | SIDEBAR.MODE_TOGGLE | Simple/Advanced navigation switch */}
+        <ListItemButton
+          onClick={toggleSimpleMode}
+          sx={{
+            borderRadius: 2,
+            mb: 1,
+            px: 1.5,
+            py: 0.75,
+            bgcolor: 'rgba(255, 255, 255, 0.02)',
+            border: '1px solid rgba(255, 255, 255, 0.04)',
+            '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.05)' },
+          }}
+        >
+          <ListItemIcon sx={{ minWidth: 32, color: 'text.secondary' }}>
+            {simpleMode ? <TuneIcon sx={{ fontSize: 18 }} /> : <SimpleIcon sx={{ fontSize: 18 }} />}
+          </ListItemIcon>
+          <ListItemText
+            primary={simpleMode ? 'Advanced tools' : 'Simple mode'}
+            primaryTypographyProps={{
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              color: 'text.secondary',
+            }}
+          />
+        </ListItemButton>
         <Box sx={{
           p: 1,
           borderRadius: 2,

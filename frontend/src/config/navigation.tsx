@@ -85,8 +85,12 @@ export interface AppPage {
   section: string
   keywords: string[]
   element: ReactElement
+  /**
+   * [2026-10-15] | INFO | NAVIGATION.APP_PAGE | Included in Simple mode nav
+   * (default for new users). Unmarked pages appear only in Advanced mode.
+   */
+  simpleMode?: boolean
 }
-
 export interface AppRedirect {
   path: string
   element: ReactElement
@@ -174,6 +178,7 @@ export const appPages: AppPage[] = [
     section: 'Overview',
     keywords: ['home', 'overview', 'status', 'stats'],
     element: <DashboardPage />,
+    simpleMode: true,
   },
   {
     id: 'chat',
@@ -186,6 +191,7 @@ export const appPages: AppPage[] = [
     section: 'Build & Run',
     keywords: ['conversation', 'talk', 'message', 'playground'],
     element: <ChatPage />,
+    simpleMode: true,
   },
   {
     id: 'deploy',
@@ -198,6 +204,7 @@ export const appPages: AppPage[] = [
     section: 'Build & Run',
     keywords: ['start', 'launch', 'run', 'server', 'llm'],
     element: <DeployPage />,
+    simpleMode: true,
   },
   {
     id: 'embedding-deploy',
@@ -222,6 +229,7 @@ export const appPages: AppPage[] = [
     section: 'Build & Run',
     keywords: ['speech', 'stt', 'whisper', 'transcribe', 'audio'],
     element: <STTDeployPage />,
+    simpleMode: true,
   },
   {
     id: 'streaming-stt-deploy',
@@ -246,6 +254,7 @@ export const appPages: AppPage[] = [
     section: 'Build & Run',
     keywords: ['voice', 'tts', 'speak', 'audio'],
     element: <TTSDeployPage />,
+    simpleMode: true,
   },
   {
     id: 'workflows',
@@ -270,6 +279,7 @@ export const appPages: AppPage[] = [
     section: 'Models & Training',
     keywords: ['download', 'gguf', 'model files', 'llm'],
     element: <ModelsPage />,
+    simpleMode: true,
   },
   {
     id: 'registry',
@@ -438,6 +448,7 @@ export const appPages: AppPage[] = [
     section: 'Knowledge & RAG',
     keywords: ['upload', 'pdf', 'file', 'ingest'],
     element: <DocumentsPage />,
+    simpleMode: true,
   },
   {
     id: 'search',
@@ -594,6 +605,7 @@ export const appPages: AppPage[] = [
     section: 'Operations',
     keywords: ['config', 'preferences', 'settings'],
     element: <ConfigurationPage />,
+    simpleMode: true,
   },
 ]
 
@@ -908,6 +920,35 @@ export const navigationSections: NavigationSection[] = [
     ],
   },
 ]
+
+/**
+ * [2026-10-15] | INFO | NAVIGATION.SIMPLE_MODE_SECTIONS | Simple mode keeps
+ * navigation approachable for new users: core pages inline (no sub-menus), all
+ * advanced/expert pages hidden until the Advanced toggle flips them on.
+ */
+export const SIMPLE_MODE_PAGE_IDS = new Set(
+  appPages.filter((page) => page.simpleMode).map((page) => page.id),
+)
+
+const filterItemsForMode = (items: NavigationItem[], simple: boolean): NavigationItem[] =>
+  simple
+    ? items
+        .filter((item) => {
+          const page = appPages.find((p) => p.path === item.path)
+          return page ? SIMPLE_MODE_PAGE_IDS.has(page.id) : true
+        })
+        .map((item) => ({ ...item, subItems: undefined }))
+    : items
+
+export const getNavigationSections = (simple: boolean): NavigationSection[] => {
+  if (!simple) return navigationSections
+  return navigationSections
+    .map((section) => ({
+      ...section,
+      items: filterItemsForMode(section.items, true),
+    }))
+    .filter((section) => section.items.length > 0)
+}
 
 const toSearchableItems = (): SearchableNavigationItem[] => {
   const seen = new Set<string>()

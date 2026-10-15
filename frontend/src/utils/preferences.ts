@@ -3,6 +3,7 @@ export const preferenceStorageKeys = {
   confirmDestructiveActions: 'llama-nexus-confirm-dangerous',
   debugLogs: 'llama-nexus-debug-logs',
   sidebarCollapsedSections: 'sidebar-collapsed-sections',
+  simpleNavigationMode: 'llama-nexus-simple-nav-mode',
 } as const;
 
 export const localPreferences = {
@@ -24,11 +25,20 @@ export const localPreferences = {
     defaultValue: false,
     storageKey: preferenceStorageKeys.debugLogs,
   },
+  // [2026-10-15] | INFO | PREFERENCES.SIMPLE_NAV | Simple mode (default) shows
+  // core pages only; Advanced reveals the full expert navigation.
+  simpleNavigationMode: {
+    label: 'Simple mode',
+    description: 'Show only core pages (Dashboard, Chat, Deploy, Models, Knowledge, Speech, Settings). Turn off for all advanced tools.',
+    defaultValue: true,
+    storageKey: preferenceStorageKeys.simpleNavigationMode,
+  },
 } as const;
 
 export type LocalPreferenceId = keyof typeof localPreferences;
 
 export const localPreferenceOrder: LocalPreferenceId[] = [
+  'simpleNavigationMode',
   'compactControlSurfaces',
   'confirmDestructiveActions',
   'debugLogs',

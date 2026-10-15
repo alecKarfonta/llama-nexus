@@ -5,6 +5,7 @@ import { useTheme } from '@mui/material/styles'
 import { Header } from '@/components/layout/Header'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { CommandPalette } from '@/components/common/CommandPalette'
+import { WelcomeWizard } from '@/components/onboarding/WelcomeWizard'
 import { PageSkeleton } from '@/components/common/PageSkeleton'
 import { ToastProvider } from '@/contexts/ToastContext'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
@@ -182,6 +183,10 @@ function App() {
           open={commandPaletteOpen}
           onClose={() => setCommandPaletteOpen(false)}
         />
+
+        {/* [2026-10-15] | INFO | APP.RENDER | First-run onboarding wizard —
+            shows on first visit until the localStorage flag is set. */}
+        <WelcomeWizard />
       </ToastProvider>
     </ErrorBoundary>
   )

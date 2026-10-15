@@ -67,6 +67,7 @@ import {
   PlayArrow as PlayIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
+  HeadsetMic as HeadsetMicIcon,
   CallSplit as ForkIcon,
   Code as CodeIcon,
 } from "@mui/icons-material";
@@ -2341,6 +2342,20 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     } finally {
       setTtsStopping(false);
     }
+  };
+
+  // [2026-10-15 | INFO | ChatPage.handleToggleVoiceMode | Toggle the fully-local voice loop (STT -> LLM -> TTS); requires the local STT service to be running]
+  const handleToggleVoiceMode = () => {
+    if (!sttServiceAvailable) return;
+    const next = !settings.voiceModeEnabled;
+    if (!next) {
+      // Leaving voice mode: release the microphone if the local VAD loop is active
+      if (voiceInput.isListening) {
+        voiceInput.stopListening();
+      }
+      tts.stop();
+    }
+    saveSettings({ ...settings, voiceModeEnabled: next });
   };
 
   // Auto-send when voice input transcription is complete and VAD detects end of speech
@@ -5366,6 +5381,28 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   <AddIcon fontSize="small" />
                 </IconButton>
               </Tooltip>
+              <Tooltip
+                title={
+                  !sttServiceAvailable
+                    ? "Voice mode unavailable — local STT service is not running. Deploy STT from the Deploy page."
+                    : settings.voiceModeEnabled
+                      ? "Voice mode: ON (local STT + TTS)"
+                      : "Voice mode: OFF"
+                }
+              >
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label="Toggle voice mode"
+                    color={settings.voiceModeEnabled ? "primary" : "default"}
+                    onClick={handleToggleVoiceMode}
+                    disabled={!sttServiceAvailable}
+                    sx={chatActionButtonSx}
+                  >
+                    <HeadsetMicIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
               <Tooltip title="Settings">
                 <IconButton
                   size="small"
@@ -6623,6 +6660,19 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   directly from here.
                 </Typography>
               )}
+
+              {/* [2026-10-15 | INFO | ChatPage.render | Voice mode master toggle — enables the fully-local voice loop (local STT + TTS) and re-routes the mic button] */}
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={settings.voiceModeEnabled}
+                    onChange={handleToggleVoiceMode}
+                    disabled={!sttServiceAvailable}
+                  />
+                }
+                label="Voice mode (fully-local STT → LLM → TTS loop)"
+                sx={{ mb: 2 }}
+              />
 
               <Grid container spacing={3}>
                 {/* TTS Settings */}
@@ -8663,28 +8713,71 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             </Tooltip>
 
             {/* Microphone button */}
-            <Tooltip title={isRecording ? "Recording..." : "Voice input"}>
+            {/* [2026-10-15 | INFO | ChatPage.render | In voice mode the mic uses the local VAD STT path; otherwise it falls back to OpenAI cloud transcription] */}
+            <Tooltip
+              title={
+                settings.voiceModeEnabled
+                  ? voiceInput.isListening
+                    ? "Stop local voice input (STT)"
+                    : "Start local voice input (STT)"
+                  : isRecording
+                    ? "Recording..."
+                    : "Voice input"
+              }
+            >
               <span>
                 <IconButton
-                  onClick={isRecording ? stopRecording : startRecording}
-                  disabled={isLoading || isTranscribing}
+                  onClick={() => {
+                    // [2026-10-15 | INFO | ChatPage.handleMicClick | Voice mode ON -> local STT; OFF -> legacy OpenAI cloud transcription]
+                    if (settings.voiceModeEnabled) {
+                      voiceInput.toggleListening();
+                    } else if (isRecording) {
+                      stopRecording();
+                    } else {
+                      startRecording();
+                    }
+                  }}
+                  disabled={
+                    isLoading ||
+                    isTranscribing ||
+                    (settings.voiceModeEnabled && voiceInput.isTranscribing)
+                  }
                   size="small"
                   sx={{
                     flexShrink: 0,
-                    color: isRecording ? "error.main" : "text.secondary",
+                    color: settings.voiceModeEnabled
+                      ? "primary.main"
+                      : isRecording
+                        ? "error.main"
+                        : "text.secondary",
                     "&:hover": {
-                      color: isRecording ? "error.dark" : "primary.main",
+                      color: settings.voiceModeEnabled
+                        ? "primary.dark"
+                        : isRecording
+                          ? "error.dark"
+                          : "primary.main",
                     },
-                    animation: isRecording
-                      ? "pulse 1.5s ease-in-out infinite"
-                      : "none",
+                    animation:
+                      !settings.voiceModeEnabled && isRecording
+                        ? "pulse 1.5s ease-in-out infinite"
+                        : "none",
                     "@keyframes pulse": {
                       "0%, 100%": { opacity: 1 },
                       "50%": { opacity: 0.5 },
                     },
                   }}
                 >
-                  {isRecording ? <StopIcon /> : <MicIcon />}
+                  {settings.voiceModeEnabled ? (
+                    voiceInput.isListening && !voiceInput.isTranscribing ? (
+                      <StopIcon />
+                    ) : (
+                      <MicIcon />
+                    )
+                  ) : isRecording ? (
+                    <StopIcon />
+                  ) : (
+                    <MicIcon />
+                  )}
                 </IconButton>
               </span>
             </Tooltip>

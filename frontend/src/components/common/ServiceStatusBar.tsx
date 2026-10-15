@@ -7,6 +7,7 @@ import {
   RecordVoiceOver as TTSIcon,
   ModelTraining as TrainingIcon,
   Compress as QuantizationIcon,
+  Storage as StorageIcon,
   CheckCircle as OnlineIcon,
   Cancel as OfflineIcon,
   Refresh as RefreshIcon,
@@ -36,6 +37,8 @@ interface ServiceStatusBarProps {
 const serviceStatusDefaults: ServiceStatus[] = [
   { id: 'llm', name: 'LLM', icon: <LLMIcon />, running: false, loading: true, color: accentColors.warning, path: getRoutePath('deploy') },
   { id: 'embedding', name: 'Embed', icon: <EmbeddingIcon />, running: false, loading: true, color: accentColors.info, path: getRoutePath('embedding-deploy') },
+  // [2026-10-15] | INFO | SERVICE_STATUS_BAR.QDRANT | Vector-store health for RAG
+  { id: 'qdrant', name: 'Vector DB', icon: <StorageIcon />, running: false, loading: true, color: accentColors.success, path: getRoutePath('documents') },
   { id: 'stt', name: 'STT', icon: <STTIcon />, running: false, loading: true, color: accentColors.success, path: getRoutePath('stt-deploy') },
   { id: 'tts', name: 'TTS', icon: <TTSIcon />, running: false, loading: true, color: accentColors.purple, path: getRoutePath('tts-deploy') },
   { id: 'training', name: 'Train', icon: <TrainingIcon />, running: false, loading: true, color: accentColors.rose, path: getRoutePath('finetuning'), isWorker: true },
@@ -61,6 +64,10 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
       apiService.get('/api/v1/embedding/status')
         .then((response) => ({ id: 'embedding', running: response.data?.running ?? false }))
         .catch(() => ({ id: 'embedding', running: false })),
+      // [2026-10-15] | INFO | SERVICE_STATUS_BAR.QDRANT_CHECK | Vector DB health via backend route
+      apiService.get('/api/v1/qdrant/status')
+        .then((response) => ({ id: 'qdrant', running: response.data?.running ?? false }))
+        .catch(() => ({ id: 'qdrant', running: false })),
       // STT service
       apiService.getSTTStatus()
         .then(status => ({ id: 'stt', running: status.running }))
@@ -86,7 +93,9 @@ export const ServiceStatusBar: React.FC<ServiceStatusBarProps> = ({
     ])
 
     // Flatten worker updates
-    const workerUpdates = updates[4] as Array<{ id: string; running: boolean; gpuActive?: boolean }>
+    // [2026-10-15] | INFO | SERVICE_STATUS_BAR.WORKER_INDEX | qdrant check inserted
+    // before the workers entry — workers are now updates[5].
+    const workerUpdates = updates[5] as Array<{ id: string; running: boolean; gpuActive?: boolean }>
 
     setServices(prev => prev.map(service => {
       if (service.isWorker) {

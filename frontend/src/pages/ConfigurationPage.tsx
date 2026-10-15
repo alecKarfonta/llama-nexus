@@ -9,11 +9,13 @@ import {
 } from '@mui/material';
 import {
   ContentCopy as CopyIcon,
+  RestartAlt as RestartWizardIcon,
   Tune as TuneIcon,
 } from '@mui/icons-material';
 import { PageShell, SectionCard, StatusChip, type StatusChipConfigMap } from '@/components/common';
 import { useClipboard } from '@/hooks/useClipboard';
 import { useLocalPreferences } from '@/hooks/useLocalPreferences';
+import { resetOnboarding } from '@/components/onboarding/WelcomeWizard';
 import {
   localPreferenceOrder,
   localPreferences,
@@ -142,6 +144,49 @@ export const ConfigurationPage: React.FC = () => {
               </Tooltip>
             </Box>
           </Box>
+        </Box>
+      </SectionCard>
+
+      {/* [2026-10-15] | INFO | CONFIGURATION_PAGE.ONBOARDING | Re-run the first-run
+          setup wizard (hardware detection + guided model download) on demand. */}
+      <SectionCard
+        title="Setup & onboarding"
+        icon={<RestartWizardIcon />}
+        accentColor={accentColors.info}
+      >
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 1,
+            flexWrap: 'wrap',
+          }}
+        >
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="body2" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+              First-run setup wizard
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.25 }}>
+              Re-run hardware detection and the guided model download at any time.
+            </Typography>
+          </Box>
+          <Tooltip title="Restart the setup wizard">
+            <IconButton
+              size="small"
+              onClick={resetOnboarding}
+              sx={{
+                borderRadius: '8px',
+                border: '1px solid',
+                borderColor: 'divider',
+                px: 1.25,
+                py: 0.5,
+                gap: 0.5,
+              }}
+            >
+              <RestartWizardIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
         </Box>
       </SectionCard>
     </PageShell>

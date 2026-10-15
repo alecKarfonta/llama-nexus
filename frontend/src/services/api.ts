@@ -1962,6 +1962,7 @@ class ApiService {
       repo_id: string;
       name: string;
       model_type?: string;
+      description?: string;
       filename: string;
       quantization: string;
       size_bytes?: number;
