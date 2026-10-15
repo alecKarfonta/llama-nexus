@@ -46,7 +46,8 @@ check "registry recommendations non-empty" "json list" \
   "test \"\$(curl -sf \"$BACKEND/api/v1/registry/recommendations?vram_gb=8\" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d.get(\"recommendations\",[])))')\" -gt 0"
 
 echo "-- Models"
-check "model list endpoint" "200" "curl -sf $BACKEND/api/v1/models/"
+# NOTE: models router is OpenAI-style /v1/models (no /api prefix)
+check "model list endpoint" "200" "curl -sf $BACKEND/v1/models"
 
 echo "-- Qdrant (vector DB)"
 check "qdrant status route" "200" "curl -sf $BACKEND/api/v1/qdrant/status"

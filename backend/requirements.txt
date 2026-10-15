@@ -6,7 +6,10 @@ pyyaml>=6.0.1
 python-multipart>=0.0.6
 httpx>=0.27.0
 pydantic>=2.7.0
-docker==6.1.3
+# [2026-10-15] | FIX | REQUIREMENTS.DOCKER | docker-py 6.x breaks with requests>=2.32
+# ("Not supported URL scheme http+docker"); 7.1+ uses the requests-unixsocket2
+# transport that works. Managers (qdrant/llamacpp/training) need the socket.
+docker>=7.1.0
 gguf>=0.10.0
 requests-unixsocket2>=0.4.0
 aiofiles==23.2.1
