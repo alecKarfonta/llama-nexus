@@ -58,6 +58,7 @@ jobs:
               SKIP_BUILD_FROM_SOURCE=true
               LLAMACPP_VERSION=b10723
               LLAMACPP_BUILD_TAG=b10723
+              RUNTIME_BASE=ubuntu:22.04
           - name: llamacpp-cuda-86
             dockerfile: ./Dockerfile
             context: .
