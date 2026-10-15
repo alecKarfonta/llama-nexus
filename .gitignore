@@ -167,6 +167,12 @@ temp/
 # =========================
 models/
 data/
+# [2026-10-15] | FIX | GITIGNORE.SEED | backend/data/model_catalog_seed.json is source
+# (shipped in the backend image), not runtime data. Re-include pattern: negate the
+# dir, re-ignore its contents, then un-ignore the seed file itself.
+!backend/data/
+backend/data/*
+!backend/data/model_catalog_seed.json
 *.bin
 *.safetensors
 *.gguf
