@@ -699,6 +699,9 @@ class ApiService {
       '/v1/models/mtp-graft/preflight',
       request,
     );
+    if (!response.data.data) {
+      throw new Error('MTP graft preflight response missing data');
+    }
     return response.data.data;
   }
 
@@ -707,6 +710,9 @@ class ApiService {
       '/v1/models/mtp-graft',
       request,
     );
+    if (!response.data.data) {
+      throw new Error('MTP graft start response missing data');
+    }
     return response.data.data;
   }
 
@@ -719,6 +725,9 @@ class ApiService {
     const response = await this.backendClient.get<ApiResponse<MtpGraftJob>>(
       `/v1/models/mtp-graft/${encodeURIComponent(jobId)}`,
     );
+    if (!response.data.data) {
+      throw new Error('MTP graft job response missing data');
+    }
     return response.data.data;
   }
 
@@ -726,6 +735,9 @@ class ApiService {
     const response = await this.backendClient.delete<ApiResponse<MtpGraftJob>>(
       `/v1/models/mtp-graft/${encodeURIComponent(jobId)}`,
     );
+    if (!response.data.data) {
+      throw new Error('MTP graft cancel response missing data');
+    }
     return response.data.data;
   }
 
@@ -737,6 +749,9 @@ class ApiService {
       '/v1/models/mtp-graft/suggestions/donor',
       { params: { target_name: targetName || '', architecture: architecture || '' } },
     );
+    if (!response.data.data) {
+      throw new Error('MTP graft donor suggestions missing data');
+    }
     return response.data.data;
   }
 
