@@ -1,0 +1,37 @@
+# [2026-10-15] | INFO | COMPOSE.PREBUILT | End-user overlay: pull published images
+# from GHCR instead of building locally. Pair with docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d
+#
+# Images are published by .github/workflows/build-images.yml on tags + master.
+# The llamacpp image variant is selected via LLAMACPP_DOCKER_IMAGE in .env
+# (see .env.example): ghcr.io/aleckarfonta/llama-nexus-llamacpp:cpu|cuda-86|cuda-89|cuda-120
+#
+# Requires Docker Compose v2.24+ (for the !override YAML tag).
+services:
+  # [2026-10-15] | INFO | COMPOSE.PREBUILT | Builder only compiles locally — park it
+  # behind a profile so plain `up` never triggers a source build.
+  llamacpp-builder:
+    profiles:
+      - local-build
+
+  backend-api:
+    image: ghcr.io/aleckarfonta/llama-nexus-backend:latest
+    pull_policy: always
+    # !override replaces the base depends_on (drops the llamacpp-builder gate)
+    depends_on: !override
+      redis:
+        condition: service_healthy
+
+  llamacpp-frontend:
+    image: ghcr.io/aleckarfonta/llama-nexus-frontend:latest
+    pull_policy: always
+    depends_on: !override
+      - backend-api
+
+  llamacpp-api:
+    image: ${LLAMACPP_DOCKER_IMAGE:-ghcr.io/aleckarfonta/llama-nexus-llamacpp:cpu}
+    pull_policy: missing
+
+  llamacpp-embed:
+    image: ${LLAMACPP_DOCKER_IMAGE:-ghcr.io/aleckarfonta/llama-nexus-llamacpp:cpu}
+    pull_policy: missing

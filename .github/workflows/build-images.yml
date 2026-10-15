@@ -1,0 +1,158 @@
+# [2026-10-15] | INFO | BUILD_IMAGES.WORKFLOW | Publish prebuilt images to GHCR so
+# end users `docker compose pull` instead of compiling llama.cpp locally.
+# Triggers: tags (v*) -> versioned + latest; master pushes -> latest only.
+# Matrix:
+#   backend, frontend           -> linux/amd64 + linux/arm64
+#   llamacpp :cpu               -> amd64 + arm64 (official upstream binaries via SKIP_BUILD_FROM_SOURCE)
+#   llamacpp :cuda-86/89/120    -> amd64 only (compiled; CUDA builds are heavy)
+#   ninfer, streaming-stt, graphrag helpers -> amd64 only
+name: Build Images
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # [2026-10-15] | INFO | BUILD_IMAGES.OWNER | GHCR namespace (repo owner lowercase)
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            dockerfile: ./backend/Dockerfile
+            context: ./backend
+            platforms: linux/amd64,linux/arm64
+            tag: llama-nexus-backend
+          - name: frontend
+            dockerfile: ./frontend/Dockerfile
+            context: ./frontend
+            platforms: linux/amd64,linux/arm64
+            tag: llama-nexus-frontend
+          # [2026-10-15] | INFO | BUILD_IMAGES.LLAMACPP_CPU | Official upstream
+          # binaries — no CUDA compile. amd64-only: the official release asset is
+          # bin-ubuntu-x64.zip (arm64 users build from source via the base compose file).
+          - name: llamacpp-cpu
+            dockerfile: ./Dockerfile
+            context: .
+            platforms: linux/amd64
+            tag: llama-nexus-llamacpp
+            suffix: cpu
+            build_args: |
+              SKIP_BUILD_FROM_SOURCE=true
+              LLAMACPP_VERSION=b10723
+              LLAMACPP_BUILD_TAG=b10723
+          - name: llamacpp-cuda-86
+            dockerfile: ./Dockerfile
+            context: .
+            platforms: linux/amd64
+            tag: llama-nexus-llamacpp
+            suffix: cuda-86
+            build_args: |
+              CUDA_ARCH=86
+              LLAMACPP_VERSION=b10723
+              LLAMACPP_BUILD_TAG=b10723
+          - name: llamacpp-cuda-89
+            dockerfile: ./Dockerfile
+            context: .
+            platforms: linux/amd64
+            tag: llama-nexus-llamacpp
+            suffix: cuda-89
+            build_args: |
+              CUDA_ARCH=89
+              LLAMACPP_VERSION=b10723
+              LLAMACPP_BUILD_TAG=b10723
+          - name: llamacpp-cuda-120
+            dockerfile: ./Dockerfile
+            context: .
+            platforms: linux/amd64
+            tag: llama-nexus-llamacpp
+            suffix: cuda-120
+            build_args: |
+              CUDA_ARCH=120
+              LLAMACPP_VERSION=b10723
+              LLAMACPP_BUILD_TAG=b10723
+          - name: ninfer
+            dockerfile: ./fast-inference/ninfer/Dockerfile
+            context: ./fast-inference/ninfer
+            platforms: linux/amd64
+            tag: llama-nexus-ninfer
+          - name: streaming-stt
+            dockerfile: ./streaming-stt/Dockerfile
+            context: ./streaming-stt
+            platforms: linux/amd64
+            tag: llama-nexus-streaming-stt
+          # [2026-10-15] | INFO | BUILD_IMAGES.GRAPHRAG | Optional helper services
+          # (CPU-only GLiNER NER/REL + Code-RAG) used with --profile graphrag.
+          - name: graphrag-ner
+            dockerfile: ./services/ner_api/Dockerfile
+            context: ./services/ner_api
+            platforms: linux/amd64
+            tag: llama-nexus-graphrag-ner
+          - name: graphrag-rel
+            dockerfile: ./services/rel_api/Dockerfile
+            context: ./services/rel_api
+            platforms: linux/amd64
+            tag: llama-nexus-graphrag-rel
+          - name: graphrag-code
+            dockerfile: ./services/code_rag/Dockerfile
+            context: ./services/code_rag
+            platforms: linux/amd64
+            tag: llama-nexus-graphrag-code
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute tags
+        id: tags
+        run: |
+          BASE="${IMAGE_PREFIX}/${{ matrix.tag }}"
+          SUFFIX="${{ matrix.suffix }}"
+          if [ -n "$SUFFIX" ]; then
+            TAGS="${BASE}:${SUFFIX}"
+          else
+            TAGS="${BASE}:latest"
+          fi
+          # Versioned tag on releases (v1.2.3 -> :cpu-1.2.3 or :1.2.3)
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            if [ -n "$SUFFIX" ]; then
+              TAGS="${TAGS},${BASE}:${SUFFIX}-${VERSION}"
+            else
+              TAGS="${TAGS},${BASE}:${VERSION}"
+            fi
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: ${{ matrix.build_args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
