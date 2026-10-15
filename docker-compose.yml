@@ -46,16 +46,19 @@ services:
       dockerfile: Dockerfile
     container_name: llamacpp-backend
     ports:
-      - "8700:8700" # Management API port
+      # [2026-10-15] | INFO | compose.backend-api | Bind localhost by default;
+      # set BIND_LAN=0.0.0.0 (installer LAN mode) to expose on the network.
+      - "${BIND_HOST:-127.0.0.1}:8700:8700" # Management API port
     environment:
-      # Default LlamaCPP configuration - Qwen3.8-Flash-Next (qwen4exp, n-gram offload)
-      - MODEL_NAME=Qwen3.8-Flash-Next
-      - MODEL_VARIANT=UD-IQ1_S
-      - MODEL_REPO=unsloth/Qwen3.8-Flash-Next-GGUF
+      # Default LlamaCPP configuration — generic single-GPU/CPU-safe defaults.
+      # Rig-specific tuning (4-GPU Qwen3.8-Flash-Next) lives in docker-compose.rig.yml.
+      - MODEL_NAME=${MODEL_NAME:-Qwen3-4B-Instruct}
+      - MODEL_VARIANT=${MODEL_VARIANT:-Q4_K_M}
+      - MODEL_REPO=${MODEL_REPO:-unsloth/Qwen3-4B-Instruct-2507-GGUF}
       # Host path for chat templates so backend can mount it into the managed container
       - TEMPLATES_HOST_DIR=${PWD}/chat-templates
-      - CONTEXT_SIZE=32768
-      - GPU_LAYERS=999
+      - CONTEXT_SIZE=${CONTEXT_SIZE:-8192}
+      - GPU_LAYERS=${GPU_LAYERS:-999}
       - TEMPERATURE=1.0
       - TOP_P=0.95
       - TOP_K=20
@@ -70,22 +73,22 @@ services:
       - DRY_PENALTY_LAST_N=0
       - BATCH_SIZE=1024
       - UBATCH_SIZE=512
-      - THREADS=44
-      - NUM_PREDICT=16000
+      - THREADS=${THREADS:-0}
+      - NUM_PREDICT=${NUM_PREDICT:-4096}
       - NUM_KEEP=256
       - PARALLEL_SLOTS=1
       - SPLIT_MODE=layer
-      - MAIN_GPU=0
-      - CACHE_TYPE_K=q8_0
-      - CACHE_TYPE_V=q8_0
-      - N_CPU_MOE=0
-      - OVERRIDE_TENSOR=per_layer_token_embd.weight=CPU
-      - TENSOR_READ_LAZY=on
-      - MMPROJ_FILE=mmproj-F16.gguf
+      - MAIN_GPU=${MAIN_GPU:-0}
+      - CACHE_TYPE_K=${CACHE_TYPE_K:-q8_0}
+      - CACHE_TYPE_V=${CACHE_TYPE_V:-q8_0}
+      - N_CPU_MOE=${N_CPU_MOE:-0}
+      - OVERRIDE_TENSOR=${OVERRIDE_TENSOR:-}
+      - TENSOR_READ_LAZY=${TENSOR_READ_LAZY:-off}
+      - MMPROJ_FILE=${MMPROJ_FILE:-}
       - API_KEY=${API_KEY:-placeholder-api-key}
       - TEMPLATE_PATH=/home/llamacpp/chat-template.jinja
-      # Docker socket + compose project root (read-only mount at this path)
-      - PROJECT_DIR=/home/alec/git/llama-nexus
+      # Compose project root as seen inside this container (read-only mount below)
+      - PROJECT_DIR=/workspace
       - USE_DOCKER=true
       - RUNNING_IN_DOCKER=true
       - LLAMACPP_CONTAINER_NAME=llamacpp-api
@@ -95,8 +98,8 @@ services:
       - LLAMACPP_DOCKER_IMAGE=${LLAMACPP_DOCKER_IMAGE:-llama-nexus-llamacpp-api:latest}
       # Optional; if unset, derived from DOCKER_NETWORK as {project}_gpt_oss_models
       - LLAMACPP_MODELS_VOLUME=${LLAMACPP_MODELS_VOLUME:-}
-      - CUDA_DEVICES=0,1,2,3
-      - TENSOR_SPLIT=1,1,1,1
+      - CUDA_DEVICES=${CUDA_DEVICES:-0}
+      - TENSOR_SPLIT=${TENSOR_SPLIT:-}
       # Pass through HuggingFace token from host environment
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
       # Enable colored logging
@@ -157,21 +160,16 @@ services:
       # Mount Docker socket to enable Docker operations
       - /var/run/docker.sock:/var/run/docker.sock
       # Mount entire project directory for rebuild operations (read-only except Dockerfile)
-      - .:/home/alec/git/llama-nexus:ro
+      - .:/workspace:ro
       # Mount Dockerfile separately as read-write for version management
-      - ./Dockerfile:/home/alec/git/llama-nexus/Dockerfile
-      - ./Dockerfile.vllm:/home/alec/git/llama-nexus/Dockerfile.vllm
+      - ./Dockerfile:/workspace/Dockerfile
+      - ./Dockerfile.vllm:/workspace/Dockerfile.vllm
       # Conversation storage
       - conversation_data:/data/conversations
     shm_size: '16gb'
-    # GPU access for local embedding models (sentence-transformers)
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # [2026-10-15] | INFO | compose.backend-api | GPU access (for local
+    # sentence-transformers embedders) is opt-in via docker-compose.gpu.yml;
+    # the base stack is CPU-safe so `docker compose up` works anywhere.
     depends_on:
       llamacpp-builder:
         condition: service_completed_successfully
@@ -196,7 +194,7 @@ services:
         # MTP_PATCH: "patches/qwen4exp-mtp-draft-head.patch"
         ENABLE_TURBOQUANT: "false"
         CMAKE_BUILD_JOBS: ${CMAKE_BUILD_JOBS:-2}
-        CUDA_ARCH: ${CUDA_ARCH:-120}
+        CUDA_ARCH: ${CUDA_ARCH:-86}
     container_name: llamacpp-builder
     volumes:
       - llamacpp_bin:/output
@@ -220,7 +218,7 @@ services:
         ENABLE_TURBOQUANT: "false"
         ENABLE_LLGUIDANCE: ${ENABLE_LLGUIDANCE:-false}
         CMAKE_BUILD_JOBS: ${CMAKE_BUILD_JOBS:-2}
-        CUDA_ARCH: ${CUDA_ARCH:-120}
+        CUDA_ARCH: ${CUDA_ARCH:-86}
         # qwen4exp (Qwen3.8-Flash-Next) — merged upstream as of llama.cpp b10723 (PR #27742)
         LLAMA_CPP_REF: "b10723"
         LLAMACPP_BUILD_TAG: "b10723"
@@ -233,7 +231,8 @@ services:
     ports:
       - "8600:8080" # API server port
     shm_size: '16gb'
-    runtime: nvidia
+    # [2026-10-15] | INFO | compose.llamacpp-api | NVIDIA runtime added by
+    # docker-compose.gpu.yml; base stays CPU-portable.
     volumes:
       - gpt_oss_models:/home/llamacpp/models
       - ./chat-templates:/home/llamacpp/templates:ro
@@ -242,39 +241,39 @@ services:
       # __embedded_jinja__ = GGUF embedded template + --jinja only (correct multi-turn framing).
       # Empty = embedded template without --jinja (legacy). Custom files via CHAT_TEMPLATE=name.jinja.
       - CHAT_TEMPLATE=__embedded_jinja__
-      # CUDA — 4× 5070 Ti; n-gram table stays on host via OVERRIDE_TENSOR
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0,1,2,3}
-      # Model configuration - Qwen3.8-Flash-Next UD-IQ1_S
-      - MODEL_NAME=Qwen3.8-Flash-Next
-      - MODEL_VARIANT=UD-IQ1_S
-      - MODEL_REPO=unsloth/Qwen3.8-Flash-Next-GGUF
-      - CONTEXT_SIZE=32768
+      # Generic single-GPU defaults; rig-specific values via docker-compose.rig.yml / .env
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
+      # Model configuration — generic default (rig: Qwen3.8-Flash-Next UD-IQ1_S)
+      - MODEL_NAME=${MODEL_NAME:-Qwen3-4B-Instruct}
+      - MODEL_VARIANT=${MODEL_VARIANT:-Q4_K_M}
+      - MODEL_REPO=${MODEL_REPO:-unsloth/Qwen3-4B-Instruct-2507-GGUF}
+      - CONTEXT_SIZE=${CONTEXT_SIZE:-8192}
       - DRY_MULTIPLIER=0.0
       - DRY_ALLOWED_LENGTH=2
       - DRY_PENALTY_LAST_N=0
       - FREQUENCY_PENALTY=0.0
       - PRESENCE_PENALTY=0.0
       - MIN_P=0.0
-      - GPU_LAYERS=999
+      - GPU_LAYERS=${GPU_LAYERS:-999}
       - TEMPERATURE=1.0
       - TOP_P=0.95
       - TOP_K=20
-      - OVERRIDE_TENSOR=per_layer_token_embd.weight=CPU
-      - TENSOR_READ_LAZY=on
-      - MMPROJ_FILE=mmproj-F16.gguf
+      - OVERRIDE_TENSOR=${OVERRIDE_TENSOR:-}
+      - TENSOR_READ_LAZY=${TENSOR_READ_LAZY:-off}
+      - MMPROJ_FILE=${MMPROJ_FILE:-}
       - API_KEY=${API_KEY:-placeholder-api-key}
       - BATCH_SIZE=1024
       - UBATCH_SIZE=512
-      - THREADS=44
-      - NUM_PREDICT=16000
+      - THREADS=${THREADS:-0}
+      - NUM_PREDICT=${NUM_PREDICT:-4096}
       - NUM_KEEP=256
       - PARALLEL_SLOTS=1
       - SPLIT_MODE=layer
-      - MAIN_GPU=0
-      - CACHE_TYPE_K=q8_0
-      - CACHE_TYPE_V=q8_0
-      - N_CPU_MOE=0
+      - MAIN_GPU=${MAIN_GPU:-0}
+      - CACHE_TYPE_K=${CACHE_TYPE_K:-q8_0}
+      - CACHE_TYPE_V=${CACHE_TYPE_V:-q8_0}
+      - N_CPU_MOE=${N_CPU_MOE:-0}
       # MTP (Multi-Token Prediction) — opt-in; requires MTP-converted GGUF + image b9193+
       - MTP_ENABLED=${MTP_ENABLED:-false}
       - MTP_DRAFT_N_MAX=${MTP_DRAFT_N_MAX:-3}
@@ -329,13 +328,17 @@ services:
     container_name: llamacpp-frontend
     hostname: frontend
     ports:
-      - "3002:80" # Frontend web interface
+      # [2026-10-15] | INFO | compose.llamacpp-frontend | Localhost default; BIND_HOST=0.0.0.0 for LAN.
+      - "${BIND_HOST:-127.0.0.1}:3002:80" # Frontend web interface
     depends_on:
       - backend-api
       # llamacpp-api dependency removed - GPU may not always be available
     environment:
       - VITE_API_BASE_URL=
       - VITE_BACKEND_URL=
+      # [2026-10-15] | INFO | compose.llamacpp-frontend | Injected into nginx.conf
+      # via envsubst so the UI's llamacpp proxy auth matches the deployed API key.
+      - LLAMACPP_API_KEY=${API_KEY:-placeholder-api-key}
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:80/health" ]
@@ -876,37 +879,23 @@ services:
     restart: unless-stopped
 
 volumes:
+  # [2026-10-15] | INFO | compose.volumes | Portable named volumes by default.
+  # To store weights on a specific host path (e.g. large NVMe), copy
+  # docker-compose.storage-override.yml.example -> docker-compose.storage-override.yml,
+  # set bind paths there, and run:
+  #   docker compose -f docker-compose.yml -f docker-compose.storage-override.yml up -d
   gpt_oss_models:
     driver: local
-    # [2026-09-06] | INFO | compose.volumes | GGUF weights on USB NVMe
-    driver_opts:
-      type: none
-      o: bind
-      device: /mnt/comfyui-models/llama-nexus/gpt_oss_models
   datasets:
     driver: local
-    # [2026-09-04] | INFO | compose.volumes | MTP captures + datasets on USB NVMe
-    driver_opts:
-      type: none
-      o: bind
-      device: /mnt/comfyui-models/llama-nexus/datasets
   llamacpp_bin:
     driver: local
   finetune_data:
     driver: local
   vllm_models:
     driver: local
-    # [2026-09-01] | INFO | compose.volumes | Cold model cache on USB NVMe
-    driver_opts:
-      type: none
-      o: bind
-      device: /mnt/comfyui-models/cache/vllm-models
   vllm_cache:
     driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /mnt/comfyui-models/cache/hf-vllm
   conversation_data:
     driver: local
   redis_data:
@@ -919,11 +908,6 @@ volumes:
     driver: local
   huggingface_cache:
     driver: local
-    # [2026-09-01] | INFO | compose.volumes | HF downloads on USB NVMe
-    driver_opts:
-      type: none
-      o: bind
-      device: /mnt/comfyui-models/cache/hf-llama-nexus
   neo4j_data:
     driver: local
   neo4j_logs:
@@ -931,11 +915,6 @@ volumes:
   # GraphRAG service volumes
   ner_cache:
     driver: local
-    # [2026-09-01] | INFO | compose.volumes | Shared with /mnt/comfyui-models/cache
-    driver_opts:
-      type: none
-      o: bind
-      device: /mnt/comfyui-models/cache/hf-graphrag-ner
   ner_models:
     driver: local
   rel_cache:

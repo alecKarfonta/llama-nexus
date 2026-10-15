@@ -1,0 +1,24 @@
+# [2026-10-15] | INFO | COMPOSE.GPU_OVERRIDE | NVIDIA GPU acceleration overlay.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# Requires: NVIDIA driver + nvidia-container-toolkit on the host.
+# Gives backend-api GPU access (local sentence-transformers embedders) and
+# restores GPU runtime for the opt-in llamacpp-api service (profile: extra).
+services:
+  backend-api:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  llamacpp-api:
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

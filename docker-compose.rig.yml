@@ -1,0 +1,41 @@
+# [2026-10-15] | INFO | COMPOSE.RIG_OVERRIDE | alec's rig profile.
+# Restores the previous hardcoded defaults (Qwen3.8-Flash-Next, 4-GPU split,
+# CUDA_ARCH for the local build) that were removed from the base file for portability.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.rig.yml up -d
+services:
+  # [2026-10-15] | INFO | COMPOSE.RIG_OVERRIDE | Blackwell (SM 120) local builds
+  llamacpp-builder:
+    build:
+      args:
+        CUDA_ARCH: "120"
+  llamacpp-api:
+    build:
+      args:
+        CUDA_ARCH: "120"
+    environment:
+      - CUDA_VISIBLE_DEVICES=0,1,2,3
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3
+      - MODEL_NAME=Qwen3.8-Flash-Next
+      - MODEL_VARIANT=UD-IQ1_S
+      - MODEL_REPO=unsloth/Qwen3.8-Flash-Next-GGUF
+      - CONTEXT_SIZE=32768
+      - THREADS=44
+      - NUM_PREDICT=16000
+      - OVERRIDE_TENSOR=per_layer_token_embd.weight=CPU
+      - TENSOR_READ_LAZY=on
+      - MMPROJ_FILE=mmproj-F16.gguf
+  backend-api:
+    environment:
+      - MODEL_NAME=Qwen3.8-Flash-Next
+      - MODEL_VARIANT=UD-IQ1_S
+      - MODEL_REPO=unsloth/Qwen3.8-Flash-Next-GGUF
+      - CONTEXT_SIZE=32768
+      - THREADS=44
+      - NUM_PREDICT=16000
+      - N_CPU_MOE=0
+      - OVERRIDE_TENSOR=per_layer_token_embd.weight=CPU
+      - TENSOR_READ_LAZY=on
+      - MMPROJ_FILE=mmproj-F16.gguf
+      - CUDA_DEVICES=0,1,2,3
+      - TENSOR_SPLIT=1,1,1,1

@@ -1,0 +1,42 @@
+# [2026-10-15] | INFO | COMPOSE.STORAGE_OVERRIDE_EXAMPLE | Relocate named volumes
+# to specific host paths (e.g. a large NVMe/USB disk) instead of Docker's
+# default /var/lib/docker/volumes location.
+#
+# Setup:
+#   1. cp docker-compose.storage-override.yml.example docker-compose.storage-override.yml
+#   2. Edit the device: paths below to your target directories.
+#   3. Create the directories first: mkdir -p /mnt/your-disk/llama-nexus/{models,datasets,...}
+#   4. Run: docker compose -f docker-compose.yml -f docker-compose.storage-override.yml up -d
+#
+# NOTE: binds use absolute host paths and require type: none + o: bind.
+volumes:
+  gpt_oss_models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/your-disk/llama-nexus/models
+  datasets:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/your-disk/llama-nexus/datasets
+  vllm_models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/your-disk/llama-nexus/vllm-models
+  vllm_cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/your-disk/llama-nexus/vllm-cache
+  huggingface_cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/your-disk/llama-nexus/hf-cache
