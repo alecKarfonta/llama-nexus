@@ -4,7 +4,7 @@ All notable changes to Llama Nexus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project adheres to
 semantic versioning.
 
-## [Unreleased] — end-user readiness program
+## [0.1.0] — 2026-10-15
 
 ### Added
 - One-command installers: `install.sh` (Linux/macOS/WSL2) and `install.ps1`
