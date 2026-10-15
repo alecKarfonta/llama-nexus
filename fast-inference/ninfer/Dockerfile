@@ -9,7 +9,8 @@ ARG CUDA_VERSION=13.1.2
 
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS build
 
-ARG NINFER_REF=master
+# [2026-09-28 | INFO | Dockerfile.ninfer | Pin the fetch ref to the same commit as NINFER_SHA
+ARG NINFER_REF=3d9fda2229eb28553768ce54ed86a0deeb57b733
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -26,8 +27,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-# [2026-08-31 | INFO | Dockerfile.ninfer | Pin SHA so `docker build` does not reuse a stale
-# `--depth 1 --branch master` layer when origin/master has moved.
+# [2026-08-31 | INFO | Dockerfile.ninfer | SHA assert so a moved default ref cannot silently ship
 ARG NINFER_SHA=3d9fda2
 RUN git init \
     && git remote add origin https://github.com/Neroued/ninfer.git \

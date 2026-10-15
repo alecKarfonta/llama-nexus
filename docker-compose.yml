@@ -432,6 +432,9 @@ services:
       context: ./fast-inference/ninfer
       dockerfile: Dockerfile
     image: ${NINFER_DOCKER_IMAGE:-llama-nexus-ninfer-api:latest}
+    # [2026-09-28 | INFO | docker-compose.ninfer-api | Local-only tag; never pull from Hub
+    # (`llama-nexus-ninfer-api` is not a public repo — pull denied then compose builds).
+    pull_policy: never
     container_name: ninfer-api
     hostname: ninfer
     ports:

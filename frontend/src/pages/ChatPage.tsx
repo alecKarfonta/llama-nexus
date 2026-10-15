@@ -1894,6 +1894,18 @@ function isDirectInferencePortBaseUrl(baseUrl: string): boolean {
   }
 }
 
+function isUsableChatApiKey(key?: string): boolean {
+  const trimmed = key?.trim() ?? "";
+  return Boolean(trimmed) && trimmed !== "placeholder-api-key";
+}
+
+function inferenceBackendLabel(backend?: string | null): string {
+  if (backend === "ninfer") return "NInfer";
+  if (backend === "vllm") return "vLLM";
+  if (backend === "llamacpp") return "llama.cpp";
+  return backend || "runtime";
+}
+
 function stringifyChatContent(
   content: ChatMessage["content"] | null | undefined,
 ): string {
@@ -2636,19 +2648,33 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
 
         const current = loadSettings();
         const updated = { ...current };
+        const ninferRunning = Boolean(ninfer?.running) || backends.active === "ninfer";
+        const ninferServer = ninfer?.config?.server as
+          { api_key?: string; apiKey?: string } | undefined;
+        const ninferServed =
+          (ninfer?.config?.model as { served_name?: string; artifact?: string } | undefined)
+            ?.served_name ||
+          (ninfer?.model as { name?: string } | undefined)?.name ||
+          "";
 
-        if (!isDirectInferencePortBaseUrl(current.baseUrl)) {
+        // [2026-09-05 | INFO | ChatPage.alignConnectionWithActiveBackend | Direct :8603
+        // without the deploy key is a 401. Prefer the backend proxy when NInfer is live.
+        if (ninferRunning || !isDirectInferencePortBaseUrl(current.baseUrl)) {
           updated.baseUrl = "";
         }
+        if (ninferRunning && ninferServed) {
+          updated.model = ninferServed;
+        }
+        if (!isUsableChatApiKey(updated.apiKey)) {
+          updated.apiKey = "";
+        }
 
-        // Sync API key from deployed backend when using the UI proxy (empty baseUrl).
-        if (!updated.baseUrl) {
+        // Sync API key from deployed backend when using a direct inference port.
+        if (isDirectInferencePortBaseUrl(updated.baseUrl)) {
           const serviceConfig = await apiService
             .getServiceConfig()
             .catch(() => null);
           const llamacppServer = llamacpp?.config?.server as
-            { api_key?: string; apiKey?: string } | undefined;
-          const ninferServer = ninfer?.config?.server as
             { api_key?: string; apiKey?: string } | undefined;
           const serviceServer = serviceConfig?.server as
             { api_key?: string; apiKey?: string } | undefined;
@@ -2659,8 +2685,9 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
             llamacppServer?.apiKey ||
             serviceServer?.api_key ||
             serviceServer?.apiKey;
-          if (deployKey && !updated.apiKey) {
-            updated.apiKey = deployKey;
+          const usableDeployKey = deployKey?.trim() ?? "";
+          if (isUsableChatApiKey(usableDeployKey)) {
+            updated.apiKey = usableDeployKey;
           }
         }
 
@@ -3428,8 +3455,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
   const createChatCompletionStream = async (
     request: ChatCompletionRequest,
   ): Promise<ReadableStream<any>> => {
-    const authHeaders: Record<string, string> = settings.apiKey
-      ? { Authorization: `Bearer ${settings.apiKey}` }
+    const authHeaders: Record<string, string> = isUsableChatApiKey(settings.apiKey)
+      ? { Authorization: `Bearer ${settings.apiKey.trim()}` }
       : {};
     const fullUrl = settings.baseUrl
       ? `${settings.baseUrl.replace(/\/$/, "")}${settings.endpoint}`
@@ -3530,8 +3557,8 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
     request: ChatCompletionRequest,
     options: { timeoutMs?: number } = {},
   ): Promise<any> => {
-    const authHeaders: Record<string, string> = settings.apiKey
-      ? { Authorization: `Bearer ${settings.apiKey}` }
+    const authHeaders: Record<string, string> = isUsableChatApiKey(settings.apiKey)
+      ? { Authorization: `Bearer ${settings.apiKey.trim()}` }
       : {};
     const fullUrl = settings.baseUrl
       ? `${settings.baseUrl.replace(/\/$/, "")}${settings.endpoint}`
@@ -5788,9 +5815,7 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                   Routing via backend proxy to active inference:{" "}
                   <Chip
                     size="small"
-                    label={
-                      activeInferenceBackend === "vllm" ? "vLLM" : "llama.cpp"
-                    }
+                    label={inferenceBackendLabel(activeInferenceBackend)}
                     color="primary"
                     variant="outlined"
                     sx={{ ml: 0.5, height: 22 }}
@@ -5967,6 +5992,22 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
                       sx={{ fontSize: "0.75rem", textTransform: "none" }}
                     >
                       vLLM direct (8601)
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() =>
+                        saveSettings({
+                          ...settings,
+                          baseUrl: "",
+                          endpoint: "/v1/chat/completions",
+                          apiKey: "",
+                          model: "Huihui-Qwen3.8-27B-abliterated",
+                        })
+                      }
+                      sx={{ fontSize: "0.75rem", textTransform: "none" }}
+                    >
+                      NInfer via proxy
                     </Button>
                     <Button
                       size="small"

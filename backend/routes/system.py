@@ -13,6 +13,7 @@ from routes.models import (
     _live_openai_context_size,
     _live_openai_model_id,
     _openai_api_key_candidates,
+    ninfer_current_model_payload,
 )
 from modules.inference_targets import (
     has_explicit_vllm_proxy_base_url,
@@ -279,6 +280,10 @@ async def get_current_model():
     When vLLM is running, returns the vLLM served model name so that
     chat requests use the correct model ID.
     """
+    ninfer_payload = ninfer_current_model_payload(ninfer_manager)
+    if ninfer_payload:
+        return ninfer_payload
+
     # Prefer vLLM if it's running or an explicit host-reachable proxy is configured.
     if vllm_manager and (vllm_manager.is_running() or has_explicit_vllm_proxy_base_url()):
         vllm_status = vllm_manager.get_status()

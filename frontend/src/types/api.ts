@@ -27,7 +27,7 @@ export interface ModelInfo {
   vramRequired?: number; // GB required
   lastModified?: Date;
   // Additional fields for running models
-  framework?: "transformers" | "llama.cpp" | "vllm" | "ggml" | "onnx";
+  framework?: "transformers" | "llama.cpp" | "vllm" | "ninfer" | "ggml" | "onnx";
   port?: number;
   latency?: string;
   memory?: string;
