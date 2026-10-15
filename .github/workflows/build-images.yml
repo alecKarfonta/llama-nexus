@@ -128,7 +128,11 @@ jobs:
       - name: Compute tags
         id: tags
         run: |
+          # [2026-10-15] | FIX | BUILD_IMAGES.TAGS | Docker repos must be
+          # lowercase; github.repository_owner may contain uppercase
+          # (e.g. alecKarfonta) which makes buildx reject the tag.
           BASE="${IMAGE_PREFIX}/${{ matrix.tag }}"
+          BASE="${BASE,,}"
           SUFFIX="${{ matrix.suffix }}"
           if [ -n "$SUFFIX" ]; then
             TAGS="${BASE}:${SUFFIX}"
