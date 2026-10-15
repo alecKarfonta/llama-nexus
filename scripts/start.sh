@@ -5,8 +5,8 @@ echo "📊 Model: ${MODEL_NAME} with optimized configuration"
 echo "🔌 OpenAI compatible endpoints will be available on port 8080"
 
 # Set required defaults for container startup
-MODEL_NAME=${MODEL_NAME:-"Qwen3.6-27B"}
-MODEL_VARIANT=${MODEL_VARIANT:-"Q6_K"}
+MODEL_NAME=${MODEL_NAME:-"Qwen3.8-Flash-Next"}
+MODEL_VARIANT=${MODEL_VARIANT:-"UD-IQ1_S"}
 HOST=${HOST:-"0.0.0.0"}
 PORT=${PORT:-"8080"}
 API_KEY=${API_KEY:-"placeholder-api-key"}
@@ -26,6 +26,7 @@ patterns=(
     "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00002.gguf"  # Multi-part in subdirectory
     "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00003.gguf"  # 3-part in subdirectory
     "${MODEL_VARIANT}/${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00004.gguf"  # 4-part in subdirectory
+    "${MODEL_NAME}-${MODEL_VARIANT}-00001-of-00004.gguf"  # 4-part flat
     "gpt-oss-20b-GGUF/${MODEL_NAME}-${MODEL_VARIANT}.gguf" # Specific pattern for gpt-oss-20b
 )
 
@@ -219,6 +220,21 @@ if [ $# -eq 0 ]; then
     if [ -n "$MMPROJ_FILE" ] && [ -f "/home/llamacpp/models/${MMPROJ_FILE}" ]; then
         CMD_ARGS+=("--mmproj" "/home/llamacpp/models/${MMPROJ_FILE}")
         echo "🖼️  Enabled vision support with multimodal projection"
+    fi
+
+    # [TIME] | INFO | START.SH | qwen4exp n-gram / PLE: keep table on host, lazy-read from SSD
+    if [[ -n "${OVERRIDE_TENSOR:-}" ]]; then
+        IFS=',' read -ra _ov_specs <<< "$OVERRIDE_TENSOR"
+        for spec in "${_ov_specs[@]}"; do
+            spec="${spec#"${spec%%[![:space:]]*}"}"
+            spec="${spec%"${spec##*[![:space:]]}"}"
+            if [[ -n "$spec" ]]; then
+                CMD_ARGS+=("--override-tensor" "$spec")
+            fi
+        done
+    fi
+    if [[ -n "${TENSOR_READ_LAZY:-}" ]]; then
+        CMD_ARGS+=("--tensor-read-lazy" "$TENSOR_READ_LAZY")
     fi
 
     # Template modes:

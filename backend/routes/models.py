@@ -42,6 +42,31 @@ def get_vllm_manager(request: Request):
     return getattr(request.app.state, 'vllm_manager', None)
 
 
+def get_ninfer_manager(request: Request):
+    """Get the NInfer manager from app state."""
+    return getattr(request.app.state, 'ninfer_manager', None)
+
+
+def ninfer_current_model_payload(ninfer_mgr) -> Dict[str, Any] | None:
+    """Return current-model info when NInfer is the active runtime."""
+    if ninfer_mgr is None or not ninfer_mgr.is_running():
+        return None
+    model = ninfer_mgr.config.get("model") or {}
+    perf = ninfer_mgr.config.get("performance") or {}
+    vision = ninfer_mgr.config.get("vision") or {}
+    served = str(model.get("served_name") or "").strip() or str(model.get("artifact") or "ninfer-model")
+    return {
+        "name": served,
+        "variant": "NVFP4",
+        "context_size": int(perf.get("max_context") or 32768),
+        "gpu_layers": 0,
+        "status": "loaded",
+        "backend": "ninfer",
+        "vision": bool(vision.get("enabled")),
+        "artifact": model.get("artifact"),
+    }
+
+
 def _live_openai_model_id(model: dict | None) -> str | None:
     if not isinstance(model, dict):
         return None
@@ -149,6 +174,10 @@ async def get_current_model(request: Request):
     When vLLM is running, returns the vLLM served model name so that
     chat requests use the correct model ID.
     """
+    ninfer_payload = ninfer_current_model_payload(get_ninfer_manager(request))
+    if ninfer_payload:
+        return ninfer_payload
+
     # Prefer vLLM if it's running or a host-reachable proxy is configured.
     vllm_mgr = get_vllm_manager(request)
     if vllm_mgr and (vllm_mgr.is_running() or has_explicit_vllm_proxy_base_url()):

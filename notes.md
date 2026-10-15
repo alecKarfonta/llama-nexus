@@ -1,4 +1,41 @@
 # Notes
+## 2026-08-22 Qwen3.8-27B deployment prep (vLLM NVFP4, TP2 on GPUs 2+3)
+
+**Goal:** Replace the Qwen3.6-27B GGUF default with Qwen3.8-27B served via vLLM. Qwen3.8 is a hybrid-attention VL model (16 Gated-DeltaNet layers : 48 linear-attention layers, vision encoder, `Qwen3_5ForConditionalGeneration` architecture) — **no llama.cpp GGUF path**; vLLM is the correct backend on this rig.
+
+**Rig state at deploy time:** 4× RTX 5070 Ti 16GB (sm_120 Blackwell). GPUs 0/1 host `llamacpp-embed` + `moss-tts`; **vLLM takes GPUs 2+3** (TP2).
+
+**Recipe source:** [vLLM recipes Qwen3.8-27B](https://recipes.vllm.ai/Qwen/Qwen3.8-27B) — requires vLLM ≥ 0.17.0 (hybrid-attention kernels + `Qwen3_5Config`), transformers ≥ 5.8.0. Officially pinned image: `vllm/vllm-openai:qwen38` (a dev build, `0.1.dev19754+g3a0914114`).
+
+**Changes made:**
+- `Dockerfile.vllm`: `FROM vllm/vllm-openai:qwen38` (was `v0.20.1`). Audio-extras `pip install` now opt-in (`ARG VLLM_AUDIO_EXTRAS=false`) because the dev-build version pin can't resolve on PyPI, and Qwen3.8 (text/image/video) needs no extras. Uses `python3 -m pip` (bare `python` not on PATH in newer images). Added `ENV HF_HOME=/home/vllm/.cache` (matches the mounted `vllm_cache` volume).
+- `scripts/start-vllm.sh`: `--video-pruning-rate` is now gated behind a `*Nemotron*` model-name case — it's an Omni-only flag newer vLLM may reject.
+- `docker-compose.yml` `vllm-api`: defaults → `MODEL_NAME=unsloth/Qwen3.8-27B-NVFP4`, `SERVED_MODEL_NAME=Qwen3.8-27B`, `MAX_MODEL_LEN=131072`, `TENSOR_PARALLEL_SIZE=2`, `REASONING_PARSER=qwen3`, `VLLM_ENFORCE_EAGER=false`, `CUDA_VISIBLE_DEVICES=2,3` / `NVIDIA_VISIBLE_DEVICES=2,3`.
+- `backend/modules/managers/vllm_manager.py`: same default flips (model, served name, `max_model_len=131072`, `tensor_parallel_size=2`, `reasoning_parser=qwen3`, `enforce_eager=false`, `moe_backend=""`, quantization default `""` since NVFP4 is auto-detected from the checkpoint), in both `load_default_config()` and `compose_launch_environment()` fallbacks; `qwen3` added to reasoning-parser dropdown options.
+- `moss-tts` on GPU 1 was left running.
+
+**Why NVFP4 (unsloth build):** On 2× 32GB RTX 5090 (recipe-verified sm_120 numbers): weights 10.64 GiB/GPU, KV pool 920,517 tokens, MTP acceptance 0.788. On our 16GB cards at TP2 → ~10.6 GiB weights leaves ~4 GiB for KV/activations/graphs — should hold at 131072 ctx with fp8 KV. The Inferact uniform W4A4 build drafts better (0.897) but leaves half the KV room. FP8 checkpoint needs ~14.3 GiB/GPU — too tight on 16GB.
+
+**MTP:** The checkpoint ships an MTP head; add `--speculative-config '{"method":"mtp","num_speculative_tokens":3}'` after first verifying the base server. Acceptance on sm_120 NVFP4 measured at 0.788 (unsloth) — check `vllm:spec_decode_num_{accepted,draft}_tokens_total` metrics, not throughput alone.
+
+**Sampling (thinking mode, from model card):** temp=1.0, top_p=0.95, top_k=20, min_p=0, presence_penalty=0. Non-thinking: temp=0.7, top_p=0.8, top_k=20, presence_penalty=1.5. Use `chat_template_kwargs` `enable_thinking`/`reasoning_effort` (`xhigh` default / `medium` / `low`) — the repo has llama.cpp `--chat-template-kwargs` support but for vLLM it's per-request `extra_body`.
+
+**Watch for:** `--enforce-eager` may still be needed if CUDA-graph capture OOMs on 16GB cards (recipe shows it OOMs at TP1 on a 32GB 5090 without it; TP2 halves per-card weights). KV pool will be smaller than the recipe's 920k tokens — vLLM will report actual at startup.
+
+**Final state (2026-08-22 18:32):** Server **healthy** on `:8601` (host) after ~8 min first start (model download 22GB + torch.compile 186s, now cached). Served as `Qwen3.8-27B`. GPUs 2/3 at ~13GB used each.
+
+**Context adjustment (16GB cards):** 131072 ctx failed — engine computed 2.08 GiB KV needed vs 1.24 GiB available (est. max ~76000). Set `max_model_len=65536` via `PUT /api/v1/service/config?backend=vllm` (persisted). Per-card: 11.44 GiB consumed (weights+non-torch), 2.09 GiB peak activation, 0.71 GiB CUDA graphs, 1.16 GiB KV. Startup log suggests `--kv-cache-memory=643483136` to fully utilize if more KV wanted.
+
+**Verified working:**
+- `GET /v1/models` → `Qwen3.8-27B`
+- Non-thinking: `chat_template_kwargs {"enable_thinking": false}` → direct answer
+- Thinking: reasoning separated into `reasoning` field (newer vLLM name; older builds used `reasoning_content`). Frontend `ChatPage.tsx` streaming path already accepts both (`delta.reasoning_content || delta.reasoning`).
+
+**Bugs hit during deploy (fixed):**
+1. `start-vllm.sh` line-concatenation bug: an edit fused `SERVED_MODEL_NAME=...` and `HOST=...` into one line → container ran with served model `Qwen3.8-27BHOST=0.0.0.0` (visible in the `non-default args` log). Fixed; container had the script baked in via `COPY` so a rebuild was required.
+2. `qwen38` recipe tag is a **dev build** (`0.1.dev19754+g3a0914114`), not on PyPI — version-pinned `vllm[audio]` extras can't install; also bare `python` is absent from PATH (only `python3`). Audio extras now opt-in `ARG VLLM_AUDIO_EXTRAS=false`.
+3. `HF_TOKEN` empty while `HUGGINGFACE_TOKEN` set → HF downloads ran unauthenticated (rate-limited). `start-vllm.sh` now mirrors `HUGGINGFACE_TOKEN` into `HF_TOKEN` when unset.
+4. Benign: newer vLLM logs `Unknown vLLM environment variable detected` for `VLLM_ENFORCE_EAGER`, `VLLM_DTYPE`, etc. — these are consumed by `start-vllm.sh`, not vLLM itself. Ignore.
 
 ## 2026-08-27 Qwen3.8-Flash-Next (qwen4exp) deploy prep
 
@@ -117,8 +154,19 @@ Cursor → https://mlapi.us/cursor/v1 (new key sk-mlapi-cursor-*)
 
 **Stage 3 (training window, not yet run):** stop `llamacpp-api` → LoRA r=32 on the BF16 head export (`dzannotti/Qwen3.8-Flash-Next-MTP-BF16.gguf` → safetensors, verify `blk.48.*` 34 tensors) on 2× 3090 Ti → merge → `convert_hf_to_gguf.py --mtp` on the patched tree → `llama-quantize` Q4_K_M (Q4_K output/embedding) → drop into models volume → swap `speculative.model_draft`, restart, gate: acceptance ≥0.93 and STRUCT bench not regressed.
 
+## 2026-08-31 Qwen3.8-Flash-Next GGUF (llama.cpp qwen4exp)
 
+**Model:** [unsloth/Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) — 125B MoE / 6B active + 51B n-gram embedding + 4B MTP, architecture `qwen4exp` (Gated DeltaNet + Qwen Sparse Attention + Gated Residual). Native 262k ctx. **llama.cpp only** (Unsloth GGUF); current vLLM image is not this path.
 
+**Why IQ1_S:** 4× 5070 Ti = 64GB VRAM. Smallest Unsloth quant is **UD-IQ1_S 72.5GB** (3-way split under `UD-IQ1_S/`). Q4_K_XL is 111GB — will not fit even with n-gram offload unless a lot of MoE goes to CPU. N-gram table is designed to sit on host RAM/SSD via `--override-tensor per_layer_token_embd.weight=CPU` + `--tensor-read-lazy on`.
+
+**llama.cpp:** PR [#27742](https://github.com/ggml-org/llama.cpp/pull/27742) merged 2026-08-27. Pin **b10723** (was b9193). `CUDA_ARCH=120` for Blackwell 5070 Ti — `.env` previously had this glued onto a comment so compose fell back to 86.
+
+**Keep `parallel_slots=1`:** qwen4exp graph aborts when a ubatch shares tokens across sequences (llama.cpp #27780).
+
+**Changes:** `Dockerfile` / compose builder+api pins; `llamacpp_manager.py` + `scripts/start.sh` grow `--override-tensor` and `--tensor-read-lazy`; compose defaults → Flash-Next IQ1_S, 32k ctx, 4-way tensor-split, thinking-mode sampling (temp 1.0 / top_p 0.95 / top_k 20), mmproj-F16.
+
+**MTP:** Unsloth's converter drops the in-checkpoint MTP head — leave MTP off unless using a separate MTP GGUF.
 
 ## 2026-06-18 Multi-GPU deploy only attached one GPU (FIXED)
 
@@ -464,5 +512,4 @@ Results: `results/heretic-graft-mtp-{off,on}.json`, `results/heretic-output-mtp-
 ## Chat UI max tokens (2026-06-09)
 
 - Raised Chat settings slider max from 4K → 128K (default remains 8K). Matches workflow OpenAI node limit.
-
 
