@@ -348,6 +348,29 @@ class NinferManager:
             "API_KEY": str(server.get("api_key") or os.getenv("API_KEY") or "placeholder-api-key"),
         }
 
+    def _docker_image_name(self) -> str:
+        return os.getenv("NINFER_DOCKER_IMAGE", "llama-nexus-ninfer-api:latest").strip()
+
+    def _docker_image_exists(self) -> bool:
+        """True when the local ninfer-api image is already tagged (no Hub pull)."""
+        image = self._docker_image_name()
+        if not image:
+            return False
+        try:
+            proc = subprocess.run(
+                ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            return proc.returncode == 0 and bool((proc.stdout or "").strip())
+        except Exception:
+            return False
+
+    async def _run_docker(self, args: list, **kwargs) -> subprocess.CompletedProcess:
+        # [2026-09-28 | INFO | NinferManager._run_docker | Keep uvicorn free during compose
+        return await asyncio.to_thread(subprocess.run, args, **kwargs)
+
     async def start(self) -> bool:
         """Start the NInfer container via ``docker compose --profile ninfer up -d``.
 
@@ -370,6 +393,18 @@ class NinferManager:
                 logger.error(self.last_action_error)
                 return False
 
+            if not self._docker_image_exists():
+                # [2026-09-28 | WARN | NinferManager.start | Compose up without an image
+                # pulls Hub (denied) then rebuilds for minutes and times out /v1/service/action.
+                image = self._docker_image_name()
+                self.last_action_error = (
+                    f"NInfer Docker image not found: {image}. "
+                    "Build it once from the repository root, then start again: "
+                    "docker compose --profile ninfer build ninfer-api"
+                )
+                logger.error(self.last_action_error)
+                return False
+
             if os.path.isfile(compose_path):
                 compose_cmd = [
                     "docker",
@@ -380,16 +415,17 @@ class NinferManager:
                     "ninfer",
                     "up",
                     "-d",
+                    "--no-build",
                     "--force-recreate",
                     "ninfer-api",
                 ]
-                proc = subprocess.run(
+                proc = await self._run_docker(
                     compose_cmd,
                     cwd=project_dir,
                     env=launch_env,
                     capture_output=True,
                     text=True,
-                    timeout=300,
+                    timeout=120,
                 )
                 if proc.returncode == 0:
                     self.start_time = datetime.now()
@@ -403,7 +439,7 @@ class NinferManager:
                 compose_err = (proc.stderr or proc.stdout or "").strip() or f"exit code {proc.returncode}"
                 logger.warning("docker compose failed (%s), trying docker start...", compose_err[:500])
 
-            proc = subprocess.run(
+            proc = await self._run_docker(
                 ["docker", "start", self.container_name],
                 capture_output=True,
                 text=True,
