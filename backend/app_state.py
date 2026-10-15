@@ -16,7 +16,8 @@ from modules.managers import (
     EmbeddingManager,
     STTManager,
     StreamingSTTManager,
-    TTSManager
+    TTSManager,
+    QdrantManager
 )
 from modules.managers.vllm_manager import VLLMManager
 from modules.managers.ninfer_manager import NinferManager
@@ -32,6 +33,8 @@ embedding_manager = EmbeddingManager()
 stt_manager = STTManager()
 streaming_stt_manager = StreamingSTTManager()
 tts_manager = TTSManager()
+# [2026-10-15] | INFO | APP_STATE.QDRANT | Vector DB lifecycle under API control
+qdrant_manager = QdrantManager()
 
 # Wire up download manager reference
 manager.download_manager = download_manager

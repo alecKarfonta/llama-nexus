@@ -178,6 +178,19 @@ async def lifespan(app: FastAPI):
     app.state.stt_manager = stt_manager
     app.state.streaming_stt_manager = streaming_stt_manager
     app.state.tts_manager = tts_manager
+    # [2026-10-15] | INFO | APP_LIFESPAN.QDRANT | Vector DB lifecycle exposed to routes
+    from app_state import qdrant_manager
+    app.state.qdrant_manager = qdrant_manager
+
+    # [2026-10-15] | INFO | APP_LIFESPAN.CATALOG_SEED | Populate curated model
+    # recommendations on first run (no-op when registry already has models).
+    try:
+        from modules.model_registry import model_registry
+        seeded = model_registry.seed_from_catalog()
+        if seeded:
+            logger.info(f"Seeded {seeded} curated models into the registry")
+    except Exception as e:
+        logger.warning(f"Model catalog seeding skipped: {e}")
     
     if RAG_AVAILABLE:
         try:

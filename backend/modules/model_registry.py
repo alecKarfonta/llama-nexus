@@ -556,6 +556,76 @@ class ModelRegistry:
                 'rated_models': rated_models,
             }
 
+    def seed_from_catalog(self, catalog_path: str = None, force: bool = False) -> int:
+        """[2026-10-15] | INFO | MODEL_REGISTRY.SEED_FROM_CATALOG | Populate the
+        registry with curated models on first run so new installs have
+        recommendations out of the box. No-op when the cache already has models
+        (unless force=True).
+        """
+        if not force:
+            stats = self.get_registry_stats()
+            if stats.get('cached_models', 0) > 0:
+                return 0
+
+        if catalog_path is None:
+            catalog_path = str(Path(__file__).resolve().parents[1] / "data" / "model_catalog_seed.json")
+
+        try:
+            with open(catalog_path, "r") as fh:
+                catalog = json.load(fh)
+        except FileNotFoundError:
+            logger.warning(f"Model catalog seed not found: {catalog_path}")
+            return 0
+        except json.JSONDecodeError as e:
+            logger.error(f"Model catalog seed invalid JSON: {e}")
+            return 0
+
+        seeded = 0
+        for model in catalog.get("models", []):
+            repo_id = model.get("repo_id")
+            if not repo_id:
+                continue
+            model_id = self.cache_model(
+                repo_id=repo_id,
+                name=model.get("name", repo_id),
+                description=model.get("description"),
+                author=model.get("author"),
+                downloads=model.get("downloads", 0),
+                likes=model.get("likes", 0),
+                tags=model.get("tags", []),
+                model_type=model.get("model_type"),
+                license=model.get("license"),
+                last_modified=catalog.get("updated"),
+                metadata={"curated": True},
+            )
+            for variant in model.get("variants", []):
+                size_gb = variant.get("size_gb")
+                self.add_variant(
+                    repo_id=repo_id,
+                    filename=variant.get("filename", ""),
+                    quantization=variant.get("quantization", ""),
+                    size_bytes=int(size_gb * (1024 ** 3)) if size_gb else None,
+                    vram_required_mb=int(variant.get("min_vram_gb", 0) * 1024) or None,
+                    quality_score=variant.get("quality_score"),
+                    speed_score=variant.get("speed_score"),
+                )
+                hw = variant.get("recommended_vram_gb")
+                if hw:
+                    self.set_hardware_recommendation(
+                        repo_id=repo_id,
+                        variant=variant.get("quantization", ""),
+                        min_vram_gb=variant.get("min_vram_gb"),
+                        recommended_vram_gb=variant.get("recommended_vram_gb"),
+                        min_ram_gb=variant.get("min_ram_gb"),
+                        recommended_context_size=variant.get("recommended_context_size"),
+                        gpu_layers_recommendation=None,
+                        notes="Curated seed recommendation",
+                    )
+            seeded += 1
+
+        logger.info(f"Seeded model registry with {seeded} curated models from {catalog_path}")
+        return seeded
+
 
 # Global instance
 model_registry = ModelRegistry()

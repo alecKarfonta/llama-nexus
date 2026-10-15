@@ -7,6 +7,7 @@ from .embedding_manager import EmbeddingManager
 from .stt_manager import STTManager
 from .streaming_stt_manager import StreamingSTTManager
 from .tts_manager import TTSManager
+from .qdrant_manager import QdrantManager
 
 __all__ = [
     "LlamaCPPManager",
@@ -15,5 +16,6 @@ __all__ = [
     "EmbeddingManager",
     "STTManager",
     "StreamingSTTManager",
-    "TTSManager"
+    "TTSManager",
+    "QdrantManager"
 ]

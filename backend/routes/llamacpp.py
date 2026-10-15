@@ -7,12 +7,14 @@ import subprocess
 import httpx
 
 from enhanced_logger import enhanced_logger as logger
+import local_paths
 from app_state import vllm_manager
 
 router = APIRouter(prefix="/api/v1", tags=["llamacpp"])
 
 VLLM_GITHUB_REPO = "vllm-project/vllm"
-DOCKERFILE_VLLM_PATH = Path("/home/alec/git/llama-nexus/Dockerfile.vllm")
+# [2026-10-15] | INFO | ROUTES.LLAMACPP | Repo-relative Dockerfile.vllm (was hardcoded /home/alec path)
+DOCKERFILE_VLLM_PATH = local_paths.project_root() / "Dockerfile.vllm"
 
 
 def _dockerfile_path() -> Path:
@@ -188,14 +190,14 @@ async def apply_llamacpp_commit(commit_id: str):
 async def rebuild_llamacpp():
     """Rebuild the llama.cpp containers with the current Dockerfile"""
     try:
-        compose_file = "/home/alec/git/llama-nexus/docker-compose.yml"
+        compose_file = str(local_paths.project_root() / "docker-compose.yml")
         
         if not Path(compose_file).exists():
             raise HTTPException(status_code=500, detail=f"Docker compose file not found: {compose_file}")
         
         result = subprocess.run(
             ["docker", "compose", "-f", compose_file, "up", "-d", "--build"],
-            cwd="/home/alec/git/llama-nexus",
+            cwd=str(local_paths.project_root()),
             capture_output=True,
             text=True,
             timeout=1800
@@ -377,7 +379,7 @@ async def apply_vllm_openai_image_tag(image_tag: str):
 async def rebuild_vllm_api():
     """Rebuild and recreate vllm-api via compose (profile vllm)."""
     try:
-        project_dir = os.getenv("PROJECT_DIR", "/home/alec/git/llama-nexus")
+        project_dir = str(local_paths.project_root())
         compose_file = os.path.join(project_dir, "docker-compose.yml")
 
         if not Path(compose_file).exists():

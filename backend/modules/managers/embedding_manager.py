@@ -13,6 +13,7 @@ import re
 
 from huggingface_hub import hf_hub_url, HfApi
 from enhanced_logger import enhanced_logger as logger
+from local_paths import backend_data_path
 from modules.managers.base import DOCKER_AVAILABLE, docker_client
 
 
@@ -22,11 +23,31 @@ class EmbeddingManager:
     def __init__(self):
         self.docker_container = None
         self.config: Dict[str, Any] = self.load_default_config()
+        self._load_persisted_config()
         self.log_buffer = deque(maxlen=1000)
         self.start_time: Optional[datetime] = None
         self.use_docker = DOCKER_AVAILABLE and os.getenv("USE_DOCKER", "false").lower() == "true"
         self.container_name = "llamacpp-embed"
         self.docker_network = os.getenv("DOCKER_NETWORK", "llama-nexus_default")
+
+    # [2026-10-15] | INFO | EMBEDDING_MANAGER.PERSISTENCE | Config persists under
+    # the backend data dir (survives container restarts; /tmp was wiped each boot).
+    def _config_path(self) -> Path:
+        return backend_data_path("embedding_config.json")
+
+    def _load_persisted_config(self) -> None:
+        config_file = self._config_path()
+        if config_file.exists():
+            try:
+                with open(config_file, "r") as f:
+                    saved = json.load(f)
+                for category in ["model", "performance", "execution", "server"]:
+                    if category in saved and isinstance(saved[category], dict):
+                        self.config.setdefault(category, {}).update(
+                            {k: v for k, v in saved[category].items() if v is not None}
+                        )
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Embedding persisted config unreadable, using defaults: {e}")
     
     def load_default_config(self) -> Dict[str, Any]:
         """Load default embedding configuration"""
@@ -421,7 +442,7 @@ class EmbeddingManager:
                 self.config[category].update(filtered_category)
         
         # Save config
-        config_file = Path("/tmp/embedding_config.json")
+        config_file = self._config_path()
         with open(config_file, "w") as f:
             json.dump(self.config, f, indent=2)
         

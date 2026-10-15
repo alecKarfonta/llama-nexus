@@ -60,14 +60,16 @@ def _conversation_runtime(**overrides: Dict[str, Any]) -> Dict[str, Any]:
         },
         "template": {"selected": ""},
         "performance": {
-            "threads": 22,
+            # [2026-10-15] | INFO | PRESETS.RUNTIME | Portable defaults:
+            # threads 0 = auto (nproc), main_gpu 0 = first visible GPU.
+            "threads": 0,
             "batch_size": 1024,
             "ubatch_size": 512,
             "num_keep": 1024,
             "num_predict": 1024,
             "parallel_slots": 1,
             "split_mode": "layer",
-            "main_gpu": 2,
+            "main_gpu": 0,
             "cache_type_k": "f16",
             "cache_type_v": "f16",
             **performance_overrides,
@@ -88,6 +90,26 @@ def _conversation_runtime(**overrides: Dict[str, Any]) -> Dict[str, Any]:
 
 
 LLAMACPP_DEPLOY_PRESETS: List[Dict[str, Any]] = [
+    {
+        # [2026-10-15] | INFO | PRESETS.STARTER | Universal starter preset — the
+        # model from the curated catalog seed (runs on CPU or any 4GB+ GPU).
+        "id": "chat-starter",
+        "name": "Chat · Starter (4B)",
+        "description": (
+            "Qwen3-4B-Instruct Q4_K_M — recommended first deployment. Runs on CPU "
+            "or any GPU with 4GB+ VRAM. Start here on a new install."
+        ),
+        "category": "starter",
+        "config": _conversation_runtime(
+            model={
+                "name": "Qwen3-4B-Instruct",
+                "variant": "Q4_K_M",
+                "context_size": 16384,
+            },
+            performance={"num_predict": 1024, "num_keep": 512},
+            sampling=QWEN36_CHAT_SAMPLING,
+        ),
+    },
     {
         "id": "chat-vtuber",
         "name": "Chat · VTuber",

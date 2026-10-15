@@ -12,6 +12,13 @@ try:
 except ImportError:
     token_tracker = None
 
+# [2026-10-15] | INFO | APP_FACTORY.MGMT_AUTH | Optional management-API token
+# gate — active only when MANAGEMENT_AUTH_TOKEN is set (LAN installs).
+try:
+    from auth_middleware import ManagementAuthMiddleware
+except ImportError:
+    ManagementAuthMiddleware = None
+
 # Import all route modules
 import routes.models as models
 import routes.templates as templates
@@ -48,6 +55,10 @@ try:
     import routes.streaming_stt as streaming_stt
 except ImportError:
     streaming_stt = None
+try:
+    import routes.qdrant as qdrant
+except ImportError:
+    qdrant = None
 try:
     import routes.finetuning as finetuning
 except ImportError:
@@ -122,6 +133,9 @@ def create_app(lifespan_handler) -> FastAPI:
     if token_tracker:
         app.add_middleware(TokenUsageMiddleware)
 
+    if ManagementAuthMiddleware is not None:
+        app.add_middleware(ManagementAuthMiddleware)
+
     # Include basic routers
     app.include_router(system.router)
     app.include_router(llamacpp.router)
@@ -150,6 +164,8 @@ def create_app(lifespan_handler) -> FastAPI:
         app.include_router(tts.router)
     if streaming_stt is not None:
         app.include_router(streaming_stt.router)
+    if qdrant is not None:
+        app.include_router(qdrant.router)
     if finetuning is not None:
         app.include_router(finetuning.router)
     if quantization is not None:

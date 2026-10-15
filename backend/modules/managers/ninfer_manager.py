@@ -19,6 +19,7 @@ from datetime import datetime
 from collections import deque
 
 from enhanced_logger import enhanced_logger as logger
+import local_paths
 
 NINFER_DEPLOY_CONFIG_PATH = os.getenv("NINFER_DEPLOY_CONFIG_PATH", "/data/ninfer_deploy_config.json")
 
@@ -379,7 +380,7 @@ class NinferManager:
         compose_err: Optional[str] = None
         try:
             logger.info("Starting NInfer service...")
-            project_dir = os.getenv("PROJECT_DIR", "/home/alec/git/llama-nexus")
+            project_dir = str(local_paths.project_root())
             compose_path = os.path.join(project_dir, "docker-compose.yml")
             launch_env = {**os.environ, **self.compose_launch_environment()}
 

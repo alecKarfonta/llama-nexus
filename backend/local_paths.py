@@ -9,6 +9,27 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parent
 
 
+def project_root() -> Path:
+    """[2026-10-15] | INFO | LOCAL_PATHS.PROJECT_ROOT | Repo root for compose/Dockerfile access.
+
+    Resolution order: PROJECT_DIR env (set by docker-compose) -> parent of backend/
+    (works bare-metal and inside the container where the repo is mounted at /workspace).
+    """
+    env_dir = os.getenv("PROJECT_DIR", "").strip()
+    if env_dir:
+        candidate = Path(env_dir)
+        if (candidate / "docker-compose.yml").exists():
+            return candidate
+    repo_root = BACKEND_ROOT.parent
+    if (repo_root / "docker-compose.yml").exists():
+        return repo_root
+    # Container fallback: repo is mounted read-only at /workspace by compose
+    workspace = Path("/workspace")
+    if (workspace / "docker-compose.yml").exists():
+        return workspace
+    return repo_root
+
+
 def _writable_dir(path: Path) -> bool:
     return path.exists() and path.is_dir() and os.access(path, os.W_OK | os.X_OK)
 

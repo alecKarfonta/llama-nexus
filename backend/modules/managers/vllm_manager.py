@@ -17,6 +17,7 @@ from collections import deque
 
 from enhanced_logger import enhanced_logger as logger
 from local_paths import backend_data_path
+import local_paths
 from modules.inference_targets import vllm_proxy_base_url_candidates
 
 VLLM_DEPLOY_CONFIG_PATH = os.getenv("VLLM_DEPLOY_CONFIG_PATH") or str(
@@ -482,7 +483,7 @@ class VLLMManager:
         compose_err: Optional[str] = None
         try:
             logger.info("Starting vLLM service...")
-            project_dir = os.getenv("PROJECT_DIR", "/home/alec/git/llama-nexus")
+            project_dir = str(local_paths.project_root())
             compose_path = os.path.join(project_dir, "docker-compose.yml")
             launch_env = {**os.environ, **self.compose_launch_environment()}
 
