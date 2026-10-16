@@ -124,7 +124,7 @@ services:
       - GRAPHRAG_PIPELINE_RUNS_FILE=${GRAPHRAG_PIPELINE_RUNS_FILE:-/data/graphrag/pipeline_runs.json}
       - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?NEO4J_PASSWORD missing in .env}
       # GraphRAG helper services. When GRAPHRAG_ENABLED=true inside Docker,
       # the backend falls back to graphrag-ner:8001, graphrag-rel:8002,
       # and graphrag-code:8000 if these are left blank.
@@ -768,7 +768,9 @@ services:
       - "7474:7474"  # HTTP Browser
       - "7687:7687"  # Bolt
     environment:
-      - NEO4J_AUTH=neo4j/password
+      # [2026-10-16] | FIX | COMPOSE.NEO4J_AUTH | password sourced from .env
+      # (installers generate a random one); no more literal default
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD missing in .env}
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
       - NEO4J_dbms_security_procedures_allowlist=apoc.*
