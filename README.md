@@ -30,9 +30,9 @@ irm https://raw.githubusercontent.com/alecKarfonta/llama-nexus/master/install.ps
 The installer detects your hardware, picks the right prebuilt images, and
 starts the stack. Then:
 
-1. Open **http://localhost:3002** — the welcome wizard recommends and
-   downloads a model matched to your hardware
-2. Click **Deploy**, then start chatting
+1. Open **http://localhost:3002** — the welcome wizard recommends a model
+   matched to your hardware, downloads it, and deploys it automatically
+2. Click **Get Started** — you land straight in **Chat**, ready to talk
 3. Optional: enable **Voice mode** in Chat, or upload documents for RAG
 
 Requirements: Docker (Engine or Desktop) + Compose v2, 8 GB+ RAM, 10 GB+
@@ -45,8 +45,8 @@ disk. NVIDIA GPU optional but transformative. Details:
 |---|---|---|
 | Linux + NVIDIA | Full | All engines (llama.cpp, vLLM, NInfer), GPU acceleration |
 | Windows 10/11 | Full | Docker Desktop w/ WSL2; NVIDIA GPU passthrough supported |
-| macOS | CPU tier | Docker VM has no GPU passthrough — use ≤4B models; native Metal is on the roadmap |
-| CPU-only (any OS) | Works | Small models; see the [model guide](docs/user/MODEL_GUIDE.md) |
+| macOS (Apple Silicon M1/M2/M3) | CPU tier | Native arm64 `cpu` image (no emulation) — Docker VM has no GPU passthrough; use ≤4B models. Native Metal is on the roadmap |
+| macOS (Intel) / CPU-only (any OS) | Works | Small models; see the [model guide](docs/user/MODEL_GUIDE.md) |
 
 ## What's inside
 

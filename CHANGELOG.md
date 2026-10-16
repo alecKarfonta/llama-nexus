@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-16
+
 ### Added
 - Real Settings page (server-backed): HuggingFace token management (persisted
   on the backend data volume, masked in transit, re-applied to the runtime
@@ -15,6 +17,27 @@ semantic versioning.
   is required. New endpoints: `GET /api/v1/settings`, `PUT
   /api/v1/settings/hf-token`, `PUT /api/v1/settings/lan`, `GET
   /api/v1/settings/management-token/suggest`.
+- First-run wizard now deploys for you: once the selected chat model finishes
+  downloading, the wizard deploys it automatically (no separate Deploy step)
+  and the final step's **Get Started** lands the user directly in Chat with
+  the model live.
+- Management-token login dialog in the web UI: shown only when
+  `MANAGEMENT_AUTH_TOKEN` is set and a management call returns 401. Verifies
+  the candidate token against the server, stores it in the browser, and the
+  API interceptor attaches it to subsequent requests. Default localhost
+  installs without a token never see it.
+- Native `linux/arm64` build of the llama.cpp `cpu` image — Apple Silicon
+  (M1/M2/M3) Macs run the CPU tier natively without emulation. CUDA variants
+  (86/89/120) remain amd64-only.
+- Workflow Runway on the Dashboard: guided checklist (assets → operations)
+  with live status chips that flip to Complete as each feature is used.
+
+### Fixed
+- Neo4j no longer ships a literal default password. `NEO4J_PASSWORD` is now
+  **required** in `.env` (compose refuses to start without it) and both
+  installers (`install.sh`, `install.ps1`) generate a random value.
+- CI compose-portability validation supplies a Neo4j password, fixing
+  validation runs after the requirement was introduced.
 
 ## [0.1.0] — 2026-10-15
 

@@ -47,18 +47,21 @@ Or clone and run `powershell -ExecutionPolicy Bypass -File install.ps1`.
 The installer:
 1. Checks Docker and Compose v2
 2. Detects your GPU (NVIDIA + toolkit = GPU tier with CUDA-matched images; otherwise CPU tier)
-3. Writes a `.env` with a generated API key
+3. Writes a `.env` with a generated `API_KEY` and a random `NEO4J_PASSWORD`
+   (both required — see [Manual install](#manual-install-no-script) if you
+   skip the installer)
 4. Pulls prebuilt images (no compilation)
 5. Starts the stack and prints your URLs
 
 ## First run
 
 1. Open **http://localhost:3002**
-2. The welcome wizard shows your hardware and recommends a model — download it
-   with one click
-3. Go to **Deploy** and click **Deploy** on the recommended configuration
-4. Start chatting — enable **Voice mode** in Chat for the local speech loop,
-   or **Documents** to ingest files into RAG
+2. The welcome wizard shows your hardware and recommends a model — download
+   it with one click, and the wizard **deploys it automatically** when the
+   download completes
+3. Click **Get Started** — you land straight in **Chat** with the model live
+4. Optional: enable **Voice mode** in Chat for the local speech loop, or
+   **Documents** to ingest files into RAG
 
 ## Platform notes
 
@@ -66,18 +69,26 @@ The installer:
 |---|---|---|
 | Linux + NVIDIA | Full | All features incl. vLLM/NInfer engines, GPU acceleration |
 | Windows (WSL2 + Docker Desktop) | Full (GPU if NVIDIA) | Install Docker Desktop with WSL2 backend; GPU passthrough works with recent NVIDIA drivers |
-| macOS (Apple Silicon/Intel) | CPU | Docker runs in a Linux VM — no GPU passthrough. Use small models (≤4B Q4). Native Metal support is on the roadmap |
+| macOS (Apple Silicon M1/M2/M3) | CPU | Native arm64 `cpu` image (no Rosetta/QEMU emulation) — Docker runs in a Linux VM with no GPU passthrough; use small models (≤4B Q4). Native Metal support is on the roadmap |
+| macOS (Intel) | CPU | Emulated amd64 `cpu` image; slower — use small models (≤4B Q4) |
 
 ## Manual install (no script)
 
 ```bash
 git clone https://github.com/alecKarfonta/llama-nexus.git
 cd llama-nexus
-cp .env.example .env          # edit: set API_KEY
+cp .env.example .env          # edit: set API_KEY and NEO4J_PASSWORD
 docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d
 # NVIDIA GPU hosts additionally:
 docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml -f docker-compose.gpu.yml up -d
 ```
+
+**Required `.env` values** (the installers generate both automatically):
+
+- `API_KEY` — inference API key (e.g. `openssl rand -hex 16`)
+- `NEO4J_PASSWORD` — Neo4j (GraphRAG) password, **no default**; compose
+  refuses to start without it. Use e.g. `openssl rand -hex 24`. Even if you
+  never enable GraphRAG, the variable must be set.
 
 Prebuilt image tiers (set `LLAMACPP_DOCKER_IMAGE` in `.env`):
 `ghcr.io/aleckarfonta/llama-nexus-llamacpp:cpu | :cuda-86 | :cuda-89 | :cuda-120`
@@ -112,11 +123,15 @@ docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml down -v   # 
 
 - **`docker compose up` fails with port conflicts** — another service owns
   3002/8700/8600. Stop it or remap the host ports in `.env`.
+- **`NEO4J_PASSWORD missing in .env`** — you cloned without running an
+  installer. Add a random value (`openssl rand -hex 24`) to `.env` and retry;
+  see [Manual install](#manual-install-no-script).
 - **GPU not detected in containers** — install
   [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
   and restart Docker.
-- **Model downloads fail (401)** — the model is gated; set `HUGGINGFACE_TOKEN`
-  in `.env`.
+- **Model downloads fail (401)** — the model is gated; set the token via
+  **Settings → HuggingFace token** (server-side, survives restarts) or
+  `HUGGINGFACE_TOKEN` in `.env`.
 - **Everything slow** — you're on CPU with a large model. Use the starter
   (Qwen3-4B Q4_K_M) or upgrade your GPU tier.
 - **Mac fans at max** — expected for CPU inference; use smaller quantizations.

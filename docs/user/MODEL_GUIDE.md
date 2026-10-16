@@ -2,7 +2,8 @@
 
 Llama Nexus downloads models from HuggingFace (GGUF format for llama.cpp).
 The built-in catalog (`Models` page, or the first-run wizard) recommends
-hardware-matched models; this guide explains the trade-offs.
+hardware-matched models — the wizard even deploys your pick automatically —
+and any HuggingFace GGUF repo works too; this guide explains the trade-offs.
 
 ## Rule of thumb
 
@@ -17,6 +18,7 @@ hardware-matched models; this guide explains the trade-offs.
 | Model | File size | Min VRAM | Good for |
 |---|---|---|---|
 | Qwen3-4B-Instruct Q4_K_M | ~2.5 GB | 4 GB / CPU ok | Default starter, fast chat |
+| Qwen3-4B-Instruct Q8_0 | ~4.4 GB | 6 GB | Higher-quality starter on 8 GB+ GPUs |
 | Llama-3.1-8B-Instruct Q4_K_M | ~4.9 GB | 6 GB | Better general quality |
 | Qwen3-30B-A3B Q4_K_M (MoE) | ~18.6 GB | 20 GB | Big-model quality, small-model speed |
 | Qwen3.8-Flash-Next UD-IQ1_S | ~8.6 GB | 10 GB (multi-GPU best) | High-throughput advanced workloads |
@@ -45,7 +47,7 @@ The Deploy page offers one-click presets:
 | Preset | Target |
 |---|---|
 | Chat · Starter (4B) | New installs — CPU or any 4 GB+ GPU |
-| Chat · Assistant / VTuber / RP | Larger curated models for GPU rigs |
+| Chat · Assistant / VTuber / RP / Multi-Platform | Larger curated models for GPU rigs |
 | Chat · Fast / Side Bot | Second lightweight endpoint |
 
 If a preset's model isn't downloaded yet, download it from the Models page

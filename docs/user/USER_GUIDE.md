@@ -6,13 +6,33 @@ Everyday workflows after your stack is running (see [INSTALL.md](INSTALL.md)).
 
 Open **http://localhost:3002**. The sidebar has two modes:
 
-- **Simple mode** (default): Dashboard, Chat, Deploy LLM, Models, Speech
-  pages, Documents, Settings.
+- **Simple mode** (default): eight core pages — Dashboard, Chat, Deploy LLM,
+  STT, TTS, Models, Documents, Settings.
 - **Advanced tools** (sidebar footer toggle): everything — workflows,
   fine-tuning, quantization, GraphRAG workbench, benchmarks, MCP, registry.
 
 The top status bar shows live health for LLM, Embeddings, Vector DB (Qdrant),
 STT, TTS, and training/quantization workers. Click a chip to jump to its page.
+
+**Dashboard → Workflow Runway**: a guided checklist of the llama-nexus path
+(assets → deploy → chat → knowledge → finetuning → operations). Each step
+shows a live status chip that flips to Complete once you've actually used the
+feature.
+
+**Management-token login dialog**: if your operator set
+`MANAGEMENT_AUTH_TOKEN` in `.env`, the first management-API call fails with
+401 and a login dialog appears asking for the token. Enter it once; it's
+remembered in your browser and re-attached automatically. On a default
+localhost install (no token configured) the dialog never appears.
+
+## First run: the wizard deploys for you
+
+On a fresh install the welcome wizard runs automatically: it detects your
+hardware (GPU/VRAM/RAM), asks your use case, and recommends a model. Download
+it and the wizard **deploys it automatically** — no separate Deploy step.
+Click **Get Started** on the final step and you land straight in **Chat**
+with the model live. Voice (STT/TTS) and RAG services can be enabled later
+from their own pages.
 
 ## Chat with a local LLM
 
