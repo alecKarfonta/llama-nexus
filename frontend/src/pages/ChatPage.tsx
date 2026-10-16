@@ -10,7 +10,7 @@ import React, {
   KeyboardEvent,
 } from "react";
 import { flushSync } from "react-dom";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -70,6 +70,7 @@ import {
   HeadsetMic as HeadsetMicIcon,
   CallSplit as ForkIcon,
   Code as CodeIcon,
+  CheckCircle as CheckCircleIcon,
 } from "@mui/icons-material";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import { useTTS } from "@/hooks/useTTS";
@@ -2003,10 +2004,17 @@ function normalizeLoadedMessages(rawMessages: unknown): ChatMessage[] {
 export const ChatPage: React.FC<ChatPageProps> = () => {
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const copyTextToClipboard = useClipboard();
   const deployPath = getRoutePath("deploy");
   const routeState = location.state as ChatRouteState | null;
   const deploymentContext = routeState?.deployment;
+  // [2026-10-16] | INFO | CHAT_PAGE.WIZARD_READY_BANNER | Arriving with
+  // ?wizard=1 (set by the onboarding wizard after a successful deploy) shows a
+  // dismissible ready banner above the composer. Dismissed once per arrival.
+  const [wizardReadyDismissed, setWizardReadyDismissed] = useState(false);
+  const wizardReady =
+    searchParams.get("wizard") === "1" && !wizardReadyDismissed;
   const graphRAGRouteHandoff = routeState?.graphragHandoff;
   const graphRAGRouteRunIdsKey =
     getGraphRAGHandoffRunIds(graphRAGRouteHandoff).join("|");
@@ -8617,6 +8625,32 @@ export const ChatPage: React.FC<ChatPageProps> = () => {
         )}
 
         {/* Input */}
+        {/* [2026-10-16] | INFO | CHAT_PAGE.WIZARD_READY_BANNER | Dismissible
+            ready-state banner shown when the user lands here from the onboarding
+            wizard after a successful one-click deploy. */}
+        {wizardReady && (
+          <Alert
+            severity="success"
+            icon={<CheckCircleIcon />}
+            sx={{
+              mb: 1,
+              fontSize: "0.8125rem",
+              alignItems: "center",
+              "& .MuiAlert-message": { flexGrow: 1 },
+            }}
+            action={
+              <IconButton
+                aria-label="Dismiss"
+                size="small"
+                onClick={() => setWizardReadyDismissed(true)}
+              >
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            }
+          >
+            Your model is deployed and ready — start chatting
+          </Alert>
+        )}
         <Paper
           data-chat-input
           sx={{

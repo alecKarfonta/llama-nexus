@@ -41,7 +41,7 @@ import {
 } from '@mui/icons-material'
 import { apiService } from '@/services/api'
 import { useToast } from '@/contexts/ToastContext'
-import type { ModelDownload } from '@/types/api'
+import type { ModelDownload, ServiceActionRequest } from '@/types/api'
 
 // [2026-10-15] | INFO | WELCOME_WIZARD.MODULE | First-run flag helpers.
 // The flag lives in plain localStorage (not useLocalPreference) because it is
@@ -107,6 +107,15 @@ interface RecommendedModel {
   variants: RecommendedVariant[]
 }
 
+// [2026-10-16] | INFO | WELCOME_WIZARD.DEPLOY_STATE | Lifecycle of the
+// one-click download+deploy phase for the recommended chat model.
+type DeployPhase = 'idle' | 'deploying' | 'ready' | 'failed'
+
+interface DeployState {
+  phase: DeployPhase
+  error?: string
+}
+
 interface SystemGpusResponse {
   available?: boolean
   gpus?: Array<{ index?: number; name?: string; vram_total_mb?: number }>
@@ -126,6 +135,11 @@ const GB_BYTES = 1024 ** 3
 const WIZARD_STEPS = ['Welcome', 'Use Case', 'Models', 'Done']
 
 const DEFAULT_VRAM_BUDGET_GB = 8
+
+// [2026-10-16] | INFO | WELCOME_WIZARD.DEPLOY_TUNING | Polling cadence and
+// timeout budget for waiting on a freshly-started llamacpp runtime.
+const DEPLOY_POLL_INTERVAL_MS = 2000
+const DEPLOY_POLL_TIMEOUT_MS = 120000
 
 const formatGb = (bytes?: number): string => (
   typeof bytes === 'number' && bytes > 0 ? `${(bytes / GB_BYTES).toFixed(1)} GB` : '—'
@@ -153,6 +167,19 @@ const formatEta = (seconds: number): string => {
 const modelIdForFilename = (filename: string): string => (
   filename.toLowerCase().endsWith('.gguf') ? filename.slice(0, -5) : filename.replace(/\.[^./]+$/, '')
 )
+
+// [2026-10-16] | INFO | WELCOME_WIZARD.NAME_VARIANT_FOR_FILENAME | Derive the
+// llamacpp config {name, variant} pair the backend expects from a downloaded
+// filename. Curated filenames follow "Model-QUANT.gguf" ("nomic.Q8_0.gguf"
+// uses dots), and backend build_command() probes `{name}-{variant}` /
+// `{name}.{variant}` patterns, so splitting on the LAST separator covers both.
+const nameVariantForFilename = (filename: string): { name: string; variant: string } => {
+  const stem = modelIdForFilename(filename)
+  const separator = stem.includes('.') && !stem.includes('-') ? '.' : '-'
+  const idx = stem.lastIndexOf(separator)
+  if (idx <= 0 || idx === stem.length - 1) return { name: stem, variant: '' }
+  return { name: stem.slice(0, idx), variant: stem.slice(idx + 1) }
+}
 
 // Mirrors the extension allowlist enforced by POST /v1/models/download.
 const DIRECT_DOWNLOAD_RE = /(\.gguf|\.safetensors|\.bin|\.pth|\.pt|\.ninfer)(\.part\d+of\d+)?$/i
@@ -220,6 +247,13 @@ export const WelcomeWizard: React.FC = () => {
   const [showAllModels, setShowAllModels] = useState(false)
   const [variantSelection, setVariantSelection] = useState<Record<string, number>>({})
   const [downloads, setDownloads] = useState<Record<string, ModelDownload>>({})
+  // [2026-10-16] | INFO | WELCOME_WIZARD.DEPLOY_STATE | One-click deploy status
+  // for the chat model: follows download completion, polls service status until
+  // running, then marks the card Ready. Keyed by modelId (filename stem).
+  const [deployState, setDeployState] = useState<Record<string, DeployState>>({})
+  // Track which modelId the auto-deploy already ran for so a failed deploy is
+  // not retried behind the user's back (a manual Retry stays available).
+  const autoDeployedRef = useRef<Set<string>>(new Set())
 
   // Guards: one hardware fetch per epoch, one recommendations fetch per epoch.
   const fetchEpochRef = useRef(0)
@@ -238,6 +272,8 @@ export const WelcomeWizard: React.FC = () => {
       setShowAllModels(false)
       setVariantSelection({})
       setDownloads({})
+      setDeployState({})
+      autoDeployedRef.current.clear()
       setHardware(null)
       setHardwareError(null)
       setHardwareLoading(true)
@@ -497,12 +533,80 @@ export const WelcomeWizard: React.FC = () => {
     }
   }, [variantSelection, toast])
 
+  // [2026-10-16] | INFO | WELCOME_WIZARD.HANDLE_DEPLOY | One-click deploy after
+  // download: reuse the exact /v1/service/action contract DeployPage uses
+  // (config-merged start), then poll /v1/service/status until the runtime
+  // reports running. Single chat-model deploy only — embedding/stt models start
+  // on demand from their own deploy surfaces.
+  const handleDeploy = useCallback(async (model: RecommendedModel, variant: RecommendedVariant) => {
+    const modelId = modelIdForFilename(variant.filename)
+    setDeployState((prev) => ({ ...prev, [modelId]: { phase: 'deploying' } }))
+    try {
+      const { name, variant: variantName } = nameVariantForFilename(variant.filename)
+      // [2026-10-16] | INFO | WELCOME_WIZARD.HANDLE_DEPLOY | The action endpoint
+      // deep-merges partial config over the persisted llamacpp config, so we only
+      // send the model selection and leave all other runtime params untouched
+      // (Partial<> is top-level only, hence the cast — same as DeployPage).
+      const request: ServiceActionRequest = {
+        action: 'start',
+        backend: 'llamacpp',
+        config: { model: { name, variant: variantName } } as ServiceActionRequest['config'],
+      }
+      const result = await apiService.performServiceAction(request)
+      if (!result.success) {
+        throw new Error('Service failed to start')
+      }
+
+      // Poll until the service reports running (load can take a while for big GGUFs).
+      const startedAt = Date.now()
+      for (;;) {
+        const status = await apiService.getServiceStatus()
+        if (status.health === 'healthy' && status.modelLoaded) break
+        if (Date.now() - startedAt > DEPLOY_POLL_TIMEOUT_MS) {
+          throw new Error('Timed out waiting for the runtime to become ready')
+        }
+        await new Promise((resolve) => setTimeout(resolve, DEPLOY_POLL_INTERVAL_MS))
+      }
+
+      setDeployState((prev) => ({ ...prev, [modelId]: { phase: 'ready' } }))
+      toast.success(`${model.name} is deployed and ready`, 'Model Deploy')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Deploy failed'
+      setDeployState((prev) => ({ ...prev, [modelId]: { phase: 'failed', error: message } }))
+      toast.warning(
+        `Download succeeded but deploy failed: ${message}. You can continue and launch it from the Deploy page.`,
+        'Model Deploy',
+      )
+    }
+  }, [toast])
+
   const activeUseCase = USE_CASES.find((c) => c.id === useCase) ?? null
 
   const visibleModels = useMemo(() => {
     if (showAllModels || !activeUseCase) return models
     return models.filter((m) => activeUseCase.modelTypes.includes(m.modelType ?? 'llm'))
   }, [models, showAllModels, activeUseCase])
+
+  // [2026-10-16] | INFO | WELCOME_WIZARD.USE_EFFECT_AUTO_DEPLOY | When the
+  // selected chat (llm) model finishes downloading, automatically kick off the
+  // deploy phase — even if the user already moved to the Done step (it reacts
+  // live to the deploy result). Single-model by design: only the recommended
+  // (first visible) chat card's selected variant deploys; embedding/stt models
+  // never do (they start on demand from their own deploy surfaces).
+  useEffect(() => {
+    if (!open) return
+    const chatModel = visibleModels.find((m) => (m.modelType ?? 'llm') === 'llm')
+    if (!chatModel) return
+    const variantIndex = variantSelection[chatModel.repoId] ?? 0
+    const variant = chatModel.variants[variantIndex]
+    if (!variant || !isDirectDownloadable(variant.filename)) return
+    const modelId = modelIdForFilename(variant.filename)
+    const record = downloads[modelId]
+    if (record?.status !== 'completed') return
+    if (deployState[modelId] || autoDeployedRef.current.has(modelId)) return
+    autoDeployedRef.current.add(modelId)
+    void handleDeploy(chatModel, variant)
+  }, [open, downloads, deployState, visibleModels, variantSelection, handleDeploy])
 
   const startedDownloadCount = Object.keys(downloads).length
   const completedDownloadCount = Object.values(downloads).filter((d) => d.status === 'completed').length
@@ -676,6 +780,11 @@ export const WelcomeWizard: React.FC = () => {
     }
 
     const record = downloads[modelIdForFilename(variant.filename)]
+    const deploy = deployState[modelIdForFilename(variant.filename)]
+    // [2026-10-16] | INFO | WELCOME_WIZARD.RENDER_DOWNLOAD_STATE | LLM cards
+    // show a full download -> deploy -> Ready lifecycle; other model types
+    // stop at Downloaded (they start on demand from their own surfaces).
+    const isLlm = (model.modelType ?? 'llm') === 'llm'
 
     if (!record) {
       return (
@@ -687,6 +796,60 @@ export const WelcomeWizard: React.FC = () => {
         >
           Download
         </Button>
+      )
+    }
+
+    if (isLlm && deploy?.phase === 'deploying') {
+      return (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 160 }}>
+          <CircularProgress size={16} />
+          <Typography variant="caption" color="text.secondary">
+            Deploying model…
+          </Typography>
+        </Box>
+      )
+    }
+
+    if (isLlm && deploy?.phase === 'ready') {
+      return (
+        <Chip
+          size="small"
+          color="success"
+          icon={<CheckIcon />}
+          label="Ready"
+        />
+      )
+    }
+
+    if (isLlm && deploy?.phase === 'failed') {
+      return (
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 240, maxWidth: 300 }}>
+          <Alert severity="warning" sx={{ py: 0 }}>
+            Downloaded — deploy failed: {deploy.error}
+          </Alert>
+          <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+            <Button size="small" onClick={() => { void handleDeploy(model, variant) }}>
+              Retry deploy
+            </Button>
+            {/* [2026-10-16] | INFO | WELCOME_WIZARD.RENDER_DOWNLOAD_STATE |
+                Continue anyway: the download succeeded, so acknowledge the
+                failure and keep the model as a plain Downloaded card. */}
+            <Button
+              size="small"
+              color="inherit"
+              onClick={() => setDeployState((prev) => {
+                const next = { ...prev }
+                delete next[modelIdForFilename(variant.filename)]
+                return next
+              })}
+            >
+              Continue anyway
+            </Button>
+            <Button size="small" variant="outlined" onClick={() => closeWizard('/deploy')}>
+              Open Deploy
+            </Button>
+          </Box>
+        </Box>
       )
     }
 
@@ -864,6 +1027,14 @@ export const WelcomeWizard: React.FC = () => {
     </Box>
   )
 
+  // [2026-10-16] | INFO | WELCOME_WIZARD.CHAT_DEPLOYED | True when the
+  // recommended chat model finished both download and auto-deploy — used to
+  // auto-land the user in Chat with a ready state.
+  const chatDeployed = useMemo(
+    () => Object.values(deployState).some((d) => d.phase === 'ready'),
+    [deployState],
+  )
+
   const renderDoneStep = () => (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', py: 2, gap: 2 }}>
       <CheckIcon sx={{ fontSize: 56, color: '#10b981' }} />
@@ -875,16 +1046,34 @@ export const WelcomeWizard: React.FC = () => {
           {startedDownloadCount > 0
             ? `${startedDownloadCount} download${startedDownloadCount > 1 ? 's' : ''} started (${completedDownloadCount} finished). Progress continues in the background — track it on the Models page.`
             : 'No downloads were started — you can add models anytime from the Models or Registry pages.'}
-          {' '}Launch a runtime on the Deploy page, then talk to it in Chat.
+          {' '}{chatDeployed
+            ? 'Your chat model is deployed — start chatting right away.'
+            : 'Launch a runtime on the Deploy page, then talk to it in Chat.'}
         </Typography>
       </Box>
+      {chatDeployed && (
+        <Chip size="small" color="success" icon={<CheckIcon />} label="Chat model deployed" />
+      )}
       <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', justifyContent: 'center' }}>
-        <Button variant="contained" startIcon={<RocketIcon />} onClick={() => closeWizard('/deploy')}>
-          Open Deploy
-        </Button>
-        <Button variant="outlined" startIcon={<ChatIcon />} onClick={() => closeWizard('/chat')}>
-          Start Chatting
-        </Button>
+        {chatDeployed ? (
+          <>
+            <Button variant="contained" startIcon={<ChatIcon />} onClick={() => closeWizard('/chat?wizard=1')}>
+              Start Chatting
+            </Button>
+            <Button variant="outlined" startIcon={<RocketIcon />} onClick={() => closeWizard('/deploy')}>
+              Open Deploy
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button variant="contained" startIcon={<RocketIcon />} onClick={() => closeWizard('/deploy')}>
+              Open Deploy
+            </Button>
+            <Button variant="outlined" startIcon={<ChatIcon />} onClick={() => closeWizard('/chat')}>
+              Start Chatting
+            </Button>
+          </>
+        )}
       </Box>
     </Box>
   )
@@ -932,7 +1121,9 @@ export const WelcomeWizard: React.FC = () => {
               {activeStep === 2 ? 'Continue' : 'Next'}
             </Button>
           ) : (
-            <Button variant="contained" onClick={() => closeWizard()}>
+            // [2026-10-16] | INFO | WELCOME_WIZARD.GET_STARTED | Auto-land in
+            // Chat when the chat model deployed; otherwise stay on current path.
+            <Button variant="contained" onClick={() => closeWizard(chatDeployed ? '/chat?wizard=1' : undefined)}>
               Get Started
             </Button>
           )}

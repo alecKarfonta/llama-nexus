@@ -7,12 +7,13 @@ import {
   Add as AddIcon,
   History as HistoryIcon,
   RocketLaunch as DeployIcon,
+  Route as RouteIcon,
 } from '@mui/icons-material'
 import { useNavigate } from 'react-router-dom'
 import { ServiceStatusDisplay } from '@/components/monitoring/ServiceStatusDisplay'
 import { LogViewer } from '@/components/monitoring/LogViewer'
 import { TokenUsageTracker } from '@/components/monitoring/TokenUsageTracker'
-import { RecentConversations } from '@/components/dashboard'
+import { RecentConversations, WorkflowRunway } from '@/components/dashboard'
 import { PageShell, SectionCard, compactCollapsibleCardSx } from '@/components/common'
 import {
   getRoutePath,
@@ -45,6 +46,25 @@ export const DashboardPage: React.FC = () => {
 
   return (
     <PageShell sx={{ py: 1.25 }}>
+      {/* [2026-10-16] | INFO | DASHBOARD_PAGE.WORKFLOW_RUNWAY | Guided-tour
+          section reviving the navigation.tsx workflow/lifecycle data with
+          live feature-usage chips. */}
+      <Grid container spacing={1.25} sx={{ mb: 1.25 }}>
+        <Grid item xs={12}>
+          <SectionCard
+            title="Workflow Runway"
+            subtitle="The llama-nexus path from assets to operations"
+            accentColor={accentColors.purple}
+            icon={<RouteIcon />}
+            collapsible
+            defaultExpanded={false}
+            sx={compactCollapsibleCardSx}
+          >
+            <WorkflowRunway hasTokenUsage={tokenUsage.length > 0} />
+          </SectionCard>
+        </Grid>
+      </Grid>
+
       <Grid container spacing={1.25} sx={{ mb: 1.25 }}>
         <Grid item xs={12} lg={7}>
           <SectionCard
