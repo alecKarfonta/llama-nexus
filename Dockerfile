@@ -175,7 +175,13 @@ COPY --from=builder /build/llama.cpp/build/bin/llama-gguf-split /usr/local/bin/
 # [2026-10-15] | INFO | DOCKERFILE.RUNTIME_LIBS | upstream prebuilts are dynamically
 # linked with RUNPATH=$ORIGIN; bundled .so files must sit beside the binaries.
 # Compiled-from-source builds leave /build/runtime-libs empty -> copy is a no-op.
+# [2026-10-16] | FIX | DOCKERFILE.BACKEND_DIRS | ggml's dynamic backend loader
+# (libggml-cpu-*.so) searches the EXECUTABLE directory — LD_LIBRARY_PATH only
+# satisfies the linker. Upstream prebuilts ship dynamic backends, so they must
+# sit beside llama-server in /usr/local/bin (the lib copy stays for the linker
+# and any embedded consumers). Symptom without this: "no backends are loaded".
 COPY --from=builder /build/runtime-libs/ /usr/local/lib/llama-nexus/
+COPY --from=builder /build/runtime-libs/ /usr/local/bin/
 # [2026-10-15] | INFO | DOCKERFILE.LD_PATH | plain value; ENV has no shell expansion
 ENV LD_LIBRARY_PATH=/usr/local/lib/llama-nexus
 COPY --from=builder /build/llamacpp-build-tag.txt /etc/llama-nexus/llamacpp-build-tag

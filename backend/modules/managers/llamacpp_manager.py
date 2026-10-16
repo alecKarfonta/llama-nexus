@@ -1247,6 +1247,24 @@ class LlamaCPPManager:
         except Exception as e:
             logger.error(f"Error reading Docker logs via CLI: {e}")
 
+    async def read_docker_logs(self):
+        # [2026-10-16] | FIX | LLAMACPP_MANAGER.READ_DOCKER_LOGS | SDK path
+        # referenced this method (start_docker_sdk line ~749) but it was never
+        # implemented — every SDK-path deploy crashed with AttributeError
+        # ('no attribute read_docker_logs') right after container creation.
+        # Streams container logs into the same log_buffer the CLI reader uses.
+        try:
+            if self.docker_container is None:
+                self.docker_container = docker_client.containers.get(self.container_name)
+            logger.info(f"Started reading Docker logs (SDK) for container: {self.container_name}")
+            for line in self.docker_container.logs(stream=True, follow=True):
+                if line:
+                    line_str = line.decode('utf-8', errors='replace').strip()
+                    if line_str:
+                        await self.add_log_line(line_str)
+        except Exception as e:
+            logger.error(f"Error reading Docker logs via SDK: {e}")
+
     def _probe_running(self) -> bool:
         """Check if the llamacpp service container or subprocess is running (no status payload)."""
         if self.use_docker:

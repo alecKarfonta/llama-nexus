@@ -16,6 +16,12 @@ from enhanced_logger import enhanced_logger as logger
 from local_paths import backend_data_path
 from modules.managers.base import DOCKER_AVAILABLE, docker_client
 
+# [2026-10-16] | FIX | EMBEDDING_MANAGER.DOCKER_IMPORT | bare `docker.errors.*`
+# references below (lines 163/347/401 + DeviceRequest) crashed with
+# NameError when DOCKER_AVAILABLE, masking the real start failure
+if DOCKER_AVAILABLE:
+    import docker
+
 
 class EmbeddingManager:
     """Manages Embedding Service lifecycle and configuration"""
@@ -70,7 +76,12 @@ class EmbeddingManager:
             },
             "server": {
                 "host": "0.0.0.0",
-                "port": 8602,
+                # [2026-10-16] | FIX | EMBEDDING_MANAGER.PORT | internal container
+                # port is 8080 (convention shared by llamacpp-api/vllm/ninfer;
+                # all proxy call sites hardcode llamacpp-embed:8080); 8602 stays
+                # as the published host port via port_publish below
+                "port": 8080,
+                "port_publish": 8602,
                 "api_key": os.getenv("EMBED_API_KEY", "llamacpp-embed"),
             }
         }
@@ -195,7 +206,7 @@ class EmbeddingManager:
                 "environment": environment,
                 "command": " ".join(self.build_command()),
                 "network": self.docker_network,
-                "ports": {f"{self.config['server']['port']}/tcp": self.config['server']['port']},
+                "ports": {f"{self.config['server']['port']}/tcp": self.config['server'].get('port_publish', self.config['server']['port'])},
                 "volumes": {
                     "llama-nexus_gpt_oss_models": {"bind": "/home/llamacpp/models", "mode": "rw"}
                 },
@@ -270,7 +281,7 @@ class EmbeddingManager:
                 "--name", self.container_name,
                 "--hostname", "llamacpp-embed",
                 f"--network={self.docker_network}",
-                f"-p", f"{self.config['server']['port']}:{self.config['server']['port']}",
+                f"-p", f"{self.config['server'].get('port_publish', self.config['server']['port'])}:{self.config['server']['port']}",
                 "-v", "llama-nexus_gpt_oss_models:/home/llamacpp/models",
                 "--shm-size", "8gb",
                 "-e", f"MODEL_NAME={self.config['model']['name']}",
