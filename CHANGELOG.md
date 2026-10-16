@@ -4,6 +4,18 @@ All notable changes to Llama Nexus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project adheres to
 semantic versioning.
 
+## [Unreleased]
+
+### Added
+- Real Settings page (server-backed): HuggingFace token management (persisted
+  on the backend data volume, masked in transit, re-applied to the runtime
+  environment on boot), masked view of the effective inference/embedding API
+  keys, storage-path inventory with free-space reporting, and a LAN-exposure
+  toggle that rewrites `BIND_HOST` in `.env` and reports when a stack restart
+  is required. New endpoints: `GET /api/v1/settings`, `PUT
+  /api/v1/settings/hf-token`, `PUT /api/v1/settings/lan`, `GET
+  /api/v1/settings/management-token/suggest`.
+
 ## [0.1.0] — 2026-10-15
 
 ### Added

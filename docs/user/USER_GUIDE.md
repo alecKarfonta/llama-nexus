@@ -68,6 +68,24 @@ from your `.env`. Embeddings: `/v1/embeddings` on port 8602. Transcription:
 - **Backups**: model files live in the `gpt_oss_models` Docker volume;
   conversations in `conversation_data`. See SECURITY.md for paths.
 
+## Settings
+
+The Settings page manages both server-side installation settings and local
+browser preferences:
+
+- **HuggingFace token** — saved on the server (survives restarts, stored in
+  the backend data volume). Needed only for gated model downloads; create a
+  token at huggingface.co/settings/tokens.
+- **API keys** — shows the effective inference and embedding keys (masked).
+  Change them on the matching Deploy page and redeploy.
+- **Storage** — where models, conversations, and caches live, with free
+  space per volume.
+- **Network exposure** — flip between localhost-only and LAN-wide binding.
+  Requires a stack restart to take effect; the page warns you and suggests a
+  management token when exposing to the LAN (see SECURITY.md).
+- **Preferences** — Simple/Advanced navigation, compact layouts, and other
+  browser-local toggles.
+
 ## Tips
 
 - First generation after deploy is slower (model warm-up).

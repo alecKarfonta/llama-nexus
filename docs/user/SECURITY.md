@@ -16,9 +16,12 @@ the default posture and how to harden it when needed.
 
 If you want other devices on your network to use it:
 
-1. Set `BIND_HOST=0.0.0.0` in `.env`.
-2. **Set `MANAGEMENT_AUTH_TOKEN`** (e.g. `openssl rand -hex 24`). This is
-   strongly recommended: without it, anyone on the LAN can control services,
+1. Open **Settings → Network exposure** and flip **Expose UI & API on the
+   LAN** — the backend rewrites `BIND_HOST` in `.env` for you and remembers
+   the choice. (Or set `BIND_HOST=0.0.0.0` in `.env` by hand.)
+2. **Set `MANAGEMENT_AUTH_TOKEN`** (the Settings page suggests a random
+   token you can copy; or `openssl rand -hex 24`). This is strongly
+   recommended: without it, anyone on the LAN can control services,
    download/delete models, and read logs. With it, all `/api/v1` routes
    require `Authorization: Bearer <token>`.
 3. Restart: `docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d`.
