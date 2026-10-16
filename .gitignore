@@ -120,7 +120,8 @@ test-results/
 # =========================
 # Docker
 # =========================
-.dockerignore
+# [2026-10-16] | FIX | GITIGNORE.DOCKERIGNORE | repo now ships curated
+# .dockerignore files (M3 hygiene) — no machine-specific content to hide
 docker-compose.override.yml
 .docker/
 

@@ -1,0 +1,30 @@
+# [2026-10-16] | INFO | DOCKERIGNORE.ROOT | keeps the llamacpp build context
+# (root .) small and secret-free: no model weights, runtime DBs, local checkouts
+# of llama.cpp, or .env secrets. Only Dockerfile, scripts/start.sh, chat-templates/,
+# and patches/ are actually COPYed — everything else is dead context weight.
+.git
+.github
+.env
+.env.*
+!.env.example
+docs
+models
+data
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+llama.cpp
+llama.cpp-*
+node_modules
+frontend
+backend
+streaming-stt
+fast-inference
+services
+tests
+*.md
+LICENSE
+install.sh
+install.ps1

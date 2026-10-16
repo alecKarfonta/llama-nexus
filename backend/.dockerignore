@@ -1,0 +1,15 @@
+# [2026-10-16] | INFO | DOCKERIGNORE.BACKEND | backend image COPYs specific files
+# (requirements, main/app modules, modules/, routes/, scripts/, data seed); keep
+# runtime DBs, downloads, and caches out of the context.
+data/*
+!data/model_catalog_seed.json
+__pycache__
+*.pyc
+.pytest_cache
+tests
+*.db
+*.db-shm
+*.db-wal
+models
+venv
+.venv

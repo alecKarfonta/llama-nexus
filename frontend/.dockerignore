@@ -1,0 +1,6 @@
+# [2026-10-16] | INFO | DOCKERIGNORE.FRONTEND | npm install runs in-image from
+# package.json; local deps and build output must not leak into the context.
+node_modules
+dist
+coverage
+.vite
