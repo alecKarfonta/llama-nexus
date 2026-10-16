@@ -6,6 +6,38 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-16
+
+### Added
+- Full-pipeline e2e smoke (`scripts/smoke_e2e.sh --full`): wizard flow
+  (download Qwen3-0.6B → deploy → chat completion) plus STT transcribe,
+  TTS synthesize, embedding round-trip, and RAG search — idempotent
+  (skips download/deploy when a healthy model is already running), with
+  per-stage and total timeouts, `--mgmt-token` support, and api-key
+  auto-discovery. Live-verified 20/20.
+- CI `smoke-e2e` job: boots the published cpu-tier stack from GHCR on a
+  clean runner and runs the full pipeline on every PR — the Linux CPU
+  platform tier is now continuously tested.
+- `docs/user/TEST_MATRIX.md`: per-platform validation record (Tier 1
+  live-tested, WSL2 logic-reviewed, Apple Silicon build-verified, Intel
+  pending hardware).
+- `.dockerignore` files (root/backend/frontend) trimming build contexts of
+  model weights, runtime DBs, and local llama.cpp checkouts.
+
+### Fixed
+- Prebuilt cpu images could not load any model: ggml's dynamic backend
+  loader searches the executable directory, and the bundled
+  `libggml-cpu-*.so` backends shipped only in a library dir — every
+  `llama-server` start died with "no backends are loaded". Backends now
+  also ship beside the binary.
+- SDK-path LLM deploy crashed with `AttributeError: read_docker_logs`
+  right after container creation (only the CLI log reader existed).
+  Implemented the SDK log reader.
+- Embedding service was unreachable from every proxy call site: the
+  container listened on published port 8602 internally while proxies
+  target `llamacpp-embed:8080`. Internal port is now 8080 (8602
+  published), SDK and CLI paths both fixed.
+
 ## [0.2.0] — 2026-10-16
 
 ### Added
