@@ -68,7 +68,10 @@ COPY ${MTP_PATCH} /build-context/${MTP_PATCH}
 # prebuilt binaries are dynamically linked (RUNPATH=$ORIGIN) with bundled .so files that
 # must sit beside them at runtime. curl now uses -f so a 404 asset fails the build; the
 # old `A && B || fallback` precedence silently swallowed download failures.
-ARG TARGETARCH=amd64
+# [2026-10-16] | FIX | DOCKERFILE.TARGETARCH | bare ARG (no default): buildx
+# auto-populates TARGETARCH per build platform; a declared default would pin
+# every platform to amd64 (bit me in the arm64 cross-build)
+ARG TARGETARCH
 RUN if [ "$SKIP_BUILD_FROM_SOURCE" = "true" ]; then \
         case "${TARGETARCH}" in \
             arm64) ASSET_ARCH=arm64 ;; \
@@ -150,11 +153,18 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
+# [2026-10-16] | INFO | DOCKERFILE.PIP_PEP668 | ubuntu:24.04 runtime (needed by arm64
+# prebuilts, glibc 2.38+) marks python externally-managed; this pip env var allows
+# the install and is harmlessly ignored by 22.04's older pip
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # Install huggingface_hub for model downloads
 RUN pip3 install huggingface_hub hf_transfer
 
 # Create user for security
-RUN useradd -m -u 1000 llamacpp && \
+# [2026-10-16] | FIX | DOCKERFILE.USERADD | ubuntu:24.04 ships a default 'ubuntu'
+# user at UID 1000; reuse the slot (useradd -o allows duplicate UID) so arm64
+# builds don't die where 22.04 had no default user
+RUN useradd -m -o -u 1000 llamacpp && \
     mkdir -p /home/llamacpp/models && \
     chown -R llamacpp:llamacpp /home/llamacpp
 

@@ -51,14 +51,18 @@ jobs:
           - name: llamacpp-cpu
             dockerfile: ./Dockerfile
             context: .
-            platforms: linux/amd64
+            # [2026-10-16] | INFO | BUILD_IMAGES.CPU_PLATFORMS | arm64 = Apple Silicon
+            # (M1/M2/M3) native Docker; SKIP_BUILD_FROM_SOURCE path is download+copy
+            # only, so QEMU cross-build is fast and reliable. ubuntu:24.04 base
+            # because arm64 prebuilts need glibc 2.38+ (22.04 ships 2.35).
+            platforms: linux/amd64,linux/arm64
             tag: llama-nexus-llamacpp
             suffix: cpu
             build_args: |
               SKIP_BUILD_FROM_SOURCE=true
               LLAMACPP_VERSION=b10723
               LLAMACPP_BUILD_TAG=b10723
-              RUNTIME_BASE=ubuntu:22.04
+              RUNTIME_BASE=ubuntu:24.04
           - name: llamacpp-cuda-86
             dockerfile: ./Dockerfile
             context: .
