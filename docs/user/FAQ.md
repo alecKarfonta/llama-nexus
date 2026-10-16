@@ -8,16 +8,32 @@ other service or remap via `.env` (e.g. `QDRANT_HTTP_PORT=16333`).
 
 **Is a GPU required?**
 No. CPU-only installs run small models (Qwen3-4B Q4). GPU hosts get much
-faster inference. macOS runs CPU-tier (Docker VM limitation).
+faster inference. macOS runs CPU-tier (Docker VM limitation); Apple Silicon
+uses the native arm64 image.
 
 **The installer picked the wrong image tier**
 Set `LLAMACPP_DOCKER_IMAGE` in `.env` to any of
 `ghcr.io/aleckarfonta/llama-nexus-llamacpp:cpu|:cuda-86|:cuda-89|:cuda-120`
-and re-run `up -d`.
+and re-run `up -d`. Note: the `cpu` image is multi-arch (amd64 + native
+arm64 for Apple Silicon); CUDA variants are amd64-only.
 
 **Windows: GPU works in games but not in containers**
 Install/enable the WSL2 backend in Docker Desktop and update your NVIDIA
 driver (WSL-CUDA support).
+
+**Why am I asked for a management token?**
+Your operator set `MANAGEMENT_AUTH_TOKEN` in the server's `.env` — typically
+because the stack is exposed on a LAN. The login dialog wants that token;
+enter it once and the browser remembers it. On a default localhost install
+with no token configured, the dialog never appears. See
+[SECURITY.md](SECURITY.md#management-token-login-dialog).
+
+**Where is the Neo4j password?**
+In the `.env` file next to `docker-compose.yml` (`NEO4J_PASSWORD=...`). The
+installers generate a random one at install time — there is no default to
+look up. If you cloned the repo manually and compose fails with
+`NEO4J_PASSWORD missing in .env`, just set any strong value
+(e.g. `openssl rand -hex 24`).
 
 ## Models
 
@@ -61,6 +77,10 @@ allows audio autoplay for localhost.
 
 **Where are my conversations/models stored?**
 Docker volumes — see [SECURITY.md](SECURITY.md) for the table.
+
+**Which platforms are actually tested?**
+See [TEST_MATRIX.md](TEST_MATRIX.md) — Linux+NVIDIA and Linux CPU are
+continuously verified; Windows/macOS are logic-reviewed pending hardware runs.
 
 **How do I reset everything?**
 `docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml down -v`

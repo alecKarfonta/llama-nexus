@@ -94,3 +94,42 @@ jobs:
         env:
           NEO4J_PASSWORD: ci-dummy
         run: docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml config --quiet
+
+  smoke-e2e:
+    # [2026-10-16] | INFO | CI.SMOKE_E2E | Milestone 3.2: full-pipeline validation
+    # on PRs — pulls the published prebuilt stack (cpu tier), boots backend +
+    # frontend, then runs scripts/smoke_e2e.sh --full: wizard flow (download
+    # Qwen3-0.6B -> deploy -> chat) + STT + TTS + embed + RAG round-trips.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate .env
+        run: |
+          cat > .env <<'EOF'
+          API_KEY=ci-smoke-key
+          NEO4J_PASSWORD=ci-dummy
+          LLAMACPP_DOCKER_IMAGE=ghcr.io/aleckarfonta/llama-nexus-llamacpp:cpu
+          EOF
+      - name: Boot stack (backend + frontend + llamacpp cpu)
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml \
+            up -d backend-api llamacpp-frontend llamacpp-api qdrant redis
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8700/health && break
+            sleep 5
+          done
+          curl -sf http://localhost:8700/health
+      - name: Run smoke e2e (--full)
+        env:
+          API_KEY: ci-smoke-key
+          TOTAL_TIMEOUT: 1500
+        run: bash scripts/smoke_e2e.sh --full --api-key "$API_KEY"
+      - name: Dump stack logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml logs --tail 100
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml down -v
