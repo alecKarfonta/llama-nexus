@@ -67,9 +67,16 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      # [2026-10-16] | FIX | CI.COMPOSE_VALIDATION | NEO4J_PASSWORD is required
+      # by compose (fail-fast :? interpolation); CI validates syntax only, so a
+      # dummy value suffices — same for every validate step below
       - name: Validate base compose (CPU-safe default)
+        env:
+          NEO4J_PASSWORD: ci-dummy
         run: docker compose -f docker-compose.yml config --quiet
       - name: Validate GPU overlay
+        env:
+          NEO4J_PASSWORD: ci-dummy
         run: docker compose -f docker-compose.yml -f docker-compose.gpu.yml config --quiet
       - name: Portability check — no hardcoded host paths
         # [2026-10-15] | INFO | CI.PORTABILITY | Fails if personal host paths
@@ -80,6 +87,10 @@ jobs:
             exit 1
           fi
       - name: Validate storage override example
+        env:
+          NEO4J_PASSWORD: ci-dummy
         run: docker compose -f docker-compose.yml -f docker-compose.storage-override.yml.example config --quiet
       - name: Validate prebuilt compose
+        env:
+          NEO4J_PASSWORD: ci-dummy
         run: docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml config --quiet
