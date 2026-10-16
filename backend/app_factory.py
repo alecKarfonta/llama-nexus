@@ -83,6 +83,12 @@ try:
     import routes.profiles as profiles
 except ImportError:
     profiles = None
+# [2026-10-16] | INFO | APP_FACTORY.SETTINGS | Settings page backing routes
+# (HF token, API keys, storage paths, LAN exposure)
+try:
+    import routes.settings as settings
+except ImportError:
+    settings = None
 
 # Custom Logging Middleware
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -178,6 +184,9 @@ def create_app(lifespan_handler) -> FastAPI:
         app.include_router(mcp.router)
     if profiles is not None:
         app.include_router(profiles.router)
+    # [2026-10-16] | INFO | APP_FACTORY.SETTINGS_ROUTER | Milestone 2.4 — real Settings page
+    if settings is not None:
+        app.include_router(settings.router)
 
     # Compatibility health check (moved from main.py)
     @app.get("/health")

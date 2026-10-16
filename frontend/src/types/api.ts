@@ -127,6 +127,56 @@ export interface MtpGraftDonorSuggestions {
   suggested_donors: MtpGraftDonorSuggestion[];
 }
 
+// Application settings (Settings page — Milestone 2.4)
+export interface AppSettingsStorageRow {
+  label: string;
+  path: string;
+  exists: boolean;
+  free_gb?: number;
+  total_gb?: number;
+  error?: string;
+}
+
+export interface AppSettingsPayload {
+  hf_token_set: boolean;
+  hf_token_masked: string;
+  hf_token_source?: 'settings' | 'env' | null;
+  api_keys: {
+    inference: { masked: string; source?: string | null };
+    embedding: { masked: string; source?: string | null };
+  };
+  storage: AppSettingsStorageRow[];
+  lan: {
+    effective: boolean;
+    desired: boolean | null;
+    bind_host: string;
+    management_auth_configured: boolean;
+    env_file_writable: boolean;
+  };
+  security: {
+    management_auth_configured: boolean;
+    bind_host: string;
+  };
+  docker: boolean;
+}
+
+export interface HfTokenUpdateResponse {
+  status: 'updated' | 'cleared' | 'unchanged';
+  hf_token_masked: string;
+  hf_token_set: boolean;
+}
+
+export interface LanUpdateResponse {
+  status: 'updated';
+  desired: boolean;
+  effective: boolean;
+  env_file_updated: boolean;
+  restart_required: boolean;
+  instructions?: string;
+  management_token_suggestion?: string;
+  warning?: string;
+}
+
 export interface ModelDownload {
   modelId: string;
   progress: number; // 0-100

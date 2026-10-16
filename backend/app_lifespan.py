@@ -326,6 +326,15 @@ async def lifespan(app: FastAPI):
     app.state.merge_and_persist_config = _merge_and_persist_config
     app.state.token_tracker = token_tracker
 
+    # [2026-10-16] | INFO | APP_LIFESPAN.SETTINGS_STORE | Server-side app
+    # settings (HF token, LAN-exposure desired state) for the Settings page.
+    try:
+        from modules.app_settings import AppSettingsStore
+        app.state.app_settings_store = AppSettingsStore()
+    except Exception as e:
+        logger.warning(f"App settings store not available: {e}")
+        app.state.app_settings_store = None
+
     # Initialize MCP manager. Read-only MCP endpoints remain useful even when
     # no external servers are configured, so mount a manager with an empty store.
     try:
