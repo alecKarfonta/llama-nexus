@@ -5,6 +5,7 @@
 
 import type { WebSocketMessage, MetricsUpdate, StatusUpdate, DownloadUpdate } from '@/types/api';
 import { debugLog } from '@/utils/debug';
+import { getManagementToken } from '@/utils/managementAuth';
 
 export type WebSocketEventHandler = (message: WebSocketMessage) => void;
 
@@ -33,8 +34,13 @@ class WebSocketService {
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        debugLog('websocket', 'Attempting to connect to WebSocket', this.url);
-        this.ws = new WebSocket(this.url);
+        // [2026-10-16] | INFO | WEBSOCKET.CONNECT | Browsers cannot attach
+        // custom headers to WS upgrades, so the management token (when
+        // present) rides as ?token= per backend/auth_middleware.py.
+        const token = getManagementToken();
+        const url = token ? `${this.url}?token=${encodeURIComponent(token)}` : this.url;
+        debugLog('websocket', 'Attempting to connect to WebSocket', url);
+        this.ws = new WebSocket(url);
 
         // Set a timeout for connection
         const connectionTimeout = setTimeout(() => {

@@ -6,11 +6,14 @@ import { Header } from '@/components/layout/Header'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { CommandPalette } from '@/components/common/CommandPalette'
 import { WelcomeWizard } from '@/components/onboarding/WelcomeWizard'
+import { ManagementLoginDialog } from '@/components/auth/ManagementLoginDialog'
 import { PageSkeleton } from '@/components/common/PageSkeleton'
 import { ToastProvider } from '@/contexts/ToastContext'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { appPages, appRedirects } from '@/config/navigation'
 import { useLocalPreference } from '@/hooks/useLocalPreferences'
+import { useManagementAuthState } from '@/hooks/useManagementAuth'
+import { requestManagementLoginEvent } from '@/utils/managementAuth'
 
 const HASH_SCROLL_RETRY_DELAYS_MS = [75, 150, 300, 600, 1000, 1500]
 
@@ -36,6 +39,25 @@ function App() {
   const { value: compactControlSurfaces } = useLocalPreference('compactControlSurfaces')
   const density = compactControlSurfaces ? 'compact' : 'comfortable'
   const isGraphFocusRoute = location.pathname === '/knowledge-graph' || location.pathname.startsWith('/knowledge-graph/')
+
+  // [2026-10-16] | INFO | APP.MANAGEMENT_LOGIN | Global management-token gate:
+  // opens on the auth-required transition (a real 401 from the management
+  // API) and on explicit unlock requests from the header indicator. Stays
+  // closed on localhost where management auth is off.
+  const managementAuthState = useManagementAuthState()
+  const [managementLoginOpen, setManagementLoginOpen] = useState(false)
+
+  useEffect(() => {
+    if (managementAuthState === 'required') {
+      setManagementLoginOpen(true)
+    }
+  }, [managementAuthState])
+
+  useEffect(() => {
+    const handleLoginRequest = () => setManagementLoginOpen(true)
+    window.addEventListener(requestManagementLoginEvent, handleLoginRequest)
+    return () => window.removeEventListener(requestManagementLoginEvent, handleLoginRequest)
+  }, [])
 
   const handleSidebarToggle = () => {
     setSidebarOpen((open) => !open)
@@ -187,6 +209,13 @@ function App() {
         {/* [2026-10-15] | INFO | APP.RENDER | First-run onboarding wizard —
             shows on first visit until the localStorage flag is set. */}
         <WelcomeWizard />
+
+        {/* [2026-10-16] | INFO | APP.RENDER | Management-token login — reacts
+            to 401s from the management API; inert when auth is off. */}
+        <ManagementLoginDialog
+          open={managementLoginOpen}
+          onClose={() => setManagementLoginOpen(false)}
+        />
       </ToastProvider>
     </ErrorBoundary>
   )

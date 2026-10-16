@@ -6,6 +6,11 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { settingsManager } from '@/utils/settings';
 import { debugLog } from '@/utils/debug';
+import {
+  getManagementToken,
+  handleManagementAuthRequired,
+  ManagementAuthRequiredError,
+} from '@/utils/managementAuth';
 import type {
   ModelInfo,
   ModelDownloadRequest,
@@ -29,6 +34,9 @@ import type {
   MtpGraftPreflightResult,
   MtpGraftJob,
   MtpGraftDonorSuggestions,
+  AppSettingsPayload,
+  HfTokenUpdateResponse,
+  LanUpdateResponse,
 } from '@/types/api';
 
 type GraphRAGCapability = {
@@ -421,6 +429,26 @@ class ApiService {
         // Inject API key dynamically
         const authHeaders = this.getAuthHeaders();
         config.headers = { ...config.headers, ...authHeaders };
+        // [2026-10-16] | INFO | API.BACKEND_AUTH_HEADER | Attach the management
+        // token when the server has auth enabled. Both header forms are sent;
+        // Authorization may already carry the inference API key from above, so
+        // a valid management token must win — hence the explicit overwrite. An
+        // explicit X-Management-Token on the config (login-dialog verify call)
+        // takes precedence over the stored token. AxiosHeaders.get is
+        // case-insensitive; bracket fallbacks cover plain-object headers.
+        const explicitManagementToken = (
+          config.headers?.get?.('X-Management-Token')
+          ?? config.headers?.['X-Management-Token']
+          ?? config.headers?.['x-management-token']
+        ) as string | undefined;
+        const managementToken = explicitManagementToken || getManagementToken();
+        if (managementToken) {
+          config.headers = {
+            ...config.headers,
+            'X-Management-Token': managementToken,
+            'Authorization': `Bearer ${managementToken}`,
+          };
+        }
         return config;
       },
       (error: any) => {
@@ -440,7 +468,24 @@ class ApiService {
       onError
     );
 
-    this.backendClient.interceptors.response.use(onResponse, onError);
+    // [2026-10-16] | INFO | API.BACKEND_401 | Management-auth handling: on a
+    // 401 from the management API, fire the auth-required event (opens the
+    // login dialog globally) and reject with a typed silent error so polling
+    // callers can skip toasting on every missed call.
+    const onBackendError = (error: AxiosError) => {
+      if (error.response?.status === 401) {
+        handleManagementAuthRequired();
+        if (error.config) {
+          // Silent marker — error pipelines can check this to suppress noise.
+          (error.config as any).silentManagementAuth = true;
+        }
+        debugLog('api', 'Management auth required (401) — login flow triggered');
+        return Promise.reject(new ManagementAuthRequiredError());
+      }
+      console.error('API Response Error:', error);
+      return Promise.reject(this.transformError(error));
+    };
+    this.backendClient.interceptors.response.use(onResponse, onBackendError);
   }
 
   private transformError(error: AxiosError): Error {
@@ -3361,6 +3406,59 @@ class ApiService {
   }> {
     const response = await this.backendClient.get('/api/v1/graphrag/supported-formats');
     return response.data;
+  }
+
+  // ============================================================================
+  // Settings (application settings) API — Milestone 2.4
+  // ============================================================================
+
+  /**
+   * Full settings payload: HF token state, masked API keys, storage paths,
+   * LAN-exposure state, and security posture.
+   */
+  async getAppSettings(): Promise<AppSettingsPayload> {
+    const response = await this.backendClient.get('/api/v1/settings');
+    return response.data;
+  }
+
+  /**
+   * Set or clear the HuggingFace token. Send the masked echo to leave it
+   * unchanged, a new `hf_...` value to replace it, or '' to clear it.
+   */
+  async updateHfToken(token: string): Promise<HfTokenUpdateResponse> {
+    const response = await this.backendClient.put('/api/v1/settings/hf-token', { token });
+    return response.data;
+  }
+
+  /**
+   * Toggle LAN exposure (BIND_HOST). Returns whether a host-side compose
+   * restart is required for the new binding to take effect.
+   */
+  async updateLanExposure(exposed: boolean): Promise<LanUpdateResponse> {
+    const response = await this.backendClient.put('/api/v1/settings/lan', { exposed });
+    return response.data;
+  }
+
+  /**
+   * Fresh random management-token suggestion for LAN installs.
+   */
+  async suggestManagementToken(): Promise<{ token: string }> {
+    const response = await this.backendClient.get('/api/v1/settings/management-token/suggest');
+    return response.data;
+  }
+
+  /**
+   * [2026-10-16] | INFO | API.VERIFY_MANAGEMENT_TOKEN | Validate a candidate
+   * management token without storing it (login dialog). A 200 means accepted;
+   * a 401 rejects with ManagementAuthRequiredError. Auth-off servers 200 here
+   * too, so any token "works" — the dialog only ever appears after a real 401,
+   * so no probing of auth-off servers happens.
+   */
+  async verifyManagementToken(token: string): Promise<boolean> {
+    const response = await this.backendClient.get('/api/v1/settings', {
+      headers: { 'X-Management-Token': token },
+    });
+    return response.status === 200;
   }
 
   // ============================================================================

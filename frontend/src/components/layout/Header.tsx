@@ -14,6 +14,7 @@ import {
 } from '@mui/icons-material'
 import { useLocation } from 'react-router-dom'
 import { ServiceStatusBar } from '@/components/common/ServiceStatusBar'
+import { ManagementAuthIndicator } from '@/components/auth/ManagementAuthIndicator'
 import { getRouteMeta } from '@/config/navigation'
 
 interface HeaderProps {
@@ -192,6 +193,10 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, onCommandPalette })
             </Typography>
           </Box>
         </Tooltip>
+
+        {/* [2026-10-16] | INFO | HEADER.MANAGEMENT_AUTH | Lock/sign-out
+            indicator — renders nothing when management auth is off. */}
+        <ManagementAuthIndicator />
 
         {/* Service Status */}
         <Box sx={{ display: { xs: 'none', md: 'block' } }}>
